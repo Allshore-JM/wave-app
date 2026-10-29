@@ -881,6 +881,16 @@ first.
   office's newest run listing the station, else its kept runs; each file checked. Rows in the GFS table's shape
   (feet, FROM, the site's swell rank); the Wind column is the GFS station winds (section 53). `?model=NWPS` is honoured
   only at the 112 stations; `/healthz` reports `nwps`.
+- Limits (G41, step 8): the pointer is read by one thread at a time (a request holding a good pointer is served it
+  meanwhile; one holding nothing waits up to 10 s); a failed read with nothing held is asked again only after a minute;
+  every run name must be a real date; at most the newest 8 kept runs are tried, in 20 s in all, and none after the
+  bucket stops answering (a missing file still moves on to the next run). The Location line names the NWPS point the
+  numbers are for (the file's), not the GFS bulletin's point.
+- An office that stops (owner, G41): the window says "· N h old" (header and the line above the table) once the run is
+  over 36 h old (Honolulu's own runs reach ~32 h before the next lands). Past 72 h the station is served as one without
+  NWPS: no NWPS button, and a request for NWPS gets the GFS table, until the office publishes again. The GFS path judges
+  this from the pointer the server already holds (never a bucket read). A run over 48 h old has early hours older than
+  every GFS winds run kept, so its wind gaps there are final (the table kept the full 30 min; `wind_complete` true).
 - Validation (2026-10-28, 30 stations, 4,350 hours): combined Hs vs NOAA's GFS bulletins |diff| 0.19 m; NOAA's swell
   systems of 0.5 m or more matched within 2 s / 30 deg 88 %; hour 0 vs the buoys |Hs - WVHT| 0.22 m. Record:
   `docs/reviews/nwps-G41-adversarial.md`.

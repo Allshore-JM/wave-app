@@ -56,6 +56,7 @@ const CASES = [
   ['?station=51201&unit=constructor', undefined], ['?station=51201', { unit: 'toString' }],
   ['?station=51003&model=NWPS', undefined], ['?station=51003&model=nwps', { unit: 'Metric' }], ['?station=51201&model=NWPS', undefined],
   ['?station=46026&model=NWPS&tz=UTC', undefined], ['?station=51003&model=SWAN', undefined], ['?station=51003&model=GLWU', undefined],
+  ['?station=51003&model=%20Nwps%20', undefined], ['?station=%2051003%20&model=NWPS', undefined],   // trimmed alike (G41 A E02)
 ];
 
 test('the head asks for exactly the query of the module\'s first load, for every address / saved-settings combination', () => {

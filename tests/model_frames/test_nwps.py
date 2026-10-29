@@ -272,7 +272,7 @@ def test_the_station_file():
 
 def test_reader_values_are_integers_and_factors_sane():
     """G41a P3-3 / P3-2: only integers (or the exception value) in the rows, a finite factor, at most MAX_STEPS steps."""
-    text = fixture("51003.spc2d.txt").decode()
+    text = fixture("51003.spc2d.txt").decode().replace("\r\n", "\n")   # a Windows checkout may hold CRLF (G41 A P3-7)
     head, rest = text.split("20261028.000000", 1)
     block = "20261028.000000" + rest.split("20261028.010000")[0]
     row = "    0    0    0    0    2    9    7"

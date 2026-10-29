@@ -432,7 +432,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.5"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.6"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -477,9 +477,17 @@ def _forecast_entry_ttl(data) -> int:
     -- so wind re-joins within minutes instead of being pinned incomplete for the full
     30 min (the page asks again after a minute: wind_complete false)."""
     rows = data[3] if data and len(data) > 3 else None
-    if rows and any(len(r) <= 20 or r[20] is None for r in rows):
+    if rows and any(len(r) <= 20 or r[20] is None for r in rows) and not _nwps_wind_final(data[0]):
         return _WIND_NEG_TTL
     return _FORECAST_CACHE_TTL
+
+
+def _nwps_wind_final(cycle_str) -> bool:
+    """An NWPS table whose run is older than _NWPS_WIND_HEAL_H: its early hours precede every GFS winds run kept, so a
+    wind gap there never heals by asking again (G41 A P3-5): the table is kept the full time."""
+    run = _nwps_cycle_run(cycle_str) if isinstance(cycle_str, str) else None
+    age = _nwps_run_age_h(run) if run else None
+    return age is not None and age >= _NWPS_WIND_HEAL_H
 
 # ---------------------- Forecast points (plan section 31) -----------------------
 # A forecast for ANY ocean point: station ids of the form pt_21667N_158054W are read from the forecast-point
@@ -1270,7 +1278,7 @@ def resolve_model(station_id: str, requested: str | None) -> str:
         return "GFS"
     if model == "SWAN" and station_id not in SWAN_STATIONS:
         return "GFS"
-    if model == "NWPS" and station_id not in NWPS_STATIONS:
+    if model == "NWPS" and not nwps_offered(station_id):   # not an NWPS station, or its office stopped (G41 K-7)
         return "GFS"
     return model
 
@@ -1732,7 +1740,7 @@ def _run_health():
 _WIND_CACHE = {}            # (station_id, date_str, run_str) -> {"ts", "data", "ttl"}
 _WIND_CACHE_TTL = 30 * 60   # aligned with _FORECAST_CACHE / _RUN_CACHE
 _WIND_NEG_TTL = 5 * 60      # failed/empty fetches retry sooner (spec can publish after bulls)
-_WIND_CACHE_MAX = 128          # the 12 SWAN points hold two runs each (the back-fill, plan section 27)
+_WIND_CACHE_MAX = 256          # the 12 SWAN points and the 112 NWPS stations hold two runs each (the back-fill)
 _WIND_PAST_RUN_TTL = 6 * 3600  # a past cycle's spec never changes (the SWAN back-fill, plan section 27)
 _WIND_INFLIGHT = {}         # key -> Lock: collapse concurrent cold misses (singleflight)
 
@@ -1746,7 +1754,7 @@ GFSWINDS_PREFIX = "gfswave/winds/v1"
 _GFS_WINDS_STEPS = 385
 _GFS_WINDS_RECORD = _GFS_WINDS_STEPS * 4
 _GFS_WINDS_MAX = {"index": 512 * 1024, "winds": 8 * 1024 * 1024}
-_GFS_WINDS_KEEP_RUNS = 4               # held here: the newest run and the SWAN back-fill's (up to ~30 h older)
+_GFS_WINDS_KEEP_RUNS = 8               # held here: the newest run and the SWAN / NWPS back-fills' (G41 B-5)
 _GFS_WINDS_MISS_TTL = 120              # a run the job has not published yet (404): asked again after this
 _GFS_WINDS_ERR_TTL = 60                # any other failure
 _GFS_WINDS_LOCK = threading.Lock()
@@ -2661,13 +2669,33 @@ NWPS_PREFIX = "nwps/v1"
 NWPS_POINTER_FORMAT = "nwps-pointer-v1"
 NWPS_FORMAT = "nwps-v1"
 NWPS_UNAVAILABLE = "NWPS forecasts are not available on this server"
-_NWPS_PTR = {"ts": 0.0, "good": 0.0, "doc": None, "error": None}
+_NWPS_PTR = {"ts": 0.0, "good": 0.0, "doc": None, "error": None, "failed": 0.0}
 _NWPS_PTR_TTL = 5 * 60                 # the job rewrites the pointer when an office publishes (and once an hour)
 _NWPS_PTR_KEEP = 6 * 3600              # a pointer that cannot be read: the last good one serves this long
+_NWPS_PTR_NEG_TTL = 60                 # nothing held and the read failed: asked again after this, not on every request
+_NWPS_PTR_WAIT_S = 10                  # nothing held: a request waits this long for the read another thread is making
 _NWPS_LOCK = threading.Lock()
+_NWPS_FETCH_LOCK = threading.Lock()    # one pointer read at a time (G41 A P3-3)
 _NWPS_MAX_BYTES = {"pointer": 256 * 1024, "station": 512 * 1024}
 _NWPS_RUN_RE = re.compile(r"^\d{10}$")
 _NWPS_MAX_HOURS = 145
+_NWPS_MAX_RUNS = 8                     # the kept runs tried for one table (the job keeps 4; G41 A P3-2)
+_NWPS_RUNS_BUDGET_S = 20               # the station files of one table: this long in all (each read has its own cap)
+_NWPS_NOTE_H = 36                      # the page says "· N h old" past this (owner, G41 K-7; HFO's runs reach ~32 h)
+_NWPS_HIDE_H = 72                      # past this the station does not offer NWPS until its office publishes again
+_NWPS_WIND_HEAL_H = 48                 # an older run's early hours are older than every GFS winds run kept (8 x 6 h)
+_NWPS_CYCLE_RE = re.compile(r"NOAA NWPS (\d{8}) (\d{2}) UTC")
+
+
+def _nwps_run_ok(r):
+    """A run name as the job writes it: YYYYMMDDHH, a real date (G41 A P3-1)."""
+    if not (isinstance(r, str) and _NWPS_RUN_RE.match(r)):
+        return False
+    try:
+        datetime.strptime(r, "%Y%m%d%H")
+    except ValueError:
+        return False
+    return True
 
 
 def _nwps_pointer_ok(ptr):
@@ -2675,8 +2703,8 @@ def _nwps_pointer_ok(ptr):
         raise ValueError("unsupported NWPS pointer")
     for office, o in ptr["offices"].items():
         if not (isinstance(office, str) and re.fullmatch(r"[a-z]{3}", office) and isinstance(o, dict)
-                and isinstance(o.get("run"), str) and _NWPS_RUN_RE.match(o["run"])
-                and isinstance(o.get("runs"), list) and all(isinstance(r, str) and _NWPS_RUN_RE.match(r) for r in o["runs"])
+                and _nwps_run_ok(o.get("run"))
+                and isinstance(o.get("runs"), list) and all(_nwps_run_ok(r) for r in o["runs"])
                 and isinstance(o.get("stations"), list)):
             raise ValueError(f"unsupported NWPS pointer entry {office!r}")
     return ptr
@@ -2684,25 +2712,86 @@ def _nwps_pointer_ok(ptr):
 
 def _nwps_pointer(root):
     """The NWPS pointer (cached _NWPS_PTR_TTL; one that cannot be read keeps the last good one for _NWPS_PTR_KEEP), or
-    None."""
+    None. One read at a time: while it runs, a request holding a good pointer gets that one at once; one holding
+    nothing waits for the read (up to _NWPS_PTR_WAIT_S). A failed read with nothing held is asked again only after
+    _NWPS_PTR_NEG_TTL."""
     now = time.time()
     with _NWPS_LOCK:
-        if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["ts"] < _NWPS_PTR_TTL:
-            return _NWPS_PTR["doc"]
+        held = _NWPS_PTR["doc"] if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["good"] < _NWPS_PTR_KEEP else None
+        if held is not None and now - _NWPS_PTR["ts"] < _NWPS_PTR_TTL:
+            return held
+        if held is None and now - _NWPS_PTR["failed"] < _NWPS_PTR_NEG_TTL:
+            return None
+    if not _NWPS_FETCH_LOCK.acquire(blocking=held is None, timeout=_NWPS_PTR_WAIT_S if held is None else -1):
+        return held                                    # another thread is reading it
     try:
-        raw = _points_fetch(f"{root}/{NWPS_PREFIX}/latest.json?ts={int(now // _NWPS_PTR_TTL)}", _NWPS_MAX_BYTES["pointer"])
-        ptr = _nwps_pointer_ok(json.loads(raw.decode("utf-8")))
-        with _NWPS_LOCK:
-            _NWPS_PTR.update(ts=now, good=now, doc=ptr, error=None)
-        return ptr
-    except Exception as exc:
-        logger.warning("NWPS pointer unreadable: %r", exc)
-        with _NWPS_LOCK:
-            _NWPS_PTR["error"] = f"{exc.__class__.__name__}: {exc}"[:200]
-            if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["good"] < _NWPS_PTR_KEEP:
-                _NWPS_PTR["ts"] = now                 # asked again after the TTL, not on every request
+        with _NWPS_LOCK:                               # read by the thread before this one?
+            now = time.time()
+            if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["ts"] < _NWPS_PTR_TTL:
                 return _NWPS_PTR["doc"]
+            if held is None and _NWPS_PTR["doc"] is None and now - _NWPS_PTR["failed"] < _NWPS_PTR_NEG_TTL:
+                return None
+        try:
+            raw = _points_fetch(f"{root}/{NWPS_PREFIX}/latest.json?ts={int(now // _NWPS_PTR_TTL)}", _NWPS_MAX_BYTES["pointer"])
+            ptr = _nwps_pointer_ok(json.loads(raw.decode("utf-8")))
+            with _NWPS_LOCK:
+                _NWPS_PTR.update(ts=now, good=now, doc=ptr, error=None, failed=0.0)
+            return ptr
+        except Exception as exc:
+            logger.warning("NWPS pointer unreadable: %r", exc)
+            with _NWPS_LOCK:
+                _NWPS_PTR["error"] = f"{exc.__class__.__name__}: {exc}"[:200]
+                _NWPS_PTR["failed"] = now
+                if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["good"] < _NWPS_PTR_KEEP:
+                    _NWPS_PTR["ts"] = now                 # asked again after the TTL, not on every request
+                    return _NWPS_PTR["doc"]
+            return None
+    finally:
+        _NWPS_FETCH_LOCK.release()
+
+
+def _nwps_utcnow():
+    """The clock the NWPS age rules read (naive UTC; tests set it)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _nwps_run_age_h(run, now=None):
+    """Hours since a run's label (YYYYMMDDHH), or None."""
+    try:
+        t = datetime.strptime(run, "%Y%m%d%H")
+    except (TypeError, ValueError):
         return None
+    now = now or _nwps_utcnow()
+    return (now - t).total_seconds() / 3600
+
+
+def _nwps_cycle_run(cycle_str):
+    """The run named in an NWPS table's cycle line ("Cycle : NOAA NWPS 20261028 06 UTC (NWS HFO)"), or None."""
+    m = _NWPS_CYCLE_RE.search(cycle_str or "")
+    return m.group(1) + m.group(2) if m else None
+
+
+def _nwps_held_run(station_id):
+    """The newest run of the station's office that can serve it, by the pointer this server HOLDS (never read here:
+    the GFS path must not wait on the bucket), or None when nothing is held."""
+    st = NWPS_STATIONS.get(station_id)
+    with _NWPS_LOCK:
+        doc = _NWPS_PTR["doc"]
+    entry = doc["offices"].get(st["office"]) if (st and doc) else None
+    if not entry:
+        return None
+    runs = sorted(set(entry["runs"]) | {entry["run"]}, reverse=True)
+    return next((r for r in runs if not (r == entry["run"] and station_id not in entry["stations"])), None)
+
+
+def nwps_offered(station_id) -> bool:
+    """The model button offers NWPS at this station: an NWPS station whose newest run (by the held pointer) is not
+    older than _NWPS_HIDE_H (owner, G41 K-7). Without a held pointer it is offered (the reader then decides)."""
+    if station_id not in NWPS_STATIONS:
+        return False
+    run = _nwps_held_run(station_id)
+    age = _nwps_run_age_h(run) if run else None
+    return age is None or age <= _NWPS_HIDE_H
 
 
 def _nwps_num(v, lo, hi):
@@ -2734,14 +2823,32 @@ def _nwps_doc_ok(doc, office, run, station_id):
 
 
 def _nwps_doc(root, office, run, station_id):
-    """The station's file of that run, checked, or None (404: the run does not hold the station)."""
+    """(the station's file of that run, checked, or None, why): "missing" (404: the run does not hold the station),
+    "bad" (the file refused), "transport" (the bucket did not answer: the next run is not asked; G41 A P3-4)."""
     try:
         raw = _points_fetch(f"{root}/{NWPS_PREFIX}/{office}/{run}/{station_id}.json", _NWPS_MAX_BYTES["station"])
-        return _nwps_doc_ok(json.loads(raw.decode("utf-8")), office, run, station_id)
     except Exception as exc:
-        if "HTTP 404" not in str(exc):
-            logger.warning("NWPS file %s / %s / %s unreadable: %r", office, run, station_id, exc)
-        return None
+        if "HTTP 404" in str(exc) or "HTTP 403" in str(exc):
+            return None, "missing"
+        logger.warning("NWPS file %s / %s / %s unreadable: %r", office, run, station_id, exc)
+        return None, "transport"
+    try:
+        return _nwps_doc_ok(json.loads(raw.decode("utf-8")), office, run, station_id), None
+    except Exception as exc:
+        logger.warning("NWPS file %s / %s / %s refused: %r", office, run, station_id, exc)
+        return None, "bad"
+
+
+def _nwps_point_str(doc, st):
+    """The NWPS point the numbers are for (the file's, else the station file's copy of NOAA's), "19.29N 160.57W"."""
+    p = doc.get("point") if isinstance(doc, dict) else None
+    if isinstance(p, dict) and _nwps_num(p.get("lat"), -90, 90) and _nwps_num(p.get("lon"), -180, 360):
+        lat, lon = p["lat"], p["lon"]
+    else:
+        lat, lon = st["lat"], st["lon"]
+    if lon > 180:
+        lon -= 360
+    return _fmt_latlon(lat, lon)
 
 
 def _gfs_wind_cover(station_id, first_utc):
@@ -2804,16 +2911,22 @@ def _parse_nwps_uncached(station_id: str, target_tz_name: str | None = None):
     entry = ptr["offices"].get(office)
     if not entry:
         return None, None, None, None, 'UTC', f"No NWPS forecast found for {station_id}"
-    # the office's newest run when it lists the station, then its kept runs (newest first)
-    runs = sorted({r for r in entry["runs"]} | {entry["run"]}, reverse=True)
-    doc = None
+    # the office's newest run when it lists the station, then its kept runs (newest first; at most _NWPS_MAX_RUNS, and
+    # no further once the bucket stops answering or the time is up)
+    runs = sorted({r for r in entry["runs"]} | {entry["run"]}, reverse=True)[:_NWPS_MAX_RUNS]
+    doc, why, deadline = None, None, time.monotonic() + _NWPS_RUNS_BUDGET_S
     for run in runs:
         if run == entry["run"] and station_id not in entry["stations"]:
             continue
-        doc = _nwps_doc(root, office, run, station_id)
-        if doc is not None:
+        if time.monotonic() > deadline:
+            why = "transport"
+            break
+        doc, why = _nwps_doc(root, office, run, station_id)
+        if doc is not None or why == "transport":
             break
     if doc is None:
+        if why == "transport":
+            return None, None, None, None, 'UTC', "Could not reach the NWPS forecast (NOAA NWPS)"
         return None, None, None, None, 'UTC', f"No NWPS forecast found for {station_id}"
 
     coords = load_station_coords().get(str(station_id).strip())
@@ -2834,7 +2947,7 @@ def _parse_nwps_uncached(station_id: str, target_tz_name: str | None = None):
     rows = nwps_rows(doc, local_tz, _gfs_wind_cover(station_id, first))
     if not rows:
         return None, None, None, None, effective_tz_name, f"No NWPS forecast found for {station_id}"
-    location_str = f"Location : {station_id} ({_fmt_latlon(lat, lon)})"
+    location_str = f"Location : {station_id} ({_nwps_point_str(doc, st)})"    # the point the numbers are for (G41 B-3)
     cycle_str = f"Cycle : NOAA NWPS {doc['run'][:8]} {doc['run'][8:]} UTC (NWS {office.upper()})"
     return cycle_str, location_str, None, rank_rows(rows), effective_tz_name, None
 
@@ -3562,7 +3675,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "graph_header": None,
         "model": resolve_model(station, model),               # the model actually used (SWAN falls back to GFS)
         "swan_available": station in SWAN_STATIONS,
-        "nwps_available": station in NWPS_STATIONS,            # the model button's NWPS choice (plan section 59)
+        "nwps_available": nwps_offered(station),               # the model button's NWPS choice (plan section 59; G41 K-7)
         "summary_html": None,                                  # the window's Summary view (plan section 35)
     }
     if not station:
@@ -3602,6 +3715,15 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
             station, tz or None
         )
+        if model == "NWPS" and rows is not None:
+            age = _nwps_run_age_h(_nwps_cycle_run(cycle_str))
+            if age is not None and age > _NWPS_HIDE_H:      # its office stopped publishing (a pointer read just now
+                model = "GFS"                              # said so): the station is served as without NWPS (G41 K-7)
+                out["model"], out["nwps_available"] = model, False
+                cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+                    station, tz or None)
+            elif age is not None:
+                out["nwps_age_hours"] = round(age, 1)      # the page says "· N h old" past _NWPS_NOTE_H
     out["error"] = parse_error
     if rows is None:
         return out
@@ -3615,7 +3737,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     week = _swell_groups(rows, days=7) or present
     # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only); a Great
     # Lakes run's winds are fixed with the run (a gap never heals by asking again: 45195 on Lake Champlain has none)
-    out["wind_complete"] = model == "GLWU" or all(len(r) > 21 and r[20] is not None for r in rows)
+    out["wind_complete"] = (model == "GLWU" or (model == "NWPS" and _nwps_wind_final(cycle_str))
+                            or all(len(r) > 21 and r[20] is not None for r in rows))
 
     # single map marker if coords JSON has it
     coords_map = load_station_coords()
@@ -3733,7 +3856,7 @@ def api_forecast():
             "table_html": None, "tz_label": "", "lat": None, "lon": None,
             "graph_data": None, "graph_header": None,
             "model": resolve_model(station, model), "swan_available": station in SWAN_STATIONS,
-            "nwps_available": station in NWPS_STATIONS, "summary_html": None,
+            "nwps_available": nwps_offered(station), "summary_html": None,
         })
 
 
@@ -3761,7 +3884,7 @@ def index():
     # Model dropdown only exists for the stations with SWAN bulletins; a stale
     # ?model=SWAN on any other station silently resolves back to GFS.
     swan_available = selected_station in SWAN_STATIONS
-    nwps_available = selected_station in NWPS_STATIONS          # the model button's NWPS choice (plan section 59)
+    nwps_available = nwps_offered(selected_station)             # the model button's NWPS choice (plan section 59)
     selected_model = resolve_model(selected_station, selected_model)
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
@@ -3785,7 +3908,7 @@ def index():
         "station": selected_station, "tz": selected_tz, "unit": selected_unit if selected_unit in unit_options else "US",
         "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
         "swan_available": swan_available, "swan_stations": sorted(SWAN_STATIONS),
-        "nwps_available": nwps_available, "nwps_stations": sorted(NWPS_STATIONS),
+        "nwps_available": nwps_available, "nwps_stations": sorted(s for s in NWPS_STATIONS if nwps_offered(s)),
         "inline": bool(payload),
     }
     if payload:                                                # render=full: the window shows this without a fetch
@@ -5644,8 +5767,9 @@ def _live_after_fork():
     _GFS_WINDS_INFLIGHT.clear()
     _RUN_PROBE_LOCK = threading.Lock()            # the run probe's singleflight (G36 B-2)
     _TIDES_LOCK = threading.Lock()                # the tide service resets its own locks (tide_sources)
-    global _NWPS_LOCK
+    global _NWPS_LOCK, _NWPS_FETCH_LOCK
     _NWPS_LOCK = threading.Lock()                 # the NWPS pointer (plan section 59)
+    _NWPS_FETCH_LOCK = threading.Lock()           # its one read at a time (G41 A P3-3)
     _WINDS_LOCK = threading.Lock()                # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()

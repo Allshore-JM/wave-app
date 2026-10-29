@@ -138,6 +138,8 @@ test('meta lines: Run (UTC, with the table\'s run), Updated and Next Update in t
   assert.equal(text(s.panel.querySelector('.ov-run')), 'Run: 2026-10-07 06Z (UTC) — the forecast table is a PacIOOS SWAN run');
   const gl = world({ pageCycle: { model: 'GLWU' } }); gl.ov.render({ state: 'ready' });   // a Great Lakes station's table (plan section 50)
   assert.equal(text(gl.panel.querySelector('.ov-run')), 'Run: 2026-10-07 06Z (UTC) — the forecast table is a NOAA GLWU (Great Lakes) run');
+  const nw = world({ pageCycle: { model: 'NWPS' } }); nw.ov.render({ state: 'ready' });   // an NWPS table (plan section 59; G41 A O02)
+  assert.equal(text(nw.panel.querySelector('.ov-run')), 'Run: 2026-10-07 06Z (UTC) — the forecast table is a NOAA NWPS (nearshore) run');
 }));
 
 test('legend: the bar and the ticks come from the same functions as before (positions and labels unchanged), in the site unit', () => withClock(() => {

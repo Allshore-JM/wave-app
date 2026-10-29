@@ -1370,3 +1370,50 @@ test('NWPS: the model bar shows GFS with the station\'s other model only; a clic
   b.fs_.last().release(payload({ station: '46001', model: 'GFS', swan_available: false, nwps_available: false })); await settle();
   assert.equal(bar.hidden, true);
 });
+
+
+// ---- G41 fixes (plan section 59, step 8) ----
+test('a failed load keeps the model bar with the station models, so GFS stays one press away (G41 B-4)', async () => {
+  const b = boot({ initial: { station: '51003', swan_stations: ['51201'], nwps_stations: ['51003'] } });
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'GFS', swan_available: false, nwps_available: true })); await settle();
+  btn('NWPS').dispatch('click'); await settle();
+  b.fs_.last().fail(); await settle();
+  assert.equal(bar.hidden, false, 'the bar stays'); assert.equal(btn('GFS').hidden, false); assert.equal(btn('NWPS').hidden, false);
+  assert.equal(btn('SWAN').hidden, true);
+  const before = b.fs_.calls.length;
+  btn('GFS').dispatch('click'); await settle();
+  assert.equal(b.fs_.calls.length, before, 'GFS from the page cache: no request');
+  assert.equal(btn('GFS').getAttribute('aria-pressed'), 'true');
+  b.app.loader.load({ station: '46001' }); await settle(); b.fs_.last().fail(); await settle();
+  assert.equal(bar.hidden, true, 'a station with GFS only: no bar');
+});
+
+test('an NWPS run past 36 h says how old it is, in the header and the line above the table (G41 K-7)', async () => {
+  const b = boot({ initial: { station: '51003', swan_stations: ['51201'], nwps_stations: ['51003'], model: 'NWPS' } });
+  const I = b.F._internals;
+  assert.equal(I.NWPS_STALE_H, 36);
+  await settle();
+  const h = { cycle: 'NOAA NWPS 20261028 06 UTC (NWS HFO)', location: '51003 (19.29N 160.57W)', tz: 'Pacific/Honolulu' };
+  b.fs_.last().release(payload({ station: '51003', model: 'NWPS', nwps_available: true, nwps_age_hours: 35.9, graph_header: h })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'NWPS · run 20261028 06 UTC (NWS HFO)', 'under 36 h: no note');
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'NWPS', nwps_available: true, nwps_age_hours: 40.4, graph_header: h })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'NWPS · run 20261028 06 UTC (NWS HFO) · 40 h old');
+  const meta = b.doc.getElementById('forecastMeta').textContent;
+  assert.ok(meta.replace(/\u00a0/g, ' ').startsWith('Cycle : NOAA NWPS 20261028 06 UTC (NWS HFO) · 40 h old  |  Location : 51003 (19.29N 160.57W)'), meta);   // the separators are no-break spaces
+  assert.equal(/Cycle\s*:\s*([^|\n]*)/.exec(meta)[1].includes('NWPS'), true, 'the overlay still reads an NWPS table');
+  b.app.loader.load({ model: 'GFS', unit: 'US' }); await settle();
+  b.fs_.last().release(payload({ station: '51003', model: 'GFS', nwps_available: true, nwps_age_hours: 50 })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'a GFS table never carries it');
+});
+
+test('init hands the page NWPS list to the loader: NWPS is never asked at a station off it (G41 A C12)', async () => {
+  const b = boot({ search: '?station=46026&model=NWPS', initial: { station: '46026', model: 'NWPS', nwps_stations: ['51003'] } });
+  await settle();
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'GFS');
+  const c = boot({ search: '?station=51003&model=NWPS', initial: { station: '51003', model: 'NWPS', nwps_stations: ['51003'] } });
+  await settle();
+  assert.equal(c.fs_.param(c.fs_.last(), 'model'), 'NWPS');
+});

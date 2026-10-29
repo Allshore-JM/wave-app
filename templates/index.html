@@ -688,6 +688,8 @@
     @media (prefers-reduced-motion: reduce) { .fw-refresh[aria-busy="true"] .fw-refresh-icon { animation: none; opacity: .4; } }
     .fwin.fw-min .fw-refresh { display: none; }
     .fw-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #eee; flex-wrap: wrap; }
+    /* the last SHOWN model button keeps its rounded end (a hidden button after it is the group's last child: G41 B-2) */
+    #modelBar > .btn:not([hidden]):not(:has(~ .btn:not([hidden]))) { border-top-right-radius: var(--bs-btn-border-radius); border-bottom-right-radius: var(--bs-btn-border-radius); }
     .fw-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; -webkit-overflow-scrolling: touch; container-type: inline-size; container-name: fwbody; }
     /* The forecast window's body has no top or side padding: the frozen header and the sticky Date / Time columns sit
        at offset 0 (Chromium paints a sticky table header at a negative offset short of the scroll box's padding: the
@@ -1102,7 +1104,7 @@
           <button type="button" class="btn btn-outline-secondary{% if selected_view == 'Graph' %} active{% endif %}" data-view="Graph" aria-pressed="{{ 'true' if selected_view == 'Graph' else 'false' }}">Graph</button>
         </div>
         <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not (swan_available or nwps_available) %} hidden{% endif %}>
-          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'GFS' %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'true' if selected_model == 'GFS' else 'false' }}">GFS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model not in ('SWAN', 'NWPS') %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model in ('SWAN', 'NWPS') else 'true' }}">GFS</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}"{% if not swan_available %} hidden{% endif %}>SWAN</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'NWPS' %} active{% endif %}" data-model="NWPS" aria-pressed="{{ 'true' if selected_model == 'NWPS' else 'false' }}"{% if not nwps_available %} hidden{% endif %} title="NOAA NWPS: the National Weather Service's nearshore SWAN model">NWPS</button>
         </div>

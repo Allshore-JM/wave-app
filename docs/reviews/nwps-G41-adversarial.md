@@ -708,3 +708,67 @@ Checked:
 
 Next: the test site at MAX, including the phone note at 375x812 against the shifted-clock server; then a short fresh
 re-check at MAX; then step 9 production.
+
+## Test-site verification of fix round 2 (2026-10-29, Opus 5.5 at MAX)
+
+`test` @ 93fb224: cherry-picks of b357c67 (1e4d1ef), the golden c74938b (fd4c4b9) and the pins 150b8d8 (72fdcd3) and
+77147e5 (93fb224); README kept as test's own; the record commits left off. Pushed 17:11:27 UTC; the old instance
+answered until 17:12:35, the new one from 17:12:45 (polls every 10 s across the switch, 0 failed). UI 1.26.7 served =
+the commit (the 7 UI files), 1.26.6 URLs 404; site files = `feat/nwps-tables` except test's 3 logo lines. Test-branch
+suites: pytest 1,262 passed + the 5 failures the test branch always has (its logo lines vs the page golden x4, the
+numpy-import test); Node 1,058 (the test branch lacks one production manifest test). Scratch `g41\fix2\v` and `g41\v8`.
+
+Answers (GFS run 2026102906):
+- 65 non-NWPS answers (GFS, SWAN, Great Lakes, points, removed stations; Metric and UTC): production = test before the
+  deploy (65 identical), and test before = test after (65 identical). `nwps_available` the same before and after
+  (true at the 14 NWPS stations among them, false elsewhere); no `nwps_age_hours` on any of them.
+- All 112 NWPS tables (`nwps_check8.py` with tzdata 2026e): 112 of 112 = an independent rebuild from the bucket (145
+  rows, the NWPS point, wind = the GFS table at common times); median 0.56 s, max 1.76 s.
+- Failure paths on real data (`fail_local9.py` = `fail_local8.py` with two changes for today's data: its made-up newer
+  Honolulu run moved to 2026102903, past today's real 00Z run, and case 21's "another office" from 46026 (mtr, on the
+  same 00Z run as hfo today, so the moved clock aged it too) to 41008 (chs, 12Z)): 31 of 31.
+
+F-1 (a) and (b), the background refresh, live on the test site: `/healthz` polled every 30 s for 13 min from the new
+instance's first minute, with no NWPS request to the site meanwhile (the 65 answers make none: they judge by the held
+pointer). The pointer was read at the first request and again at uptime 324 s and 626 s; its age never passed 296 s
+(26 polls, 0 failed). Before this fix a server that built no NWPS table never read the pointer again.
+
+F-1 (c), a live run switch: Lake Charles (lch, station 42035) published its 12Z run while it was watched (`runswitch2.py`, one
+station of each of 34 offices kept cached on the site). The site had built the old 2026102812 table at 17:28:24. The
+bucket's pointer named 2026102912 from 17:36:33 UTC (the pointer is not cached at the edge: `cf-cache-status`
+DYNAMIC). The site answered the old run at 17:36:38, 17:37:08 and 17:37:39 (cache hits, 0.2-0.35 s); its background
+refresh read the new pointer at about 17:38:03, and the next answer (17:38:09, 0.64 s, a build) was the new run: 92 s
+after the bucket changed. Without the run in the cache key the old table would have stayed until about 17:58 (its
+30-min cache).
+
+In the browser (headless Chrome 156, own profile, trusted clicks and taps), against the fixed code served locally
+(`run_shifted.py`: the real bucket, the NWPS age clock moved forward):
+- Honolulu's 00Z run 38 h old:
+  - desktop 1280x800: the header "NWPS · run 20261029 00 UTC (NWS HFO)" then `#fwOld` "· 38 h old" (56 px), the run
+    text whole, its tooltip holding both; the line above the table "Cycle : NOAA NWPS 20261029 00 UTC (NWS HFO) · 38 h
+    old | Location : 51003 (19.29N 160.57W) | ...". GFS pressed: the note hidden and empty; NWPS again: back.
+  - phone 375x812, full-screen window: the run text gives way to 0 px, "· 38 h old" stays whole (56 px) between the
+    station box and the minimise button; the same in the minimised bar at the bottom.
+  - `?render=full`: the server's own line "Cycle : NOAA NWPS 20261029 00 UTC (NWS HFO) · 38 h old | ..."; the page's
+    state carries model NWPS, `nwps_available` true, `nwps_age_hours` 38.3; the note shown with 0 forecast requests.
+- 80 h: `?station=51003&model=NWPS&render=full` answers GFS: the line "Cycle : 20261029 6 UTC | Location : 51003
+  (19.22N 160.82W) | ...", no age note, the NWPS button hidden, no NWPS option in the no-script list, 51003 not in the
+  page's NWPS list (29 stations at that clock).
+- F-4: a page opened at 50 h (its list names 51003; NWPS showed "· 50 h old"), then the server restarted at 80 h, same
+  tab:
+  - pressing NWPS answered from the page's own 10-min cache (no request), by design;
+  - a new query (zone UTC) right after the restart still offered NWPS: the server's first background pointer read had
+    not landed yet (no pointer held = offered, by design; an NWPS request reads it). A failed load (Metric, refused by
+    DevTools) kept the bar as that answer left it (GFS / NWPS); Retry: the answer withdrew NWPS and the bar hid;
+  - a failed load from there (the zone back to the buoy's own, refused): the bar stayed hidden although the page's own
+    list still names 51003 (1.26.6 brought GFS / NWPS back from that list); Retry: hidden.
+- Smoke on the test site, desktop and phone: Great Lakes 45007 (bar hidden, GFS pressed), 51201 GFS / SWAN / GFS,
+  46026 GFS / NWPS (00Z MTR, the NWPS point in the Location line), a forecast point, no sideways scroll; the no-script
+  NWPS page at 51003 (145 rows, no note: the run 17 h old, 0 requests); the page's NWPS list 112, `#fwOld` present and
+  hidden. A fresh tab: no console problems. Test-origin storage emptied.
+- Memory: RSS 192 MB at 18 min, after the 112 NWPS tables and the 65 answers.
+
+No new findings. Owner awareness: on a phone the run text yields completely, in the window's header and in the
+minimised bar, so the note's own "·" follows the station box ("· 38 h old").
+
+Next: a short fresh re-check at MAX; then step 9 production (tag `prod-pre-nwps` @ a01c039).

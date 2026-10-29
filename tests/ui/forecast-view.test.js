@@ -333,3 +333,26 @@ test('the context row above the now row is the row above it, at its own height (
   b.fs_.last().release(skyPayload()); await settle();
   assert.equal(b.page.body.scrollTop, 500 - 100 - 40 - 33, 'a two-line row above stays whole under the header');
 });
+
+
+// ---- G41 B-1 (plan section 59, step 8): another model's table starts at another hour ----
+test('a model change reveals the now row of the new table (G41 B-1); a unit change still leaves the place', async () => {
+  const b = boot({ initial: { nwps_stations: ['51201'] } }); await settle(); wireTable(b);
+  b.app.window.setMode('normal');
+  b.fs_.last().release(skyPayload({ nwps_available: true })); await settle();
+  assert.equal(b.page.body.scrollTop, 340, 'the GFS table: revealed');
+  b.page.body.scrollTop = 0;
+  b.app.loader.load({ model: 'NWPS' }); await settle();
+  b.fs_.last().release(skyPayload({ model: 'NWPS', nwps_available: true })); await settle();
+  assert.equal(b.page.body.scrollTop, 340, 'the NWPS table: its own now row');
+  b.page.body.scrollTop = 0;
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(skyPayload({ model: 'NWPS', nwps_available: true })); await settle();
+  assert.equal(b.page.body.scrollTop, 0, 'a unit change: left where the visitor scrolled');
+  b.app.loader.load({ model: 'GFS', unit: 'US' }); await settle();
+  assert.equal(b.page.body.scrollTop, 340, 'back to GFS (from the page cache): revealed again');
+  b.page.body.scrollTop = 0;
+  b.app.loader.load({ model: 'NWPS', tz: 'UTC' }); await settle();     // the server answers GFS (an office that stopped)
+  b.fs_.last().release(skyPayload({ model: 'GFS', nwps_available: false })); await settle();
+  assert.equal(b.page.body.scrollTop, 0, 'the same GFS table again: the echo decides, nothing moves');
+});

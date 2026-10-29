@@ -1274,3 +1274,31 @@ def test_section_59_the_nwps_model_on_the_page(client):
     assert src.index("if (/NWPS/.test(m[1]))") < src.index("if (/SWAN/.test(m[1]))"), "NWPS before SWAN: NOAA NWPS is a SWAN model too"
     ov = open(os.path.join(A.app.root_path, "static_overlay", "overlay.js"), encoding="utf-8").read()
     assert "pc.model === 'NWPS' ? ' — the forecast table is a NOAA NWPS (nearshore) run'" in ov
+
+
+def test_section_59_g41_fixes_on_the_page(client, monkeypatch):
+    """G41 (plan section 59, step 8): the last shown model button keeps its rounded end, a Great Lakes page presses
+    GFS in its hidden bar again, and a station whose NWPS office stopped (past 72 h) is served as one without NWPS."""
+    src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    assert ("#modelBar > .btn:not([hidden]):not(:has(~ .btn:not([hidden]))) { border-top-right-radius: "
+            "var(--bs-btn-border-radius); border-bottom-right-radius: var(--bs-btn-border-radius); }") in src
+    gl = client.get("/?station=45007").get_data(as_text=True)
+    assert re.search(r'data-model="GFS" aria-pressed="true"', gl)                         # G41 A P3-7
+    from datetime import datetime, timedelta
+    run = "2026102806"
+    held = {"format": "nwps-pointer-v1", "offices": {"hfo": {"run": run, "runs": [run], "stations": ["51003"]}}}
+    saved = dict(A._NWPS_PTR)
+    try:
+        A._NWPS_PTR.update(doc=held, ts=0.0, good=0.0)
+        monkeypatch.setattr(A, "_nwps_utcnow", lambda: datetime(2026, 10, 28, 6) + timedelta(hours=73))
+        b = client.get("/?station=51003&model=NWPS").get_data(as_text=True)
+        st = initial(b)
+        assert st["model"] == "GFS" and st["nwps_available"] is False and "51003" not in st["nwps_stations"]
+        assert len(st["nwps_stations"]) == 111 and re.search(r'id="modelBar" hidden', b)
+        monkeypatch.setattr(A, "_nwps_utcnow", lambda: datetime(2026, 10, 28, 6) + timedelta(hours=40))
+        st = initial(client.get("/?station=51003&model=NWPS").get_data(as_text=True))
+        assert st["model"] == "NWPS" and "51003" in st["nwps_stations"]
+    finally:
+        A._NWPS_PTR.clear()
+        A._NWPS_PTR.update(saved)
+

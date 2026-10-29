@@ -233,7 +233,8 @@ def test_the_swan_backfill_keeps_an_older_run_from_the_table(world):
     assert app._WIND_CACHE[("51201", DATE, RUN)]["ttl"] == app._WIND_PAST_RUN_TTL
 
 
-def test_four_runs_are_held(world):
+def test_four_runs_are_held(world, monkeypatch):
+    monkeypatch.setattr(app, "_GFS_WINDS_KEEP_RUNS", 4)               # the rule at a small cap (the site holds 8: G41 B-5)
     b, _, _ = world
     for run in ("00", "06", "18"):
         idx = json.loads(b.objects[f"{PRE}/index.json"])
@@ -294,7 +295,8 @@ def test_a_missing_run_waits_two_minutes_and_an_error_one(world):
     assert len(b.asked) == asked, "a missing run is not asked again after only a minute"
 
 
-def test_the_runs_held_are_the_last_used(world):
+def test_the_runs_held_are_the_last_used(world, monkeypatch):
+    monkeypatch.setattr(app, "_GFS_WINDS_KEEP_RUNS", 4)
     b, _, _ = world
     idx0 = json.loads(b.objects[f"{PRE}/index.json"])
     runs = [("20261024", "18"), (DATE, "00"), (DATE, "06"), (DATE, "18")]

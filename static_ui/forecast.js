@@ -37,6 +37,8 @@
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
   var POINTS_MAX = 50, POINT_NAME_MAX = 40;
+  var NWPS_STALE_H = 36;                       // an NWPS run older than this: its NWS office missed its runs (owner, G41 K-7;
+                                               // Honolulu's own runs reach ~32 h before the next one lands)
   var STALE_H = 13;                            // a point's run older than this: a NOAA cycle was missed (runs go live ~5.5 h after
                                                // the cycle and are replaced 6 h later, so a live run is 5.5-11.5 h old)
   function isUnit(u) { return u === 'US' || u === 'Metric'; }   // (an object lookup matched 'constructor' and the like)
@@ -958,11 +960,22 @@
       }
       box.hidden = false;
     }
-    function setMeta(h) {
+    // The model bar: GFS plus the station's other model(s), the one on screen pressed; hidden where there is none. With no
+    // answer (a failed load) the station lists decide, so the way back to GFS stays (G41 B-4).
+    function syncBar(d, st) {
+      if (!els.modelBar) return;
+      var swan = d && typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
+      var nwps = d && typeof d.nwps_available === 'boolean' ? d.nwps_available : nwpsStations.indexOf(st.station) >= 0;
+      els.modelBar.hidden = !(swan || nwps); pressed(els.modelBar, 'data-model', st.model);
+      Array.prototype.forEach.call(els.modelBar.querySelectorAll('[data-model]'), function (b) {
+        var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps);
+      });
+    }
+    function setMeta(h, tail) {
       var m = els.meta; if (!m) return;
       clearNode(m);
       if (!h) return;
-      [['Cycle : ', h.cycle], ['Location : ', h.location], ['Time Zone: ', zoneLabel(h.tz)]].forEach(function (pair, i) {
+      [['Cycle : ', String(h.cycle == null ? '' : h.cycle) + (tail || '')], ['Location : ', h.location], ['Time Zone: ', zoneLabel(h.tz)]].forEach(function (pair, i) {
         if (i) m.appendChild(doc.createTextNode('  |  '));
         var b = doc.createElement('strong'); b.textContent = pair[0]; m.appendChild(b);
         m.appendChild(doc.createTextNode(String(pair[1] == null ? '' : pair[1])));
@@ -1005,26 +1018,22 @@
               clearNode(els.table); setMeta(null); graphs.setData(null);
               if (els.summary) clearNode(els.summary); summaryAvail = false; applyPanels();
               text(els.cycle, ''); if (els.cycle) els.cycle.title = '';
-              if (els.modelBar) els.modelBar.hidden = true;
+              syncBar(null, state);                                           // GFS stays one press away (G41 B-4)
               note(null);
             },
             apply: function (d, st, retry) {
-              var swan = typeof d.swan_available === 'boolean' ? d.swan_available : swanStations.indexOf(st.station) >= 0;
-              var nwps = typeof d.nwps_available === 'boolean' ? d.nwps_available : nwpsStations.indexOf(st.station) >= 0;
-              if (els.modelBar) {                                             // GFS plus the station's other model(s)
-                els.modelBar.hidden = !(swan || nwps); pressed(els.modelBar, 'data-model', st.model);
-                Array.prototype.forEach.call(els.modelBar.querySelectorAll('[data-model]'), function (b) {
-                  var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps);
-                });
-              }
+              syncBar(d, st);
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(d.model === 'GLWU' ? 'GLWU' : st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
               if (age !== null && age >= STALE_H) cyc += ' · ' + Math.round(age) + ' h old';   // a point's run NOAA stopped feeding (plan section 31)
+              var oldNote = d.model === 'NWPS' && typeof d.nwps_age_hours === 'number' && d.nwps_age_hours >= NWPS_STALE_H
+                ? ' · ' + Math.round(d.nwps_age_hours) + ' h old' : '';                      // an NWS office that stopped (G41 K-7)
+              cyc += oldNote;
               writeLabel(els.title, label); text(els.cycle, cyc);
               if (noteFor !== null && noteFor !== st.station) note(null);
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = cyc;
-              setMeta(d.graph_header);
+              setMeta(d.graph_header, oldNote);
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); if (!d.error) { var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = 'No forecast available.'; els.table.appendChild(p); } }   // an error is said once, in its box (G22 K-5)
               if (els.summary) { if (d.summary_html) els.summary.innerHTML = d.summary_html; else clearNode(els.summary); }   // the day-by-day Summary (plan section 35)
@@ -1035,8 +1044,9 @@
               graphs.setData(d.graph_data);
               applyPanels();
               if (!d.table_html) revealedFor = null;                           // an error answer: the next table is revealed again (G24 B-8)
-              if (d.table_html && st.station !== revealedFor) {                 // once per station or point landing, not on a unit / zone change
-                revealedFor = st.station; revealPending = true; panelScroll = {};
+              var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
+              if (d.table_html && landing !== revealedFor) {                    // another model's table starts at another hour (G41 B-1)
+                revealedFor = landing; revealPending = true; panelScroll = {};
                 if (panelKey() === 'summary') { els.body.scrollTop = 0; els.body.scrollLeft = 0; }   // another station's summary from its first day
               }
               revealNow();
@@ -1228,7 +1238,7 @@
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,
-      POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
+      NWPS_STALE_H: NWPS_STALE_H, POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }
   };

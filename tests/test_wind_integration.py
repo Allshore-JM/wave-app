@@ -222,7 +222,7 @@ def test_graph_data_has_no_wind_keys(monkeypatch):
     monkeypatch.setattr(app, "parse_bull",
                         lambda s, tz: ("Cycle : x", "Location : x (21.67N 158.12W)",
                                        None, rows, "Pacific/Honolulu", None))
-    monkeypatch.setattr(app, "resolve_model", lambda s, m: "GFS")
+    monkeypatch.setattr(app, "resolve_model", lambda s, m, ok=None: "GFS")
     payload = app.compute_forecast_payload("51201", None, "US", "GFS")
     gd = payload["graph_data"]
     assert set(gd.keys()) == {"labels", "height", "period", "direction",
@@ -298,7 +298,7 @@ def test_payload_reports_whether_every_row_has_wind(monkeypatch):
     text = open(SWAN_FIX).read()
     monkeypatch.setattr(app.HTTP, "get", lambda *a, **k: _Resp(text))
     monkeypatch.setattr(app, "get_station_wind", lambda sid, d=None, r=None, keep_s=None: dict(LATEST if d is None else OLDER))
-    monkeypatch.setattr(app, "resolve_model", lambda s, m: "SWAN")
+    monkeypatch.setattr(app, "resolve_model", lambda s, m, ok=None: "SWAN")
     assert app.compute_forecast_payload("51201", None, "US", "SWAN", compact=True)["wind_complete"] is True
     with app._CACHE_LOCK:
         app._FORECAST_CACHE.clear()

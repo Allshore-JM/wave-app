@@ -447,11 +447,12 @@ def test_the_wind_caches_hold_the_nwps_back_fills():
 def test_the_age_is_the_run_that_can_serve_the_station(bucket):
     """A newer run that does not list the station does not make it fresh: its kept run decides (mutant M18)."""
     newer = (datetime.strptime(RUN, "%Y%m%d%H") + timedelta(hours=60)).strftime("%Y%m%d%H")
-    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51004",)))   # held; 51003 only in RUN
+    import time as _t
+    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51004",)), good=_t.time())   # held; 51003 only in RUN
     bucket.clock["now"] = ago(80)
     assert A._nwps_held_run("51003") == RUN and not A.nwps_offered("51003")
     assert A._nwps_held_run("51004") is None and A.nwps_offered("51004") is False    # not an NWPS station at all
-    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51003",)))
+    A._NWPS_PTR.update(doc=pointer(runs=(newer, RUN), stations=("51003",)), good=_t.time())
     assert A._nwps_held_run("51003") == newer and A.nwps_offered("51003")
 
 
@@ -469,3 +470,247 @@ def test_the_back_fill_follows_the_first_hour_with_a_spectrum(bucket):
     rows = A._parse_nwps_uncached("51003")[3]
     assert [r[20] for r in rows[:6]] == [3.0] * 5 + [7.0]
 
+
+
+# ------------------------------------------------------------------ G41 re-check, fix round 2 (plan section 59)
+
+def _age_pointer(hours):
+    """Time passes for the held pointer's own clocks (time.time() itself is not moved)."""
+    A._NWPS_PTR["ts"] -= hours * 3600
+    A._NWPS_PTR["good"] -= hours * 3600
+
+
+def _tick_and_wait():
+    started = A._nwps_tick()
+    if started:
+        A._NWPS_BG["thread"].join(10)
+    return started
+
+
+def _publish(bucket, run, runs=None):
+    bucket.put("nwps/v1/latest.json", pointer(runs=runs or (run,)))
+    bucket.put(f"nwps/v1/hfo/{run}/51003.json", doc_for(run))
+
+
+def test_the_scheduler_keeps_the_pointer_fresh_and_the_hide_follows_the_office(bucket):
+    """F-1 (P1): nobody builds an NWPS table. Every office keeps publishing: the scheduler pass alone keeps 51003 offered
+    past 78 h. Honolulu stops: hidden once its last run passes 72 h. It publishes again: offered after one pass."""
+    t0 = datetime.strptime(RUN, "%Y%m%d%H")
+    _publish(bucket, RUN)
+    assert _tick_and_wait() and A.nwps_offered("51003")
+    assert not A._nwps_tick()                                                     # fresh: nothing to do
+    for h in range(6, 79, 6):
+        bucket.clock["now"] = t0 + timedelta(hours=h + 10)
+        _publish(bucket, (t0 + timedelta(hours=h)).strftime("%Y%m%d%H"))
+        _age_pointer(6)
+        assert _tick_and_wait() and A.nwps_offered("51003"), h
+    assert bucket.asked.count("nwps/v1/latest.json") == 14 and not any(k.endswith("51003.json") for k in bucket.asked)
+    bucket.clock["now"] = t0 + timedelta(hours=78 + 73)                           # Honolulu's last run 73 h old
+    _age_pointer(0.1)
+    assert _tick_and_wait() and not A.nwps_offered("51003") and A.resolve_model("51003", "NWPS") == "GFS"
+    new = (t0 + timedelta(hours=78 + 72)).strftime("%Y%m%d%H")
+    _publish(bucket, new)                                                         # it publishes again
+    _age_pointer(0.1)                                                             # six minutes later
+    assert _tick_and_wait() and A.nwps_offered("51003")
+    p = A.compute_forecast_payload("51003", None, "US", "NWPS", compact=True)
+    assert p["model"] == "NWPS" and f"{new[:8]} {new[8:]}" in p["graph_header"]["cycle"]
+
+
+def test_the_scheduler_pass_starts_one_read_and_only_when_due(bucket, monkeypatch):
+    import threading
+    _publish(bucket, RUN)
+    gate, real = threading.Event(), bucket.fetch
+
+    def slow(url, max_bytes, **kw):
+        gate.wait(5)
+        return real(url, max_bytes, **kw)
+    monkeypatch.setattr(A, "_points_fetch", slow)
+    assert A._nwps_tick() is True and A._nwps_tick() is False                     # one read at a time
+    gate.set()
+    A._NWPS_BG["thread"].join(10)
+    assert A._nwps_tick() is False and A._NWPS_PTR["doc"] is not None             # fresh now
+    _age_pointer(0.1)
+    monkeypatch.setattr(A, "_points_root", lambda: "")
+    assert A._nwps_tick() is False                                                # no bucket: nothing
+    monkeypatch.setattr(A, "_points_root", lambda: "https://models.test")
+    monkeypatch.setattr(A, "NWPS_STATIONS", {})
+    assert A._nwps_tick() is False                                                # NWPS off: nothing
+    seen = []
+    monkeypatch.setattr(A, "_nwps_tick", lambda: seen.append(1))
+    A._live_tick([])
+    assert seen == [1]                                                            # the live scheduler's pass runs it
+    A._NWPS_BG["thread"] = threading.Thread(target=lambda: None)
+    A._live_after_fork()
+    assert A._NWPS_BG["thread"] is None                                           # not the parent's thread
+
+
+def test_a_pointer_last_read_past_the_keep_decides_nothing(bucket):
+    """F-1 (a): without the scheduler a held pointer is believed only within _NWPS_PTR_KEEP of its last good read."""
+    _publish(bucket, RUN)
+    A._parse_nwps_uncached("51003")
+    bucket.clock["now"] = ago(80)
+    assert not A.nwps_offered("51003")
+    A._NWPS_PTR["good"] -= A._NWPS_PTR_KEEP - 5
+    assert not A.nwps_offered("51003")
+    A._NWPS_PTR["good"] -= 10
+    assert A._nwps_held_run("51003") is None and A.nwps_offered("51003")         # nothing held: the reader decides
+
+
+def test_the_nwps_table_follows_the_held_run_not_the_cache(bucket):
+    """F-1 (c), K-1: a table cached for one run is not served once the held pointer names a newer run."""
+    _publish(bucket, RUN)
+    cycle = lambda: A.compute_forecast_payload("51003", None, "US", "NWPS", compact=True)["graph_header"]["cycle"]
+    assert f"{RUN[:8]} {RUN[8:]}" in cycle()
+    assert f"{RUN[:8]} {RUN[8:]}" in cycle()                                      # held run unchanged: the cache
+    new = (datetime.strptime(RUN, "%Y%m%d%H") + timedelta(hours=6)).strftime("%Y%m%d%H")
+    _publish(bucket, new, runs=(new, RUN))
+    bucket.put(f"nwps/v1/hfo/{RUN}/51003.json", DOC)
+    _age_pointer(0.1)
+    _tick_and_wait()
+    assert f"{new[:8]} {new[8:]}" in cycle()
+
+
+def test_one_answer_judges_nwps_once(bucket, monkeypatch):
+    """F-3: the answer's model and its nwps_available come from one look at the held pointer and the clock."""
+    _publish(bucket, RUN)
+    calls, answers = [], iter([True, False, False, False])
+
+    def offered(sid):
+        calls.append(sid)
+        return next(answers)
+    monkeypatch.setattr(A, "nwps_offered", offered)
+    p = A.compute_forecast_payload("51003", None, "US", "NWPS", compact=True)
+    assert calls == ["51003"] and p["model"] == "NWPS" and p["nwps_available"] is True
+
+
+def test_the_edges_and_the_rounding(bucket, monkeypatch):
+    """F-7: S01 (48.0 h), S05 (72.0 h on the read-time path), S08 (one decimal), X01 / X02 (the fallback's zone, keys)."""
+    cyc = f"Cycle : NOAA NWPS {RUN[:8]} {RUN[8:]} UTC (NWS HFO)"
+    bucket.clock["now"] = ago(48)
+    assert A._nwps_wind_final(cyc)
+    bucket.clock["now"] = ago(47.99)
+    assert not A._nwps_wind_final(cyc)
+    _publish(bucket, RUN)
+    rows = A._parse_nwps_uncached("51003")[3]
+    asked = []
+
+    def gfs(sid, tz=None):
+        asked.append(tz)
+        return fake_gfs(rows)(sid, tz)
+    monkeypatch.setattr(A, "parse_bull", gfs)
+    for hours, model, age in ((72, "NWPS", 72.0), (40.66, "NWPS", 40.7), (72.01, "GFS", None)):
+        A._NWPS_PTR.update(ts=0.0, good=0.0, doc=None, failed=0.0)                # nothing held: the read decides
+        A._FORECAST_CACHE.clear()
+        bucket.clock["now"] = ago(hours)
+        p = A.compute_forecast_payload("51003", "UTC", "US", "NWPS", compact=True)
+        assert p["model"] == model and p.get("nwps_age_hours") == age, hours
+    assert asked == ["UTC"]                                                       # X01: the GFS table in the asked zone
+    assert "nwps_age_hours" not in p and p["nwps_available"] is False             # X02
+
+
+def test_the_error_path_hides_a_station_past_72_h(bucket, monkeypatch):
+    """F-7 S15: the answer of a failed build follows the K-7 rule too."""
+    import time as _t
+    A._NWPS_PTR.update(doc=pointer(), good=_t.time(), ts=_t.time())
+    bucket.clock["now"] = ago(80)
+
+    def boom(*a, **k):
+        raise RuntimeError("x")
+    monkeypatch.setattr(A, "compute_forecast_payload", boom)
+    with A.app.test_client() as c:
+        body = c.get("/api/forecast?station=51003&model=NWPS").get_json()
+    assert body["nwps_available"] is False and body["model"] == "GFS"
+
+
+def test_an_expired_pointer_and_a_failing_bucket_one_read_a_minute(bucket, monkeypatch):
+    """F-6: the fast path and the re-check under the lock share one rule. A pointer past the keep is not served, even
+    while its last failed read is fresh; after a failure the others wait for the minute, sequential or concurrent."""
+    import threading
+    import time as _t
+    root = "https://models.test"
+    _publish(bucket, RUN)
+    assert A._nwps_pointer(root) is not None
+    A._NWPS_PTR["good"] -= A._NWPS_PTR_KEEP + 1                                   # past the keep, ts still fresh
+    bucket.fail.add("nwps/v1/latest.json")
+    assert A._nwps_pointer(root) is None                                          # P11: never served past the keep
+    for _ in range(4):
+        assert A._nwps_pointer(root) is None
+    assert bucket.asked.count("nwps/v1/latest.json") == 2                         # P01 / P02: one read, then the minute
+    A._NWPS_PTR["failed"] -= A._NWPS_PTR_NEG_TTL + 1                              # a minute later, four at once
+    real = bucket.fetch
+
+    def slow(url, max_bytes, **kw):
+        _t.sleep(0.3)
+        return real(url, max_bytes, **kw)
+    monkeypatch.setattr(A, "_points_fetch", slow)
+    out = []
+    ts = [threading.Thread(target=lambda: out.append(A._nwps_pointer(root))) for _ in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(10)
+    assert out == [None] * 4 and bucket.asked.count("nwps/v1/latest.json") == 3
+
+
+def test_the_station_files_take_twenty_seconds_in_all(bucket, monkeypatch):
+    """F-5, F-7 R10: a read starts only with a whole read's time left, so the files take _NWPS_RUNS_BUDGET_S in all."""
+    start = datetime.strptime(RUN, "%Y%m%d%H")
+    runs = [(start - timedelta(hours=6 * i)).strftime("%Y%m%d%H") for i in range(8)]
+    bucket.put("nwps/v1/latest.json", pointer(runs=runs))
+    clock, real = {"t": 1000.0}, bucket.fetch
+    monkeypatch.setattr(A, "_nwps_monotonic", lambda: clock["t"])
+
+    def slow(url, max_bytes, **kw):
+        if url.endswith("/51003.json"):
+            clock["t"] += 7.5                                                     # a slow 404
+        return real(url, max_bytes, **kw)
+    monkeypatch.setattr(A, "_points_fetch", slow)
+    assert A._parse_nwps_uncached("51003")[-1] == "Could not reach the NWPS forecast (NOAA NWPS)"
+    files = [k for k in bucket.asked if k.endswith("/51003.json")]
+    assert len(files) == 2 and clock["t"] - 1000.0 <= A._NWPS_RUNS_BUDGET_S
+
+
+@pytest.mark.parametrize("error", ["too large", "HTTP 403"])
+def test_a_file_over_its_cap_or_refused_moves_on_to_the_older_run(bucket, monkeypatch, error):
+    """F-5 (an over-cap file is a damaged file, not a bucket that did not answer) and F-7 R08 (a 403 is missing)."""
+    older = (datetime.strptime(RUN, "%Y%m%d%H") - timedelta(hours=6)).strftime("%Y%m%d%H")
+    bucket.put("nwps/v1/latest.json", pointer(runs=(RUN, older)))
+    bucket.put(f"nwps/v1/hfo/{older}/51003.json", doc_for(older))
+    real = bucket.fetch
+
+    def fetch(url, max_bytes, **kw):
+        if f"/{RUN}/51003.json" in url:
+            raise A.BodyTooLarge("body too large") if error == "too large" else IOError(error)
+        return real(url, max_bytes, **kw)
+    monkeypatch.setattr(A, "_points_fetch", fetch)
+    data = A._parse_nwps_uncached("51003")
+    assert data[-1] is None and f"{older[:8]} {older[8:]}" in data[0]
+    assert issubclass(A.BodyTooLarge, IOError)
+
+
+def test_the_no_script_page_follows_its_own_answer(bucket, monkeypatch):
+    """F-2: render=full on a fresh server with the run 80 h old: GFS pressed, no NWPS button, option or list entry;
+    with the run 40 h old: the meta line and the page state carry the age."""
+    import re
+    _publish(bucket, RUN)
+    rows = A._parse_nwps_uncached("51003")[3]
+    monkeypatch.setattr(A, "parse_bull", fake_gfs(rows))
+
+    def state(html):
+        return json.loads(re.search(r"window\.__initial = (\{.*?\});", html).group(1))
+    for hours in (80, 40):
+        A._NWPS_PTR.update(ts=0.0, good=0.0, doc=None, failed=0.0)
+        A._FORECAST_CACHE.clear()
+        bucket.clock["now"] = ago(hours)
+        with A.app.test_client() as c:
+            html = c.get("/?station=51003&model=NWPS&render=full").get_data(as_text=True)
+        st = state(html)
+        if hours == 80:
+            assert st["model"] == "GFS" and st["nwps_available"] is False and "51003" not in st["nwps_stations"]
+            assert 'data-model="GFS" aria-pressed="true"' in html and 'value="NWPS"' not in html
+            assert re.search(r'data-model="NWPS" aria-pressed="false" hidden', html)
+            assert "h old" not in html.split('id="forecastMeta"')[1][:400]
+        else:
+            assert st["model"] == "NWPS" and st["nwps_available"] is True and "51003" in st["nwps_stations"]
+            assert st["nwps_age_hours"] == 40.0
+            assert f"NOAA NWPS {RUN[:8]} {RUN[8:]} UTC (NWS HFO) · 40 h old" in html

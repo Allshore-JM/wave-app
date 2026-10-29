@@ -671,6 +671,8 @@
     .fw-header .station-trigger { width: auto; max-width: 100%; }
     .fw-header .station-trigger .station-current { max-width: 48ch; }
     .fw-titles .fw-cycle { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; }
+    /* "· 40 h old": its own span so it never gives way with the run text (phones cut that first; G41 re-check) */
+    .fw-titles .fw-old { color: #5a6b7a; font-size: .85rem; flex: 0 0 auto; margin-left: -6px; }
     /* a label "name — coordinates": the name is cut when room runs out, never the coordinates (G22 B-4) */
     .lbl-split { display: flex; min-width: 0; }
     .lbl-split .lbl-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1091,6 +1093,7 @@
             </select>
           </div>
           <span id="fwCycle" class="fw-cycle"></span>
+          <span id="fwOld" class="fw-old" hidden></span>
         </div>
         <span id="fwBusy" class="spinner" hidden aria-hidden="true"></span>
         <button type="button" id="fwMin" class="fw-btn" aria-label="Expand forecast" aria-expanded="false">&#8211;</button>
@@ -1138,7 +1141,7 @@
       <div id="fwNote" class="fw-note" role="status" hidden></div>
       <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
         <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
-        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
+        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }}{{ nwps_old_note }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
 
         <div id="forecastTable"{% if selected_view == 'Graph' %} hidden{% endif %}>
           {% if table_html %}{{ table_html|safe }}{% endif %}

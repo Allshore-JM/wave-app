@@ -432,7 +432,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.6"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.7"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -573,6 +573,10 @@ class HTTPStatusError(IOError):
         self.status = status
 
 
+class BodyTooLarge(IOError):
+    """A capped fetch's body passed its byte cap: the server answered, the object is not what was expected."""
+
+
 _DROPPED = (http.client.RemoteDisconnected, ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
 
 
@@ -688,7 +692,7 @@ def _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_r
                 for chunk in resp.iter_content(65536):
                     body += chunk
                     if len(body) > max_bytes:
-                        raise IOError("body too large")
+                        raise BodyTooLarge("body too large")
                     if time.monotonic() > deadline:
                         raise IOError("too slow")
                 if byte_range is not None and len(body) != max_bytes:
@@ -1264,12 +1268,14 @@ BLANK_STATIONS = _load_blank_stations()
 BLANK_STATION_NOTE = "No model data at this point (sheltered water the wave model has no sea for)."
 
 
-def resolve_model(station_id: str, requested: str | None) -> str:
+def resolve_model(station_id: str, requested: str | None, nwps_ok: bool | None = None) -> str:
     """Validate a requested forecast model for a station.
 
     A Great Lakes station is always "GLWU" (the only model with lake data). "SWAN" is honored only for stations with
     a PacIOOS bulletin, "NWPS" only for the NWPS stations (plan section 59); anything else (unknown values, uncovered
     stations, absent param, "GLWU" off the lakes) silently resolves to "GFS" so stale ?model= URLs degrade gracefully.
+    `nwps_ok`: nwps_offered(station_id) as the caller already judged it, so one answer judges it once (the held pointer
+    and the clock can change between two looks: G41 re-check F-3).
     """
     if station_id in GLWU_STATIONS:
         return "GLWU"
@@ -1278,8 +1284,8 @@ def resolve_model(station_id: str, requested: str | None) -> str:
         return "GFS"
     if model == "SWAN" and station_id not in SWAN_STATIONS:
         return "GFS"
-    if model == "NWPS" and not nwps_offered(station_id):   # not an NWPS station, or its office stopped (G41 K-7)
-        return "GFS"
+    if model == "NWPS" and not (nwps_offered(station_id) if nwps_ok is None else nwps_ok):   # not an NWPS station, or
+        return "GFS"                                                                          # its office stopped (K-7)
     return model
 
 # Timezones
@@ -2710,14 +2716,22 @@ def _nwps_pointer_ok(ptr):
     return ptr
 
 
+def _nwps_held_doc(now):
+    """The pointer this server holds, while its last good read is within _NWPS_PTR_KEEP; else None. The one rule for
+    the reader's fast path, its re-check under the fetch lock and the model button (G41 re-check F-1, F-6). Call with
+    _NWPS_LOCK held."""
+    doc = _NWPS_PTR["doc"]
+    return doc if doc is not None and now - _NWPS_PTR["good"] < _NWPS_PTR_KEEP else None
+
+
 def _nwps_pointer(root):
     """The NWPS pointer (cached _NWPS_PTR_TTL; one that cannot be read keeps the last good one for _NWPS_PTR_KEEP), or
     None. One read at a time: while it runs, a request holding a good pointer gets that one at once; one holding
-    nothing waits for the read (up to _NWPS_PTR_WAIT_S). A failed read with nothing held is asked again only after
-    _NWPS_PTR_NEG_TTL."""
+    nothing waits for the read (up to _NWPS_PTR_WAIT_S). A failed read with nothing usable held is asked again only
+    after _NWPS_PTR_NEG_TTL."""
     now = time.time()
     with _NWPS_LOCK:
-        held = _NWPS_PTR["doc"] if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["good"] < _NWPS_PTR_KEEP else None
+        held = _nwps_held_doc(now)
         if held is not None and now - _NWPS_PTR["ts"] < _NWPS_PTR_TTL:
             return held
         if held is None and now - _NWPS_PTR["failed"] < _NWPS_PTR_NEG_TTL:
@@ -2725,11 +2739,12 @@ def _nwps_pointer(root):
     if not _NWPS_FETCH_LOCK.acquire(blocking=held is None, timeout=_NWPS_PTR_WAIT_S if held is None else -1):
         return held                                    # another thread is reading it
     try:
-        with _NWPS_LOCK:                               # read by the thread before this one?
+        with _NWPS_LOCK:                               # read by the thread before this one? (the fast path's rule)
             now = time.time()
-            if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["ts"] < _NWPS_PTR_TTL:
-                return _NWPS_PTR["doc"]
-            if held is None and _NWPS_PTR["doc"] is None and now - _NWPS_PTR["failed"] < _NWPS_PTR_NEG_TTL:
+            held = _nwps_held_doc(now)
+            if held is not None and now - _NWPS_PTR["ts"] < _NWPS_PTR_TTL:
+                return held
+            if held is None and now - _NWPS_PTR["failed"] < _NWPS_PTR_NEG_TTL:
                 return None
         try:
             raw = _points_fetch(f"{root}/{NWPS_PREFIX}/latest.json?ts={int(now // _NWPS_PTR_TTL)}", _NWPS_MAX_BYTES["pointer"])
@@ -2742,17 +2757,55 @@ def _nwps_pointer(root):
             with _NWPS_LOCK:
                 _NWPS_PTR["error"] = f"{exc.__class__.__name__}: {exc}"[:200]
                 _NWPS_PTR["failed"] = now
-                if _NWPS_PTR["doc"] is not None and now - _NWPS_PTR["good"] < _NWPS_PTR_KEEP:
+                held = _nwps_held_doc(now)
+                if held is not None:
                     _NWPS_PTR["ts"] = now                 # asked again after the TTL, not on every request
-                    return _NWPS_PTR["doc"]
+                    return held
             return None
     finally:
         _NWPS_FETCH_LOCK.release()
 
 
+_NWPS_BG = {"thread": None, "started": 0}
+
+
+def _nwps_refresh_due(now):
+    """The held pointer is past its TTL (or nothing usable is held and the last failure is a minute old)."""
+    with _NWPS_LOCK:
+        held = _nwps_held_doc(now)
+        if held is not None:
+            return now - _NWPS_PTR["ts"] >= _NWPS_PTR_TTL
+        return now - _NWPS_PTR["failed"] >= _NWPS_PTR_NEG_TTL
+
+
+def _nwps_tick():
+    """One pass of the live scheduler (plan section 59, G41 re-check F-1): keep the held pointer fresh in the
+    background, so the 72-h rule follows the offices whether or not anyone builds an NWPS table (a hidden station never
+    does). One read at a time, in its own thread: never on a request's path, never holding up the scheduler. True when
+    a read was started."""
+    if not NWPS_STATIONS:
+        return False
+    root = _points_root()
+    if not root or not _nwps_refresh_due(time.time()):
+        return False
+    t = _NWPS_BG["thread"]
+    if t is not None and t.is_alive():
+        return False
+    t = threading.Thread(target=_nwps_pointer, args=(root,), name="nwps-pointer", daemon=True)
+    _NWPS_BG["thread"] = t
+    _NWPS_BG["started"] += 1
+    t.start()
+    return True
+
+
 def _nwps_utcnow():
     """The clock the NWPS age rules read (naive UTC; tests set it)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _nwps_monotonic():
+    """The clock the station files' time budget reads (tests set it)."""
+    return time.monotonic()
 
 
 def _nwps_run_age_h(run, now=None):
@@ -2773,10 +2826,11 @@ def _nwps_cycle_run(cycle_str):
 
 def _nwps_held_run(station_id):
     """The newest run of the station's office that can serve it, by the pointer this server HOLDS (never read here:
-    the GFS path must not wait on the bucket), or None when nothing is held."""
+    the GFS path must not wait on the bucket), or None when nothing usable is held (a pointer last read more than
+    _NWPS_PTR_KEEP ago counts as nothing: G41 re-check F-1; the live scheduler keeps it fresh, _nwps_tick)."""
     st = NWPS_STATIONS.get(station_id)
     with _NWPS_LOCK:
-        doc = _NWPS_PTR["doc"]
+        doc = _nwps_held_doc(time.time())
     entry = doc["offices"].get(st["office"]) if (st and doc) else None
     if not entry:
         return None
@@ -2827,6 +2881,9 @@ def _nwps_doc(root, office, run, station_id):
     "bad" (the file refused), "transport" (the bucket did not answer: the next run is not asked; G41 A P3-4)."""
     try:
         raw = _points_fetch(f"{root}/{NWPS_PREFIX}/{office}/{run}/{station_id}.json", _NWPS_MAX_BYTES["station"])
+    except BodyTooLarge as exc:                          # the bucket answered: a damaged file, the older run is tried
+        logger.warning("NWPS file %s / %s / %s refused: %r", office, run, station_id, exc)   # (G41 re-check F-5)
+        return None, "bad"
     except Exception as exc:
         if "HTTP 404" in str(exc) or "HTTP 403" in str(exc):
             return None, "missing"
@@ -2892,8 +2949,10 @@ def nwps_rows(doc, local_tz, wind):
 
 
 def parse_nwps(station_id: str, target_tz_name: str | None = None):
-    """Cached NWPS forecast (the parse_bull() 6-tuple), keyed (station, tz, "NWPS")."""
-    key = (station_id, target_tz_name or "", "NWPS")
+    """Cached NWPS forecast (the parse_bull() 6-tuple), keyed (station, tz, "NWPS", the run the held pointer names for
+    the station): a new run, or an office coming back after the 72-h hide, is built at once rather than after the
+    cache's 30 min (G41 re-check F-1, K-1)."""
+    key = (station_id, target_tz_name or "", "NWPS", _nwps_held_run(station_id))
     return _forecast_singleflight(key, lambda: _parse_nwps_uncached(station_id, target_tz_name))
 
 
@@ -2914,12 +2973,12 @@ def _parse_nwps_uncached(station_id: str, target_tz_name: str | None = None):
     # the office's newest run when it lists the station, then its kept runs (newest first; at most _NWPS_MAX_RUNS, and
     # no further once the bucket stops answering or the time is up)
     runs = sorted({r for r in entry["runs"]} | {entry["run"]}, reverse=True)[:_NWPS_MAX_RUNS]
-    doc, why, deadline = None, None, time.monotonic() + _NWPS_RUNS_BUDGET_S
+    doc, why, deadline = None, None, _nwps_monotonic() + _NWPS_RUNS_BUDGET_S
     for run in runs:
         if run == entry["run"] and station_id not in entry["stations"]:
             continue
-        if time.monotonic() > deadline:
-            why = "transport"
+        if deadline - _nwps_monotonic() < _POINT_FETCH_MAX_S:   # a read starts only with a whole read's time left:
+            why = "transport"                                    # the files take _NWPS_RUNS_BUDGET_S in all (G41 F-5)
             break
         doc, why = _nwps_doc(root, office, run, station_id)
         if doc is not None or why == "transport":
@@ -3664,6 +3723,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     bulletins) is cached, so on a warm cache this only re-runs the cheap
     HTML/graph packing. Returns a JSON-serializable dict.
     """
+    nwps_ok = nwps_offered(station)                            # judged once for the whole answer (G41 re-check F-3)
     out = {
         "station": station,
         "error": None,
@@ -3673,9 +3733,9 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "lon": None,
         "graph_data": None,
         "graph_header": None,
-        "model": resolve_model(station, model),               # the model actually used (SWAN falls back to GFS)
+        "model": resolve_model(station, model, nwps_ok),      # the model actually used (SWAN falls back to GFS)
         "swan_available": station in SWAN_STATIONS,
-        "nwps_available": nwps_offered(station),               # the model button's NWPS choice (plan section 59; G41 K-7)
+        "nwps_available": nwps_ok,                             # the model button's NWPS choice (plan section 59; G41 K-7)
         "summary_html": None,                                  # the window's Summary view (plan section 35)
     }
     if not station:
@@ -3694,7 +3754,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
             out["lat"], out["lon"] = pos["lat"], pos["lon"]
         return out
 
-    model = resolve_model(station, model)
+    model = out["model"]
     point = None
     if point_forecast.is_point_id(station):                    # a forecast point (plan section 31): the model's own cell
         (cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error), point = point_forecast_data(
@@ -3851,12 +3911,13 @@ def api_forecast():
         return jsonify(compute_forecast_payload(station, tz or None, unit, model, compact=compact))
     except Exception as exc:  # always return JSON the client can render
         logger.warning("forecast payload failed for %s: %r", station, exc)
+        nwps_ok = nwps_offered(station)                        # judged once (G41 re-check F-3)
         return jsonify({
             "station": station, "error": "Forecast temporarily unavailable",
             "table_html": None, "tz_label": "", "lat": None, "lon": None,
             "graph_data": None, "graph_header": None,
-            "model": resolve_model(station, model), "swan_available": station in SWAN_STATIONS,
-            "nwps_available": nwps_offered(station), "summary_html": None,
+            "model": resolve_model(station, model, nwps_ok), "swan_available": station in SWAN_STATIONS,
+            "nwps_available": nwps_ok, "summary_html": None,
         })
 
 
@@ -3885,7 +3946,7 @@ def index():
     # ?model=SWAN on any other station silently resolves back to GFS.
     swan_available = selected_station in SWAN_STATIONS
     nwps_available = nwps_offered(selected_station)             # the model button's NWPS choice (plan section 59)
-    selected_model = resolve_model(selected_station, selected_model)
+    selected_model = resolve_model(selected_station, selected_model, nwps_available)   # judged once (G41 re-check F-3)
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
     # dropdown so it still shows as selected (back-compat with older links).
@@ -3902,21 +3963,32 @@ def index():
     if force_render:
         payload = compute_forecast_payload(selected_station, selected_tz or None, selected_unit,
                                            selected_model, compact=True)
+        # the inline answer read the NWPS pointer: the page's bar, select and lists follow ITS judgement, never the one
+        # made before the read (G41 re-check F-2)
+        selected_model = payload.get("model", selected_model)
+        nwps_available = payload.get("nwps_available", nwps_available)
+    nwps_age = payload.get("nwps_age_hours") if payload and payload.get("model") == "NWPS" else None
+    nwps_old_note = (f" · {int(nwps_age + 0.5)} h old"           # the page's rule (forecast.js: Math.round, >= 36 h)
+                     if isinstance(nwps_age, (int, float)) and nwps_age >= _NWPS_NOTE_H else "")
 
-    # The forecast window's starting state (plan section 25): what this request asked for, resolved.
+    # The forecast window's starting state (plan section 25): what this request asked for, resolved. The page's NWPS
+    # list holds the station on screen exactly when its own judgement offers it (one rule for both fields).
+    nwps_list = {s for s in NWPS_STATIONS if s != selected_station and nwps_offered(s)}
+    if nwps_available:
+        nwps_list.add(selected_station)
     initial_state = {
         "station": selected_station, "tz": selected_tz, "unit": selected_unit if selected_unit in unit_options else "US",
         "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
         "swan_available": swan_available, "swan_stations": sorted(SWAN_STATIONS),
-        "nwps_available": nwps_available, "nwps_stations": sorted(s for s in NWPS_STATIONS if nwps_offered(s)),
+        "nwps_available": nwps_available, "nwps_stations": sorted(nwps_list),
         "inline": bool(payload),
     }
     if payload:                                                # render=full: the window shows this without a fetch
         initial_state.update({"graph_data": payload["graph_data"], "graph_header": payload["graph_header"],
                               "error": payload["error"], "model": payload["model"],
                               "wind_complete": payload.get("wind_complete", True)})
-        for k in ("point", "final", "busy", "reason", "summary_html"):   # a point's own keys (a refusal is final: no
-                                                                          # Retry) and the Summary view
+        for k in ("point", "final", "busy", "reason", "summary_html", "nwps_age_hours"):   # a point's own keys (a refusal
+                                                                          # is final: no Retry), the Summary view, the run's age
             if payload.get(k) is not None:
                 initial_state[k] = payload[k]
 
@@ -3931,6 +4003,7 @@ def index():
         selected_unknown=bool(selected_station) and not point_forecast.parse_point_id(selected_station)
                          and all(sid != selected_station for sid, _name in stations),
         points_enabled=bool(_points_root()),
+        nwps_old_note=nwps_old_note,              # " · N h old" on the no-script meta line (G41 re-check F-2)
         timezones=timezones,
         selected_tz=selected_tz,
         units=unit_options,
@@ -5654,6 +5727,10 @@ def _live_tick(providers=None):
                 _WIND_BG["errors"] += 1
                 _WIND_BG["last_error"] = "tick: %s" % exc
             logger.warning("wind stations: scheduler pass failed: %s", exc)
+    try:
+        _nwps_tick()                              # the NWPS pointer kept fresh (plan section 59, G41 re-check F-1)
+    except Exception as exc:
+        logger.warning("NWPS pointer: scheduler pass failed: %s", exc)
     warm = _live_warm(providers)
     with _LIVE_BG_LOCK:
         _LIVE_BG["ticks"] += 1
@@ -5770,7 +5847,8 @@ def _live_after_fork():
     global _NWPS_LOCK, _NWPS_FETCH_LOCK
     _NWPS_LOCK = threading.Lock()                 # the NWPS pointer (plan section 59)
     _NWPS_FETCH_LOCK = threading.Lock()           # its one read at a time (G41 A P3-3)
-    _WINDS_LOCK = threading.Lock()                # the wind history service and providers reset their own
+    _NWPS_BG["thread"] = None                     # the parent's background read does not exist here (G41 re-check F-1)
+    _WINDS_LOCK = threading.Lock()              # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()
     _LIVE_BUILD_LOCK = threading.Lock()

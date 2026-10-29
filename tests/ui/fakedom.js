@@ -160,7 +160,7 @@ function buildPage(win) {
   const sel = el('select', 'station', field);
   [['51201', '51201 — Waimea Bay, HI'], ['46001', '46001 — Gulf of Alaska']].forEach(([v, t]) => { const o = el('option', null, sel); o.value = v; o.textContent = t; });
   sel.value = '51201';
-  el('span', 'fwCycle', header); el('span', 'fwBusy', header).hidden = true;
+  el('span', 'fwCycle', header); el('span', 'fwOld', header).hidden = true; el('span', 'fwBusy', header).hidden = true;
   el('button', 'fwMin', header); el('button', 'fwMax', header);
   const toolbar = el('div', 'fwToolbar', w);
   const viewBar = el('div', 'viewBar', toolbar); ['Table', 'Graph'].forEach((v) => el('button', null, viewBar, { 'data-view': v }));

@@ -863,3 +863,34 @@ Owner awareness (not counted):
 4. Optional: report `_NWPS_BG["started"]` in /healthz `nwps`.
 
 Then a short test-site check (MAX), then step 9 production.
+
+## Fix round 3 (2026-10-29, Opus 5.5 at HIGH)
+
+Owner: "proceed with fix round 3", which accepts the proposed scope, including the departure from section 26's chip
+rule while the age note shows. Commits 528f703 (code + tests) and 32e2aaf (golden), on `feat/nwps-tables`; UI 1.26.8.
+
+- F2C-1: `createLoader`'s `follow(d)`: an answer with `nwps_available` true adds its station to the page's NWPS list,
+  and false removes it. `normalise` and the bar read that same array. An office back while a tab is open now gives a
+  working NWPS button. A station whose last answer withdrew NWPS stays away after a failed load: the F-4 test's last
+  step now expects the button hidden (F-4 fixed at its root).
+- F2C-2: `.fw-titles:has(.fw-old:not([hidden])) .fw-cycle { flex: 0 1000 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; }`. While a run is at least 36 h old, the run text gives way first at every width (a narrow
+  window, the desktop chip) and the note stays whole. The run text's tooltip still holds both. With no note, section
+  26's rule holds as before.
+- F2C-3: tests for each survivor:
+  - the background read's pace after a failure, with and without a usable pointer (D01, D04);
+  - a raising NWPS pass still counting the scheduler pass (T05);
+  - the daemon flag (T03);
+  - the no-script list when the held pointer offers the station but the answer fell back to GFS (I02);
+  - the no-script note at 35.9 / 36.0 / 40.6 h (I03, I04);
+  - 4.5-s reads giving three files in the 20-s budget (B03);
+  - a point's age said once, not in the meta line (C05);
+  - every office back after a site-wide silence of over 72 h.
+- `/healthz` `nwps.reads_started` reports the background pointer reads started (T02 now has a reader and a test).
+- Suites: pytest 1,721 + the golden file's 16 (the full run); Node `window.test.js` 83 (all UI suites through
+  `test_ui_module`).
+- Mutants: the 8 survivors plus T02, and 4 of the new lines (F01-F03 `follow`, H03 the CSS rule): 14 of 14 killed
+  (scratch `g41/fix3/mut3.py`, a detached scratch worktree). F01 checked by hand: it fails the come-back test.
+
+Next: a short test-site check at MAX (the come-back in an open tab, the note at narrow desktop widths and in the chip,
+`/healthz`, a regression smoke); then step 9 production.

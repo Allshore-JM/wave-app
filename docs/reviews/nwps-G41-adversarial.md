@@ -203,3 +203,75 @@ Commits e9f2bc8 (code, UI 1.26.5, overlay 2.22.6) and e840aeb (the page snapshot
 - Tests: window +2, early cases +6, page +1 (the old SWAN-bar test moved to a station with neither model: 46001 is an
   NWPS station). Mutants of the client: 9 of 10 killed (the survivor, `modelOf` again inside the loader's normalise, is
   redundant: every caller passes the model through it). Whole suite green.
+
+## Step 6: test-site deploy and verification (2026-10-29, Opus 5.5 at MAX)
+
+`test` @ 0773a42: cherry-picks of 1713a8e (433b275), c1645e7's test change (1d441ba; this record left off the test
+branch), e9f2bc8 (360a5f4; README the test branch's own), e840aeb (bfe2b4a, the snapshot), and 0773a42 = `nwps_stations.json`
+from production a01c039 (the test branch carries no job files; the site reads that file). Site files = the feature
+branch's except the test branch's 3 logo lines. Live 01:14:27 UTC, 0 failed polls across the switch; forecast.js /
+winds.js (UI 1.26.5) and overlay.js / .css (2.22.6) served = the commit, the 1.26.4 / 2.22.5 URLs 404. Test-branch suites:
+pytest 1,227 passed + the 5 failures the test branch always has (its logo lines vs the page snapshot x4, the numpy
+import); Node 1,052. Scripts and outputs: scratch `nwps/v6`.
+
+- **Nothing else moved.** 65 forecast answers (30 GFS stations compact, 6 classic, 5 Metric, 5 UTC, the 12 SWAN tables,
+  3 Great Lakes, 2 points, 2 removed stations) on GFS run 2026102818: production = the test site before = the test site
+  after, the new `nwps_available` key aside (true in the 14 answers of the 7 NWPS stations in the set, false elsewhere,
+  0 wrong).
+- **All 112 NWPS tables** (`nwps_check.py`, the site's answer against the job's file read from the bucket and rebuilt
+  without the site's code: newest office run listing the station, feet, the site's rank, labels in the station's zone):
+  112 of 112 agree in every label, combined height and swell (height, period, direction); 145 rows each, 35 offices;
+  model NWPS, `nwps_available` true, `swan_available` false, the cycle naming the run and the office, `wind_complete`
+  true, the Wind column = the same station's GFS table at every common local time and never empty. First (cold) answer
+  per station median 0.57 s, max 1.55 s. Metric 14 of 14, UTC 14 of 14.
+- **One mismatch, in my checker, not the site:** at 46206 (off Vancouver Island) the site's times from 2 AM on Sunday
+  1 November ran an hour ahead of mine. The time-zone data Render installs (pytz 2026.5, tzdata 2026e) has British
+  Columbia staying on UTC-7 from 2026-11-01; this laptop's pytz 2025.2 (2025b) still falls back. Re-checked with
+  tzdata 2026e: 112 of 112. (The site's row builder follows whichever library it runs with: locally, with 2025b, it
+  gives the old fall-back.) Chrome 156 and Node 24.22.1 (tzdata 2026e) agree with the server (UTC-7 at 09Z on
+  1 November), so the page's clock and the table agree.
+- **Wind, every row** (`wind_check.py`, 8 stations, the GFS station winds decoded here from the bucket): 0 mismatches,
+  including the first 6-12 rows that come from the GFS run before the latest (51003's NWPS run starts at 06Z, the latest
+  GFS run at 18Z) and 46206 across its zone change.
+- **The model each request gets** (13 cases): NWPS only at the 112 (`model=nwps` too); SWAN or GLWU asked at an NWPS
+  station -> GFS; NWPS asked at 51201 / 13130 / a point / 46240 / 42023 (both left out of the station set) -> GFS; at
+  45007 -> GLWU; at 44062 -> the sheltered note.
+- **The page as served:** 51003 -> GFS | NWPS (SWAN hidden), NWPS pressed with `model=NWPS`; 51201 -> GFS | SWAN with NWPS
+  hidden, also with `model=NWPS`; 13130 -> no bar; the no-script select offers NWPS only where it exists (selected with
+  `model=NWPS`); `render=full` with `model=NWPS` inlines the 145-row NWPS table with its meta line.
+- **Browser** (headless Chrome 156, own profile, never signed in; trusted clicks and taps), desktop 1280x800: a fresh
+  51003 opens on GFS with GFS | NWPS; a click on NWPS = one request, 145 rows, "NWPS · run 20261028 06 UTC (NWS HFO)",
+  the address `?station=51003&model=NWPS`; Summary 6 days; Graph 145 labels, six swell series; Metric and UTC one request
+  each; 51201 next -> GFS with GFS | SWAN; 13130 -> no bar; back to 51003 -> GFS from the page's cache; 46026 -> NWPS
+  "run 20261028 12 UTC (NWS MTR)" with the zone's fall-back on Sunday 1 November; GFS again from the cache. Links: six
+  addresses (NWPS, lower-case nwps, NWPS at 51201 and 13130, SWAN at 51003, NWPS with Metric + UTC) each make exactly ONE
+  request (the head's early one), with the right model, and the address cleaned where NWPS is not offered. The overlay
+  panel: "the forecast table is a NOAA NWPS (nearshore) run" under an NWPS table, nothing under a GFS table of the same
+  run, the SWAN and GLWU notes unchanged. 51003's live window "Forecast point 51003 · 14 mi away" brings the NWPS table
+  forward. Phone 375x812: a tap on NWPS = one request, the 145-row table full screen, no sideways scroll. Console clean in
+  every part; the test origin's storage emptied; the browser stopped and its profile removed.
+- **Failure paths on real data** (`fail_local.py`: the site's code in-process against a stand-in bucket passing every
+  request through to models.allshoresurf.com except the file a case changes): 20 of 20. The newest run not listing the
+  station -> the kept run, the newest file never asked; listed but 404, another station's file, a file cut short, the
+  older run's file under the newer name -> refused, the kept run; the pointer answering 503 after a good read -> the last
+  good one served, `/healthz` names the error, the next request does not ask again within the minute; refused at a cold
+  start or with the last good one older than 6 h -> "Could not reach the NWPS forecast" with Retry (not final); the office
+  missing or no run listing the station -> "No NWPS forecast found"; a damaged pointer entry -> the whole pointer refused;
+  no wind anywhere -> the waves still served, `wind_complete` false; 46028 / 44009 / 44017 / 41004 (published by two
+  offices) read from their chosen office only.
+- **A run switch, live** (`runswitch.py`): NWS AJK's 00Z run was published by the job at 01:47:09 UTC, seen in the
+  pointer at 01:47:35, and the test site served it for 46083 at 01:47:36 ("NOAA NWPS 20261029 00 UTC (NWS AJK)"; the
+  station's table was no longer in the site's 30-minute cache). That table = the independent rebuild from the new run's
+  file (145 rows; Alaska's fall-back hour on 1 November appears twice, as in the GFS table).
+- `/healthz` on the test site: `nwps` 112 stations, 35 offices, pointer 31 s old, no error; memory 204 MB after the
+  checks (production 222 MB after 4 h).
+
+For the owner (none blocks G41):
+- British Columbia's permanent UTC-7 (tzdata 2026e): the site already shows it (the server's library and Chrome / Node
+  agree); this laptop's library is older (no test depends on it).
+- A new NWPS run reaches a table up to about 35 minutes after the job publishes it (the site re-reads the run list every
+  5 minutes and keeps a built table 30 minutes, as for GFS).
+- On phones the window's header hides the run text (as for every model); the pressed NWPS button and the line above the
+  table name it. The model buttons are 31 px tall there (the SWAN bar's size since section 25).
+- My own slip: a `chrome.exe --version` call printed "Opening in existing browser session" (the section-50 lesson): it
+  may have opened a blank window in the owner's Chrome. Nothing else touched it.

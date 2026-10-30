@@ -266,6 +266,22 @@ def test_the_age_note_the_hide_and_the_held_record(site):
     assert A.swan_age_h("52202") is None and A.swan_offered("52202")
 
 
+def test_the_offered_set_equals_the_per_station_rule(site):
+    assert A.swan_offered_set() == set(A.SWAN_STATIONS)
+    site.now = hours(76)
+    A._swan_record("mariana", PUBLISHED)                                # read 76 h after the publish: stale, held 4 h
+    A._swan_record("palau", PUBLISHED)
+    site.now = hours(80)
+    A._swan_record("samoa", PUBLISHED)
+    want = {s for s in A.SWAN_STATIONS if A.swan_offered(s)}
+    assert A.swan_offered_set() == want == set(A.SWAN_STATIONS) - {"52200", "52202", "52211", "52212", "51209"}
+    A._SWAN_UPDATED["mariana"]["ts"] = site.now - A._SWAN_HELD_S       # the held record expired: offered again
+    assert A.swan_offered_set() == {s for s in A.SWAN_STATIONS if A.swan_offered(s)} and "52202" in A.swan_offered_set()
+    site.now = hours(72)                                                # exactly 72.0 h: still offered (<=)
+    A._swan_record("palau", PUBLISHED)
+    assert "52212" in A.swan_offered_set() and A.swan_offered("52212")
+
+
 def test_the_cycle_age_and_the_wind_rule():
     cyc = "Cycle : PacIOOS SWAN updated 20261029 23 UTC"
     A._swan_now = lambda: PUBLISHED - 1 + 50 * 3600

@@ -7,6 +7,7 @@ background probe record each region's publish time (Last-Modified); past 36 h th
 the station is served as one without SWAN. Nothing reaches the network: HTTP.get and the probe's HEAD are fakes.
 """
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -293,15 +294,45 @@ def test_the_cycle_age_and_the_wind_rule():
         assert A._swan_wind_final(cyc) and A._old_run_wind_final(cyc)
         blank = (cyc, "Location : 52202", None, [["d", "t"] + [None] * 18 + [None, None, 1.0]], "Pacific/Guam", None)
         assert A._forecast_entry_ttl(blank) == A._FORECAST_CACHE_TTL, "an old table's blank wind cells are final"
-        A._swan_now = lambda: PUBLISHED - 1 + 48 * 3600                    # exactly 48.0 h: final (the NWPS edge too)
-        assert A._swan_wind_final(cyc) and A._forecast_entry_ttl(blank) == A._FORECAST_CACHE_TTL
-        A._swan_now = lambda: PUBLISHED + 47.99 * 3600
+        A._swan_now = lambda: PUBLISHED - 1 + 36 * 3600                    # exactly 36.0 h: final (G43: the run covering
+        assert A._swan_wind_final(cyc) and A._forecast_entry_ttl(blank) == A._FORECAST_CACHE_TTL   # the first row is gone)
+        A._swan_now = lambda: PUBLISHED + 35.99 * 3600
         assert not A._swan_wind_final(cyc) and not A._old_run_wind_final(cyc)
         assert A._forecast_entry_ttl(blank) == A._WIND_NEG_TTL, "a fresh table's blank wind cells may still heal"
         gfs = ("Cycle : 20261029 18 UTC", "Location : 52202", None, blank[3], "Pacific/Guam", None)
         assert A._forecast_entry_ttl(gfs) == A._WIND_NEG_TTL, "a GFS table: unchanged"
     finally:
         A._swan_now = time.time
+
+
+def test_an_old_tables_blank_wind_cells_count_as_complete(site):
+    # the Site fake's wind cover is empty: every SWAN row's wind cells are blank (G43 F1)
+    site.now = hours(30)
+    p = A.compute_forecast_payload("52202", None, "US", "SWAN", compact=True)
+    assert p["model"] == "SWAN" and p["wind_complete"] is False, "a fresh table's blanks may still heal"
+    A._FORECAST_CACHE.clear()
+    site.now = hours(50)
+    p = A.compute_forecast_payload("52202", None, "US", "SWAN", compact=True)
+    assert p["model"] == "SWAN" and p["wind_complete"] is True, "an old table's blanks are final: no minute re-asks"
+
+
+def test_a_record_never_goes_back_and_a_1970_header_counts_as_none(site):
+    t2 = PUBLISHED + 86400
+    A._swan_record("hawaii", t2)
+    A._swan_record("hawaii", PUBLISHED)                                 # a fetch that started before the probe (G43 F3)
+    assert A._SWAN_UPDATED["hawaii"]["updated"] == t2
+    site.now = hours(30)
+    A._swan_record("hawaii", 0)                                         # nginx mtime 0 (G43 F5): a read without a time
+    assert A._SWAN_UPDATED["hawaii"]["updated"] == t2 and A._SWAN_UPDATED["hawaii"]["ts"] == site.now
+    A._swan_record("palau", 0)
+    assert A._SWAN_UPDATED["palau"]["updated"] is None and A.swan_offered("52212")
+    assert A._swan_health()["regions"]["palau"]["age_h"] is None
+
+
+def test_the_tick_starts_nothing_when_no_region_is_due(site):
+    for r in A.SWAN_REGION:
+        A._swan_record(r, PUBLISHED)
+    assert A._swan_tick() is False and A._SWAN_BG["thread"] is None and A._SWAN_BG["started"] == 0
 
 
 def test_the_payload_carries_the_age_and_falls_back_to_gfs_past_72_h(site, monkeypatch):
@@ -400,3 +431,35 @@ def test_render_full_seeds_the_age_and_the_meta_line_note(site, monkeypatch):
         site.now = hours(35)
         b, st = page(c, "/?station=52212&model=SWAN&render=full")
         assert st["swan_age_hours"] == 35.0 and "h old" not in b.split('id="forecastMeta"', 1)[1][:300]
+        # the note's threshold is the model's own, not the lower of the two (G43 F4)
+        monkeypatch.setattr(A, "_NWPS_NOTE_H", 10)
+        site.now = hours(20)
+        b, st = page(c, "/?station=52212&model=SWAN&render=full")
+        assert st["swan_age_hours"] == 20.0 and "h old" not in b.split('id="forecastMeta"', 1)[1][:300]
+
+
+def test_render_full_follows_the_reads_judgement_for_the_whole_region(site, monkeypatch):
+    # the inline read withdrew the station (its table's own cycle line is too old) while the held set still offered it:
+    # the page's flag AND list follow the read, and the region's siblings go with it (G43 F2 / M20)
+    gfs = ("Cycle : 20261030 12 UTC", "Location : 52202 (13.68N 144.81E)", None,
+           [["Friday, October 30, 2026", "10:00 PM"] + [None] * 18 + [5.0, 90, 2.0]], "Pacific/Guam", None)
+    monkeypatch.setattr(A, "parse_bull", lambda sid, tz=None: gfs)
+    monkeypatch.setattr(A, "swan_offered_set", lambda: set(A.SWAN_STATIONS))
+    site.now = hours(72.5)
+    with A.app.test_client() as c:
+        b, st = page(c, "/?station=52202&model=SWAN&render=full")
+        assert st["model"] == "GFS" and st["swan_available"] is False
+        assert sorted(st["swan_stations"]) == sorted(set(A.SWAN_STATIONS) - {"52200", "52202", "52211"})
+        assert re.search(r'data-model="SWAN" aria-pressed="false" hidden', b)
+        # no reverse case: a station the held set withdrew is asked for as GFS before any read (the first page test)
+
+
+def test_the_api_error_answer_judges_swan_by_the_rule(site, monkeypatch):
+    monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    with A.app.test_client() as c:
+        j = c.get("/api/forecast?station=52202&model=SWAN").get_json()
+        assert j["model"] == "SWAN" and j["swan_available"] is True and j["error"]
+        site.now = hours(73)
+        A._swan_record("mariana", PUBLISHED)
+        j = c.get("/api/forecast?station=52202&model=SWAN").get_json()
+        assert j["model"] == "GFS" and j["swan_available"] is False, "a withdrawn station stays withdrawn (G43 M11)"

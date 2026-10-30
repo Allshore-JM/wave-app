@@ -1249,7 +1249,8 @@ _SWAN_PROBE_NEG_TTL = 60          # a failed probe is tried again after this, no
 _SWAN_HELD_S = 6 * 3600           # a record older than this (nothing read since) decides nothing: SWAN is offered
 _SWAN_NOTE_H = 36                 # the window says "· N h old" past this (a daily run reaches ~24-28 h before the next)
 _SWAN_HIDE_H = 72                 # past this the station does not offer SWAN until PacIOOS publishes again
-_SWAN_WIND_HEAL_H = 48            # an older table's early hours are older than every GFS winds run kept (8 x 6 h)
+_SWAN_WIND_HEAL_H = 36            # an older table's early hours are older than every GFS winds run kept: 8 runs = 48 h
+#                                   after the cycle covering the table's first shown row, ~11 h before its publish (G43)
 _SWAN_PROBE_TIMEOUT = (3.05, 10)
 _SWAN_CYCLE_RE = re.compile(r"PacIOOS SWAN updated (\d{8}) (\d{2}) UTC")
 _SWAN_BG = {"thread": None, "started": 0}
@@ -3087,8 +3088,9 @@ def _swan_record(region, updated):
     with _SWAN_LOCK:
         rec["ts"] = _swan_now()
         rec["error"] = None
-        if updated is not None:
-            rec["updated"] = updated
+        if updated:                                          # a 1970 header (mtime 0) counts as none (G43 F5)
+            rec["updated"] = max(rec["updated"] or 0, updated)   # a region's table never gets older: a fetch that
+            #                                                    started before a probe saw the new table (G43 F3)
 
 
 def _swan_failed(region, exc):
@@ -4017,7 +4019,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     week = _swell_groups(rows, days=7) or present
     # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only); a Great
     # Lakes run's winds are fixed with the run (a gap never heals by asking again: 45195 on Lake Champlain has none)
-    out["wind_complete"] = (model == "GLWU" or (model == "NWPS" and _nwps_wind_final(cycle_str))
+    out["wind_complete"] = (model == "GLWU" or (model in ("NWPS", "SWAN") and _old_run_wind_final(cycle_str))
                             or all(len(r) > 21 and r[20] is not None for r in rows))
 
     # single map marker if coords JSON has it
@@ -4189,13 +4191,22 @@ def index():
         # made before the read (G41 re-check F-2)
         selected_model = payload.get("model", selected_model)
         nwps_available = payload.get("nwps_available", nwps_available)
-        swan_available = payload.get("swan_available", swan_available)
+        if "swan_available" in payload and bool(payload["swan_available"]) != swan_available:
+            # the read's judgement differs from the held set's (a probe landed between, or the table's own cycle line
+            # withdrew it): judge the page's list again, and a withdrawal takes the whole region with it, since its
+            # tables share one run (G43 F2)
+            swan_available = bool(payload["swan_available"])
+            swan_now = swan_offered_set()
+            if not swan_available:
+                region = SWAN_STATION_REGION.get(selected_station)
+                swan_now -= {s for s in swan_now if SWAN_STATION_REGION.get(s) == region}
     # the run's age on the no-script meta line, the page's rule (forecast.js: Math.round, >= 36 h): an NWS office or
     # PacIOOS that stopped publishing (G41 re-check F-2; plan section 64)
     old_age = (payload.get("nwps_age_hours") if payload.get("model") == "NWPS" else
                payload.get("swan_age_hours") if payload.get("model") == "SWAN" else None) if payload else None
     old_run_note = (f" · {int(old_age + 0.5)} h old"
-                    if isinstance(old_age, (int, float)) and old_age >= min(_NWPS_NOTE_H, _SWAN_NOTE_H) else "")
+                    if isinstance(old_age, (int, float))
+                    and old_age >= (_SWAN_NOTE_H if payload.get("model") == "SWAN" else _NWPS_NOTE_H) else "")
 
     # The forecast window's starting state (plan section 25): what this request asked for, resolved. The page's NWPS
     # and SWAN lists hold the station on screen exactly when its own judgement offers it (one rule for both fields).

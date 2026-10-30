@@ -3138,6 +3138,16 @@ def swan_offered(station_id) -> bool:
     return age is None or age <= _SWAN_HIDE_H
 
 
+def swan_offered_set() -> set:
+    """The SWAN stations offered right now, judged from ONE reading of the held records (a page lists them all: a probe
+    landing between two per-station looks must not give a list inconsistent with itself; G41 re-check F-3's rule)."""
+    now = _swan_now()
+    with _SWAN_LOCK:
+        ages = {r: ((now - rec["updated"]) / 3600 if rec["updated"] is not None and now - rec["ts"] < _SWAN_HELD_S else None)
+                for r, rec in _SWAN_UPDATED.items()}
+    return {s for s, r in SWAN_STATION_REGION.items() if ages.get(r) is None or ages[r] <= _SWAN_HIDE_H}
+
+
 def _swan_cycle_age_h(cycle_str):
     """Hours since the time named in a SWAN table's cycle line ("Cycle : PacIOOS SWAN updated 20261030 23 UTC"), or
     None (a table without a publish time, or another model's line)."""
@@ -4155,7 +4165,8 @@ def index():
 
     # Model dropdown only exists for the stations with SWAN bulletins; a stale
     # ?model=SWAN on any other station silently resolves back to GFS.
-    swan_available = swan_offered(selected_station)             # the model button's SWAN choice (plan section 64)
+    swan_now = swan_offered_set()                               # the SWAN choices, judged once for the page (section 64)
+    swan_available = selected_station in swan_now               # the model button's SWAN choice
     nwps_available = nwps_offered(selected_station)             # the model button's NWPS choice (plan section 59)
     selected_model = resolve_model(selected_station, selected_model, nwps_available, swan_available)   # judged once
 
@@ -4191,7 +4202,7 @@ def index():
     nwps_list = {s for s in NWPS_STATIONS if s != selected_station and nwps_offered(s)}
     if nwps_available:
         nwps_list.add(selected_station)
-    swan_list = {s for s in SWAN_STATIONS if s != selected_station and swan_offered(s)}
+    swan_list = swan_now - {selected_station}
     if swan_available:
         swan_list.add(selected_station)
     initial_state = {

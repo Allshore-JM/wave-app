@@ -140,7 +140,7 @@ def test_added_sources_counts_zones_and_landmarks(snap):
     bands = {"eccc": (250, 400), "jma": (480, 680), "iem": (420, 700), "smhi": (85, 140), "fmi": (80, 130),
              "dmi": (40, 75), "dwd": (20, 45), "ipma": (65, 110), "mei": (10, 18)}
     for src, (lo, hi) in bands.items():
-        assert lo <= count[src] <= hi, (src, count[src])          # measured 2026-10-30: 312 580 534 112 102 56 28 87 13
+        assert lo <= count[src] <= hi, (src, count[src])          # measured 2026-10-30: 300 575 534 103 101 51 28 84 10
     assert all(r["tz"] == "Asia/Tokyo" for r in rows if r["src"] == "jma")
     assert all(r["tz"] in ("Europe/Lisbon", "Atlantic/Azores", "Atlantic/Madeira") for r in rows if r["src"] == "ipma")
     assert all(r["tz"] == "Europe/Dublin" for r in rows if r["src"] == "mei")
@@ -177,6 +177,17 @@ def test_added_sources_never_duplicate_a_kept_station(snap):
         close = [sid for la, lo, sid in pts if sid != r["id"] and abs(la - r["lat"]) < 0.03
                  and W.km_between(r["lat"], r["lon"], la, lo) * 1000 <= 2000]
         assert not close, (r["id"], close)
+
+
+def test_no_weather_service_station_on_an_airfield(snap):
+    _, rows = snap
+    metar = [r for r in rows if r["src"] == "metar"]
+    for r in rows:
+        if r["kind"] != "met":
+            continue
+        near = [m["id"] for m in metar if abs(m["lat"] - r["lat"]) < 0.03
+                and W.km_between(r["lat"], r["lon"], m["lat"], m["lon"]) * 1000 <= 1500]
+        assert not near, (r["id"], r["name"], near)                  # the airport keeps one flag: its METAR
 
 
 def test_dwd_rows_are_german_stations(snap):

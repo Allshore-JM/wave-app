@@ -289,7 +289,8 @@ def test_ioos_rows_without_height_or_failed_qc_left_out():
     assert "2026-10-29T04:55:31Z" not in times and "2026-10-29T05:55:31Z" not in times
 
 
-@pytest.mark.parametrize("over", [dict(index="a,b\n1,2\n"), dict(live=Resp("x", 500)), dict(index=Resp("x", 503))])
+@pytest.mark.parametrize("over", [dict(index="a,b\n1,2\n"), dict(live=Resp("x", 500)), dict(index=Resp("x", 503)),
+                                  dict(live="a,b\nc,d\n1,2\n")])
 def test_ioos_list_failures_raise(over):
     p, by, ok, err = ioos(http=ioos_http(**over))
     assert not ok
@@ -576,3 +577,21 @@ def test_ioos_verdict_kept_when_a_later_probe_fails():
     http.routes[-1] = ("orderByMax", Resp("x", 503))
     lst, ok, err = p._build_station_list()
     assert ok and "ioos:45135" not in {s["id"] for s in lst} and "ioos:41110" in {s["id"] for s in lst}
+
+
+def test_json_array_items_one_at_a_time():
+    items = [{"a": 1}, {"b": [1, 2]}, 3, "x"]
+    text = "  " + json.dumps(items, indent=2) + "  "
+    assert list(B._json_array_items(text)) == items
+    assert list(B._json_array_items("[]")) == []
+    for bad in ('{"a": 1}', "", "[1, 2", "[1, }", "x]"):
+        with pytest.raises(ValueError):
+            list(B._json_array_items(bad))
+
+
+def test_glos_parameter_map_keeps_only_the_names_the_window_uses():
+    p, by, ok, err = glos()
+    names = {v[0] for v in p._params.values()}
+    used = {n for _key, ns in B.GlosProvider.FIELDS for n in ns}
+    assert names and names <= used
+    assert "air_temperature" not in names and "sea_water_temperature" in names

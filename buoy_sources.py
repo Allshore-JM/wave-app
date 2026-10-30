@@ -18,6 +18,7 @@ caller wait.
 import bisect
 import csv
 import io
+import json
 import logging
 import math
 import os
@@ -2187,6 +2188,28 @@ def _num_or_none(v):
     return x if math.isfinite(x) else None
 
 
+def _json_array_items(text):
+    """The objects of a JSON array, one at a time (json.loads of GLOS's 3.6 MB parameter list peaked at ~27 MB of
+    Python objects; this holds the text and one item). Anything but an array of values raises ValueError."""
+    dec = json.JSONDecoder()
+    n = len(text)
+    i = 0
+    while i < n and text[i] in " \t\r\n":
+        i += 1
+    if i >= n or text[i] != "[":
+        raise ValueError("not a JSON array")
+    i += 1
+    while True:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n:
+            raise ValueError("unterminated JSON array")
+        if text[i] == "]":
+            return
+        item, i = dec.raw_decode(text, i)
+        yield item
+
+
 def _erddap_wave_newest(http, url, timeout):
     """One ERDDAP 'newest wave height' query (orderByMax time, NaN rows excluded) -> ("yes", ISO time) when the
     dataset has a wave height in the query's window, ("no", None) when ERDDAP answers that nothing matches (its
@@ -2302,15 +2325,17 @@ class GlosProvider(BuoyProvider):
             return
         try:
             r = _size_capped_get(self.http, self.BASE + "parameters", self.timeout, self.PARAMS_CAP)
-            items = r.json()
+            wanted = {n for _key, names in self.FIELDS for n in names}
             m = {}
-            for p in items if isinstance(items, list) else []:
+            for p in _json_array_items(r.text):          # one item at a time; only the names the window uses
+                if not isinstance(p, dict):
+                    continue
                 try:
                     pid = int(p["parameter_id"])
                 except (KeyError, TypeError, ValueError):
                     continue
                 name = p.get("standard_name") or p.get("parameter_name")
-                if isinstance(name, str):
+                if isinstance(name, str) and name in wanted:
                     m[pid] = (name, _num_or_none(p.get("depth")))
             if m:
                 self._params = m
@@ -2581,12 +2606,13 @@ class IoosSensorsProvider(BuoyProvider):
 
     def _fetch_stations(self):
         r = _size_capped_get(self.http, self.INDEX_URL, self.timeout, self.LIST_CAP)
-        rows = list(csv.reader(io.StringIO(r.text)))
-        if not rows or "Dataset ID" not in rows[0]:
+        rows = csv.reader(io.StringIO(r.text))                  # streamed: a list of every row peaked at ~24 MB
+        head = next(rows, None)
+        if not head or "Dataset ID" not in head:
             raise ValueError("IOOS index without a Dataset ID column")
-        ix = {c: i for i, c in enumerate(rows[0])}
+        ix = {c: i for i, c in enumerate(head)}
         meta = {}
-        for row in rows[1:]:
+        for row in rows:
             try:
                 dsid = row[ix["Dataset ID"]]
                 variables = _erddap_index_variables(row[ix["Summary"]])
@@ -2594,8 +2620,11 @@ class IoosSensorsProvider(BuoyProvider):
                 continue
             if self._DS_RE.match(dsid) and self.HS in variables and "time" in variables:
                 meta[dsid] = (row[ix["Title"]] if "Title" in ix else "", variables)
-        hdr, live = _erddap_rows(self.http, self.LIVE_URL, self.timeout)
-        if not hdr:
+        r = _size_capped_get(self.http, self.LIVE_URL, self.timeout, self.LIST_CAP)
+        live = csv.reader(io.StringIO(r.text))          # streamed: a list of every dataset's row peaked at ~18 MB
+        hdr = next(live, None)
+        next(live, None)                                 # the units row
+        if not hdr or "datasetID" not in hdr:
             raise ValueError("IOOS allDatasets answered nothing")
         li = {c: i for i, c in enumerate(hdr)}
         best = {}                               # local id -> (maxTime, row data)

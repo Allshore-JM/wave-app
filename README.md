@@ -1494,8 +1494,8 @@ are not asked (NDBC's marker wins there). GLOS judges nothing by its mirror when
 2 days (every activated platform listed, no probe asked), and a batch answering "no" for more than 80 % of at least 10
 platforms is read as a mirror problem (its "no" verdicts are not kept). IOOS's marker time is that newest wave height:
 allDatasets' `maxTime` is the dataset's stated end, which can lag its rows by a day and counts every variable. Cost: the
-GLOS and IOOS list refreshes took 45-51 s on the free test instance instead of 2-9 s (background runner only); about 100
-small queries every 6 hours.
+GLOS and IOOS list refreshes took 45-51 s on the free test instance instead of 2-9 s (background runner only); about 50
+small IOOS queries an hour and about 50 GLOS queries every 6 hours.
 
 Every reading of the three feeds (and every probe row) passes one check, `_sane_reading` (G42): a row stamped more than
 an hour ahead of the clock is left out, so is a height outside 0-30 m (fill values such as -9999 or 9.97e36 included);
@@ -1520,9 +1520,10 @@ the 3.6 MB parameter list itself. CEFAS's Sandettie LV, Clipper and Lomond carry
   parameter list (read once a day); temperatures are stored in kelvin. A window's 24 hours are one `obs` request; the period
   and direction are filled from the nearest earlier reading within 30 minutes (GLOS stamps them minutes apart). "Free to use
   and redistribute; not intended for legal use" (the credit names GLOS and its partner buoys).
-- **IOOS: the IOOS sensors ERDDAP** (Axiom Data Science, for U.S. IOOS): every regional association's wave datasets. Two
-  requests every 6 hours: the wave-height category index (each dataset's variables are in its summary) and `allDatasets`
-  (positions and the newest time, last 2 days), then the wave-height check above. A dataset whose positions span more
+- **IOOS: the IOOS sensors ERDDAP** (Axiom Data Science, for U.S. IOOS): every regional association's wave datasets.
+  Every hour `allDatasets` (positions and the newest time, last 2 days, ~1.8 MB) and the wave-height check above; the
+  wave-height category index (each dataset's variables are in its summary, ~2 MB) is read every 6 hours and a failed
+  read keeps the held one for up to a day. A dataset whose positions span more
   than 0.2 degrees (a glider, a
   Saildrone, a re-deployed buoy) is left out; datasets of the same buoy (a network's copy and the regional association's)
   are one marker, the newest wins. A window's 24 hours are one tabledap CSV naming only that dataset's own variables (ERDDAP
@@ -1533,8 +1534,10 @@ the 3.6 MB parameter list itself. CEFAS's Sandettie LV, Clipper and Lomond carry
 
 Known limits: NDBCW and most IOOS buoys give bulk parameters only (no spectra); GLOS Spotters' wind is an estimate from the
 wave data (GLOS); Canada's DFO buoys report hourly without direction. A marker's grey "stale" look is set when the list
-is built (IOOS every 6 h; GLOS markers carry no time: its mirror lags the API by about a day, so a GLOS buoy that went
-quiet stays coloured until the probe's 3-day window drops it; its window then starts a day before its last wave height).
+is built: IOOS every hour, from its newest wave height (grey 6 h after it); GLOS from its newest wave height at the ERDDAP
+mirror, which runs about 30 h behind the API, so a GLOS marker turns grey after 2 days without a wave height there and
+leaves the map after 3 (a stalled mirror gives no times: nothing greys); a quiet GLOS platform's window starts a day
+before its last wave height.
 Tests: `tests/test_buoys_widen.py` and `tests/test_buoys_widen_g42.py` (the review's fixes) on real answers
 cut by `tests/capture_buoy_widen_fixtures.py`; the three fakes in `tests/fake_buoy_providers.py` are in the live-stations
 golden (captured on the code before this section: the new code merges them identically).

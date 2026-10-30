@@ -184,13 +184,20 @@ def test_jma_provider_lists_snapshot_stations_only(clock):
 
 def test_one_file_feed_keeps_readings_and_raises_on_failure(clock):
     f = Fetch({"latest_time.txt": fx("jma_time.txt"), "data/map/": fx("jma_map.json")})
-    p = M.JmaProvider(_st(["11001"]), f)
+    p = M.JmaProvider(_st(["11001", "44132"]), f)
     assert p._fetch_stations()
     f.table["data/map/"] = IOError("HTTP 500")
     with pytest.raises(IOError):
         p._fetch_stations()                                          # the base class keeps the last list
-    f.table["data/map/"] = json.dumps({})
-    assert p._fetch_stations()[0]["local_id"] == "11001"             # a station missing from one answer keeps its reading
+    doc = json.loads(fx("jma_map.json"))
+    f.table["data/map/"] = json.dumps({"44132": doc["44132"]})
+    lst = p._fetch_stations()
+    assert [e["local_id"] for e in lst] == ["11001", "44132"]        # a station missing from one answer keeps its reading
+    for body in ("{}", "null", '{"error": "x"}', json.dumps({"99999": doc["44132"]})):
+        f.table["data/map/"] = body                                  # an answer holding no reading of any station
+        with pytest.raises(RuntimeError, match="no reading"):        # failed (keep-last; /healthz says so: G44 P3-5)
+            p._fetch_stations()
+    f.table["data/map/"] = json.dumps({"44132": doc["44132"]})
     clock["now"] += M.KEEP_S + 3600
     assert p._fetch_stations() == []                                 # ... until it is KEEP_S old
 
@@ -259,7 +266,10 @@ def test_make_providers_switches():
     groups = {"jma": _st(["1"]), "eccc": _st(["X"]), "dwd": {}}
     ps = M.make_providers(groups, Fetch({}), enabled={"eccc": False})
     assert [p.source for p in ps] == ["JMA"]
-    assert all(p.attribution_text.startswith("Source: ") for p in M.make_providers(groups, Fetch({})))
+    every = M.make_providers({k: _st(["1"]) for k in M.KEYS}, Fetch({}))
+    assert all(p.attribution_text.startswith(("Source: ", "Data Source: ")) for p in every)
+    assert not any("Source: Source" in p.attribution_text or "Source: Data Source" in p.attribution_text for p in every)
+    assert next(p for p in every if p.key == "eccc").attribution_text.startswith("Data Source: Environment and Climate")
 
 
 # ---------------------------------------------------------------------------------------------- the service

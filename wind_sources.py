@@ -78,15 +78,22 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                       "allshoresurf.com; Public Data License 1.0",
                "iem": "Iowa Environmental Mesonet, Iowa State University (mesonet.agron.iastate.edu): state DOT road "
                       "weather and airport stations",
-               "smhi": "SMHI, Swedish Meteorological and Hydrological Institute (opendata.smhi.se), CC BY 4.0",
-               "fmi": "Finnish Meteorological Institute (opendata.fmi.fi), CC BY 4.0",
-               "dmi": "DMI, Danish Meteorological Institute (opendataapi.dmi.dk)",
-               "dwd": "Deutscher Wetterdienst (opendata.dwd.de), CC BY 4.0",
-               "ipma": "IPMA, Instituto Portugues do Mar e da Atmosfera (api.ipma.pt)",
-               "mei": "Met Eireann (met.ie), CC BY 4.0"}
+               "smhi": "SMHI, Swedish Meteorological and Hydrological Institute (opendata.smhi.se), CC BY 4.0, units converted by allshoresurf.com",
+               "fmi": "Finnish Meteorological Institute (opendata.fmi.fi), CC BY 4.0, units converted by allshoresurf.com",
+               "dmi": "DMI, Danish Meteorological Institute (opendataapi.dmi.dk), CC BY 4.0, units converted by allshoresurf.com",
+               "dwd": "Deutscher Wetterdienst (opendata.dwd.de), CC BY 4.0, units converted by allshoresurf.com",
+               "ipma": "IPMA, Instituto Portugues do Mar e da Atmosfera (api.ipma.pt), units converted by "
+                       "allshoresurf.com",
+               "mei": "Met Eireann (met.ie), CC BY 4.0, units converted by allshoresurf.com"}
+CC_BY = "https://creativecommons.org/licenses/by/4.0/"
+# the licence text a window's source line links to (G44 P3-9: CC BY 4.0 asks for a link to the licence)
+LICENCE_URL = {"smhi": CC_BY, "fmi": CC_BY, "dmi": CC_BY, "dwd": CC_BY, "mei": CC_BY,
+               "jma": "https://www.jma.go.jp/jma/en/copyright.html",
+               "eccc": "https://eccc-msc.github.io/open-data/licence/readme_en/"}
 MORE_SOURCES = ("eccc", "jma", "iem", "smhi", "fmi", "dmi", "dwd", "ipma", "mei")   # plan section 67 (wind_more.py)
 MORE_KEPT = ("eccc", "ipma", "mei")             # their windows' 24 hours are the feed's own, kept in memory
 MORE_RESTART_NOTE = "Earlier hours are not kept after a server restart."
+MORE_RESTART_EMPTY = "No readings since the server restarted; earlier hours are not kept after a restart."
 # NOAA's restrictions page for MADIS asks pages that show mesonet observations to carry an accuracy disclaimer: shown in
 # the window of every NWS-network station (HECO / UH / RAWS / CWOP ...), whichever feed brought the reading (G35).
 MESONET_DISCLAIMER = ("NOAA and its data providers disclaim liability of any kind whatsoever, including, without "
@@ -1669,20 +1676,23 @@ class WindHistory:
         return [r for r in parse_nws_observations(doc) if r["t"] >= since]
 
     def _more(self, src, local, st, since, now):
-        """(rows, note) of a section-67 station: the feed's own 24 hours in memory (ECCC, IPMA, Met Eireann: with a
-        note when the server has not run 24 hours yet), else its agency's history behind the agency's budget."""
+        """(rows, note, short) of a section-67 station: the feed's own 24 hours in memory (ECCC, IPMA, Met Eireann:
+        with a note when the server has not run 24 hours yet, and kept only a minute while it holds no row of the
+        station: the feed may read it any moment, G44 P3-7), else its agency's history behind the agency's budget."""
         if src in MORE_KEPT:
             get = self.more_hist.get(src)
             rows = get(local, since) if get else []
             started = self.more_started.get(src)
-            note = MORE_RESTART_NOTE if rows and started and started > since else None
-            return rows or [], note
+            young = bool(started and started > since)
+            if not rows:
+                return [], (MORE_RESTART_EMPTY if young else None), young
+            return rows, (MORE_RESTART_NOTE if young else None), False
         import wind_more
         bucket = self.more_buckets.get(src)
         if bucket is None:
             bucket = self.more_buckets.setdefault(src, TokenBucket(wind_more.BUCKET_PER_MIN))
         self._take(bucket, wind_more.SOURCES[src]["short"])
-        return wind_more.history(src, local, st, since, self._fetch, now) or [], None
+        return wind_more.history(src, local, st, since, self._fetch, now) or [], None, False
 
     def history(self, sid, fresh_s=None):
         """fresh_s: a refresh from the wind window (plan section 56): an answer at least that old is built again."""
@@ -1728,7 +1738,7 @@ class WindHistory:
             if self.madis_filling and self.madis_filling():
                 partial, filling = True, True
         elif src in MORE_SOURCES:                                      # plan section 67
-            rows, note = self._more(src, local, st, since, now)
+            rows, note, partial = self._more(src, local, st, since, now)
         elif src == "coops":
             self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:
@@ -1748,7 +1758,7 @@ class WindHistory:
         else:                                                          # a source with no history (never served)
             rows = []
         rows = sorted({r["t"]: r for r in rows}.values(), key=lambda r: r["t"])[-HISTORY_ROWS:]
-        if not rows:
+        if not rows and not note:
             note = NDBC_NO_FILE if no_file else NO_HISTORY
         for r in rows:                                                 # humidity from the dew point where not reported
             if r.get("rh") is None and r.get("at") is not None and r.get("dp") is not None:
@@ -1760,6 +1770,8 @@ class WindHistory:
                          "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],
                "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
+        if LICENCE_URL.get(via or src):                                # the licence text the source line links to
+            out["licence_url"] = LICENCE_URL[via or src]
         if src == "nws":                                               # mesonet observations: NOAA's disclaimer
             out["disclaimer"] = MESONET_DISCLAIMER
         if filling:                                                    # MADIS is still asking the earlier hours

@@ -143,3 +143,28 @@ def test_respot_places_the_snapshots_rows_again_without_the_network(tmp_path):
     doc = json.loads(f.read_text(encoding="utf-8"))
     assert [r[0] for r in doc["stations"]] == ["metar:EKCH", "dmi:06183"]
     assert doc["captured"] == "2026-10-30T21:35:05Z" and doc["stations"][1][6] == "Europe/Paris"
+
+
+# ------------------------------------------------------------------ G44: Canadian airfields, NDBC twins (P2-3, P3-2)
+
+def test_an_airports_own_station_stands_for_its_field_among_the_new_rows():
+    rows = [["ndbc:KP53", "Munising", 46.41, -86.65, "station", "ndbc", "America/Detroit", None, None, None]]
+    cands = [_c("eccc", "CZHY", 60.840, -115.783),                  # Hay River climate station, 0.11 km from CYHY
+             _c("eccc", "CYHY", 60.839, -115.782),                  # the NAV CANADA airport station: placed first
+             _c("eccc", "COSM", 46.486, -84.505),                   # "Sault Ste. Marie Airport", 0.94 km from CYAM
+             _c("eccc", "CYAM", 46.485, -84.517),
+             _c("eccc", "CWXX", 46.600, -84.517),                   # 12.7 km away: kept
+             _c("iem", "P53", 46.415, -86.655, kind="airport", net="MI_ASOS", icao="P53")]
+    cands[2]["name"] = "Sault Ste. Marie Airport"
+    kept, dropped = T.place(cands, rows)
+    why = {cid: (w, k) for cid, w, k in dropped}
+    assert [r[0] for r in kept] == ["eccc:CYAM", "eccc:CYHY", "eccc:CWXX"]
+    assert why["eccc:CZHY"] == ("airfield", "eccc:CYHY") and why["eccc:COSM"] == ("airfield", "eccc:CYAM")
+    assert why["iem:P53"] == ("NDBC id", "ndbc:KP53")
+    assert T.field_rank(cands[1]) == 0 and T.field_rank(cands[2]) == 1 and T.field_rank(cands[0]) == 2
+    assert not T.is_field(_c("iem", "X", 1, 1, kind="road"))
+
+
+def test_fixed_zones_cover_the_one_country_agencies():
+    assert T.FIXED_TZ == {"jma": "Asia/Tokyo", "fmi": "Europe/Helsinki", "smhi": "Europe/Stockholm",
+                          "dwd": "Europe/Berlin", "mei": "Europe/Dublin"}

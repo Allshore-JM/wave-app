@@ -728,6 +728,20 @@ test('G35 K-2: a reading that stands alone (one MADIS report) is drawn as a dot 
   assert.deepEqual(I2.map((r) => r.s), [3], 'a reading past the gap stands alone');
 });
 
+test('G44 P3-9: the source line links the licence text when the answer names one (https only)', async () => {
+  const s = viewSetup();
+  s.view.load(HNL, { unit: 'US' });
+  s.answers[0].res(resp(200, history({ id: 'dwd:10637', src: 'dwd', kind: 'met', source: 'Deutscher Wetterdienst, CC BY 4.0',
+    licence_url: 'https://creativecommons.org/licenses/by/4.0/' }))); await flush();
+  const line = s.els.meta.children[s.els.meta.children.length - 1];
+  assert.equal(line.textContent, 'Source: Deutscher Wetterdienst, CC BY 4.0 (licence)');
+  const a = line.querySelector('a');
+  assert.equal(a.getAttribute('href'), 'https://creativecommons.org/licenses/by/4.0/'); assert.equal(a.getAttribute('rel'), 'noopener');
+  const t = viewSetup(); t.view.load(HNL, { unit: 'US' });
+  t.answers[0].res(resp(200, history({ licence_url: 'javascript:alert(1)' }))); await flush();
+  assert.ok(!/licence/.test(t.els.meta.children[t.els.meta.children.length - 1].textContent), 'not an https address: no link');
+});
+
 
 // ------------------------------------------------------------------ the refresh button (plan section 56)
 test('section 56: refreshNow asks again with the header, draws in place and keeps the state; false on failure; null when superseded', async () => {

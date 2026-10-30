@@ -17,7 +17,8 @@ Sources (all anonymous; licences in SOURCES):
 - fmi   FMI WFS multipointcoverage (windspeedms, winddirection, windgust), 10-minute steps, positions per step.
 - dmi   DMI metObs v2 items (wind_speed / wind_dir: the last 10 minutes' mean; wind_max: their highest 3-second mean).
 - dwd   DWD weather_reports/poi <id>-BEOB.csv: semicolon CSV, three header rows, newest first, km/h, "---" missing.
-- ipma  IPMA obs-surface.geojson: hourly, m/s, an 8-class direction (1 = N ... 8 = NW), -99 missing, time UTC.
+- ipma  IPMA obs-surface.geojson: hourly, m/s, an 8-class direction (1 = N ... 8 = NW; 9 = N as well), -99 missing,
+        time UTC.
 - mei   Met Eireann prodapi observations/<slug>/today: hourly rows of the day, km/h, local time (Europe/Dublin)."""
 import calendar
 import csv
@@ -40,17 +41,18 @@ SOURCES = {
                        "(Public Data License 1.0)"},
     "iem": {"name": "Iowa Environmental Mesonet", "short": "IEM", "url": "https://mesonet.agron.iastate.edu/",
             "licence": "Iowa Environmental Mesonet (Iowa State University): state DOT road weather and airport stations"},
-    "smhi": {"name": "SMHI", "short": "SMHI", "url": "https://www.smhi.se/data", "licence": "SMHI open data (CC BY 4.0)"},
+    "smhi": {"name": "SMHI", "short": "SMHI", "url": "https://www.smhi.se/data",
+             "licence": "SMHI open data (CC BY 4.0, units converted by allshoresurf.com)"},
     "fmi": {"name": "Finnish Meteorological Institute", "short": "FMI", "url": "https://en.ilmatieteenlaitos.fi/open-data",
-            "licence": "Finnish Meteorological Institute open data (CC BY 4.0)"},
+            "licence": "Finnish Meteorological Institute open data (CC BY 4.0, units converted by allshoresurf.com)"},
     "dmi": {"name": "DMI", "short": "DMI", "url": "https://www.dmi.dk/friedata",
-            "licence": "Danish Meteorological Institute (DMI) open data"},
+            "licence": "Danish Meteorological Institute (DMI) open data (CC BY 4.0, units converted by allshoresurf.com)"},
     "dwd": {"name": "Deutscher Wetterdienst", "short": "DWD", "url": "https://opendata.dwd.de/",
-            "licence": "Deutscher Wetterdienst (DWD) open data (CC BY 4.0)"},
+            "licence": "Deutscher Wetterdienst (DWD) open data (CC BY 4.0, units converted by allshoresurf.com)"},
     "ipma": {"name": "IPMA", "short": "IPMA", "url": "https://www.ipma.pt/",
              "licence": "IPMA, Instituto Portugues do Mar e da Atmosfera"},
     "mei": {"name": "Met Eireann", "short": "Met Eireann", "url": "https://www.met.ie/",
-            "licence": "Met Eireann (CC BY 4.0)"},
+            "licence": "Met Eireann (CC BY 4.0, units converted by allshoresurf.com)"},
 }
 KEYS = tuple(SOURCES)
 ECCC_DD = "https://dd.weather.gc.ca/today/observations"
@@ -603,7 +605,7 @@ def parse_dwd_listing(html):
 
 # ---------------------------------------------------------------------------------------------- IPMA
 
-IPMA_DIR = {1: 0, 2: 45, 3: 90, 4: 135, 5: 180, 6: 225, 7: 270, 8: 315}
+IPMA_DIR = {1: 0, 2: 45, 3: 90, 4: 135, 5: 180, 6: 225, 7: 270, 8: 315, 9: 0}   # 9 = N too (IPMA: descDirVento "N")
 
 
 def _ipma_val(v):
@@ -612,7 +614,8 @@ def _ipma_val(v):
 
 
 def parse_ipma_obs(doc):
-    """obs-surface.geojson -> {idEstacao: [reading, ...] ascending} (time UTC; -99 missing; idDireccVento 1..8 = N..NW)."""
+    """obs-surface.geojson -> {idEstacao: [reading, ...] ascending} (time UTC; -99 missing; idDireccVento 1..8 = N..NW,
+    9 = N, 0 = calm or not reported)."""
     if isinstance(doc, (bytes, str)):
         doc = json.loads(doc)
     out = {}
@@ -703,6 +706,8 @@ import buoy_sources                              # noqa: E402
 
 KEEP_S = 6 * 3600                                # a reading kept this long after its station's last report
 SERIES_S = W.HISTORY_S + 3600                    # an in-memory 24-hour series is kept this long
+AHEAD_S = 600                                    # a reading this far ahead of the server's clock is not believed
+REFRESH_S = 90                                   # a paced refresh asks nothing new after this long (G44 P3-8)
 BUCKET_PER_MIN = 30                              # each agency's window (history) requests a minute
 MAX_LIST = 4 * 1024 * 1024                       # one answer's byte cap (the JMA map is ~250 KB; IPMA's 24 h ~1 MB)
 MAX_STATION = 512 * 1024                         # one station's file (SWOB ~10 KB; DWD ~7 KB; IEM history ~100 KB)
@@ -721,12 +726,14 @@ class MoreProvider(W.WindProvider):
     license_label = "Open data"
     series = False
     key = ""
+    empty_fails = True                           # one answer for every station: one with no reading at all failed
 
     def __init__(self, stations, fetch):
         super().__init__(stations, fetch)
         meta = SOURCES[self.key]
         self.source_name, self.source_url = meta["name"], meta["url"]
-        self.attribution_text = "Source: " + meta["licence"]
+        lic = meta["licence"]
+        self.attribution_text = lic if re.match(r"(Data )?Source:", lic) else "Source: " + lic
         self._kept = {}
         self._hist = {}
         self._hist_lock = threading.Lock()
@@ -739,11 +746,12 @@ class MoreProvider(W.WindProvider):
         cut = now - SERIES_S
         with self._hist_lock:
             for local, rows in obs.items():
-                if local not in self.stations or not rows:
+                if local not in self.stations:
+                    continue
+                rows = [r for r in rows or () if r["t"] <= now + AHEAD_S]    # a clock far ahead: that row not believed
+                if not rows:
                     continue
                 newest = max(rows, key=lambda r: r["t"])
-                if newest["t"] > now + 600:                                 # a clock far ahead: not believed
-                    continue
                 old = self._kept.get(local)
                 if old is None or newest["t"] >= old["t"]:
                     self._kept[local] = newest
@@ -754,7 +762,7 @@ class MoreProvider(W.WindProvider):
                     if ser is None:
                         ser = self._hist[local] = W.MadisSeries()
                     for r in rows:
-                        if cut <= r["t"] <= now + 600:
+                        if r["t"] >= cut:
                             ser.add(r)
             for local in [k for k, r in self._kept.items() if r["t"] < now - KEEP_S]:
                 del self._kept[local]
@@ -765,7 +773,10 @@ class MoreProvider(W.WindProvider):
 
     def _fetch_stations(self):
         now = buoy_sources.time.time()
-        self._merge(self._readings(), now)
+        obs = self._readings()
+        if self.empty_fails and not any(rows for local, rows in (obs or {}).items() if local in self.stations):
+            raise RuntimeError("the answer holds no reading of any station (an empty or unexpected answer)")
+        self._merge(obs, now)
         with self._hist_lock:
             return [self._entry(local, r) for local, r in sorted(self._kept.items())]
 
@@ -841,12 +852,14 @@ class IpmaProvider(MoreProvider):
 class PacedMore(MoreProvider):
     """A feed asking one request per unit (a station, or an IEM network), `per_refresh` units a refresh in turn,
     `workers` at a time; a unit that fails keeps its readings; every request of a refresh failing is a failed fetch
-    (keep-last); an HTTP 403 / 429 stops the refresh and pauses the feed pause_s. Subclasses: units() and one(unit) ->
-    {local: [readings]}."""
+    (keep-last); an HTTP 403 / 429 stops the refresh and pauses the feed pause_s (what answered before it is kept; the
+    refused and the unasked units go first after the pause); after REFRESH_S a refresh asks nothing new (those units
+    go first next time). Subclasses: units() and one(unit) -> {local: [readings]}."""
     workers = 2
     per_refresh = 8
     pause_s = 300
     refused = ("HTTP 403", "HTTP 429")
+    empty_fails = False                          # a refresh asks some units: no new reading is an ordinary answer
 
     def __init__(self, stations, fetch, per_refresh=None):
         super().__init__(stations, fetch)
@@ -873,32 +886,37 @@ class PacedMore(MoreProvider):
         self._cursor = (start + len(ask)) % len(units)
         out, errors = {}, []
         stop = threading.Event()
+        deadline = buoy_sources.time.time() + REFRESH_S
 
         def run(u):
-            if stop.is_set():
-                return u, None, None, True
+            if stop.is_set() or buoy_sources.time.time() > deadline:
+                return u, None, None, "skip"
             try:
-                return u, self.one(u), None, False
+                return u, self.one(u), None, None
             except Exception as e:                       # noqa: BLE001
                 msg = "%s: %s" % (type(e).__name__, e)
                 if any(c in msg for c in self.refused):
                     stop.set()
-                return u, None, msg, False
+                    return u, None, msg, "refused"
+                return u, None, msg, None
 
-        skipped = []
+        later = []                                       # refused or not asked: these go first next time
         with ThreadPoolExecutor(self.workers) as pool:
-            for u, obs, err, skip in pool.map(run, ask):
-                if skip:
-                    skipped.append(u)
-                elif err:
+            for u, obs, err, what in pool.map(run, ask):
+                if what:
+                    later.append(u)
+                if err:
                     errors.append(err)
-                else:
+                elif what is None:
                     out.update(obs or {})
-        if any(any(c in e for c in self.refused) for e in errors):
-            if skipped:
-                self._cursor = units.index(skipped[0])     # the units not asked go first after the pause
+        if later:
+            self._cursor = units.index(later[0])
+        refusal = next((e for e in errors if any(c in e for c in self.refused)), None)
+        if refusal:
+            if out:                                      # what answered before the refusal is kept (G44 P3-4)
+                self._merge(out, buoy_sources.time.time())
             self._paused_until = buoy_sources.time.time() + self.pause_s
-            raise RuntimeError("the agency refused a request: paused for %d s (%s)" % (self.pause_s, errors[0]))
+            raise RuntimeError("the agency refused a request: paused for %d s (%s)" % (self.pause_s, refusal))
         if errors and len(errors) == len(ask):
             raise RuntimeError("every request failed (%s)" % errors[-1])
         return out
@@ -947,6 +965,7 @@ class EcccProvider(MoreProvider):
     source, key, list_ttl_sec, series = "ECCC", "eccc", 300, True
     per_refresh = 60
     workers = 2
+    empty_fails = False                          # a refresh reads only the files that changed: none is ordinary
 
     def __init__(self, stations, fetch, per_refresh=None):
         super().__init__(stations, fetch)
@@ -963,9 +982,12 @@ class EcccProvider(MoreProvider):
                 due.append((pick[1], sid, pick[0]))
         due.sort()
         out, errors = {}, []
+        deadline = buoy_sources.time.time() + REFRESH_S
 
         def run(item):
             when, sid, f = item
+            if buoy_sources.time.time() > deadline:     # not asked: read next time (G44 P3-8)
+                return sid, when, None, "skip"
             try:
                 _s, _la, _lo, r = parse_swob(self._fetch(ECCC_LATEST + f, MAX_STATION, HEADERS))
                 return sid, when, r, None
@@ -973,15 +995,19 @@ class EcccProvider(MoreProvider):
                 return sid, when, None, "%s: %s" % (type(e).__name__, e)
 
         ask = due[:self.per_refresh]
+        skipped = 0
         with ThreadPoolExecutor(self.workers) as pool:
             for sid, when, r, err in pool.map(run, ask):
+                if err == "skip":
+                    skipped += 1
+                    continue
                 if err:
                     errors.append(err)
                     continue
                 self._seen[sid] = when
                 if r:
                     out[sid] = [r]
-        if ask and len(errors) == len(ask):
+        if errors and len(errors) == len(ask) - skipped:
             raise RuntimeError("every SWOB file failed (%s)" % errors[-1])
         return out
 
@@ -1005,11 +1031,39 @@ def make_providers(groups, fetch, enabled=None, per_refresh=None):
 
 # ============================================================================================== the windows' history
 
+SHAPE_ERRORS = (AttributeError, TypeError, KeyError, IndexError, ValueError, RecursionError)
+
+
 def history(src, local, st, since, fetch, now):
     """A station's readings since (ascending) from its agency, for the sources with a per-station history: JMA (the 3-hour
-    point files), IEM (obhistory for each UTC day of the window), SMHI (latest-day per parameter), FMI (one WFS answer),
-    DMI (each parameter over the window), DWD (the poi CSV). Raises W.WindError on a failure. None for the sources whose
-    history is kept in memory (ECCC, IPMA, Met Eireann)."""
+    point files), IEM (obhistory for each of the station's local days in the window: IEM's day is the station's own),
+    SMHI (latest-day per parameter), FMI (one WFS answer), DMI (each parameter over the window), DWD (the poi CSV).
+    Raises W.WindError on a failure, also for an answer of an unexpected shape. None for the sources whose history is
+    kept in memory (ECCC, IPMA, Met Eireann)."""
+    try:
+        rows = _history(src, local, st, since, fetch, now)
+    except W.WindError:
+        raise
+    except SHAPE_ERRORS as exc:                          # a 200 answer of another shape (G44 P2-1)
+        raise W.WindError("the answer has an unexpected shape (%s)" % type(exc).__name__) from None
+    return None if rows is None else [r for r in rows if r["t"] >= since]
+
+
+def local_days(since, now, tz):
+    """The calendar dates in zone tz (an IANA name; UTC when unknown) from since's to now's, oldest first."""
+    try:
+        z = ZoneInfo(tz) if tz else timezone.utc
+    except Exception:                                    # noqa: BLE001
+        z = timezone.utc
+    d, last = datetime.fromtimestamp(since, z).date(), datetime.fromtimestamp(now, z).date()
+    out = []
+    while d <= last and len(out) < 4:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def _history(src, local, st, since, fetch, now):
     def body(url, cap=MAX_STATION):
         try:
             return fetch(url, cap, HEADERS)
@@ -1019,7 +1073,7 @@ def history(src, local, st, since, fetch, now):
     def js(url, cap=MAX_STATION):
         try:
             return json.loads(body(url, cap))
-        except ValueError:
+        except (ValueError, RecursionError):
             raise W.WindError("the answer is not JSON") from None
 
     if src == "jma":
@@ -1037,8 +1091,7 @@ def history(src, local, st, since, fetch, now):
     elif src == "iem":
         net = st.get("net") or ""
         rows = []
-        days = sorted({datetime.fromtimestamp(since, timezone.utc).date(), datetime.fromtimestamp(now, timezone.utc).date()})
-        for d in days:
+        for d in local_days(since, now, st.get("tz")):
             rows += parse_iem_history(js(IEM_HISTORY.format(sid=local, net=net, ymd=d.isoformat()), MAX_LIST))
     elif src == "smhi":
         p = {}
@@ -1063,4 +1116,4 @@ def history(src, local, st, since, fetch, now):
         rows = parse_dwd_poi(body(DWD_CSV.format(sid=local)))
     else:
         return None
-    return [r for r in rows if r["t"] >= since]
+    return rows

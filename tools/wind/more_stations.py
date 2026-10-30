@@ -8,10 +8,15 @@ is added when (owner, 2026-10-30):
   lakes >= 100 km2: the Great Lakes, Winnipeg, Ladoga, Biwa ...), or at sea;
 - no station is already kept at its spot: within SPOT_M of any kept station, within AIRPORT_SPOT_M of a METAR site (an
   airport's own weather station is the airport), the METAR id itself (ECCC's NAV CANADA files, IEM's ASOS sites, DWD's
-  ICAO), a national weather service's station on an airfield (within AIRFIELD_M of a METAR site, or within
-  AIRFIELD_NAMED_M when its name says airport or begins like the site's), and for DWD (coarse 0.01-degree positions)
-  within DWD_NEAR_M of a kept station. Order:
-  SPOT_RANK_MORE (the national services, then DWD, then IEM), id.
+  ICAO; also an NDBC id: NDBC relays some Great Lakes airports as KPxx), a national weather service's station on an
+  airfield (within AIRFIELD_M of an airfield site, or within AIRFIELD_NAMED_M when its name says airport or begins like
+  the site's; airfield sites = the METAR sites and the new rows that are an airport's own station: ECCC's NAV CANADA
+  CYxx ids and stations named like an airport, placed first so the airport's station stands for the field: G44 P2-3),
+  and for DWD (coarse 0.01-degree positions) within DWD_NEAR_M of a kept station. Order: SPOT_RANK_MORE (the national
+  services, then DWD, then IEM), airfield sites first, id.
+
+Zones: the nearest civil zone (app._nearest_civil_tz), except FIXED_TZ for the agencies whose stations all keep one
+country's clock (a coastal or offshore point can fall nearer another country's zone: G44 P3-1).
 
 Kinds: "met" (a national weather service's station), "road" (a state DOT road-weather station, IEM XX_RWIS), "airport"
 (IEM XX_ASOS: the non-federal AWOS sites without a METAR). `net` = the IEM network (the feed asks per network).
@@ -48,6 +53,8 @@ AIRFIELD_WORDS = re.compile(r"\b(airport|aeroport|aeroporto|aerodromo|aerodrome|
 DWD_WMO_BLOCK = "10"                                           # DWD's own stations: WMO block 10 = Germany (its
                                                                # poi list also relays other countries' SYNOP reports)
 SPOT_RANK_MORE = {"eccc": 4, "jma": 4, "smhi": 4, "fmi": 4, "dmi": 4, "ipma": 4, "mei": 4, "dwd": 5, "iem": 6}
+FIXED_TZ = {"jma": "Asia/Tokyo", "fmi": "Europe/Helsinki", "smhi": "Europe/Stockholm", "dwd": "Europe/Berlin",
+            "mei": "Europe/Dublin"}
 CACHE_S = 12 * 3600
 PAUSE_S = 0.25                                                 # between one-station reads (ECCC, DWD, Met Eireann)
 IEM_PAUSE_S = 1.0
@@ -267,19 +274,23 @@ class Spots:
 
     def __init__(self, rows):
         self.grid = {}
-        self.metar_ids = set()
+        self.metar_ids, self.ndbc_ids, self.fields = set(), set(), set()
         for r in rows:
             self.add(r)
 
-    def add(self, r):
+    def add(self, r, field=False):
         self.grid.setdefault((math.floor(r[2] * 10), math.floor(r[3] * 10)), []).append(r)
         if r[5] == "metar":
             self.metar_ids.add(r[0][6:])
+        elif r[5] == "ndbc":
+            self.ndbc_ids.add(r[0][5:])
+        if r[5] == "metar" or field:
+            self.fields.add(r[0])
 
-    def near(self, lat, lon, metres, only_src=None):
-        return next(iter(self.near_all(lat, lon, metres, only_src)), None)
+    def near(self, lat, lon, metres, only_src=None, fields=False):
+        return next(iter(self.near_all(lat, lon, metres, only_src, fields)), None)
 
-    def near_all(self, lat, lon, metres, only_src=None):
+    def near_all(self, lat, lon, metres, only_src=None, fields=False):
         out = []
         cy, cx = math.floor(lat * 10), math.floor(lon * 10)
         for dy in (-1, 0, 1):
@@ -287,8 +298,11 @@ class Spots:
                 for k in self.grid.get((cy + dy, (cx + dx + 1800) % 3600 - 1800), ()):
                     if only_src and k[5] != only_src:
                         continue
+                    if fields and k[0] not in self.fields:
+                        continue
                     if FS.km_between(lat, lon, k[2], k[3]) * 1000 <= metres:
                         out.append(k)
+        out.sort(key=lambda k: FS.km_between(lat, lon, k[2], k[3]))
         return out
 
 
@@ -303,37 +317,62 @@ def fold(name):
     return " ".join(re.sub(r"[^a-z0-9]+", " ", n).split())
 
 
+def is_field(c):
+    """A new row that is an airport's own station (an airfield site for the rows after it): ECCC's NAV CANADA ids
+    (CYxx), or a national weather service's station named like an airport."""
+    if c["kind"] != "met":
+        return False
+    return (c["src"] == "eccc" and str(c["local"]).upper().startswith("CY")) or bool(AIRFIELD_WORDS.search(fold(c["name"])))
+
+
+def field_rank(c):
+    """Placing order inside a source: an airport's NAV CANADA station first, then stations named like an airport,
+    then the rest (the airport's own station stands for its field)."""
+    if c["kind"] == "met" and c["src"] == "eccc" and str(c["local"]).upper().startswith("CY"):
+        return 0
+    return 1 if is_field(c) else 2
+
+
 def airfield(c, spots):
-    """The METAR site whose airfield a national weather service's station stands on: within AIRFIELD_M, or within
-    AIRFIELD_NAMED_M when the station's name says airport or begins like the METAR site's name. None for road
-    weather stations (IEM's airports are matched by their METAR id)."""
+    """The airfield site (a METAR site, or a kept airport station: is_field) whose airfield a national weather
+    service's station stands on: within AIRFIELD_M, or within AIRFIELD_NAMED_M when the station's name says airport or
+    begins like the site's name. None for road weather stations (IEM's airports are matched by their METAR id)."""
     if c["kind"] != "met":
         return None
-    near = spots.near(c["lat"], c["lon"], AIRFIELD_M, only_src="metar")
+    near = spots.near(c["lat"], c["lon"], AIRFIELD_M, fields=True)
     if near:
         return near
     name = fold(c["name"])
     first = name.split(" ")[0] if name else ""
-    for k in spots.near_all(c["lat"], c["lon"], AIRFIELD_NAMED_M, only_src="metar"):
+    for k in spots.near_all(c["lat"], c["lon"], AIRFIELD_NAMED_M, fields=True):
         if AIRFIELD_WORDS.search(name) or (first and fold(k[1]).split(" ")[0] == first):
             return k
     return None
 
 
-def metar_twin(c, spots):
+def twin_ids(c):
     ids = set()
     icao = (c.get("icao") or "").upper()
     if icao:
         ids |= {icao}
         if c["src"] == "iem" and len(icao) == 3:
             ids |= {"K" + icao, "P" + icao, "T" + icao}
-    return next((i for i in sorted(ids) if i in spots.metar_ids), None)
+    return sorted(ids)
+
+
+def metar_twin(c, spots):
+    return next((i for i in twin_ids(c) if i in spots.metar_ids), None)
+
+
+def ndbc_twin(c, spots):
+    """NDBC's id of the same site (NDBC relays some Great Lakes airports' reports as KPxx: G44 P3-2)."""
+    return next((i for i in twin_ids(c) if i in spots.ndbc_ids), None)
 
 
 def place(cands, rows):
     """-> (the new rows' candidates kept, [(dropped id, why, kept id)])."""
     spots = Spots(rows)
-    order = sorted(cands, key=lambda c: (SPOT_RANK_MORE[c["src"]], c["src"], c["local"]))
+    order = sorted(cands, key=lambda c: (SPOT_RANK_MORE[c["src"]], c["src"], field_rank(c), c["local"]))
     kept, dropped, seen = [], [], set()
     for c in order:
         cid = f"{c['src']}:{c['local']}"
@@ -343,6 +382,10 @@ def place(cands, rows):
         twin = metar_twin(c, spots)
         if twin:
             dropped.append((cid, "METAR id", "metar:" + twin))
+            continue
+        twin = ndbc_twin(c, spots)
+        if twin:
+            dropped.append((cid, "NDBC id", "ndbc:" + twin))
             continue
         k = airfield(c, spots)
         if k:
@@ -355,7 +398,7 @@ def place(cands, rows):
             continue
         seen.add(cid)
         row = [cid, c["name"], c["lat"], c["lon"], c["kind"], c["src"], None, None, None, c["net"]]
-        spots.add(row)
+        spots.add(row, field=is_field(c))
         kept.append(row)
     return kept, dropped
 
@@ -393,7 +436,8 @@ def make_coastal(sea_edges, lake_edges, counts):
 
 
 def respot(out_path, doc, rows, only):
-    """The snapshot's rows of the sources `only` placed again by the spot rule (positions, names, zones kept)."""
+    """The snapshot's rows of the sources `only` placed again by the spot rule (positions, names kept; zones kept
+    except FIXED_TZ's)."""
     cands, old = [], {}
     for r in doc["stations"]:
         r = list(r) + [None] * (len(FS.FIELDS) - len(r))
@@ -402,10 +446,10 @@ def respot(out_path, doc, rows, only):
         src, _, local = r[0].partition(":")
         old[r[0]] = r
         cands.append({"src": src, "local": local, "name": r[1], "lat": r[2], "lon": r[3], "kind": r[4], "net": r[9],
-                      "icao": None})
+                      "icao": local if src in ("eccc", "iem") else None})
     new, dropped = place(cands, rows)
     for r in new:
-        r[6] = old[r[0]][6]
+        r[6] = FIXED_TZ.get(r[5]) or old[r[0]][6]
     print(f"respot: {len(dropped)} left out {dropped}", flush=True)
     FS.write_doc(out_path, rows + sorted(new, key=lambda r: r[0]), doc["source"], captured=doc.get("captured"))
     print(f"wrote {out_path}: {len(rows) + len(new)} stations", flush=True)
@@ -459,7 +503,7 @@ def main(argv=None):
         return 2
     new, dropped = place(cands, rows)
     for r in new:
-        r[6] = A._nearest_civil_tz(r[2], r[3])
+        r[6] = FIXED_TZ.get(r[5]) or A._nearest_civil_tz(r[2], r[3])
     why = {}
     for _cid, w, _k in dropped:
         why[w] = why.get(w, 0) + 1

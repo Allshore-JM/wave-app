@@ -322,3 +322,34 @@ def test_unknown_source_has_no_history_branch():
     src = open(os.path.join(ROOT, "wind_sources.py"), encoding="utf-8").read()
     body = src[src.index("    def _build(self, sid, st):"):src.index("def conditions(rows):")]
     assert 'elif src == "coops":' in body and re.search(r"\n        else:\s+# a source with no history", body)
+
+
+# ------------------------------------------------------------------ mutation pins (section 67, step 2)
+
+def test_ipma_every_direction_class():
+    feats = [{"properties": {"idEstacao": i, "time": "2026-10-30T18:00:00", "intensidadeVento": 3.0, "idDireccVento": i}}
+             for i in range(1, 9)]
+    obs = M.parse_ipma_obs({"features": feats})
+    assert [obs[str(i)][0]["d"] for i in range(1, 9)] == [0, 45, 90, 135, 180, 225, 270, 315]   # 1 = N .. 8 = NW
+
+
+def test_a_reading_far_in_the_future_is_not_believed(clock):
+    now = clock["now"]
+
+    class P(M.MoreProvider):
+        source, key = "JMA", "jma"
+
+        def _readings(self):
+            return {"AHEAD": [W.reading(now + 3600, 5.0, None, 90)], "SOON": [W.reading(now + 300, 4.0, None, 90)]}
+    assert [e["local_id"] for e in P(_st(["AHEAD", "SOON"]), Fetch({}))._fetch_stations()] == ["SOON"]
+
+
+def test_eccc_reads_at_most_per_refresh_files_oldest_first(clock):
+    f = Fetch({"CAAB-AUTO": fx("swob_cweb_auto.xml"), "CWEB-AUTO": fx("swob_cweb_auto.xml"),
+               "CWVF-AUTO": fx("swob_cweb_auto.xml"), "swob-ml/latest/": fx("swob_latest.html")})
+    p = M.EcccProvider(_st(["CAAB", "CWEB", "CWVF"]), f, per_refresh=2)
+    assert sorted(e["local_id"] for e in p._fetch_stations()) == ["CAAB", "CWVF"]    # listed 20:01 and 20:00
+    assert sorted(u.rsplit("/", 1)[1] for u in f.asked[1:]) == ["CAAB-AUTO-swob.xml", "CWVF-AUTO-swob.xml"]  # 2 workers
+    n = len(f.asked)
+    assert sorted(e["local_id"] for e in p._fetch_stations()) == ["CAAB", "CWEB", "CWVF"]
+    assert [u.rsplit("/", 1)[1] for u in f.asked[n + 1:]] == ["CWEB-AUTO-swob.xml"]  # the rest the next refresh

@@ -82,7 +82,7 @@ def test_swan_path_uses_the_same_singleflight(monkeypatch):
     monkeypatch.setattr(A, "_parse_swan_uncached", slow)
     results = _par(lambda: A.parse_swan("51201"))
     assert len(calls) == 1 and all(r is OK for r in results)
-    assert A._FORECAST_CACHE[("51201", "", "SWAN")]["data"] is OK
+    assert A._FORECAST_CACHE[("51201", "", "SWAN", None)]["data"] is OK   # (..., the held publish time: section 64)
 
 
 def test_cache_hit_and_ttl_rule_unchanged(monkeypatch):

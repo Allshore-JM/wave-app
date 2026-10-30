@@ -82,7 +82,8 @@ def test_the_station_file_and_the_model_rule(tmp_path):
     assert len(A.NWPS_STATIONS) == 112 and A.NWPS_STATIONS["51003"]["office"] == "hfo"
     listed = {sid for sid, _ in A.get_station_list()}
     assert set(A.NWPS_STATIONS) <= listed                             # every one a GFS forecast station
-    assert not set(A.NWPS_STATIONS) & set(A.SWAN_STATIONS) and not set(A.NWPS_STATIONS) & set(A.GLWU_STATIONS)
+    assert set(A.NWPS_STATIONS) & set(A.SWAN_STATIONS) == {"52200", "52202", "52211"}   # Guam / Saipan: both (section 64)
+    assert not set(A.NWPS_STATIONS) & set(A.GLWU_STATIONS)
     for sid, asked, used in (("51003", "NWPS", "NWPS"), ("51003", "nwps", "NWPS"), ("51003", "SWAN", "GFS"),
                              ("51201", "NWPS", "GFS"), ("51201", "SWAN", "SWAN"), ("13130", "NWPS", "GFS"),
                              ("45007", "NWPS", "GLWU"), ("46026", None, "GFS"), ("46240", "NWPS", "GFS")):

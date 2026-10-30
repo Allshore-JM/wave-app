@@ -37,8 +37,10 @@
   var RANGE_KEY = 'chartRange';                // sessionStorage 'full' | '7' | '3' (unchanged from the old page)
   var POINTS_KEY = 'allshore.points.v1';       // localStorage [{id, lat, lon, name}]: the visitor's forecast points
   var POINTS_MAX = 50, POINT_NAME_MAX = 40;
-  var NWPS_STALE_H = 36;                       // an NWPS run older than this: its NWS office missed its runs (owner, G41 K-7;
-                                               // Honolulu's own runs reach ~32 h before the next one lands)
+  var OLD_RUN_H = 36;                          // an NWPS run or a PacIOOS SWAN table older than this: its office missed its
+                                               // runs (owner, G41 K-7; plan section 64; Honolulu's own NWPS runs reach ~32 h
+                                               // and PacIOOS's daily tables ~24-28 h before the next lands)
+  var NWPS_STALE_H = OLD_RUN_H;                // (the older name, kept for the pins)
   var STALE_H = 13;                            // a point's run older than this: a NOAA cycle was missed (runs go live ~5.5 h after
                                                // the cycle and are replaced 6 h later, so a live run is 5.5-11.5 h old)
   function isUnit(u) { return u === 'US' || u === 'Metric'; }   // (an object lookup matched 'constructor' and the like)
@@ -297,14 +299,20 @@
       return s;
     }
     function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
-    // The page's NWPS list follows the answers: an office back from a 72-h silence offers NWPS again while the tab is
-    // open, and one past it stops (the list was the page load's: G41 fix2check F2C-1). The bar reads the same array.
+    // The page's NWPS and SWAN lists follow the answers: an office (or PacIOOS) back from a 72-h silence offers its model
+    // again while the tab is open, and one past it stops (the lists were the page load's: G41 fix2check F2C-1; plan
+    // section 64). The bar reads the same arrays.
+    function followList(list, sid, offered) {
+      if (!list || typeof offered !== 'boolean') return;
+      var i = list.indexOf(sid);
+      if (offered && i < 0) list.push(sid);
+      else if (!offered && i >= 0) list.splice(i, 1);
+    }
     function follow(d) {
-      var list = deps.nwpsStations;
-      if (!list || !d || typeof d.nwps_available !== 'boolean') return;
-      var sid = typeof d.station === 'string' && d.station ? d.station : state.station, i = list.indexOf(sid);
-      if (d.nwps_available && i < 0) list.push(sid);
-      else if (!d.nwps_available && i >= 0) list.splice(i, 1);
+      if (!d) return;
+      var sid = typeof d.station === 'string' && d.station ? d.station : state.station;
+      followList(deps.nwpsStations, sid, d.nwps_available);
+      followList(deps.swanStations, sid, d.swan_available);
     }
     function apply(d) {
       follow(d);
@@ -1043,8 +1051,9 @@
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(d.model === 'GLWU' ? 'GLWU' : st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
               var pointNote = age !== null && age >= STALE_H ? ' · ' + Math.round(age) + ' h old' : '';   // a point's run NOAA stopped feeding (plan section 31)
-              var oldNote = d.model === 'NWPS' && typeof d.nwps_age_hours === 'number' && d.nwps_age_hours >= NWPS_STALE_H
-                ? ' · ' + Math.round(d.nwps_age_hours) + ' h old' : '';                      // an NWS office that stopped (G41 K-7)
+              var oldAge = d.model === 'NWPS' ? d.nwps_age_hours : d.model === 'SWAN' ? d.swan_age_hours : null;
+              var oldNote = typeof oldAge === 'number' && oldAge >= OLD_RUN_H
+                ? ' · ' + Math.round(oldAge) + ' h old' : '';                      // an NWS office / PacIOOS that stopped (G41 K-7; §64)
               // the note has its own span where the page has one: on phones the run text gives way first, the note not
               var ageNote = pointNote + oldNote;
               if (els.old) { text(els.old, ageNote.replace(/^ /, '')); els.old.hidden = !ageNote; } else cyc += ageNote;
@@ -1218,7 +1227,7 @@
     setView(state.view);
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
-        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, nwps_age_hours: initial.nwps_age_hours, wind_complete: initial.wind_complete,
+        error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, nwps_age_hours: initial.nwps_age_hours, swan_age_hours: initial.swan_age_hours, wind_complete: initial.wind_complete,
         point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
     } else if (deferred) {
       Promise.resolve(earlyStation).then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })   // (G32 A-P3-4)
@@ -1257,7 +1266,7 @@
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,
-      NWPS_STALE_H: NWPS_STALE_H, POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
+      NWPS_STALE_H: NWPS_STALE_H, OLD_RUN_H: OLD_RUN_H, POINTS_KEY: POINTS_KEY, POINT_NAME_MAX: POINT_NAME_MAX, STALE_H: STALE_H, readPoints: readPoints, dayStarts: dayStarts, noonStarts: noonStarts,
       app: function () { return app; }
     }
   };

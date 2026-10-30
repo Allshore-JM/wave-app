@@ -221,7 +221,7 @@ def test_nomads_disabled_serves_from_the_archive_alone(monkeypatch):
     monkeypatch.setattr(app, "NOMADS_DISABLED", True)
     _pin_run(monkeypatch)
     fake = _world(monkeypatch)
-    monkeypatch.setattr(app, "resolve_model", lambda s, m, ok=None: "GFS")
+    monkeypatch.setattr(app, "resolve_model", lambda s, m, ok=None, sok=None: "GFS")
     payload = app.compute_forecast_payload("51201", None, "US", "GFS")
     assert payload["error"] is None and payload["table_html"]
     assert {c[1] for c in fake.calls} == {S3}
@@ -231,7 +231,7 @@ def test_nomads_refusing_everything_still_serves_the_tables(monkeypatch):
     """The 2026-10-11 outage again: NOMADS answers 403 to everything; AWS has the run's archive."""
     _pin_run(monkeypatch)
     fake = _world(monkeypatch, nomads_all=403)
-    monkeypatch.setattr(app, "resolve_model", lambda s, m, ok=None: "GFS")
+    monkeypatch.setattr(app, "resolve_model", lambda s, m, ok=None, sok=None: "GFS")
     payload = app.compute_forecast_payload("51201", None, "US", "GFS")
     assert payload["error"] is None and payload["table_html"]
     assert not fake.urls(NOMADS, "GET")

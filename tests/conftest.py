@@ -20,6 +20,7 @@ import pytest
 
 os.environ.setdefault("LIVE_BACKGROUND", "0")
 os.environ.setdefault("WIND_STATIONS", "0")      # the wind feeds (section 39) stay off unless a test switches them on
+os.environ.setdefault("SWAN_PROBE", "0")         # the SWAN tables' background probes (section 64) stay off: their tests call them
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if os.path.dirname(HERE) not in sys.path:

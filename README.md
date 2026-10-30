@@ -1487,17 +1487,33 @@ markers opened an empty window, platforms whose wave sensor was off while their 
 GLOS and IOOS ask each station once, at list time, for its newest wave height (one ERDDAP query of under 100 bytes,
 four at a time, `_wave_probes`): GLOS through its ERDDAP mirror (3 days back: the mirror lags the API by about a day;
 a verdict is kept 6 h), IOOS on the sensors ERDDAP (4 days back) at every list refresh. "Nothing matches" leaves the
-station out; a failed answer keeps the last verdict (never asked: listed). Stations the NDBC provider lists with spectra
-are not asked (NDBC's marker wins there). IOOS's marker time is that newest wave height: allDatasets' `maxTime` is the
-dataset's stated end, which can lag its rows by a day and counts every variable. Cost: the GLOS and IOOS list
-refreshes take about 22-24 s instead of 2-9 s (background runner only); about 100 small queries every 6 hours.
+station out; ERDDAP's other 404s ("Currently unknown datasetID" while it reloads a dataset), failed and unreadable
+answers count as unknown and keep the last verdict (never asked: listed). Every probe of a refresh shares one deadline
+(`PROBE_BATCH_S`, 150 s); a probe's own download is capped (1 MB, 30 s). Stations the NDBC provider lists with spectra
+are not asked (NDBC's marker wins there). GLOS judges nothing by its mirror when the mirror's newest dataset is older than
+2 days (every activated platform listed, no probe asked), and a batch answering "no" for more than 80 % of at least 10
+platforms is read as a mirror problem (its "no" verdicts are not kept). IOOS's marker time is that newest wave height:
+allDatasets' `maxTime` is the dataset's stated end, which can lag its rows by a day and counts every variable. Cost: the
+GLOS and IOOS list refreshes took 45-51 s on the free test instance instead of 2-9 s (background runner only); about 100
+small queries every 6 hours.
+
+Every reading of the three feeds (and every probe row) passes one check, `_sane_reading` (G42): a row stamped more than
+an hour ahead of the clock is left out, so is a height outside 0-30 m (fill values such as -9999 or 9.97e36 included);
+periods outside 0-40 s, directions outside 0-360, spreads outside 0-180 and temperatures outside -5 to 40 C are blanked.
+Downloads are read in chunks under a byte cap and a time limit (`_capped_fetch`: lists 180 s, windows 20 s). A refresh that
+lists nothing after a good list keeps the markers AND the station-to-dataset maps their windows need. GLOS's list needs its
+parameter map: without it the list refresh fails (keep-last) rather than opening empty windows, and a window never fetches
+the 3.6 MB parameter list itself. CEFAS's Sandettie LV, Clipper and Lomond carry NDBC's numbers in the merge
+(`_BUOY_ALIAS`, the page's `LINK_ALIAS`), so their NDBC copies 6-7 km away are one marker.
 
 - **NDBCW: NDBC's bulk report.** `latest_obs.txt` (~100 KB, every 30 min) lists every NDBC station's newest observation;
   the NDBC provider lists only stations with a spectral file, so the stations that report waves WITHOUT one were left out
   (Canada's DFO buoys, Great Lakes partner buoys, CORMP, CBIBS, UK platforms ...). Ids `ndbcw:<id>`, shown by number like
-  NDBC's; names from NDBC's `activestations.xml`. Height, dominant and mean period, mean direction where measured (DFO's
-  buoys have none), water temperature; a window's 24 hours from `realtime2/<id>.txt`. Korea's KMA buoys (22101-22108)
-  are left out: they arrive with placeholder values. Public domain.
+  NDBC's; names from NDBC's `activestations.xml`. Height, dominant and mean period, the direction at the dominant period
+  (NDBC's MWD) where measured (DFO's buoys have none), water temperature; a window's 24 hours from `realtime2/<id>.txt`
+  (asked only for a listed station). Korea's KMA buoys (22101-22108) are left out, and so is any report with a 0-s period
+  (their placeholder values: 0.5 m / 0 s). NOAA's data are public domain; the partner buoys NDBC relays (Environment and
+  Climate Change Canada, the UK Met Office, Great Lakes partners) stay under their operators' terms.
 - **GLOS: the Great Lakes Observing System's Seagull API** (anonymous JSON). The roster lists the platforms; those
   `activated` with a wave height are listed (seasonal: buoys come out of the water November-April); a platform silent for
   more than 4 days by GLOS's ERDDAP mirror is left out. The API names series by numeric parameter ids, mapped through its
@@ -1512,11 +1528,14 @@ refreshes take about 22-24 s instead of 2-9 s (background runner only); about 10
   are one marker, the newest wins. A window's 24 hours are one tabledap CSV naming only that dataset's own variables (ERDDAP
   refuses a query naming one it lacks), starting no later than the dataset's stated end (ERDDAP also refuses a time
   constraint past it although newer rows exist: gov-ndbc-46004 on 2026-10-30); rows whose QARTOD aggregate flag is 4 (failed) are dropped; swell / wind-sea
-  partitions when the dataset has them. The window's credit names the dataset's operator (its `institution`). "Free to use
-  and redistribute; not intended for legal use."
+  partitions when the dataset has them. The window's credit names the dataset's operator (its `institution`); each
+  dataset carries its operator's own licence text, so the label says "each operator's terms".
 
 Known limits: NDBCW and most IOOS buoys give bulk parameters only (no spectra); GLOS Spotters' wind is an estimate from the
-wave data (GLOS); Canada's DFO buoys report hourly without direction. Tests: `tests/test_buoys_widen.py` on real answers
+wave data (GLOS); Canada's DFO buoys report hourly without direction. A marker's grey "stale" look is set when the list
+is built (IOOS every 6 h; GLOS markers carry no time: its mirror lags the API by about a day, so a GLOS buoy that went
+quiet stays coloured until the probe's 3-day window drops it; its window then starts a day before its last wave height).
+Tests: `tests/test_buoys_widen.py` and `tests/test_buoys_widen_g42.py` (the review's fixes) on real answers
 cut by `tests/capture_buoy_widen_fixtures.py`; the three fakes in `tests/fake_buoy_providers.py` are in the live-stations
 golden (captured on the code before this section: the new code merges them identically).
 

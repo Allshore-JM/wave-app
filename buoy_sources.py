@@ -1868,10 +1868,19 @@ _NUMBERED_SOURCES = frozenset(("NDBC", "NDBCW", "GLOS", "IOOS"))
 _BUOY_NUMBER_RE = re.compile(r"^(?:\d{5}|[A-Z]{4}\d)$")
 
 
+# Another network's id of a numbered buoy (the page's LINK_ALIAS, owner 2026-10-25): CEFAS lists the UK
+# platforms Sandettie LV, Clipper and Lomond that NDBC relays as 62304 / 62144 / 62146, 6-7 km from NDBC's
+# positions (G42 F10)
+_BUOY_ALIAS = {"cefas:8": "62304", "cefas:10": "62144", "cefas:305": "62146"}
+
+
 def _buoy_number(st):
-    """The station's NDBC / WMO number when its feed names buoys by number, else ''. Two feeds'
-    markers with the same number are the same buoy even when their positions disagree (2026-10-30:
+    """The station's NDBC / WMO number when its feed names buoys by number (or _BUOY_ALIAS names it), else ''.
+    Two feeds' markers with the same number are the same buoy even when their positions disagree (2026-10-30:
     the IOOS ERDDAP placed NDBC's 41056 133 km from NDBC's own position)."""
+    alias = _BUOY_ALIAS.get(str(st.get("id") or "").lower())
+    if alias:
+        return alias
     if st.get("source") not in _NUMBERED_SOURCES:
         return ""
     local = str(st.get("id") or "").split(":", 1)[-1].upper()
@@ -1926,16 +1935,112 @@ def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0, number_ra
 # Their station lists are fetched on the refresh runner; a window's 24 hours are asked on
 # demand with one short request and kept a few minutes (a refresh press asks again).
 
-def _size_capped_get(http, url, timeout, cap, one_shot=False):
+class _CappedBody:
+    """A fully read response whose body was read under a byte cap: status_code, content, text, json()."""
+
+    def __init__(self, status_code, content, encoding):
+        self.status_code = status_code
+        self.content = content
+        self.encoding = encoding or "utf-8"
+
+    @property
+    def text(self):
+        return self.content.decode(self.encoding, "replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+
+LIST_MAX_S = 180            # a list download that has not finished after this is given up (the refresh runner's worker)
+DETAIL_MAX_S = 20           # a window's download (a visitor's request thread)
+
+
+def _capped_fetch(http, url, timeout, cap, one_shot=False, max_s=None):
+    """GET url with its body read in chunks under `cap` bytes and `max_s` seconds in all: a feed that answers 300 MB,
+    or a trickle, is cut off before it fills the instance's memory or holds a thread (G42 F7, F8). Any status is
+    returned (a caller reads an error page's text). `one_shot`: no automatic retries (a visitor's request thread). A
+    test's fake http (not a requests.Session) is called as is and its body checked against the cap."""
+    where = url.split("?")[0]
+    if not isinstance(http, requests.Session):
+        r = http.get(url, timeout=timeout)
+        if len(r.content) > cap:
+            raise RuntimeError("%s answered %d bytes (cap %d)" % (where, len(r.content), cap))
+        return r
+    t0 = time.monotonic()
+    r = (requests.get if one_shot else http.get)(url, timeout=timeout, stream=True)
+    try:
+        n = r.headers.get("Content-Length")
+        if n and n.isdigit() and int(n) > cap:
+            raise RuntimeError("%s announced %s bytes (cap %d)" % (where, n, cap))
+        buf = bytearray()
+        for chunk in r.iter_content(65536):
+            buf += chunk
+            if len(buf) > cap:
+                raise RuntimeError("%s answered more than %d bytes (cap)" % (where, cap))
+            if max_s is not None and time.monotonic() - t0 > max_s:
+                raise RuntimeError("%s took longer than %d s" % (where, max_s))
+        return _CappedBody(r.status_code, bytes(buf), r.encoding)
+    finally:
+        r.close()
+
+
+def _size_capped_get(http, url, timeout, cap, one_shot=False, max_s=LIST_MAX_S):
     """GET url and return the response after checking its size: a body larger than `cap`
-    bytes raises (a feed that suddenly answers 50 MB must not reach the list builder).
-    `one_shot`: no automatic retries (a visitor's request thread)."""
-    r = _one_shot_get(http, url, timeout) if one_shot else http.get(url, timeout=timeout)
+    bytes raises (a feed that suddenly answers 50 MB must not reach the list builder), and so
+    does a download past `max_s` seconds. `one_shot`: no automatic retries (a visitor's request thread)."""
+    r = _capped_fetch(http, url, timeout, cap, one_shot=one_shot, max_s=max_s)
     if r.status_code != 200:
         raise RuntimeError("HTTP %s from %s" % (r.status_code, url.split("?")[0]))
-    if len(r.content) > cap:
-        raise RuntimeError("%s answered %d bytes (cap %d)" % (url.split("?")[0], len(r.content), cap))
     return r
+
+
+# One reading check for every section-63 feed and the wave probe (G42 F3): a row stamped more than
+# FUTURE_SLACK_S ahead of the clock is left out (one future row would make itself the newest and cut the
+# 24-hour window to itself), so is a height outside 0-30 m; any other value outside its range is blanked.
+FUTURE_SLACK_S = 3600
+HS_MAX_M = 30.0
+_FIELD_RANGES = {                       # key -> (lowest, highest, lowest allowed)
+    "tp_s": (0.0, 40.0, False),
+    "mean_period_s": (0.0, 40.0, False),
+    "dir_deg": (0.0, 360.0, True),
+    "dir_spread_deg": (0.0, 180.0, True),
+    "hmax_m": (0.0, 40.0, True),
+    "sst_c": (-5.0, 40.0, True),
+}
+
+
+def _in_range(v, lo, hi, lo_ok=True):
+    return v is not None and math.isfinite(v) and (v >= lo if lo_ok else v > lo) and v <= hi
+
+
+def _sane_reading(o, now=None):
+    """The reading with impossible values blanked, or None when it cannot be shown (no time, a time in the
+    future, no height or an impossible one)."""
+    if not o:
+        return None
+    ep = _z_epoch(o)
+    if ep is None or ep > (time.time() if now is None else now) + FUTURE_SLACK_S:
+        return None
+    if not _in_range(o.get("hs_m"), 0.0, HS_MAX_M):
+        return None
+    for key, (lo, hi, lo_ok) in _FIELD_RANGES.items():
+        if key in o and o[key] is not None and not _in_range(o[key], lo, hi, lo_ok):
+            o[key] = None
+    if o.get("partitions"):
+        parts = []
+        for q in o["partitions"]:
+            if not _in_range(q.get("hs_m"), 0.0, HS_MAX_M):
+                continue
+            if q.get("period_s") is not None and not _in_range(q["period_s"], 0.0, 40.0, False):
+                q["period_s"] = None
+            if q.get("dir_deg") is not None and not _in_range(q["dir_deg"], 0.0, 360.0):
+                q["dir_deg"] = None
+            parts.append(q)
+        if parts:
+            o["partitions"] = parts
+        else:
+            o.pop("partitions")
+    return o
 
 
 def _ndbc_num(v):
@@ -1982,9 +2087,11 @@ def _ndbc_wave_obs(row, ix):
     }
 
 
-def parse_ndbc_latest_waves(text):
+def parse_ndbc_latest_waves(text, now=None):
     """NDBC latest_obs.txt -> {station id: {"lat", "lon", "obs"}} for the rows that carry a
-    significant wave height (the file lists every station's newest observation, wind-only ones too)."""
+    significant wave height (the file lists every station's newest observation, wind-only ones too).
+    A row whose dominant period reads exactly 0 is a placeholder, not a reading (Korea's KMA buoys arrive
+    through the GTS as 0.5 m / 0 s at every report): left out (G42 F15)."""
     out = {}
     lines = text.splitlines()
     if not lines or not lines[0].startswith("#"):
@@ -1999,8 +2106,10 @@ def parse_ndbc_latest_waves(text):
         row = line.split()
         if len(row) < len(hdr):
             continue
-        obs = _ndbc_wave_obs(row, ix)
-        if obs["hs_m"] is None or obs["time_utc"] is None:
+        if "DPD" in ix and _ndbc_num(row[ix["DPD"]]) == 0:
+            continue
+        obs = _sane_reading(_ndbc_wave_obs(row, ix), now)
+        if obs is None:
             continue
         lat, lon = _ndbc_num(row[ix["LAT"]]), _ndbc_num(row[ix["LON"]])
         if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
@@ -2009,7 +2118,7 @@ def parse_ndbc_latest_waves(text):
     return out
 
 
-def parse_ndbc_realtime_waves(lines, max_rows=400):
+def parse_ndbc_realtime_waves(lines, max_rows=400, now=None):
     """An NDBC realtime2/<id>.txt (newest first; two header lines) -> its wave readings,
     chronological, rows without a wave height left out. Reads at most `max_rows` data rows."""
     hdr, ix, obs = None, None, []
@@ -2031,8 +2140,8 @@ def parse_ndbc_realtime_waves(lines, max_rows=400):
         row = line.split()
         if len(row) < len(hdr):
             continue
-        o = _ndbc_wave_obs(row, ix)
-        if o["hs_m"] is not None and o["time_utc"] is not None:
+        o = _sane_reading(_ndbc_wave_obs(row, ix), now)
+        if o is not None:
             obs.append(o)
     obs.reverse()
     return obs
@@ -2070,13 +2179,16 @@ class NdbcBulkProvider(BuoyProvider):
     """NOAA NDBC stations that report waves but publish no spectral file. One GET of the
     all-stations latest_obs.txt (~100 KB) gives the list and the newest reading; a window's
     24 hours come from the station's realtime2/<id>.txt (the file NDBC's own pages read).
-    Bulk parameters only: height, dominant and mean period, mean direction where the buoy
-    measures it (Canada's DFO buoys do not), water temperature."""
+    Bulk parameters only: height, dominant and mean period, the direction at the dominant period
+    (NDBC's MWD) where the buoy measures it (Canada's DFO buoys do not), water temperature."""
     source = "NDBCW"
     source_name = "NOAA NDBC (bulk report)"
     source_url = "https://www.ndbc.noaa.gov"
-    license_label = "Public domain (US Govt)"
-    attribution_text = "Source: NOAA National Data Buoy Center (incl. partner networks relayed by NDBC)"
+    # NDBC relays partner networks' buoys (Environment and Climate Change Canada, the UK Met Office, Great
+    # Lakes partners): their data stay under their operators' terms (G42 F12)
+    license_label = "Public data (NOAA NDBC; partner buoys under their operators' terms)"
+    attribution_text = ("Source: NOAA National Data Buoy Center, incl. partner networks relayed by NDBC (e.g. "
+                        "Environment and Climate Change Canada, UK Met Office); partner data under their operators' terms.")
     stale_after_sec = 6 * 3600
     capabilities = _caps(bulk=True, recent_history=True)
     list_ttl_sec = 1800
@@ -2087,8 +2199,10 @@ class NdbcBulkProvider(BuoyProvider):
     LATEST_CAP = 1 << 20
     DETAIL_TIMEOUT = (3.05, 10)
     DETAIL_TTL = 300
+    DETAIL_CAP = 4 << 20
     # Korea's KMA buoys arrive through the GTS with placeholder values (0.5 m, period 0, no
-    # direction at every report on 2026-10-30): left out until their values look real.
+    # direction at every report on 2026-10-30): left out until their values look real (the
+    # parser also leaves out any row with a 0-s period, so a new id with the same values is too).
     EXCLUDE = frozenset("2210%d" % i for i in range(1, 9))
     _ID_RE = re.compile(r"^[A-Za-z0-9]{3,8}$")
 
@@ -2124,7 +2238,8 @@ class NdbcBulkProvider(BuoyProvider):
             if obs.get("dir_deg") is not None:
                 caps["directional"] = True
                 dirs.add(sid)
-            out.append({"local_id": sid, "name": names.get(sid) or sid, "lat": rec["lat"], "lon": rec["lon"],
+            name = str(names.get(sid) or "").strip() or sid
+            out.append({"local_id": sid, "name": name, "lat": rec["lat"], "lon": rec["lon"],
                         "latest_time": obs["time_utc"], "capabilities": caps})
         self._latest_by_id = latest
         self._dir_ids = dirs
@@ -2143,16 +2258,18 @@ class NdbcBulkProvider(BuoyProvider):
         if hit is not None:
             return hit
         latest = self.latest(local_id)
+        if latest is None:                     # not a listed station: never a request to NDBC for it (G42 F14)
+            return {"latest": None, "recent": []}
         recent = []
         try:
-            r = _one_shot_get(self.http, self.REALTIME_URL % local_id, self.DETAIL_TIMEOUT)
-            if r.status_code == 200 and len(r.content) <= (4 << 20):
-                obs = parse_ndbc_realtime_waves(r.text.splitlines())
-                if obs:
-                    recent = _recent_window(obs)
-                    if latest is None or (_z_epoch(obs[-1]) or 0) > (_z_epoch(latest) or 0):
-                        latest = obs[-1]
-        except (requests.RequestException, ValueError) as e:
+            r = _size_capped_get(self.http, self.REALTIME_URL % local_id, self.DETAIL_TIMEOUT, self.DETAIL_CAP,
+                                 one_shot=True, max_s=DETAIL_MAX_S)
+            obs = parse_ndbc_realtime_waves(r.text.splitlines())
+            if obs:
+                recent = _recent_window(obs)
+                if (_z_epoch(obs[-1]) or 0) > (_z_epoch(latest) or 0):
+                    latest = obs[-1]
+        except (requests.RequestException, RuntimeError, ValueError) as e:
             _log.info("buoy provider %s: %s history unavailable (%s)", self.source, local_id, e)
         out = {"latest": latest, "recent": recent}
         if recent:
@@ -2210,39 +2327,72 @@ def _json_array_items(text):
         yield item
 
 
-def _erddap_wave_newest(http, url, timeout):
+PROBE_CAP = 1 << 20
+PROBE_MAX_S = 30            # one probe's whole download
+PROBE_BATCH_S = 150         # every probe of one list refresh (the refresh runner's worker)
+_ERDDAP_NO_MATCH = "no matching results"
+
+
+def _erddap_wave_newest(http, url, timeout, now=None):
     """One ERDDAP 'newest wave height' query (orderByMax time, NaN rows excluded) -> ("yes", ISO time) when the
     dataset has a wave height in the query's window, ("no", None) when ERDDAP answers that nothing matches (its
-    404), ("unknown", None) on any other answer or failure."""
+    404 "Your query produced no matching results"), ("unknown", None) on any other answer or failure: another 404
+    ("Currently unknown datasetID" while ERDDAP reloads a dataset, G42 F6), an unreadable body (G42 F4), a body
+    over PROBE_CAP or slower than PROBE_MAX_S. A row in the future or with an impossible height does not count."""
     try:
-        r = _one_shot_get(http, url, timeout)
-    except requests.RequestException:
+        r = _capped_fetch(http, url, timeout, PROBE_CAP, one_shot=True, max_s=PROBE_MAX_S)
+    except (requests.RequestException, RuntimeError):
         return "unknown", None
-    if r.status_code == 404:
-        return "no", None
-    if r.status_code != 200 or len(r.content) > (1 << 20):
+    try:
+        if r.status_code == 404:
+            return ("no", None) if _ERDDAP_NO_MATCH in r.text.lower() else ("unknown", None)
+        if r.status_code != 200:
+            return "unknown", None
+        rows = list(csv.reader(io.StringIO(r.text)))
+        if not rows or "time" not in rows[0]:
+            return "unknown", None
+        ti = rows[0].index("time")
+        hi = [i for i, c in enumerate(rows[0]) if c.endswith("significant_height")]
+        limit = (time.time() if now is None else now) + FUTURE_SLACK_S
+        times = []
+        for row in rows[2:]:
+            if len(row) <= ti or not row[ti].endswith("Z"):
+                continue
+            ep = _z_epoch({"time_utc": row[ti]})
+            if ep is None or ep > limit:
+                continue
+            if hi and not (len(row) > hi[0] and _in_range(_num_or_none(row[hi[0]]), 0.0, HS_MAX_M)):
+                continue
+            times.append(row[ti])
+        return ("yes", max(times)) if times else ("no", None)
+    except Exception:                          # csv field limits, bad bytes ...: one probe never fails the list
         return "unknown", None
-    rows = list(csv.reader(io.StringIO(r.text)))
-    if not rows or "time" not in rows[0]:
-        return "unknown", None
-    ti = rows[0].index("time")
-    times = [row[ti] for row in rows[2:] if len(row) > ti and row[ti].endswith("Z")]
-    hi = [i for i, c in enumerate(rows[0]) if c.endswith("significant_height")]
-    if hi:
-        times = [row[ti] for row in rows[2:] if len(row) > max(ti, hi[0]) and row[ti].endswith("Z")
-                 and _num_or_none(row[hi[0]]) is not None]
-    return ("yes", max(times)) if times else ("no", None)
 
 
-def _wave_probes(http, jobs, timeout, workers=4):
-    """{key: url} -> {key: (status, newest)}, a few at a time (one short request each)."""
-    from concurrent.futures import ThreadPoolExecutor
+def _wave_probes(http, jobs, timeout, workers=4, now=None, deadline_s=None):
+    """{key: url} -> {key: (status, newest)}, a few at a time (one short request each). Every answer that has not
+    come back within `deadline_s` (PROBE_BATCH_S) counts as "unknown" and so does one that raised (G42 F4, F7):
+    the refresh goes on with the verdicts it holds."""
+    from concurrent.futures import ThreadPoolExecutor, wait
     if not jobs:
         return {}
     keys = list(jobs)
-    with ThreadPoolExecutor(max_workers=min(workers, len(keys))) as ex:
-        res = list(ex.map(lambda k: _erddap_wave_newest(http, jobs[k], timeout), keys))
-    return dict(zip(keys, res))
+    ex = ThreadPoolExecutor(max_workers=min(workers, len(keys)))
+    try:
+        futs = {ex.submit(_erddap_wave_newest, http, jobs[k], timeout, now): k for k in keys}
+        done, _left = wait(futs, timeout=PROBE_BATCH_S if deadline_s is None else deadline_s)
+        out = {}
+        for f, k in futs.items():
+            res = ("unknown", None)
+            if f in done:
+                try:
+                    res = f.result()
+                except Exception:
+                    pass
+            out[k] = res
+        return out
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
 
 class GlosProvider(BuoyProvider):
@@ -2269,6 +2419,14 @@ class GlosProvider(BuoyProvider):
     MIRROR_URL = ("https://seagull-erddap.glos.org/erddap/tabledap/allDatasets.csv?datasetID,maxTime"
                   "&datasetID=~%22obs_.*%22")
     SILENT_AFTER_S = 4 * 86400
+    # The mirror itself can stall (it runs about a day behind the API): when its newest dataset is older than
+    # MIRROR_STALL_S nothing is judged by it (every activated platform listed, no probe asked), and a probe
+    # batch that answers "no" for more than NO_SHARE_MAX of at least NO_SHARE_MIN platforms is read as a mirror
+    # problem, not as that many dead sensors (its "no" verdicts are not kept) (G42 F5).
+    MIRROR_STALL_S = 2 * 86400
+    EARLY_START_S = 36 * 3600            # the mirror runs ~30 h behind: older than this, the platform has gone quiet
+    NO_SHARE_MIN = 10
+    NO_SHARE_MAX = 0.8
     clock = staticmethod(time.time)          # tests pin it (the mirror's dates and the obs start date)
     ROSTER_CAP = 8 << 20
     PARAMS_CAP = 16 << 20
@@ -2307,7 +2465,7 @@ class GlosProvider(BuoyProvider):
         self._dataset_by_id = {}             # local id -> obs_dataset_id
         self._params = {}                    # parameter_id -> (standard_name, depth)
         self._params_ts = 0.0
-        self._probe = {}                     # obs_dataset_id -> (asked epoch, "yes" / "no")
+        self._probe = {}                     # obs_dataset_id -> (asked epoch, "yes" / "no", newest at the mirror)
         self._cache = _DetailCache(self.DETAIL_TTL)
 
     def _wave_verdicts(self, cands):
@@ -2315,9 +2473,16 @@ class GlosProvider(BuoyProvider):
         now = self.clock()
         jobs = {ds: self.PROBE_URL % ds for ds in cands.values()
                 if not (ds in self._probe and now - self._probe[ds][0] < self.PROBE_TTL)}
-        for ds, (status, _newest) in _wave_probes(self.http, jobs, self.PROBE_TIMEOUT).items():
-            if status in ("yes", "no"):
-                self._probe[ds] = (now, status)
+        res = _wave_probes(self.http, jobs, self.PROBE_TIMEOUT, now=now)
+        answered = [s for s, _n in res.values() if s in ("yes", "no")]
+        nos = answered.count("no")
+        doubt = len(answered) >= self.NO_SHARE_MIN and nos > self.NO_SHARE_MAX * len(answered)
+        if doubt:
+            _log.warning("buoy provider %s: %d of %d wave probes answered no; read as a mirror problem, "
+                         "no platform left out by this batch", self.source, nos, len(answered))
+        for ds, (status, newest) in res.items():
+            if status == "yes" or (status == "no" and not doubt):
+                self._probe[ds] = (now, status, newest)
         return {loc for loc, ds in cands.items() if self._probe.get(ds, (0, "yes"))[1] == "no"}
 
     def _refresh_params(self):
@@ -2343,27 +2508,36 @@ class GlosProvider(BuoyProvider):
         except Exception as e:                 # the kept map serves; the list itself still refreshes
             _log.warning("buoy provider %s: parameter list unavailable (%s)", self.source, e)
 
-    def _silent_datasets(self):
-        """obs_dataset_ids whose newest data (per the mirror) is older than SILENT_AFTER_S; an
-        empty set when the mirror cannot be read (every activated platform is then listed)."""
+    def _mirror_state(self):
+        """(obs_dataset_ids whose newest data at the mirror is older than SILENT_AFTER_S, whether the mirror can be
+        trusted to judge). The mirror cannot be read, or its newest dataset is older than MIRROR_STALL_S: (empty,
+        False) -- every activated platform is then listed and no probe is asked."""
         try:
             hdr, rows = _erddap_rows(self.http, self.MIRROR_URL, 30)
         except requests.RequestException:
-            return set()
+            return set(), False
         if not hdr or "maxTime" not in hdr:
-            return set()
+            return set(), False
         ix = {c: i for i, c in enumerate(hdr)}
         now = self.clock()
-        out = set()
+        out, newest = set(), None
         for row in rows:
             try:
                 m = re.match(r"^obs_(\d+)$", row[ix["datasetID"]])
                 ep = _z_epoch({"time_utc": row[ix["maxTime"]]})
             except (KeyError, IndexError):
                 continue
-            if m and ep is not None and now - ep > self.SILENT_AFTER_S:
+            if not m or ep is None or ep > now + FUTURE_SLACK_S:
+                continue
+            newest = ep if newest is None else max(newest, ep)
+            if now - ep > self.SILENT_AFTER_S:
                 out.add(int(m.group(1)))
-        return out
+        if newest is None or now - newest > self.MIRROR_STALL_S:
+            if newest is not None:
+                _log.warning("buoy provider %s: the ERDDAP mirror's newest data is %.0f h old; not judging by it",
+                             self.source, (now - newest) / 3600.0)
+            return set(), False
+        return out, True
 
     def _fetch_stations(self):
         r = _size_capped_get(self.http, self.BASE + "obs-datasets.geojson", self.timeout, self.ROSTER_CAP)
@@ -2371,8 +2545,9 @@ class GlosProvider(BuoyProvider):
         feats = doc.get("features") if isinstance(doc, dict) else None
         if not isinstance(feats, list):
             raise ValueError("GLOS roster without features")
+        del doc, r                                # not kept through the ~50 s of probes (G42 F9)
         out, by_id = [], {}
-        silent = self._silent_datasets()
+        silent, judged = self._mirror_state()
         covered = {str(x).upper() for x in _call_quietly(self._covered_ids, set(), self.source)}
         for f in feats:
             try:
@@ -2389,6 +2564,8 @@ class GlosProvider(BuoyProvider):
                 ds = int(p["obs_dataset_id"])
             except (KeyError, TypeError, ValueError, IndexError):
                 continue
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):        # G42 F13
+                continue
             if ds in silent:
                 continue
             org = str(p.get("org_platform_id") or "").strip()
@@ -2401,10 +2578,18 @@ class GlosProvider(BuoyProvider):
                                                 "sea_surface_wave_from_direction_at_variance_spectral_density_maximum"})
             out.append({"local_id": local, "name": str(p.get("platform_name") or local), "lat": lat, "lon": lon,
                         "capabilities": caps})
-        quiet = self._wave_verdicts({s["local_id"]: by_id[s["local_id"]] for s in out if s["local_id"] not in covered})
+        del feats
+        quiet = (self._wave_verdicts({s["local_id"]: by_id[s["local_id"]] for s in out if s["local_id"] not in covered})
+                 if judged else set())
         out = [s for s in out if s["local_id"] not in quiet]
-        self._dataset_by_id = {k: v for k, v in by_id.items() if k not in quiet}
+        # the windows name a series only through the parameter map: a list without it would open empty windows,
+        # and a window must never fetch the 3.6 MB list on a visitor's thread (G42 F2)
         self._refresh_params()
+        if not self._params:
+            raise RuntimeError("GLOS parameter list unavailable")
+        if not out and self._dataset_by_id:   # keep-last keeps the markers: keep their windows with them (G42 F1)
+            raise ValueError("GLOS listed nothing after %d stations" % len(self._dataset_by_id))
+        self._dataset_by_id = {k: v for k, v in by_id.items() if k not in quiet}
         return out
 
     def _obs_from(self, answer):
@@ -2421,12 +2606,12 @@ class GlosProvider(BuoyProvider):
                 vals = {}
                 for o in par.get("observations") or []:
                     try:
-                        t = str(o["timestamp"])
+                        t = _glos_naive_utc(str(o["timestamp"]))
                         v = _num_or_none(o["value"])
                     except (KeyError, TypeError):
                         continue
-                    if v is not None:
-                        vals[t[:19]] = v
+                    if v is not None and t is not None:
+                        vals[t] = v
                 d = depth if depth is not None else 0.0
                 if name not in series or d < series[name][0]:
                     series[name] = (d, vals)
@@ -2450,6 +2635,7 @@ class GlosProvider(BuoyProvider):
                 return vs[i]
             return None
         obs = []
+        now = self.clock()
         for t in sorted(hs[1]):
             o = {"time_utc": _z(t), "dir_kind": "from"}
             ep = _z_epoch(o)
@@ -2463,7 +2649,8 @@ class GlosProvider(BuoyProvider):
                         o[key] = v
                         break
             o["sst_c"] = _kelvin_to_c(o["sst_c"])
-            if o["hs_m"] is not None and _z_epoch(o) is not None:
+            o = _sane_reading(o, now)
+            if o is not None:
                 obs.append(o)
         return obs
 
@@ -2477,12 +2664,18 @@ class GlosProvider(BuoyProvider):
         hit = self._cache.get(local_id, fresh_s)
         if hit is not None:
             return hit
-        if not self._params:
-            self._refresh_params()
-        start = (datetime.fromtimestamp(self.clock(), timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        # yesterday (UTC); a platform whose newest wave height at the mirror is older starts a day before that,
+        # so its window shows its last readings rather than nothing (G42 F11)
+        start_ep = self.clock() - 86400
+        rec = self._probe.get(ds)
+        newest = _z_epoch({"time_utc": rec[2]}) if rec and len(rec) > 2 and rec[2] else None
+        if newest is not None and self.clock() - newest > self.EARLY_START_S:
+            start_ep = min(start_ep, newest - 86400)
+        start = datetime.fromtimestamp(start_ep, timezone.utc).strftime("%Y-%m-%d")
         url = self.BASE + "obs?obsDatasetId=%d&startDate=%s" % (ds, start)
         try:
-            r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.OBS_CAP, one_shot=True)
+            r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.OBS_CAP, one_shot=True,
+                                 max_s=DETAIL_MAX_S)
             obs = self._obs_from(r.json())
         except (requests.RequestException, RuntimeError, ValueError) as e:
             _log.info("buoy provider %s: %s obs unavailable (%s)", self.source, local_id, e)
@@ -2494,6 +2687,18 @@ class GlosProvider(BuoyProvider):
 
     def latest(self, local_id):
         return self.detail(local_id)["latest"]
+
+
+def _glos_naive_utc(t):
+    """A GLOS timestamp ('2026-10-30T05:20:00', '...Z', '...-04:00', with or without fractions of a second) ->
+    the naive UTC 'YYYY-MM-DDTHH:MM:SS' the reader keys on; an offset is applied, not cut off (G42 F3)."""
+    try:
+        d = datetime.fromisoformat(t.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d.strftime("%Y-%m-%dT%H:%M:%S")
 
 
 def _erddap_index_variables(summary):
@@ -2552,9 +2757,10 @@ class IoosSensorsProvider(BuoyProvider):
     source = "IOOS"
     source_name = "U.S. IOOS regional observing systems"
     source_url = "https://sensors.ioos.us"
-    license_label = "Free to use and redistribute (IOOS)"
+    # every dataset carries its operator's own licence text (G42 F12): the window names the operator
+    license_label = "Open data (U.S. IOOS; each operator's terms)"
     attribution_text = ("Source: U.S. IOOS regional ocean observing systems and NOAA, via the IOOS sensor "
-                        "map (Axiom Data Science). Free to use and redistribute; not intended for legal use.")
+                        "map (Axiom Data Science). Data under each operator's terms; not intended for legal use.")
     stale_after_sec = 6 * 3600
     capabilities = _caps(bulk=True, recent_history=True)
     list_ttl_sec = 6 * 3600
@@ -2620,6 +2826,7 @@ class IoosSensorsProvider(BuoyProvider):
                 continue
             if self._DS_RE.match(dsid) and self.HS in variables and "time" in variables:
                 meta[dsid] = (row[ix["Title"]] if "Title" in ix else "", variables)
+        del rows, r                                     # not kept through the probes (G42 F9)
         r = _size_capped_get(self.http, self.LIVE_URL, self.timeout, self.LIST_CAP)
         live = csv.reader(io.StringIO(r.text))          # streamed: a list of every dataset's row peaked at ~18 MB
         hdr = next(live, None)
@@ -2652,10 +2859,11 @@ class IoosSensorsProvider(BuoyProvider):
                 continue
             best[local] = (maxt, {"dataset": dsid, "vars": variables, "title": title,
                                   "institution": row[li["institution"]], "lat": lat, "lon": lon, "maxtime": maxt})
+        del live, r
         covered = {str(x).upper() for x in _call_quietly(self._covered_ids, set(), self.source)}
         jobs = {d["dataset"]: self.BASE + "tabledap/" + d["dataset"] + self.PROBE_SUFFIX
                 for local, (_m, d) in best.items() if local not in covered}
-        for dsid, (status, newest) in _wave_probes(self.http, jobs, self.PROBE_TIMEOUT).items():
+        for dsid, (status, newest) in _wave_probes(self.http, jobs, self.PROBE_TIMEOUT, now=self.clock()).items():
             if status in ("yes", "no"):
                 self._probe[dsid] = (status, newest)
         out, ds = [], {}
@@ -2669,6 +2877,8 @@ class IoosSensorsProvider(BuoyProvider):
             when = verdict[1] if verdict and verdict[1] else maxt
             out.append({"local_id": local, "name": _ioos_name(d["title"]) or local, "lat": d["lat"],
                         "lon": d["lon"], "latest_time": when, "capabilities": caps})
+        if not out and self._ds:                # keep-last keeps the markers: keep their windows with them (G42 F1)
+            raise ValueError("IOOS listed nothing after %d stations" % len(self._ds))
         self._ds = ds
         return out
 
@@ -2710,11 +2920,12 @@ class IoosSensorsProvider(BuoyProvider):
         url = (self.BASE + "tabledap/" + d["dataset"] + ".csv?time," + ",".join(cols) +
                "&time%3E=" + self._window_start(d) + "&orderBy(%22time%22)")
         try:
-            r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.DETAIL_CAP, one_shot=True)
-        except (requests.RequestException, RuntimeError) as e:
+            r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.DETAIL_CAP, one_shot=True,
+                                 max_s=DETAIL_MAX_S)
+            rows = list(csv.reader(io.StringIO(r.text)))
+        except (requests.RequestException, RuntimeError, csv.Error) as e:
             _log.info("buoy provider %s: %s data unavailable (%s)", self.source, local_id, e)
             return {"latest": None, "recent": [], "attribution_text": self._attribution(d)}
-        rows = list(csv.reader(io.StringIO(r.text)))
         obs = []
         if len(rows) >= 3:
             hi = {c: i for i, c in enumerate(rows[0])}
@@ -2757,14 +2968,14 @@ class IoosSensorsProvider(BuoyProvider):
                 parts.append({"label": label, "hs_m": ph, "period_s": num(t_), "dir_deg": num(d_)})
         if parts:
             o["partitions"] = parts
-        return o
+        return _sane_reading(o, self.clock())
 
     @staticmethod
     def _attribution(d):
         inst = (d.get("institution") or "").strip()
         base = "Source: %s, via the U.S. IOOS sensor map (Axiom Data Science). " % inst if inst else \
             "Source: U.S. IOOS regional ocean observing systems via the IOOS sensor map (Axiom Data Science). "
-        return base + "Free to use and redistribute; not intended for legal use."
+        return base + "Data under the operator's terms; not intended for legal use."
 
     def latest(self, local_id):
         return self.detail(local_id)["latest"]

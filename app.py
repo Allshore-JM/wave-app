@@ -5394,8 +5394,8 @@ def _build_buoy_providers():
             # US widen (plan section 63): NDBC's wave-only stations, the Great Lakes, IOOS's regional sets
             buoy_sources.NdbcBulkProvider(http=HTTP, spectral_ids=_ndbc_spectral_ids,
                                           names=_ndbc_active_names),
-            buoy_sources.GlosProvider(http=HTTP),
-            buoy_sources.IoosSensorsProvider(http=HTTP),
+            buoy_sources.GlosProvider(http=HTTP, covered_ids=_ndbc_spectral_ids),
+            buoy_sources.IoosSensorsProvider(http=HTTP, covered_ids=_ndbc_spectral_ids),
         ]
         _break_providers(_BUOY_PROVIDERS)
     return _BUOY_PROVIDERS

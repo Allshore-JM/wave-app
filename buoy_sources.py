@@ -2159,6 +2159,18 @@ class NdbcBulkProvider(BuoyProvider):
         return out
 
 
+def _call_quietly(fn, default, source):
+    """fn() or default; a failure is logged and the default used (an optional helper list, e.g. the ids the NDBC
+    provider lists, must never fail a provider's own list)."""
+    if fn is None:
+        return default
+    try:
+        return fn() or default
+    except Exception as e:
+        _log.warning("buoy provider %s: %s unavailable (%s)", source, getattr(fn, "__name__", fn), e)
+        return default
+
+
 def _kelvin_to_c(v):
     """GLOS stores temperatures in kelvin (288.6 = 15.45 C); values that already look like
     Celsius (below 150) are kept."""
@@ -2173,6 +2185,41 @@ def _num_or_none(v):
     except (TypeError, ValueError):
         return None
     return x if math.isfinite(x) else None
+
+
+def _erddap_wave_newest(http, url, timeout):
+    """One ERDDAP 'newest wave height' query (orderByMax time, NaN rows excluded) -> ("yes", ISO time) when the
+    dataset has a wave height in the query's window, ("no", None) when ERDDAP answers that nothing matches (its
+    404), ("unknown", None) on any other answer or failure."""
+    try:
+        r = _one_shot_get(http, url, timeout)
+    except requests.RequestException:
+        return "unknown", None
+    if r.status_code == 404:
+        return "no", None
+    if r.status_code != 200 or len(r.content) > (1 << 20):
+        return "unknown", None
+    rows = list(csv.reader(io.StringIO(r.text)))
+    if not rows or "time" not in rows[0]:
+        return "unknown", None
+    ti = rows[0].index("time")
+    times = [row[ti] for row in rows[2:] if len(row) > ti and row[ti].endswith("Z")]
+    hi = [i for i, c in enumerate(rows[0]) if c.endswith("significant_height")]
+    if hi:
+        times = [row[ti] for row in rows[2:] if len(row) > max(ti, hi[0]) and row[ti].endswith("Z")
+                 and _num_or_none(row[hi[0]]) is not None]
+    return ("yes", max(times)) if times else ("no", None)
+
+
+def _wave_probes(http, jobs, timeout, workers=4):
+    """{key: url} -> {key: (status, newest)}, a few at a time (one short request each)."""
+    from concurrent.futures import ThreadPoolExecutor
+    if not jobs:
+        return {}
+    keys = list(jobs)
+    with ThreadPoolExecutor(max_workers=min(workers, len(keys))) as ex:
+        res = list(ex.map(lambda k: _erddap_wave_newest(http, jobs[k], timeout), keys))
+    return dict(zip(keys, res))
 
 
 class GlosProvider(BuoyProvider):
@@ -2222,12 +2269,33 @@ class GlosProvider(BuoyProvider):
     )
     _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
 
-    def __init__(self, http=None):
+    # A platform the roster calls 'activated' can report wind and temperatures for weeks with its wave sensor
+    # off (West Lake Erie 45005 and ECCC's 451xx buoys on 2026-10-30): the mirror's newest wave height decides
+    # (it lags the API by about a day, hence 3 days). Asked again after PROBE_TTL; a failed answer keeps the
+    # last verdict; platforms the NDBC provider lists with spectra are not asked (NDBC's marker wins there).
+    PROBE_URL = ("https://seagull-erddap.glos.org/erddap/tabledap/obs_%d.csv?time,sea_surface_wave_significant_height"
+                 "&time%%3E=now-3days&sea_surface_wave_significant_height!=NaN&orderByMax(%%22time%%22)")
+    PROBE_TTL = 6 * 3600
+    PROBE_TIMEOUT = (3.05, 20)
+
+    def __init__(self, http=None, covered_ids=None):
         super().__init__(http)
+        self._covered_ids = covered_ids      # callable -> ids the NDBC provider lists (spectral file)
         self._dataset_by_id = {}             # local id -> obs_dataset_id
         self._params = {}                    # parameter_id -> (standard_name, depth)
         self._params_ts = 0.0
+        self._probe = {}                     # obs_dataset_id -> (asked epoch, "yes" / "no")
         self._cache = _DetailCache(self.DETAIL_TTL)
+
+    def _wave_verdicts(self, cands):
+        """{local: ds} -> the locals to leave out (no wave height at the mirror within its window)."""
+        now = self.clock()
+        jobs = {ds: self.PROBE_URL % ds for ds in cands.values()
+                if not (ds in self._probe and now - self._probe[ds][0] < self.PROBE_TTL)}
+        for ds, (status, _newest) in _wave_probes(self.http, jobs, self.PROBE_TIMEOUT).items():
+            if status in ("yes", "no"):
+                self._probe[ds] = (now, status)
+        return {loc for loc, ds in cands.items() if self._probe.get(ds, (0, "yes"))[1] == "no"}
 
     def _refresh_params(self):
         if self._params and time.time() - self._params_ts < self.PARAMS_TTL:
@@ -2280,6 +2348,7 @@ class GlosProvider(BuoyProvider):
             raise ValueError("GLOS roster without features")
         out, by_id = [], {}
         silent = self._silent_datasets()
+        covered = {str(x).upper() for x in _call_quietly(self._covered_ids, set(), self.source)}
         for f in feats:
             try:
                 p = f["properties"]
@@ -2307,7 +2376,9 @@ class GlosProvider(BuoyProvider):
                                                 "sea_surface_wave_from_direction_at_variance_spectral_density_maximum"})
             out.append({"local_id": local, "name": str(p.get("platform_name") or local), "lat": lat, "lon": lon,
                         "capabilities": caps})
-        self._dataset_by_id = by_id
+        quiet = self._wave_verdicts({s["local_id"]: by_id[s["local_id"]] for s in out if s["local_id"] not in covered})
+        out = [s for s in out if s["local_id"] not in quiet]
+        self._dataset_by_id = {k: v for k, v in by_id.items() if k not in quiet}
         self._refresh_params()
         return out
 
@@ -2491,9 +2562,21 @@ class IoosSensorsProvider(BuoyProvider):
               "sea_surface_wind_wave_from_direction"))
     _DS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
-    def __init__(self, http=None):
+    # allDatasets' maxTime is the dataset's STATED end, which can lag its rows by a day (gov-ndbc-46004 on
+    # 2026-10-30: stated 10-29 00:00, rows to 10-30 04:00), and it counts every variable: a buoy whose wave
+    # sensor is out (44009, 62305) still looks fresh. One "newest wave height" query per station decides
+    # (4 days back: never past the stated end, which allDatasets keeps within 2 days); its time is the marker's.
+    # A failed answer keeps the last verdict; stations the NDBC provider lists with spectra are not asked.
+    PROBE_SUFFIX = (".csv?time,sea_surface_wave_significant_height&time%3E=now-4days"
+                    "&sea_surface_wave_significant_height!=NaN&orderByMax(%22time%22)")
+    PROBE_TIMEOUT = (3.05, 20)
+    clock = staticmethod(time.time)
+
+    def __init__(self, http=None, covered_ids=None):
         super().__init__(http)
-        self._ds = {}                          # local id -> {"dataset", "vars", "institution"}
+        self._covered_ids = covered_ids        # callable -> ids the NDBC provider lists (spectral file)
+        self._ds = {}                          # local id -> {"dataset", "vars", "institution", "maxtime"}
+        self._probe = {}                       # dataset id -> ("yes" / "no", newest)
         self._cache = _DetailCache(self.DETAIL_TTL)
 
     def _fetch_stations(self):
@@ -2539,16 +2622,35 @@ class IoosSensorsProvider(BuoyProvider):
             if local in best and best[local][0] >= maxt:
                 continue
             best[local] = (maxt, {"dataset": dsid, "vars": variables, "title": title,
-                                  "institution": row[li["institution"]], "lat": lat, "lon": lon})
+                                  "institution": row[li["institution"]], "lat": lat, "lon": lon, "maxtime": maxt})
+        covered = {str(x).upper() for x in _call_quietly(self._covered_ids, set(), self.source)}
+        jobs = {d["dataset"]: self.BASE + "tabledap/" + d["dataset"] + self.PROBE_SUFFIX
+                for local, (_m, d) in best.items() if local not in covered}
+        for dsid, (status, newest) in _wave_probes(self.http, jobs, self.PROBE_TIMEOUT).items():
+            if status in ("yes", "no"):
+                self._probe[dsid] = (status, newest)
         out, ds = [], {}
         for local, (maxt, d) in best.items():
+            verdict = self._probe.get(d["dataset"]) if local not in covered else None
+            if verdict and verdict[0] == "no":
+                continue
             ds[local] = d
             caps = dict(self.capabilities)
             caps["directional"] = any(v in d["vars"] for v in self.FIELDS[2][1])
+            when = verdict[1] if verdict and verdict[1] else maxt
             out.append({"local_id": local, "name": _ioos_name(d["title"]) or local, "lat": d["lat"],
-                        "lon": d["lon"], "latest_time": maxt, "capabilities": caps})
+                        "lon": d["lon"], "latest_time": when, "capabilities": caps})
         self._ds = ds
         return out
+
+    def _window_start(self, d):
+        """The window query's start: 24 hours back, but never after the dataset's stated end (ERDDAP refuses a time
+        constraint past it although newer rows exist); _recent_window keeps the newest 24 hours of the answer."""
+        start = self.clock() - 24 * 3600
+        end = _z_epoch({"time_utc": d.get("maxtime") or ""})
+        if end is not None:
+            start = min(start, end - 3600)
+        return datetime.fromtimestamp(start, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def _columns(self, variables):
         cols = [self.HS]
@@ -2577,7 +2679,7 @@ class IoosSensorsProvider(BuoyProvider):
             return hit
         cols = self._columns(d["vars"])
         url = (self.BASE + "tabledap/" + d["dataset"] + ".csv?time," + ",".join(cols) +
-               "&time%3E=now-24hours&orderBy(%22time%22)")
+               "&time%3E=" + self._window_start(d) + "&orderBy(%22time%22)")
         try:
             r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.DETAIL_CAP, one_shot=True)
         except (requests.RequestException, RuntimeError) as e:

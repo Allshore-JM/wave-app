@@ -1474,6 +1474,46 @@ test('the age note: from 36.0 h, rounded to the hour; a render=full page carries
   assert.equal(c.doc.getElementById('fwOld').textContent, '· 40 h old', 'the seed carries the age');
 });
 
+test('section 64: the SWAN list follows the answers like the NWPS one, and a stale PacIOOS table carries the same age note', async () => {
+  const I = load(fakeWindow())._internals;
+  assert.equal(I.OLD_RUN_H, 36); assert.equal(I.NWPS_STALE_H, I.OLD_RUN_H);
+  const h = { cycle: 'PacIOOS SWAN updated 20261029 23 UTC', location: '52202 (13.68N 144.81E)', tz: 'Pacific/Guam' };
+  const b = boot({ initial: { station: '52202', swan_stations: ['51201', '52202'], nwps_stations: ['52202'], model: 'SWAN' } });
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'SWAN');
+  b.fs_.last().release(payload({ station: '52202', model: 'SWAN', swan_available: true, nwps_available: true, swan_age_hours: 20.0, graph_header: h })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'SWAN · updated 20261029 23 UTC');
+  assert.equal(b.doc.getElementById('fwOld').hidden, true, 'a day-old table: no note');
+  assert.equal(btn('SWAN').hidden, false); assert.equal(btn('NWPS').hidden, false, 'three buttons at Guam');
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(payload({ station: '52202', model: 'SWAN', swan_available: true, nwps_available: true, swan_age_hours: 40.4, graph_header: h })); await settle();
+  assert.equal(b.doc.getElementById('fwOld').textContent, '· 40 h old', 'past 36 h the SWAN table says its age');
+  assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20261029 23 UTC · 40 h old');
+  const meta = b.doc.getElementById('forecastMeta').textContent.replace(/ /g, ' ');
+  assert.ok(meta.startsWith('Cycle : PacIOOS SWAN updated 20261029 23 UTC · 40 h old  |  Location : 52202'), meta);
+  // PacIOOS past 72 h: the answer is the GFS table without SWAN; the page list drops the station and a press asks nothing
+  b.app.loader.load({ tz: 'UTC' }); await settle();
+  b.fs_.last().release(payload({ station: '52202', model: 'GFS', swan_available: false, nwps_available: true })); await settle();
+  assert.equal(btn('SWAN').hidden, true); assert.equal(btn('NWPS').hidden, false);
+  assert.equal(b.doc.getElementById('fwOld').hidden, true, 'a GFS answer carries no SWAN age');
+  const swanAsked = b.fs_.calls.filter((c) => b.fs_.param(c, 'model') === 'SWAN').length;
+  b.app.loader.load({ model: 'SWAN' }); await settle();
+  assert.equal(b.fs_.calls.filter((c) => b.fs_.param(c, 'model') === 'SWAN').length, swanAsked, 'withdrawn: SWAN is not asked');
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'GFS');
+  b.app.loader.load({ unit: 'US' }); await settle();                                  // a new request (the GFS answer was cached)
+  b.fs_.last().release(payload({ station: '52202', model: 'GFS', swan_available: true, nwps_available: true })); await settle();
+  assert.equal(btn('SWAN').hidden, false, 'PacIOOS is back: the list follows the answer');
+  b.app.loader.load({ model: 'SWAN' }); await settle();
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'SWAN', 'and a press asks for SWAN again');
+  // a render=full page carries a SWAN age from the seed; the NWPS age never shows under SWAN and the other way round
+  const c = boot({ initial: { inline: true, station: '52212', swan_stations: ['52212'], swan_available: true, model: 'SWAN',
+    graph_data: payload().graph_data, graph_header: { cycle: 'PacIOOS SWAN updated 20261029 23 UTC', location: '52212', tz: 'Pacific/Palau' }, swan_age_hours: 50.4, nwps_age_hours: 90 } });
+  await settle();
+  assert.equal(c.fs_.calls.length, 0);
+  assert.equal(c.doc.getElementById('fwOld').textContent, '· 50 h old', "the seed's SWAN age; the NWPS one is not this model's");
+});
+
 test('init hands the page NWPS list to the loader: NWPS is never asked at a station off it (G41 A C12)', async () => {
   const b = boot({ search: '?station=46026&model=NWPS', initial: { station: '46026', model: 'NWPS', nwps_stations: ['51003'] } });
   await settle();

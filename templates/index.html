@@ -1146,7 +1146,7 @@
       <div id="fwNote" class="fw-note" role="status" hidden></div>
       <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
         <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
-        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }}{{ nwps_old_note }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
+        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }}{{ old_run_note }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
 
         <div id="forecastTable"{% if selected_view == 'Graph' %} hidden{% endif %}>
           {% if table_html %}{{ table_html|safe }}{% endif %}

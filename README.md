@@ -79,7 +79,7 @@ Contributions are welcome! If you want to add new features, improve the parsing 
 like the overlay assets: any other `?v` is a 404 with `no-store`. Bump `UI_ASSET_VERSION` on every change to `static_ui/*`
 and update `tests/fixtures/ui_assets.json` (version + sha256); `tests/test_ui_module.py` checks the route, the pin, and runs
 the Node tests in `tests/ui/`. `/api/forecast` also reports `model` (the model actually used: SWAN falls back to GFS off the
-12 SWAN stations; a Great Lakes station is always `GLWU`) and `swan_available`; `?compact=1` asks for the window's table.
+17 SWAN stations; a Great Lakes station is always `GLWU`) and `swan_available`; `?compact=1` asks for the window's table.
 
 The top-right controls (plan section 54, UI 1.26.0) are one row of three buttons: Legend (a key), Tools, Settings. The
 layer legend (Leaflet's layer control: the layers and their notes) lives in the key's panel, closed on every load and
@@ -902,6 +902,32 @@ first.
   `docs/reviews/nwps-G41-adversarial.md`.
 - Rollback: `prod-pre-nwps-job` (the job), `prod-pre-nwps` (the site). Disabling `model-nwps.yml` stops new runs; the
   site keeps the last ones for the runs kept.
+
+### PacIOOS SWAN tables: the Pacific islands and the freshness rule (plan section 64)
+
+PacIOOS publishes a bulletin table for each of its SWAN nests' buoys in one format
+(`https://www.pacioos.hawaii.edu/ssi/wavebuoy/swan_bull/tables/buoy.cdipNNN.table`: hourly rows of the total and six
+partitions, the first 6 hours a spin-up the site drops). `SWAN_STATIONS` in app.py maps the NOAA station ids to the
+table ids: the 12 Hawaii buoys and, since section 64, five Pacific-island buoys whose NOAA forecast station the site
+already lists: 52200 Ipan and 52202 Ritidian Point (Guam), 52211 Tanapag (Saipan), 51209 Aunu'u (American Samoa) and
+52212 Ngaraard (Palau, a 14-day run). The three Guam / Saipan buoys are NWPS stations too (office GUM), so their model
+bar shows **GFS | SWAN | NWPS**. Left out: 51214 King-Poloa (American Samoa) and a second Palau point (cdip283): PacIOOS
+has tables for them but NOAA no forecast station, so they cannot be a page station. The Wind column of a Pacific table is
+the GFS station winds (section 53) joined by hour, back-filled from the earlier GFS run as for Hawaii.
+
+PacIOOS runs once a day (~23:00 UTC) and skips some days; its whole table export stalled for three days once (section
+58). The freshness rule is the NWPS rule of section 59: every table fetch records its region's publish time (the
+table's `Last-Modified`), and the live scheduler's pass (every 30 s) asks one region's representative table for its
+header (a HEAD, ~300 B) in a background thread whenever its record is over 5 min old (never on a request's path; a failed
+probe is tried again after a minute; off with `SWAN_PROBE=0`). The regions share one run and one publish time per
+region: `SWAN_REGION` = hawaii (cdip106), mariana (cdip121), samoa (cdip189), palau (cdip219). Past 36 h the window says
+"· N h old" (the header's own span, the line above the table, the no-script meta line); past 72 h the station is served
+as one without SWAN (no button, a request for SWAN gets the GFS table; the page's station list follows the answers in an
+open tab) until PacIOOS publishes again. A record whose last good read is over 6 h old decides nothing (SWAN is offered;
+the reader then judges the table by its own cycle line). The SWAN table's cache key carries the publish time the held
+record names, so a new table is built at once. A table over 48 h old has early hours older than every GFS winds run
+kept, so its blank wind cells are final (the table kept the full 30 min). `/healthz` reports `swan` (each region's
+publish time, age and last error; never part of `ok`).
 
 ### Sea surface temperature tiles (plan section 44, the job)
 

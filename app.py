@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import pytz
 # TimezoneFinder is imported lazily to avoid heavy startup cost on Render.
 from calendar import monthrange
+import calendar
 from bs4 import BeautifulSoup
 import re
 import math
@@ -432,7 +433,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.8"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.26.9"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -477,9 +478,15 @@ def _forecast_entry_ttl(data) -> int:
     -- so wind re-joins within minutes instead of being pinned incomplete for the full
     30 min (the page asks again after a minute: wind_complete false)."""
     rows = data[3] if data and len(data) > 3 else None
-    if rows and any(len(r) <= 20 or r[20] is None for r in rows) and not _nwps_wind_final(data[0]):
+    if rows and any(len(r) <= 20 or r[20] is None for r in rows) and not _old_run_wind_final(data[0]):
         return _WIND_NEG_TTL
     return _FORECAST_CACHE_TTL
+
+
+def _old_run_wind_final(cycle_str) -> bool:
+    """An NWPS run or a SWAN table old enough that its early hours precede every GFS winds run kept (8 x 6 h): a wind
+    gap there never heals by asking again, so the table is kept the full time (G41 A P3-5; plan section 64)."""
+    return _nwps_wind_final(cycle_str) or _swan_wind_final(cycle_str)
 
 
 def _nwps_wind_final(cycle_str) -> bool:
@@ -488,6 +495,12 @@ def _nwps_wind_final(cycle_str) -> bool:
     run = _nwps_cycle_run(cycle_str) if isinstance(cycle_str, str) else None
     age = _nwps_run_age_h(run) if run else None
     return age is not None and age >= _NWPS_WIND_HEAL_H
+
+
+def _swan_wind_final(cycle_str) -> bool:
+    """The SWAN counterpart: a table updated more than _SWAN_WIND_HEAL_H ago (its cycle line's time)."""
+    age = _swan_cycle_age_h(cycle_str) if isinstance(cycle_str, str) else None
+    return age is not None and age >= _SWAN_WIND_HEAL_H
 
 # ---------------------- Forecast points (plan section 31) -----------------------
 # A forecast for ANY ocean point: station ids of the form pt_21667N_158054W are read from the forecast-point
@@ -1195,9 +1208,11 @@ def rank_rows(rows):
 # "P1_buoy.*" (event-tracked, 10 sparse slots).
 SWAN_TABLE_BASE = "https://www.pacioos.hawaii.edu/ssi/wavebuoy/swan_bull/tables"
 
-# NDBC station id -> PacIOOS CDIP table id (mapping from pacioos wavebuoy.js).
-# Only these 12 Hawaii buoy stations have SWAN partition bulletins; every other
-# forecast point stays GFS-only.
+# NDBC station id -> PacIOOS CDIP table id (mapping from pacioos wavebuoy.js; the Pacific-island ids from the tables'
+# own "% Run:... Table:<NDBC id>" header lines, plan section 64).
+# The 12 Hawaii buoys and 5 Pacific-island buoys (Guam, Saipan, American Samoa, Palau) have SWAN partition bulletins;
+# every other forecast point stays GFS-only. Left out: cdip273 (51214 King-Poloa, American Samoa: no NOAA forecast
+# station, so no page) and cdip283 (a second Palau point with no NDBC id).
 SWAN_STATIONS = {
     "51201": "cdip106",  # Waimea Bay, Oahu
     "51202": "cdip098",  # Mokapu, Oahu
@@ -1211,7 +1226,34 @@ SWAN_STATIONS = {
     "51211": "cdip233",  # Pearl Harbor, Oahu
     "51212": "cdip238",  # Barbers Point Nearshore, Oahu
     "51213": "cdip239",  # Kaumalapau Southwest, Lanai
+    "52200": "cdip121",  # Ipan, Guam (plan section 64)
+    "52202": "cdip196",  # Ritidian Point, Guam
+    "52211": "cdip197",  # Tanapag, Saipan
+    "51209": "cdip189",  # Aunu'u, American Samoa
+    "52212": "cdip219",  # Ngaraard, Palau
 }
+
+# The SWAN tables' freshness (plan section 64; the NWPS rule of section 59): PacIOOS publishes each region's tables
+# once a day (~23:00 UTC) and skips some days; its whole export stalled for three days once (section 58). The tables
+# of a region share one run and one publish time, so one representative table per region is asked (a HEAD, ~300 B)
+# for its Last-Modified by the live scheduler, never on a request's path, and every successful table fetch records
+# its own. Past _SWAN_NOTE_H the window says "· N h old"; past _SWAN_HIDE_H the station is served as one without
+# SWAN (no button; a request for SWAN gets the GFS table) until PacIOOS publishes again.
+SWAN_REGION = {"hawaii": "cdip106", "mariana": "cdip121", "samoa": "cdip189", "palau": "cdip219"}
+SWAN_STATION_REGION = {sid: ("mariana" if sid in ("52200", "52202", "52211") else "samoa" if sid == "51209"
+                             else "palau" if sid == "52212" else "hawaii") for sid in SWAN_STATIONS}
+_SWAN_UPDATED = {r: {"updated": None, "ts": 0.0, "failed": 0.0, "error": None} for r in SWAN_REGION}
+_SWAN_LOCK = threading.Lock()
+_SWAN_PROBE_TTL = 5 * 60          # a region's record is asked again after this (the scheduler's pass runs every 30 s)
+_SWAN_PROBE_NEG_TTL = 60          # a failed probe is tried again after this, not every pass
+_SWAN_HELD_S = 6 * 3600           # a record older than this (nothing read since) decides nothing: SWAN is offered
+_SWAN_NOTE_H = 36                 # the window says "· N h old" past this (a daily run reaches ~24-28 h before the next)
+_SWAN_HIDE_H = 72                 # past this the station does not offer SWAN until PacIOOS publishes again
+_SWAN_WIND_HEAL_H = 48            # an older table's early hours are older than every GFS winds run kept (8 x 6 h)
+_SWAN_PROBE_TIMEOUT = (3.05, 10)
+_SWAN_CYCLE_RE = re.compile(r"PacIOOS SWAN updated (\d{8}) (\d{2}) UTC")
+_SWAN_BG = {"thread": None, "started": 0}
+SWAN_PROBE = os.environ.get("SWAN_PROBE", "1") != "0"   # the background HEADs (off in the tests: conftest)
 
 VALID_MODELS = ("GFS", "SWAN", "GLWU", "NWPS")
 
@@ -1268,24 +1310,29 @@ BLANK_STATIONS = _load_blank_stations()
 BLANK_STATION_NOTE = "No model data at this point (sheltered water the wave model has no sea for)."
 
 
-def resolve_model(station_id: str, requested: str | None, nwps_ok: bool | None = None) -> str:
+def resolve_model(station_id: str, requested: str | None, nwps_ok: bool | None = None,
+                  swan_ok: bool | None = None) -> str:
     """Validate a requested forecast model for a station.
 
     A Great Lakes station is always "GLWU" (the only model with lake data). "SWAN" is honored only for stations with
-    a PacIOOS bulletin, "NWPS" only for the NWPS stations (plan section 59); anything else (unknown values, uncovered
-    stations, absent param, "GLWU" off the lakes) silently resolves to "GFS" so stale ?model= URLs degrade gracefully.
-    `nwps_ok`: nwps_offered(station_id) as the caller already judged it, so one answer judges it once (the held pointer
-    and the clock can change between two looks: G41 re-check F-3).
+    a PacIOOS bulletin whose table is not stale (plan section 64), "NWPS" only for the NWPS stations (plan section 59);
+    anything else (unknown values, uncovered stations, absent param, "GLWU" off the lakes) silently resolves to "GFS"
+    so stale ?model= URLs degrade gracefully. `nwps_ok` / `swan_ok`: nwps_offered / swan_offered as the caller already
+    judged them, so one answer judges each once (the held record and the clock can change between two looks: G41
+    re-check F-3).
     """
     if station_id in GLWU_STATIONS:
         return "GLWU"
     model = (requested or "GFS").strip().upper()
     if model not in VALID_MODELS or model == "GLWU":
         return "GFS"
-    if model == "SWAN" and station_id not in SWAN_STATIONS:
+    # the station's membership is checked here whatever the caller judged (a judgement can only withdraw a model)
+    if model == "SWAN" and (station_id not in SWAN_STATIONS                                   # not a SWAN station, or
+                            or not (swan_offered(station_id) if swan_ok is None else swan_ok)):   # its table is stale (§64)
         return "GFS"
-    if model == "NWPS" and not (nwps_offered(station_id) if nwps_ok is None else nwps_ok):   # not an NWPS station, or
-        return "GFS"                                                                          # its office stopped (K-7)
+    if model == "NWPS" and (station_id not in NWPS_STATIONS                                   # not an NWPS station, or
+                            or not (nwps_offered(station_id) if nwps_ok is None else nwps_ok)):   # its office stopped (K-7)
+        return "GFS"
     return model
 
 # Timezones
@@ -3022,14 +3069,168 @@ def _nwps_health():
 
 # --------------------------- PacIOOS SWAN parser --------------------------------
 
+def _swan_now():
+    """The clock the SWAN freshness rules read (epoch seconds; tests set it)."""
+    return time.time()
+
+
+def _swan_region(station_id):
+    return SWAN_STATION_REGION.get(station_id)
+
+
+def _swan_record(region, updated):
+    """A region's table was just read (a fetch or a probe) with this Last-Modified (epoch seconds, or None when the
+    header was missing or unreadable: the read still counts as a good read of the region)."""
+    rec = _SWAN_UPDATED.get(region)
+    if rec is None:
+        return
+    with _SWAN_LOCK:
+        rec["ts"] = _swan_now()
+        rec["error"] = None
+        if updated is not None:
+            rec["updated"] = updated
+
+
+def _swan_failed(region, exc):
+    rec = _SWAN_UPDATED.get(region)
+    if rec is None:
+        return
+    with _SWAN_LOCK:
+        rec["failed"] = _swan_now()
+        rec["error"] = f"{exc.__class__.__name__}: {exc}"[:200]
+
+
+def _swan_last_modified(headers):
+    """The epoch of a Last-Modified header, or None."""
+    lm = headers.get("Last-Modified") if headers else None
+    if not lm:
+        return None
+    try:
+        return calendar.timegm(datetime.strptime(lm, "%a, %d %b %Y %H:%M:%S %Z").timetuple())
+    except Exception:
+        return None
+
+
+def _swan_held_updated(station_id):
+    """The publish time (epoch) of the station's region as this server holds it, or None when nothing usable is held
+    (never read: a record whose last good read is older than _SWAN_HELD_S decides nothing)."""
+    rec = _SWAN_UPDATED.get(_swan_region(station_id))
+    if rec is None:
+        return None
+    with _SWAN_LOCK:
+        if rec["updated"] is None or _swan_now() - rec["ts"] >= _SWAN_HELD_S:
+            return None
+        return rec["updated"]
+
+
+def swan_age_h(station_id):
+    """Hours since the station's region published its tables, by the held record, or None when unknown."""
+    upd = _swan_held_updated(station_id)
+    return None if upd is None else (_swan_now() - upd) / 3600
+
+
+def swan_offered(station_id) -> bool:
+    """The model button offers SWAN at this station: a SWAN station whose region's tables (by the held record) are not
+    older than _SWAN_HIDE_H (owner, plan section 64). Without a held record it is offered (the reader then decides)."""
+    if station_id not in SWAN_STATIONS:
+        return False
+    age = swan_age_h(station_id)
+    return age is None or age <= _SWAN_HIDE_H
+
+
+def _swan_cycle_age_h(cycle_str):
+    """Hours since the time named in a SWAN table's cycle line ("Cycle : PacIOOS SWAN updated 20261030 23 UTC"), or
+    None (a table without a publish time, or another model's line)."""
+    m = _SWAN_CYCLE_RE.search(cycle_str or "")
+    if not m:
+        return None
+    try:
+        t = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H")
+    except ValueError:
+        return None
+    return (_swan_now() - calendar.timegm(t.timetuple())) / 3600
+
+
+def _swan_head(url):
+    """One HEAD of a region's representative table (no retry adapter: a one-shot answer, as the run probe's)."""
+    return _PROBE_HTTP.head(url, timeout=_SWAN_PROBE_TIMEOUT)
+
+
+def _swan_probe(region):
+    """Read one region's publish time (Last-Modified of its representative table) into the held record; a failure keeps
+    the record and notes the error. Runs in the scheduler's background thread, never on a request's path."""
+    url = f"{SWAN_TABLE_BASE}/buoy.{SWAN_REGION[region]}.table"
+    try:
+        resp = _swan_head(url)
+        if resp.status_code != 200:
+            raise RuntimeError(f"HTTP {resp.status_code}")
+        _swan_record(region, _swan_last_modified(resp.headers))
+    except Exception as exc:
+        logger.warning("SWAN table probe (%s) failed: %r", region, exc)
+        _swan_failed(region, exc)
+
+
+def _swan_due_region(now):
+    """The first region whose record is due a probe: nothing good within _SWAN_PROBE_TTL and no failure within
+    _SWAN_PROBE_NEG_TTL (the oldest record first)."""
+    with _SWAN_LOCK:
+        due = [(rec["ts"], r) for r, rec in _SWAN_UPDATED.items()
+               if now - rec["ts"] >= _SWAN_PROBE_TTL and now - rec["failed"] >= _SWAN_PROBE_NEG_TTL]
+    return min(due)[1] if due else None
+
+
+def _swan_tick():
+    """One pass of the live scheduler (plan section 64): keep the regions' publish times fresh in the background, one
+    region per pass in its own thread (four HEADs per 5 min at most), so the 72-h rule follows PacIOOS whether or not
+    anyone opens a SWAN table. True when a probe was started."""
+    if not SWAN_PROBE:
+        return False
+    region = _swan_due_region(_swan_now())
+    if region is None:
+        return False
+    t = _SWAN_BG["thread"]
+    if t is not None and t.is_alive():
+        return False
+    t = threading.Thread(target=_swan_probe, args=(region,), name="swan-probe", daemon=True)
+    _SWAN_BG["thread"] = t
+    _SWAN_BG["started"] += 1
+    t.start()
+    return True
+
+
+def _swan_health():
+    """For /healthz (reported, never part of `ok`): each region's publish time and age as this server holds them."""
+    now = _swan_now()
+    out = {"stations": len(SWAN_STATIONS), "probes_started": _SWAN_BG["started"], "regions": {}}
+    with _SWAN_LOCK:
+        for region, rec in _SWAN_UPDATED.items():
+            upd = rec["updated"]
+            out["regions"][region] = {
+                "updated_utc": datetime.fromtimestamp(upd, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if upd else None,
+                "age_h": round((now - upd) / 3600, 1) if upd else None,
+                "read_age_s": round(now - rec["ts"]) if rec["ts"] else None,
+                "last_error": rec["error"]}
+    return out
+
+
 def parse_swan(station_id: str, target_tz_name: str | None = None):
     """Cached SWAN bulletin retrieval, mirroring parse_bull()'s contract.
 
-    Same 6-tuple result and same _FORECAST_CACHE (keyed with model="SWAN").
+    Same 6-tuple result and same _FORECAST_CACHE (keyed with model="SWAN" and the publish time the held record names
+    for the station's region, so a new table is built at once rather than after the cache's 30 min: plan section 64).
     Only successful parses are cached.
     """
-    key = (station_id, target_tz_name or "", "SWAN")
-    return _forecast_singleflight(key, lambda: _parse_swan_uncached(station_id, target_tz_name))
+    held = _swan_held_updated(station_id)
+    key = (station_id, target_tz_name or "", "SWAN", held)
+    data = _forecast_singleflight(key, lambda: _parse_swan_uncached(station_id, target_tz_name))
+    if held is None and data and not data[-1]:
+        now_held = _swan_held_updated(station_id)          # the build just recorded the region's publish time:
+        if now_held is not None:                           # file the table under it too, so the next call hits
+            with _CACHE_LOCK:
+                entry = _FORECAST_CACHE.get(key)
+                if entry is not None:
+                    _FORECAST_CACHE[(station_id, target_tz_name or "", "SWAN", now_held)] = entry
+    return data
 
 
 def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
@@ -3048,19 +3249,17 @@ def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
         resp = HTTP.get(swan_url, timeout=15)
     except Exception as exc:
         logger.warning("could not download SWAN table for %s: %r", station_id, exc)
+        _swan_failed(_swan_region(station_id), exc)
         return None, None, None, None, 'UTC', f"Could not download SWAN forecast for {station_id}"
     if resp.status_code != 200 or not resp.text:
         return None, None, None, None, 'UTC', f"No SWAN forecast found for {station_id}"
 
     # Publication time (the run posts once daily ~13:00 HST). This is when the
     # file was updated, not a formal model cycle -- the label says "updated".
-    updated_utc = None
-    lm = resp.headers.get("Last-Modified")
-    if lm:
-        try:
-            updated_utc = datetime.strptime(lm, "%a, %d %b %Y %H:%M:%S %Z")
-        except Exception:
-            updated_utc = None
+    # The fetch also records it for the station's region (the freshness rule, plan section 64).
+    updated_epoch = _swan_last_modified(resp.headers)
+    _swan_record(_swan_region(station_id), updated_epoch)
+    updated_utc = datetime.fromtimestamp(updated_epoch, timezone.utc).replace(tzinfo=None) if updated_epoch else None
 
     # GFS wind for the Wind columns: the latest cycle, plus (plan section 27) the earlier cycle that covers the
     # SWAN rows predating it -- the PacIOOS table starts at 06Z of its publish day, up to ~30 h before the latest
@@ -3725,6 +3924,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     HTML/graph packing. Returns a JSON-serializable dict.
     """
     nwps_ok = nwps_offered(station)                            # judged once for the whole answer (G41 re-check F-3)
+    swan_ok = swan_offered(station)                            # likewise the SWAN choice (plan section 64)
     out = {
         "station": station,
         "error": None,
@@ -3734,8 +3934,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "lon": None,
         "graph_data": None,
         "graph_header": None,
-        "model": resolve_model(station, model, nwps_ok),      # the model actually used (SWAN falls back to GFS)
-        "swan_available": station in SWAN_STATIONS,
+        "model": resolve_model(station, model, nwps_ok, swan_ok),   # the model actually used (SWAN falls back to GFS)
+        "swan_available": swan_ok,                             # the model button's SWAN choice (a stale table withdraws it)
         "nwps_available": nwps_ok,                             # the model button's NWPS choice (plan section 59; G41 K-7)
         "summary_html": None,                                  # the window's Summary view (plan section 35)
     }
@@ -3785,6 +3985,15 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
                     station, tz or None)
             elif age is not None:
                 out["nwps_age_hours"] = round(age, 1)      # the page says "· N h old" past _NWPS_NOTE_H
+        if model == "SWAN" and rows is not None:               # the same rule for a PacIOOS table (plan section 64)
+            age = _swan_cycle_age_h(cycle_str)
+            if age is not None and age > _SWAN_HIDE_H:        # PacIOOS stopped publishing: served as without SWAN
+                model = "GFS"
+                out["model"], out["swan_available"] = model, False
+                cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parse_bull(
+                    station, tz or None)
+            elif age is not None:
+                out["swan_age_hours"] = round(age, 1)      # the page says "· N h old" past _SWAN_NOTE_H
     out["error"] = parse_error
     if rows is None:
         return out
@@ -3913,11 +4122,12 @@ def api_forecast():
     except Exception as exc:  # always return JSON the client can render
         logger.warning("forecast payload failed for %s: %r", station, exc)
         nwps_ok = nwps_offered(station)                        # judged once (G41 re-check F-3)
+        swan_ok = swan_offered(station)
         return jsonify({
             "station": station, "error": "Forecast temporarily unavailable",
             "table_html": None, "tz_label": "", "lat": None, "lon": None,
             "graph_data": None, "graph_header": None,
-            "model": resolve_model(station, model, nwps_ok), "swan_available": station in SWAN_STATIONS,
+            "model": resolve_model(station, model, nwps_ok, swan_ok), "swan_available": swan_ok,
             "nwps_available": nwps_ok, "summary_html": None,
         })
 
@@ -3945,9 +4155,9 @@ def index():
 
     # Model dropdown only exists for the stations with SWAN bulletins; a stale
     # ?model=SWAN on any other station silently resolves back to GFS.
-    swan_available = selected_station in SWAN_STATIONS
+    swan_available = swan_offered(selected_station)             # the model button's SWAN choice (plan section 64)
     nwps_available = nwps_offered(selected_station)             # the model button's NWPS choice (plan section 59)
-    selected_model = resolve_model(selected_station, selected_model, nwps_available)   # judged once (G41 re-check F-3)
+    selected_model = resolve_model(selected_station, selected_model, nwps_available, swan_available)   # judged once
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
     # dropdown so it still shows as selected (back-compat with older links).
@@ -3968,19 +4178,26 @@ def index():
         # made before the read (G41 re-check F-2)
         selected_model = payload.get("model", selected_model)
         nwps_available = payload.get("nwps_available", nwps_available)
-    nwps_age = payload.get("nwps_age_hours") if payload and payload.get("model") == "NWPS" else None
-    nwps_old_note = (f" · {int(nwps_age + 0.5)} h old"           # the page's rule (forecast.js: Math.round, >= 36 h)
-                     if isinstance(nwps_age, (int, float)) and nwps_age >= _NWPS_NOTE_H else "")
+        swan_available = payload.get("swan_available", swan_available)
+    # the run's age on the no-script meta line, the page's rule (forecast.js: Math.round, >= 36 h): an NWS office or
+    # PacIOOS that stopped publishing (G41 re-check F-2; plan section 64)
+    old_age = (payload.get("nwps_age_hours") if payload.get("model") == "NWPS" else
+               payload.get("swan_age_hours") if payload.get("model") == "SWAN" else None) if payload else None
+    old_run_note = (f" · {int(old_age + 0.5)} h old"
+                    if isinstance(old_age, (int, float)) and old_age >= min(_NWPS_NOTE_H, _SWAN_NOTE_H) else "")
 
     # The forecast window's starting state (plan section 25): what this request asked for, resolved. The page's NWPS
-    # list holds the station on screen exactly when its own judgement offers it (one rule for both fields).
+    # and SWAN lists hold the station on screen exactly when its own judgement offers it (one rule for both fields).
     nwps_list = {s for s in NWPS_STATIONS if s != selected_station and nwps_offered(s)}
     if nwps_available:
         nwps_list.add(selected_station)
+    swan_list = {s for s in SWAN_STATIONS if s != selected_station and swan_offered(s)}
+    if swan_available:
+        swan_list.add(selected_station)
     initial_state = {
         "station": selected_station, "tz": selected_tz, "unit": selected_unit if selected_unit in unit_options else "US",
         "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
-        "swan_available": swan_available, "swan_stations": sorted(SWAN_STATIONS),
+        "swan_available": swan_available, "swan_stations": sorted(swan_list),
         "nwps_available": nwps_available, "nwps_stations": sorted(nwps_list),
         "inline": bool(payload),
     }
@@ -3988,8 +4205,8 @@ def index():
         initial_state.update({"graph_data": payload["graph_data"], "graph_header": payload["graph_header"],
                               "error": payload["error"], "model": payload["model"],
                               "wind_complete": payload.get("wind_complete", True)})
-        for k in ("point", "final", "busy", "reason", "summary_html", "nwps_age_hours"):   # a point's own keys (a refusal
-                                                                          # is final: no Retry), the Summary view, the run's age
+        for k in ("point", "final", "busy", "reason", "summary_html", "nwps_age_hours", "swan_age_hours"):   # a point's
+                                            # own keys (a refusal is final: no Retry), the Summary view, the run's age
             if payload.get(k) is not None:
                 initial_state[k] = payload[k]
 
@@ -4004,7 +4221,7 @@ def index():
         selected_unknown=bool(selected_station) and not point_forecast.parse_point_id(selected_station)
                          and all(sid != selected_station for sid, _name in stations),
         points_enabled=bool(_points_root()),
-        nwps_old_note=nwps_old_note,              # " · N h old" on the no-script meta line (G41 re-check F-2)
+        old_run_note=old_run_note,                # " · N h old" on the no-script meta line (G41 re-check F-2; §64)
         timezones=timezones,
         selected_tz=selected_tz,
         units=unit_options,
@@ -5755,6 +5972,10 @@ def _live_tick(providers=None):
         _nwps_tick()                              # the NWPS pointer kept fresh (plan section 59, G41 re-check F-1)
     except Exception as exc:
         logger.warning("NWPS pointer: scheduler pass failed: %s", exc)
+    try:
+        _swan_tick()                              # the SWAN tables' publish times kept fresh (plan section 64)
+    except Exception as exc:
+        logger.warning("SWAN probe: scheduler pass failed: %s", exc)
     warm = _live_warm(providers)
     with _LIVE_BG_LOCK:
         _LIVE_BG["ticks"] += 1
@@ -5872,6 +6093,9 @@ def _live_after_fork():
     _NWPS_LOCK = threading.Lock()                 # the NWPS pointer (plan section 59)
     _NWPS_FETCH_LOCK = threading.Lock()           # its one read at a time (G41 A P3-3)
     _NWPS_BG["thread"] = None                     # the parent's background read does not exist here (G41 re-check F-1)
+    global _SWAN_LOCK
+    _SWAN_LOCK = threading.Lock()                 # the SWAN tables' publish times (plan section 64)
+    _SWAN_BG["thread"] = None
     _WINDS_LOCK = threading.Lock()              # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()
@@ -5991,6 +6215,7 @@ def healthz():
         "wind": _wind_health(now),                # the wind feeds (section 39): reported, never part of `ok`
         "tls": _tls_health(),                     # section 57: the trust list in use; reported only
         "nwps": _nwps_health(),                   # section 59: the NWPS tables' pointer; reported only
+        "swan": _swan_health(),                   # section 64: the SWAN tables' publish times; reported only
     }
     resp = jsonify(body)
     resp.status_code = 200 if ok else 503

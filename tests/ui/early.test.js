@@ -10,8 +10,8 @@ const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8');
 const a = html.indexOf('// ---- early forecast'), b = html.indexOf('// ---- end early forecast ----');
 assert.ok(a > 0 && b > a, 'the early forecast block is marked in the template');
-const SWAN = ['51201', '51202'];
-const NWPS = ['51003', '46026'];
+const SWAN = ['51201', '51202', '52202', '51209'];        // incl. two Pacific-island stations (section 64)
+const NWPS = ['51003', '46026', '52202'];                 // 52202 holds both models (Guam)
 const RAW = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.swan_stations|tojson }}', JSON.stringify(SWAN))
   .replace('{{ initial_state.nwps_stations|tojson }}', JSON.stringify(NWPS))
   .replace('{{ retired_stations|tojson }}', JSON.stringify(['44062', '46088']));
@@ -57,6 +57,8 @@ const CASES = [
   ['?station=51003&model=NWPS', undefined], ['?station=51003&model=nwps', { unit: 'Metric' }], ['?station=51201&model=NWPS', undefined],
   ['?station=46026&model=NWPS&tz=UTC', undefined], ['?station=51003&model=SWAN', undefined], ['?station=51003&model=GLWU', undefined],
   ['?station=51003&model=%20Nwps%20', undefined], ['?station=%2051003%20&model=NWPS', undefined],   // trimmed alike (G41 A E02)
+  ['?station=52202&model=SWAN', undefined], ['?station=52202&model=NWPS', { unit: 'Metric' }], ['?station=52202&model=GFS', undefined],   // both models (section 64)
+  ['?station=51209&model=SWAN', undefined], ['?station=51209&model=NWPS', undefined], ['?station=52212&model=SWAN', undefined],
 ];
 
 test('the head asks for exactly the query of the module\'s first load, for every address / saved-settings combination', () => {

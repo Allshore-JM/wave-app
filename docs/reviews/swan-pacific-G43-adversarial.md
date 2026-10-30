@@ -103,3 +103,16 @@ the bucket's winds.bin (non-blank in every row checked).
   meta line, the API answer `wind_complete` true at 60.3 h (F1); +73 h with Hawaii fresh: the first SWAN request answered
   GFS, 52202 out of the list, GFS | NWPS, Palau hidden, 51201 keeps SWAN; render=full at 52202: GFS, flag false, 12 listed
   with every Mariana / Samoa / Palau station out (F2's region rule), at 51201: SWAN, flag true, 12 listed.
+
+## Production (2026-10-30 19:44 UTC, owner "proceed with the production merge", Opus 5.5)
+
+- Rollback tag `prod-pre-swanpac` @ a2b6b4f pushed; `Live-Buoy-Update` fast-forwarded a2b6b4f..541a897; production served
+  UI 1.26.9 from 19:45:52 UTC, 7 polls across the switch, 0 failed.
+- The three page probes differ from the pre-merge capture only by the head's SWAN list (17 stations), the state's list and
+  the UI version strings; they equal the test site's pages except its three logo lines; logo count 0. Every UI and overlay
+  asset = the repo (the three animal PNGs by pixels: Render's edge recompresses them, 0 visible pixels differ).
+- The five Pacific tables on production = an independent parse of the PacIOOS files (175 / 175 / 175 / 175 / 271 rows,
+  0 mismatches), zones right, wind complete; the model matrix; `/healthz` swan four regions read, nine probes started.
+- Browser (headless Chrome, own profile, desktop 1280x800 + phone 375x812): all six stations' SWAN tables through real
+  presses, three buttons at Guam / Saipan, no age note at 20.8 h, no console problems.
+- CI on 541a897: coast-build, model-frames-tests and all six publishers green. Rollback: re-push `prod-pre-swanpac`.

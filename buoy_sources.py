@@ -2407,7 +2407,9 @@ class GlosProvider(BuoyProvider):
     license_label = "Free to use and redistribute (GLOS)"
     attribution_text = ("Source: Great Lakes Observing System (GLOS) Seagull and its partner buoys. "
                         "Free to use and redistribute; not intended for legal use.")
-    stale_after_sec = 6 * 3600
+    # A GLOS marker's time is its newest wave height at the ERDDAP mirror, which runs about 30 h behind the API (and a
+    # verdict is kept up to PROBE_TTL): a marker turns grey after 2 days without a wave height there (G42 F11).
+    stale_after_sec = 48 * 3600
     capabilities = _caps(bulk=True, recent_history=True, directional=True)
     list_ttl_sec = 3600
     timeout = 60
@@ -2582,6 +2584,11 @@ class GlosProvider(BuoyProvider):
         quiet = (self._wave_verdicts({s["local_id"]: by_id[s["local_id"]] for s in out if s["local_id"] not in covered})
                  if judged else set())
         out = [s for s in out if s["local_id"] not in quiet]
+        if judged:                          # the marker's time: its newest wave height at the mirror (G42 F11)
+            for s in out:
+                rec = self._probe.get(by_id[s["local_id"]])
+                if rec and len(rec) > 2 and rec[1] == "yes" and rec[2]:
+                    s["latest_time"] = rec[2]
         # the windows name a series only through the parameter map: a list without it would open empty windows,
         # and a window must never fetch the 3.6 MB list on a visitor's thread (G42 F2)
         self._refresh_params()
@@ -2763,7 +2770,12 @@ class IoosSensorsProvider(BuoyProvider):
                         "map (Axiom Data Science). Data under each operator's terms; not intended for legal use.")
     stale_after_sec = 6 * 3600
     capabilities = _caps(bulk=True, recent_history=True)
-    list_ttl_sec = 6 * 3600
+    # Every hour: allDatasets (~1.8 MB) and the wave-height probes, so a marker's time (its newest wave height) and its
+    # grey stale look are at most an hour behind; the category index (~2 MB, each dataset's variables) is kept
+    # INDEX_TTL and used up to INDEX_KEEP when it cannot be read (G42 F11).
+    list_ttl_sec = 3600
+    INDEX_TTL = 6 * 3600
+    INDEX_KEEP = 24 * 3600
     timeout = 90
     detail_fresh = True
     BASE = "https://erddap.sensors.ioos.us/erddap/"
@@ -2808,9 +2820,28 @@ class IoosSensorsProvider(BuoyProvider):
         self._covered_ids = covered_ids        # callable -> ids the NDBC provider lists (spectral file)
         self._ds = {}                          # local id -> {"dataset", "vars", "institution", "maxtime"}
         self._probe = {}                       # dataset id -> ("yes" / "no", newest)
+        self._meta = {}                        # dataset id -> (title, variables), from the category index
+        self._meta_ts = 0.0
         self._cache = _DetailCache(self.DETAIL_TTL)
 
-    def _fetch_stations(self):
+    def _index_meta(self):
+        """The category index's wave datasets: read again after INDEX_TTL; a failed read keeps the held index up to
+        INDEX_KEEP (the hourly refresh then goes on with it), else raises (keep-last)."""
+        now = self.clock()
+        if self._meta and now - self._meta_ts < self.INDEX_TTL:
+            return self._meta
+        try:
+            meta = self._read_index()
+        except Exception as e:
+            if self._meta and now - self._meta_ts < self.INDEX_KEEP:
+                _log.warning("buoy provider %s: index unavailable (%s), using the one from %.1f h ago",
+                             self.source, e, (now - self._meta_ts) / 3600.0)
+                return self._meta
+            raise
+        self._meta, self._meta_ts = meta, now
+        return meta
+
+    def _read_index(self):
         r = _size_capped_get(self.http, self.INDEX_URL, self.timeout, self.LIST_CAP)
         rows = csv.reader(io.StringIO(r.text))                  # streamed: a list of every row peaked at ~24 MB
         head = next(rows, None)
@@ -2826,7 +2857,12 @@ class IoosSensorsProvider(BuoyProvider):
                 continue
             if self._DS_RE.match(dsid) and self.HS in variables and "time" in variables:
                 meta[dsid] = (row[ix["Title"]] if "Title" in ix else "", variables)
-        del rows, r                                     # not kept through the probes (G42 F9)
+        if not meta:
+            raise ValueError("IOOS index listed no wave datasets")
+        return meta
+
+    def _fetch_stations(self):
+        meta = self._index_meta()
         r = _size_capped_get(self.http, self.LIVE_URL, self.timeout, self.LIST_CAP)
         live = csv.reader(io.StringIO(r.text))          # streamed: a list of every dataset's row peaked at ~18 MB
         hdr = next(live, None)

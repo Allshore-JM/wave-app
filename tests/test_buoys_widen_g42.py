@@ -409,3 +409,61 @@ def test_ioos_window_asks_the_qc_column_when_the_dataset_has_it():   # X22
     cols = p._columns([B.IoosSensorsProvider.HS, B.IoosSensorsProvider.HS + "_qc_agg", "time"])
     assert B.IoosSensorsProvider.HS + "_qc_agg" in cols
     assert B.IoosSensorsProvider.HS + "_qc_agg" not in p._columns([B.IoosSensorsProvider.HS, "time"])
+
+
+# ------------------------------------------------------------------ F11 completed: marker times and grey looks
+
+def test_glos_marker_time_is_the_mirrors_newest_wave_height_and_greys_after_two_days(monkeypatch):
+    p, by, ok, err = glos()
+    assert by["glos:45029"]["latest_time"] == "2026-10-28T23:50:00Z"          # GLOS_PROBE_YES
+    assert B.GlosProvider.stale_after_sec == 48 * 3600
+    monkeypatch.setattr(B.time, "time", lambda: CAPTURED)                     # 28.6 h after it: coloured
+    lst, ok, err = p._build_station_list()
+    assert ok and not {s["id"]: s for s in lst}["glos:45029"]["is_stale"]
+    later = CAPTURED + 22 * 3600                                               # 50.6 h after it: grey
+    monkeypatch.setattr(B.time, "time", lambda: later)
+    p.clock = staticmethod(lambda: CAPTURED)
+    lst, ok, err = p._build_station_list()
+    assert ok and {s["id"]: s for s in lst}["glos:45029"]["is_stale"]
+
+
+def test_glos_stalled_mirror_gives_no_marker_time():
+    old = "datasetID,maxTime\n,UTC\n" + "".join("obs_%d,2026-10-26T00:00:00Z\n" % i for i in (2, 3, 88, 139, 260))
+    p, by, ok, err = glos(http=glos_http(mirror=old))
+    assert ok and all("latest_time" not in s for s in by.values())
+
+
+def test_ioos_refreshes_hourly_and_keeps_its_index_six_hours():
+    assert B.IoosSensorsProvider.list_ttl_sec == 3600
+    http = ioos_http()
+    now = [CAPTURED]
+    p = B.IoosSensorsProvider(http=http)
+    p.clock = staticmethod(lambda: now[0])
+    idx = lambda: sum("categorize/standard_name" in u for u in http.calls)   # noqa: E731
+    assert p._build_station_list()[1] and idx() == 1
+    now[0] += 3600
+    assert p._build_station_list()[1] and idx() == 1                          # the index kept
+    assert sum("allDatasets.csv" in u for u in http.calls) == 2               # allDatasets every refresh
+    now[0] += 6 * 3600
+    http.routes[0] = ("categorize/standard_name", Resp("busy", 503))
+    lst, ok, err = p._build_station_list()
+    assert ok and idx() == 2 and lst                                           # a failed read: the held index serves
+    now[0] += 18 * 3600
+    lst, ok, err = p._build_station_list()
+    assert not ok and "503" in err                                             # past a day: the refresh fails (keep-last)
+
+
+def test_glos_mirror_stalling_later_drops_the_held_marker_times():
+    http = glos_http()
+    p, by, ok, err = glos(http=http)
+    assert by["glos:45029"]["latest_time"]
+    http.routes[3] = ("allDatasets.csv", "datasetID,maxTime\n,UTC\n" +
+                      "".join("obs_%d,2026-10-26T00:00:00Z\n" % i for i in (2, 3, 88, 139, 260)))
+    lst, ok, err = p._build_station_list()
+    assert ok and all("latest_time" not in s for s in lst)
+
+
+def test_ioos_index_without_wave_datasets_fails_the_refresh():
+    head = fixture("ioos_index.csv").splitlines()[0] + chr(10)
+    p, by, ok, err = ioos(http=ioos_http(index=head))
+    assert not ok and "no wave datasets" in err

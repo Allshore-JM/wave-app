@@ -15,6 +15,7 @@ Freshness: lists are refreshed stale-while-revalidate on the module's refresh ru
 BuoyProvider.list_stations_versioned / ThreadRunner); only a provider with no list yet makes a
 caller wait.
 """
+import bisect
 import csv
 import io
 import logging
@@ -1502,6 +1503,12 @@ def _station_priority(st):
         return 55
     if src == "AODN":                  # bulk only
         return 50
+    if src == "GLOS":                  # Great Lakes, 10-min with direction + history (plan section 63); below
+        return 49                      # AODN only so the list keeps its pre-section-63 order (they never meet)
+    if src == "IOOS":                  # US regional-association aggregator (relays NDBC / CDIP too)
+        return 47
+    if src == "NDBCW":                 # NDBC stations without a spectral file (bulk report only)
+        return 45
     if src == "CMEMS":                 # pan-EU/global aggregator -> fills gaps, national wins
         return 30
     return 40
@@ -1855,7 +1862,22 @@ def _match_name(st):
     return name
 
 
-def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0):
+# Feeds whose local ids are NDBC / WMO buoy numbers (5 digits, or a C-MAN call sign like FRFN7).
+_NUMBERED_SOURCES = frozenset(("NDBC", "NDBCW", "GLOS", "IOOS"))
+_BUOY_NUMBER_RE = re.compile(r"^(?:\d{5}|[A-Z]{4}\d)$")
+
+
+def _buoy_number(st):
+    """The station's NDBC / WMO number when its feed names buoys by number, else ''. Two feeds'
+    markers with the same number are the same buoy even when their positions disagree (2026-10-30:
+    the IOOS ERDDAP placed NDBC's 41056 133 km from NDBC's own position)."""
+    if st.get("source") not in _NUMBERED_SOURCES:
+        return ""
+    local = str(st.get("id") or "").split(":", 1)[-1].upper()
+    return local if _BUOY_NUMBER_RE.match(local) else ""
+
+
+def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0, number_radius_km=300.0):
     """Flatten provider station lists and physically dedup co-located buoys, keeping the
     RICHEST source per cluster (see _station_priority: spectra > sea/swell split > bulk).
     Two cross-source markers merge when within radius_km, OR within the looser name_radius_km
@@ -1866,15 +1888,17 @@ def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0):
     """
     allst = [st for lst in provider_lists for st in lst]
     allst.sort(key=_station_priority, reverse=True)   # stable: ties keep provider order
-    kept, keptkey = [], []
+    kept, keptkey, keptnum = [], [], []
     for st in allst:
         nk = _name_key(_match_name(st))
+        num = _buoy_number(st)
         dup = None
         for idx, k in enumerate(kept):
             if k["source"] == st["source"]:
                 continue
             dist = haversine_km(k["lat"], k["lon"], st["lat"], st["lon"])
-            if dist <= radius_km or (len(nk) >= 2 and nk == keptkey[idx] and dist <= name_radius_km):
+            if (dist <= radius_km or (len(nk) >= 2 and nk == keptkey[idx] and dist <= name_radius_km)
+                    or (num and num == keptnum[idx] and dist <= number_radius_km)):
                 dup = k
                 break
         if dup is not None:
@@ -1885,4 +1909,731 @@ def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0):
         else:
             kept.append(st)
             keptkey.append(nk)
+            keptnum.append(num)
     return kept
+
+
+# ----------------------- US widen (plan section 63) -----------------------------
+# Three more US feeds, each below every national feed with spectra in the dedup order:
+#   NDBCW  NDBC stations that report waves in latest_obs.txt but publish no spectral file
+#          (Canada's DFO buoys, Great Lakes partner buoys, CORMP, CBIBS ...); the NDBC provider
+#          lists only the stations with a .data_spec file.
+#   GLOS   Great Lakes Observing System Seagull (anonymous JSON; Sofar Spotters and partner
+#          buoys, 10-minute data with direction and history).
+#   IOOS   the IOOS sensors ERDDAP (Axiom): the regional associations' wave datasets in one
+#          place (CORMP, USACE, CBIBS, CARICOOS, UNC-CSI ...).
+# Their station lists are fetched on the refresh runner; a window's 24 hours are asked on
+# demand with one short request and kept a few minutes (a refresh press asks again).
+
+def _size_capped_get(http, url, timeout, cap, one_shot=False):
+    """GET url and return the response after checking its size: a body larger than `cap`
+    bytes raises (a feed that suddenly answers 50 MB must not reach the list builder).
+    `one_shot`: no automatic retries (a visitor's request thread)."""
+    r = _one_shot_get(http, url, timeout) if one_shot else http.get(url, timeout=timeout)
+    if r.status_code != 200:
+        raise RuntimeError("HTTP %s from %s" % (r.status_code, url.split("?")[0]))
+    if len(r.content) > cap:
+        raise RuntimeError("%s answered %d bytes (cap %d)" % (url.split("?")[0], len(r.content), cap))
+    return r
+
+
+def _ndbc_num(v):
+    """An NDBC text-file cell: 'MM' (missing) and anything unreadable -> None."""
+    if v is None or v == "MM":
+        return None
+    try:
+        x = float(v)
+    except ValueError:
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _ndbc_header(line):
+    """The column names of an NDBC text file's first header line ('#STN LAT ...' or '#YY MM ...')."""
+    return line.lstrip("#").split()
+
+
+def _ndbc_time(row, ix):
+    """'YYYY MM DD hh mm' columns (latest_obs uses YYYY, realtime2 '#YY') -> ISO Z or None."""
+    try:
+        y = int(row[ix["YYYY"]] if "YYYY" in ix else row[ix["YY"]])
+        if y < 100:
+            y += 2000
+        d = datetime(y, int(row[ix["MM"]]), int(row[ix["DD"]]), int(row[ix["hh"]]), int(row[ix["mm"]]),
+                     tzinfo=timezone.utc)
+    except (KeyError, IndexError, ValueError):
+        return None
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _ndbc_wave_obs(row, ix):
+    """One NDBC text row -> a reading in the site's units (heights m, periods s, FROM degrees, C)."""
+    def num(c):
+        return _ndbc_num(row[ix[c]]) if c in ix and ix[c] < len(row) else None
+    return {
+        "time_utc": _ndbc_time(row, ix),
+        "hs_m": num("WVHT"),
+        "tp_s": num("DPD"),
+        "mean_period_s": num("APD"),
+        "dir_deg": num("MWD"),
+        "sst_c": num("WTMP"),
+        "dir_kind": "from",
+    }
+
+
+def parse_ndbc_latest_waves(text):
+    """NDBC latest_obs.txt -> {station id: {"lat", "lon", "obs"}} for the rows that carry a
+    significant wave height (the file lists every station's newest observation, wind-only ones too)."""
+    out = {}
+    lines = text.splitlines()
+    if not lines or not lines[0].startswith("#"):
+        raise ValueError("not an NDBC latest_obs file")
+    hdr = _ndbc_header(lines[0])
+    ix = {c: i for i, c in enumerate(hdr)}
+    if not {"STN", "LAT", "LON", "WVHT"} <= set(ix):
+        raise ValueError("latest_obs header without STN / LAT / LON / WVHT")
+    for line in lines[1:]:
+        if not line or line.startswith("#"):
+            continue
+        row = line.split()
+        if len(row) < len(hdr):
+            continue
+        obs = _ndbc_wave_obs(row, ix)
+        if obs["hs_m"] is None or obs["time_utc"] is None:
+            continue
+        lat, lon = _ndbc_num(row[ix["LAT"]]), _ndbc_num(row[ix["LON"]])
+        if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        out[row[ix["STN"]]] = {"lat": lat, "lon": lon, "obs": obs}
+    return out
+
+
+def parse_ndbc_realtime_waves(lines, max_rows=400):
+    """An NDBC realtime2/<id>.txt (newest first; two header lines) -> its wave readings,
+    chronological, rows without a wave height left out. Reads at most `max_rows` data rows."""
+    hdr, ix, obs = None, None, []
+    for n, line in enumerate(lines):
+        if isinstance(line, bytes):
+            line = line.decode("ascii", "replace")
+        if n == 0:
+            if not line.startswith("#"):
+                raise ValueError("not an NDBC realtime2 file")
+            hdr = _ndbc_header(line)
+            ix = {c: i for i, c in enumerate(hdr)}
+            if "WVHT" not in ix:
+                raise ValueError("realtime2 header without WVHT")
+            continue
+        if not line or line.startswith("#"):
+            continue
+        if len(obs) >= max_rows:
+            break
+        row = line.split()
+        if len(row) < len(hdr):
+            continue
+        o = _ndbc_wave_obs(row, ix)
+        if o["hs_m"] is not None and o["time_utc"] is not None:
+            obs.append(o)
+    obs.reverse()
+    return obs
+
+
+class _DetailCache:
+    """A window's on-demand answers, kept `ttl` seconds per station (at most `size` stations)."""
+
+    def __init__(self, ttl, size=256):
+        self.ttl = ttl
+        self.size = size
+        self._d = {}
+        self._lock = threading.Lock()
+
+    def get(self, key, fresh_s=None):
+        """The kept answer, or None when there is none, it is older than ttl, or a refresh
+        (fresh_s) finds it older than fresh_s seconds."""
+        with self._lock:
+            hit = self._d.get(key)
+        if not hit:
+            return None
+        age = time.time() - hit[0]
+        if age > self.ttl or (fresh_s is not None and age >= fresh_s):
+            return None
+        return hit[1]
+
+    def put(self, key, value):
+        with self._lock:
+            if len(self._d) >= self.size and key not in self._d:
+                self._d.pop(next(iter(self._d)))      # oldest first (insertion order)
+            self._d[key] = (time.time(), value)
+
+
+class NdbcBulkProvider(BuoyProvider):
+    """NOAA NDBC stations that report waves but publish no spectral file. One GET of the
+    all-stations latest_obs.txt (~100 KB) gives the list and the newest reading; a window's
+    24 hours come from the station's realtime2/<id>.txt (the file NDBC's own pages read).
+    Bulk parameters only: height, dominant and mean period, mean direction where the buoy
+    measures it (Canada's DFO buoys do not), water temperature."""
+    source = "NDBCW"
+    source_name = "NOAA NDBC (bulk report)"
+    source_url = "https://www.ndbc.noaa.gov"
+    license_label = "Public domain (US Govt)"
+    attribution_text = "Source: NOAA National Data Buoy Center (incl. partner networks relayed by NDBC)"
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True)
+    list_ttl_sec = 1800
+    timeout = 30
+    detail_fresh = True                  # the window's refresh button asks again (app.py route)
+    LATEST_URL = "https://www.ndbc.noaa.gov/data/latest_obs/latest_obs.txt"
+    REALTIME_URL = "https://www.ndbc.noaa.gov/data/realtime2/%s.txt"
+    LATEST_CAP = 1 << 20
+    DETAIL_TIMEOUT = (3.05, 10)
+    DETAIL_TTL = 300
+    # Korea's KMA buoys arrive through the GTS with placeholder values (0.5 m, period 0, no
+    # direction at every report on 2026-10-30): left out until their values look real.
+    EXCLUDE = frozenset("2210%d" % i for i in range(1, 9))
+    _ID_RE = re.compile(r"^[A-Za-z0-9]{3,8}$")
+
+    def __init__(self, http=None, spectral_ids=None, names=None):
+        super().__init__(http)
+        self._spectral_ids = spectral_ids    # callable -> ids the NDBC provider lists (spectral file)
+        self._names = names                  # callable -> {id: name} from activestations.xml
+        self._latest_by_id = {}
+        self._dir_ids = set()
+        self._cache = _DetailCache(self.DETAIL_TTL)
+
+    def _call(self, fn, default):
+        if fn is None:
+            return default
+        try:
+            return fn() or default
+        except Exception as e:                # the merge's position + name dedup still applies
+            _log.warning("buoy provider %s: %s unavailable (%s)", self.source, getattr(fn, "__name__", fn), e)
+            return default
+
+    def _fetch_stations(self):
+        r = _size_capped_get(self.http, self.LATEST_URL, self.timeout, self.LATEST_CAP)
+        table = parse_ndbc_latest_waves(r.text)
+        spectral = set(self._call(self._spectral_ids, set()))
+        names = self._call(self._names, {})
+        out, latest, dirs = [], {}, set()
+        for sid, rec in table.items():
+            if sid in spectral or sid in self.EXCLUDE or not self._ID_RE.match(sid):
+                continue
+            obs = rec["obs"]
+            latest[sid] = obs
+            caps = dict(self.capabilities)
+            if obs.get("dir_deg") is not None:
+                caps["directional"] = True
+                dirs.add(sid)
+            out.append({"local_id": sid, "name": names.get(sid) or sid, "lat": rec["lat"], "lon": rec["lon"],
+                        "latest_time": obs["time_utc"], "capabilities": caps})
+        self._latest_by_id = latest
+        self._dir_ids = dirs
+        return out
+
+    def latest(self, local_id):
+        if local_id not in self._latest_by_id:
+            self.list_stations()
+        return self._latest_by_id.get(local_id)
+
+    def detail(self, local_id, fresh_s=None):
+        local_id = str(local_id)
+        if not self._ID_RE.match(local_id):
+            return {"latest": None, "recent": []}
+        hit = self._cache.get(local_id, fresh_s)
+        if hit is not None:
+            return hit
+        latest = self.latest(local_id)
+        recent = []
+        try:
+            r = _one_shot_get(self.http, self.REALTIME_URL % local_id, self.DETAIL_TIMEOUT)
+            if r.status_code == 200 and len(r.content) <= (4 << 20):
+                obs = parse_ndbc_realtime_waves(r.text.splitlines())
+                if obs:
+                    recent = _recent_window(obs)
+                    if latest is None or (_z_epoch(obs[-1]) or 0) > (_z_epoch(latest) or 0):
+                        latest = obs[-1]
+        except (requests.RequestException, ValueError) as e:
+            _log.info("buoy provider %s: %s history unavailable (%s)", self.source, local_id, e)
+        out = {"latest": latest, "recent": recent}
+        if recent:
+            self._cache.put(local_id, out)
+        return out
+
+
+def _kelvin_to_c(v):
+    """GLOS stores temperatures in kelvin (288.6 = 15.45 C); values that already look like
+    Celsius (below 150) are kept."""
+    if v is None:
+        return None
+    return round(v - 273.15, 2) if v > 150 else v
+
+
+def _num_or_none(v):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+class GlosProvider(BuoyProvider):
+    """Great Lakes Observing System (GLOS) Seagull: the Great Lakes' buoys incl. many Sofar
+    Spotters NDBC does not carry. The roster (GeoJSON) gives the station list; a window's 24
+    hours come from one obs call. The API names an observation series only by a numeric
+    parameter id: the parameter list (~3.6 MB) maps ids to CF standard names and is read once a
+    day on the refresh runner. Seasonal: buoys come out of the water Nov-Apr ('recovered')."""
+    source = "GLOS"
+    source_name = "GLOS Seagull (Great Lakes)"
+    source_url = "https://seagull.glos.org"
+    license_label = "Free to use and redistribute (GLOS)"
+    attribution_text = ("Source: Great Lakes Observing System (GLOS) Seagull and its partner buoys. "
+                        "Free to use and redistribute; not intended for legal use.")
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 3600
+    timeout = 60
+    detail_fresh = True
+    BASE = "https://seagull-api.glos.org/api/v1/"
+    # GLOS's ERDDAP mirror lists each obs dataset's newest time (about a day behind the API):
+    # good enough to leave out a platform the roster still calls 'activated' that has sent
+    # nothing for days (45204 on 2026-10-30: newest 10-15), not to judge staleness.
+    MIRROR_URL = ("https://seagull-erddap.glos.org/erddap/tabledap/allDatasets.csv?datasetID,maxTime"
+                  "&datasetID=~%22obs_.*%22")
+    SILENT_AFTER_S = 4 * 86400
+    clock = staticmethod(time.time)          # tests pin it (the mirror's dates and the obs start date)
+    ROSTER_CAP = 8 << 20
+    PARAMS_CAP = 16 << 20
+    OBS_CAP = 4 << 20
+    PARAMS_TTL = 24 * 3600
+    FILL_S = 1800
+    DETAIL_TIMEOUT = (3.05, 15)
+    DETAIL_TTL = 300
+    HS = "sea_surface_wave_significant_height"
+    # reading key -> CF standard names in order of preference
+    FIELDS = (
+        ("hs_m", (HS,)),
+        ("tp_s", ("sea_surface_wave_period_at_variance_spectral_density_maximum",)),
+        ("mean_period_s", ("sea_surface_wave_mean_period",)),
+        ("dir_deg", ("sea_surface_wave_from_direction_at_variance_spectral_density_maximum",
+                     "sea_surface_wave_from_direction")),
+        ("dir_spread_deg", ("sea_surface_wave_directional_spread_at_variance_spectral_density_maximum",
+                            "sea_surface_wave_directional_spread")),
+        ("hmax_m", ("sea_surface_wave_maximum_height",)),
+        ("sst_c", ("sea_surface_temperature", "sea_water_temperature")),
+    )
+    _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$")
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._dataset_by_id = {}             # local id -> obs_dataset_id
+        self._params = {}                    # parameter_id -> (standard_name, depth)
+        self._params_ts = 0.0
+        self._cache = _DetailCache(self.DETAIL_TTL)
+
+    def _refresh_params(self):
+        if self._params and time.time() - self._params_ts < self.PARAMS_TTL:
+            return
+        try:
+            r = _size_capped_get(self.http, self.BASE + "parameters", self.timeout, self.PARAMS_CAP)
+            items = r.json()
+            m = {}
+            for p in items if isinstance(items, list) else []:
+                try:
+                    pid = int(p["parameter_id"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                name = p.get("standard_name") or p.get("parameter_name")
+                if isinstance(name, str):
+                    m[pid] = (name, _num_or_none(p.get("depth")))
+            if m:
+                self._params = m
+                self._params_ts = time.time()
+        except Exception as e:                 # the kept map serves; the list itself still refreshes
+            _log.warning("buoy provider %s: parameter list unavailable (%s)", self.source, e)
+
+    def _silent_datasets(self):
+        """obs_dataset_ids whose newest data (per the mirror) is older than SILENT_AFTER_S; an
+        empty set when the mirror cannot be read (every activated platform is then listed)."""
+        try:
+            hdr, rows = _erddap_rows(self.http, self.MIRROR_URL, 30)
+        except requests.RequestException:
+            return set()
+        if not hdr or "maxTime" not in hdr:
+            return set()
+        ix = {c: i for i, c in enumerate(hdr)}
+        now = self.clock()
+        out = set()
+        for row in rows:
+            try:
+                m = re.match(r"^obs_(\d+)$", row[ix["datasetID"]])
+                ep = _z_epoch({"time_utc": row[ix["maxTime"]]})
+            except (KeyError, IndexError):
+                continue
+            if m and ep is not None and now - ep > self.SILENT_AFTER_S:
+                out.add(int(m.group(1)))
+        return out
+
+    def _fetch_stations(self):
+        r = _size_capped_get(self.http, self.BASE + "obs-datasets.geojson", self.timeout, self.ROSTER_CAP)
+        doc = r.json()
+        feats = doc.get("features") if isinstance(doc, dict) else None
+        if not isinstance(feats, list):
+            raise ValueError("GLOS roster without features")
+        out, by_id = [], {}
+        silent = self._silent_datasets()
+        for f in feats:
+            try:
+                p = f["properties"]
+                if p.get("platform_event") != "activated":
+                    continue
+                names = {q.get("standard_name") for q in p.get("parameters") or [] if isinstance(q, dict)}
+                if self.HS not in names:
+                    continue
+                g = f.get("geometry") or {}
+                if g.get("type") != "Point":
+                    continue
+                lon, lat = float(g["coordinates"][0]), float(g["coordinates"][1])
+                ds = int(p["obs_dataset_id"])
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+            if ds in silent:
+                continue
+            org = str(p.get("org_platform_id") or "").strip()
+            local = org if self._ID_RE.match(org) else str(ds)
+            if local in by_id:
+                continue
+            by_id[local] = ds
+            caps = dict(self.capabilities)
+            caps["directional"] = bool(names & {"sea_surface_wave_from_direction",
+                                                "sea_surface_wave_from_direction_at_variance_spectral_density_maximum"})
+            out.append({"local_id": local, "name": str(p.get("platform_name") or local), "lat": lat, "lon": lon,
+                        "capabilities": caps})
+        self._dataset_by_id = by_id
+        self._refresh_params()
+        return out
+
+    def _obs_from(self, answer):
+        """The obs answer -> chronological readings: each parameter's series is named through the
+        parameter map; the shallowest depth wins for temperatures."""
+        series = {}                                 # standard name -> (depth, {timestamp: value})
+        blocks = answer if isinstance(answer, list) else []
+        for block in blocks:
+            for par in (block.get("parameters") or []) if isinstance(block, dict) else []:
+                try:
+                    name, depth = self._params[int(par["parameter_id"])]
+                except (KeyError, TypeError, ValueError):
+                    continue
+                vals = {}
+                for o in par.get("observations") or []:
+                    try:
+                        t = str(o["timestamp"])
+                        v = _num_or_none(o["value"])
+                    except (KeyError, TypeError):
+                        continue
+                    if v is not None:
+                        vals[t[:19]] = v
+                d = depth if depth is not None else 0.0
+                if name not in series or d < series[name][0]:
+                    series[name] = (d, vals)
+        hs = series.get(self.HS)
+        if not hs:
+            return []
+        epochs = {}                                  # standard name -> (sorted epochs, values)
+        for name, (_d, vals) in series.items():
+            pairs = sorted((e, v) for e, v in ((_z_epoch({"time_utc": _z(k)}), v) for k, v in vals.items())
+                           if e is not None)
+            epochs[name] = ([e for e, _v in pairs], [v for _e, v in pairs])
+
+        def at(name, ep):
+            """The series' value at ep, else its newest value up to FILL_S earlier (GLOS stamps a
+            buoy's height and its period minutes apart), else None."""
+            if name not in epochs:
+                return None
+            es, vs = epochs[name]
+            i = bisect.bisect_right(es, ep) - 1
+            if i >= 0 and ep - es[i] <= self.FILL_S:
+                return vs[i]
+            return None
+        obs = []
+        for t in sorted(hs[1]):
+            o = {"time_utc": _z(t), "dir_kind": "from"}
+            ep = _z_epoch(o)
+            if ep is None:
+                continue
+            for key, names in self.FIELDS:
+                o[key] = None
+                for n in names:
+                    v = at(n, ep)
+                    if v is not None:
+                        o[key] = v
+                        break
+            o["sst_c"] = _kelvin_to_c(o["sst_c"])
+            if o["hs_m"] is not None and _z_epoch(o) is not None:
+                obs.append(o)
+        return obs
+
+    def detail(self, local_id, fresh_s=None):
+        local_id = str(local_id)
+        if local_id not in self._dataset_by_id:
+            self.list_stations()
+        ds = self._dataset_by_id.get(local_id)
+        if ds is None:
+            return {"latest": None, "recent": []}
+        hit = self._cache.get(local_id, fresh_s)
+        if hit is not None:
+            return hit
+        if not self._params:
+            self._refresh_params()
+        start = (datetime.fromtimestamp(self.clock(), timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        url = self.BASE + "obs?obsDatasetId=%d&startDate=%s" % (ds, start)
+        try:
+            r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.OBS_CAP, one_shot=True)
+            obs = self._obs_from(r.json())
+        except (requests.RequestException, RuntimeError, ValueError) as e:
+            _log.info("buoy provider %s: %s obs unavailable (%s)", self.source, local_id, e)
+            return {"latest": None, "recent": []}
+        out = {"latest": obs[-1] if obs else None, "recent": _recent_window(obs) if obs else []}
+        if obs:
+            self._cache.put(local_id, out)
+        return out
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+def _erddap_index_variables(summary):
+    """An ERDDAP index row's Summary text -> the dataset's variable names (the lines after
+    'VARIABLES:', each 'name (long name, units)'). ERDDAP writes the line breaks as a literal
+    backslash + n in the CSV."""
+    text = summary.replace(chr(92) + "n", "\n")
+    out, on = [], False
+    for line in text.split("\n"):
+        line = line.strip()
+        if line.startswith("VARIABLES:"):
+            on = True
+            continue
+        if on:
+            m = re.match(r"([A-Za-z_][A-Za-z0-9_]*) \(", line)
+            if m:
+                out.append(m.group(1))
+    return out
+
+
+_IOOS_ID_PATTERNS = (
+    re.compile(r"^\((\w{5})\s*/"),                 # "(41110 / ILM2WAVE / ILM2W) Wrightsville Beach ..."
+    re.compile(r"\((\d{5}|[A-Z]{4}\d)\)\s*$"),     # "181 - Rincon, PUERTO RICO (41115)", "... (SIPF1)"
+    re.compile(r"^(\d{5}|[A-Z]{4}\d)\b"),          # "46076 - Cape Cleare AK", "44008 (LLNR 827) - ..."
+)
+
+
+def _ioos_local_id(dataset_id, title):
+    """The buoy's own number when the dataset names it (NDBC / WMO ids join other networks'
+    markers and the forecast-point links), else the dataset id."""
+    m = re.match(r"^(?:ism-[a-z]+-)?(?:gov-ndbc-|wmo_)(\w+)$", dataset_id)
+    if m:
+        return m.group(1).upper()
+    t = re.sub(r"^\[[^\]]*\]\s*", "", title or "")
+    for pat in _IOOS_ID_PATTERNS:
+        m = pat.search(t)
+        if m:
+            return m.group(1).upper()
+    return re.sub(r"^ism-[a-z]+-", "", dataset_id)     # a regional association's copy = the network's own
+
+
+def _ioos_name(title):
+    """'(41110 / ILM2WAVE / ILM2W) Wrightsville Beach ..., NC' -> 'Wrightsville Beach ..., NC'."""
+    t = re.sub(r"^\[[^\]]*\]\s*", "", title or "")                 # "[SFC Buoy] 44063 - Annapolis, MD"
+    t = re.sub(r"^\([^)]*\)\s*(?:-\s*)?", "", t).strip()
+    return t or (title or "").strip()
+
+
+class IoosSensorsProvider(BuoyProvider):
+    """The IOOS sensors ERDDAP (run by Axiom for U.S. IOOS): every regional association's wave
+    datasets in one place. Two calls a refresh: the wave-height category index (each dataset's
+    variable list is in its summary) and allDatasets (positions and the newest time). A window's
+    24 hours are one tabledap CSV naming only the variables that dataset has (ERDDAP refuses a
+    query naming one it does not have). Datasets of the same buoy (a network's copy and the
+    regional association's) are one marker: the newest wins."""
+    source = "IOOS"
+    source_name = "U.S. IOOS regional observing systems"
+    source_url = "https://sensors.ioos.us"
+    license_label = "Free to use and redistribute (IOOS)"
+    attribution_text = ("Source: U.S. IOOS regional ocean observing systems and NOAA, via the IOOS sensor "
+                        "map (Axiom Data Science). Free to use and redistribute; not intended for legal use.")
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True)
+    list_ttl_sec = 6 * 3600
+    timeout = 90
+    detail_fresh = True
+    BASE = "https://erddap.sensors.ioos.us/erddap/"
+    INDEX_URL = BASE + "categorize/standard_name/sea_surface_wave_significant_height/index.csv?page=1&itemsPerPage=5000"
+    LIVE_URL = (BASE + "tabledap/allDatasets.csv?datasetID,institution,minLongitude,maxLongitude,minLatitude,"
+                "maxLatitude,maxTime,title&maxTime%3E=now-2days")
+    # A moored buoy's reported positions stay within a few km; a dataset whose positions span more
+    # than this is a glider / drifter / Saildrone (or a buoy re-deployed elsewhere): left out.
+    MAX_SPAN_DEG = 0.2
+    LIST_CAP = 16 << 20
+    DETAIL_CAP = 4 << 20
+    DETAIL_TIMEOUT = (3.05, 15)
+    DETAIL_TTL = 300
+    HS = "sea_surface_wave_significant_height"
+    # reading key -> variable names in order of preference
+    FIELDS = (
+        ("tp_s", ("sea_surface_wave_period_at_variance_spectral_density_maximum",)),
+        ("mean_period_s", ("sea_surface_wave_mean_period",)),
+        ("dir_deg", ("sea_surface_wave_from_direction_at_variance_spectral_density_maximum",
+                     "sea_surface_wave_from_direction")),
+        ("hmax_m", ("sea_surface_wave_maximum_height",)),
+        ("sst_c", ("sea_surface_temperature", "sea_water_temperature")),
+    )
+    PARTS = (("Swell", "sea_surface_swell_wave_significant_height", "sea_surface_swell_wave_period",
+              "sea_surface_swell_wave_from_direction"),
+             ("Wind sea", "sea_surface_wind_wave_significant_height", "sea_surface_wind_wave_period",
+              "sea_surface_wind_wave_from_direction"))
+    _DS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._ds = {}                          # local id -> {"dataset", "vars", "institution"}
+        self._cache = _DetailCache(self.DETAIL_TTL)
+
+    def _fetch_stations(self):
+        r = _size_capped_get(self.http, self.INDEX_URL, self.timeout, self.LIST_CAP)
+        rows = list(csv.reader(io.StringIO(r.text)))
+        if not rows or "Dataset ID" not in rows[0]:
+            raise ValueError("IOOS index without a Dataset ID column")
+        ix = {c: i for i, c in enumerate(rows[0])}
+        meta = {}
+        for row in rows[1:]:
+            try:
+                dsid = row[ix["Dataset ID"]]
+                variables = _erddap_index_variables(row[ix["Summary"]])
+            except (KeyError, IndexError):
+                continue
+            if self._DS_RE.match(dsid) and self.HS in variables and "time" in variables:
+                meta[dsid] = (row[ix["Title"]] if "Title" in ix else "", variables)
+        hdr, live = _erddap_rows(self.http, self.LIVE_URL, self.timeout)
+        if not hdr:
+            raise ValueError("IOOS allDatasets answered nothing")
+        li = {c: i for i, c in enumerate(hdr)}
+        best = {}                               # local id -> (maxTime, row data)
+        for row in live:
+            try:
+                dsid = row[li["datasetID"]]
+                if dsid not in meta:
+                    continue
+                la0, la1 = float(row[li["minLatitude"]]), float(row[li["maxLatitude"]])
+                lo0, lo1 = float(row[li["minLongitude"]]), float(row[li["maxLongitude"]])
+                maxt = row[li["maxTime"]]
+            except (KeyError, IndexError, ValueError):
+                continue
+            if not all(math.isfinite(x) for x in (la0, la1, lo0, lo1)):
+                continue
+            if la1 - la0 > self.MAX_SPAN_DEG or lo1 - lo0 > self.MAX_SPAN_DEG:
+                continue
+            lat, lon = (la0 + la1) / 2.0, (lo0 + lo1) / 2.0
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180) or not maxt.endswith("Z"):
+                continue
+            title, variables = meta[dsid]
+            title = row[li["title"]] or title
+            local = _ioos_local_id(dsid, title)
+            if local in best and best[local][0] >= maxt:
+                continue
+            best[local] = (maxt, {"dataset": dsid, "vars": variables, "title": title,
+                                  "institution": row[li["institution"]], "lat": lat, "lon": lon})
+        out, ds = [], {}
+        for local, (maxt, d) in best.items():
+            ds[local] = d
+            caps = dict(self.capabilities)
+            caps["directional"] = any(v in d["vars"] for v in self.FIELDS[2][1])
+            out.append({"local_id": local, "name": _ioos_name(d["title"]) or local, "lat": d["lat"],
+                        "lon": d["lon"], "latest_time": maxt, "capabilities": caps})
+        self._ds = ds
+        return out
+
+    def _columns(self, variables):
+        cols = [self.HS]
+        if self.HS + "_qc_agg" in variables:
+            cols.append(self.HS + "_qc_agg")
+        for _key, names in self.FIELDS:
+            for n in names:
+                if n in variables:
+                    cols.append(n)
+                    break
+        for _label, h, t, d in self.PARTS:
+            if h in variables:
+                cols.append(h)
+                cols.extend(x for x in (t, d) if x in variables)
+        return cols
+
+    def detail(self, local_id, fresh_s=None):
+        local_id = str(local_id)
+        if local_id not in self._ds:
+            self.list_stations()
+        d = self._ds.get(local_id)
+        if d is None:
+            return {"latest": None, "recent": []}
+        hit = self._cache.get(local_id, fresh_s)
+        if hit is not None:
+            return hit
+        cols = self._columns(d["vars"])
+        url = (self.BASE + "tabledap/" + d["dataset"] + ".csv?time," + ",".join(cols) +
+               "&time%3E=now-24hours&orderBy(%22time%22)")
+        try:
+            r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.DETAIL_CAP, one_shot=True)
+        except (requests.RequestException, RuntimeError) as e:
+            _log.info("buoy provider %s: %s data unavailable (%s)", self.source, local_id, e)
+            return {"latest": None, "recent": [], "attribution_text": self._attribution(d)}
+        rows = list(csv.reader(io.StringIO(r.text)))
+        obs = []
+        if len(rows) >= 3:
+            hi = {c: i for i, c in enumerate(rows[0])}
+            for row in rows[2:]:
+                o = self._obs(row, hi)
+                if o is not None:
+                    obs.append(o)
+        out = {"latest": obs[-1] if obs else None, "recent": _recent_window(obs) if obs else [],
+               "attribution_text": self._attribution(d)}
+        if obs:
+            self._cache.put(local_id, out)
+        return out
+
+    def _obs(self, row, hi):
+        def num(c):
+            if c not in hi or hi[c] >= len(row):
+                return None
+            return _num_or_none(row[hi[c]])
+        hs = num(self.HS)
+        qc = num(self.HS + "_qc_agg")
+        if hs is None or qc == 4:                 # QARTOD aggregate 4 = failed
+            return None
+        try:
+            t = row[hi["time"]]
+        except (KeyError, IndexError):
+            return None
+        o = {"time_utc": t if t.endswith("Z") else None, "hs_m": hs, "dir_kind": "from"}
+        if _z_epoch(o) is None:
+            return None
+        for key, names in self.FIELDS:
+            o[key] = None
+            for n in names:
+                if n in hi:
+                    o[key] = num(n)
+                    break
+        parts = []
+        for label, h, t_, d_ in self.PARTS:
+            ph = num(h)
+            if ph is not None:
+                parts.append({"label": label, "hs_m": ph, "period_s": num(t_), "dir_deg": num(d_)})
+        if parts:
+            o["partitions"] = parts
+        return o
+
+    @staticmethod
+    def _attribution(d):
+        inst = (d.get("institution") or "").strip()
+        base = "Source: %s, via the U.S. IOOS sensor map (Axiom Data Science). " % inst if inst else \
+            "Source: U.S. IOOS regional ocean observing systems via the IOOS sensor map (Axiom Data Science). "
+        return base + "Free to use and redistribute; not intended for legal use."
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]

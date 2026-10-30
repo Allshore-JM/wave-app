@@ -43,6 +43,18 @@ class RecordingRunner:
             fn()
         return [name for name, _ in jobs]
 
+    def run_named(self, names):
+        """Run only the named jobs (the others stay queued, in order)."""
+        keep, ran = [], []
+        for name, fn in self.jobs:
+            if name in names:
+                fn()
+                ran.append(name)
+            else:
+                keep.append((name, fn))
+        self.jobs = keep
+        return ran
+
 
 def _fresh_bg():
     return {"started": False, "thread": None, "started_ts": None, "warm_ts": None, "ticks": 0,
@@ -88,7 +100,7 @@ def test_route_never_waits_and_says_what_is_missing(bg):
     assert [n for n, _ in rec.jobs] == ["buoy-refresh-%s" % s for s in A.LIVE_WARM_ORDER]   # queued once each, cheap first
     c.get(LIVE)
     assert len(rec.jobs) == len(provs)                               # a second request queues nothing new
-    rec.run(2)                                                       # NDBC + CDIP land
+    rec.run_named({"buoy-refresh-NDBC", "buoy-refresh-CDIP"})         # NDBC + CDIP land
     A._LIVE_WAKE.clear()
     r = c.get(LIVE)                                                  # not built yet: the last build, and a wake-up
     assert r.get_json() == [] and A._LIVE_WAKE.is_set()

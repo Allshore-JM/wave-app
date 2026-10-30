@@ -4139,6 +4139,21 @@ def _stations_with_live_spectral_wave_data() -> set:
     html = _fetch_text(NDBC_REALTIME_DIR)
     return set(re.findall(r'href="([A-Za-z0-9]+)\.data_spec"', html))
 
+NDBC_ACTIVE_NAMES = {"data": None}     # activestations.xml names, kept by the spectral-list build
+
+
+def _ndbc_spectral_ids() -> set:
+    """Ids the NDBC provider lists (stations with a spectral file): the bulk feed leaves them out."""
+    return {s["id"] for s in get_live_ndbc_wave_stations()}
+
+
+def _ndbc_active_names() -> dict:
+    """{id: name} of every NDBC station (activestations.xml), from the spectral-list build."""
+    get_live_ndbc_wave_stations()
+    with _CACHE_LOCK:
+        return dict(NDBC_ACTIVE_NAMES["data"] or {})
+
+
 def get_live_ndbc_wave_stations() -> list:
     with _CACHE_LOCK:
         if NDBC_STATIONS_CACHE["data"] and _cache_valid(NDBC_STATIONS_CACHE["timestamp"]):
@@ -4146,6 +4161,8 @@ def get_live_ndbc_wave_stations() -> list:
     # Fetch/parse outside the lock so concurrent requests don't serialize on NOAA.
     active = _parse_active_ndbc_stations()
     live_ids = _stations_with_live_spectral_wave_data()
+    with _CACHE_LOCK:
+        NDBC_ACTIVE_NAMES["data"] = {sid: info.get("name") or sid for sid, info in active.items()}
     stations = []
     for sid in sorted(live_ids):
         info = active.get(sid)
@@ -5374,6 +5391,11 @@ def _build_buoy_providers():
             buoy_sources.SmhiProvider(http=HTTP),
             buoy_sources.RwsProvider(http=HTTP),
             buoy_sources.CopernicusProvider(http=HTTP),      # pan-EU/global open aggregator
+            # US widen (plan section 63): NDBC's wave-only stations, the Great Lakes, IOOS's regional sets
+            buoy_sources.NdbcBulkProvider(http=HTTP, spectral_ids=_ndbc_spectral_ids,
+                                          names=_ndbc_active_names),
+            buoy_sources.GlosProvider(http=HTTP),
+            buoy_sources.IoosSensorsProvider(http=HTTP),
         ]
         _break_providers(_BUOY_PROVIDERS)
     return _BUOY_PROVIDERS
@@ -5643,7 +5665,8 @@ LIVE_BUILD_FAIL_MAX = 3                      # this many failed builds in a row:
 LIVE_FETCH_STUCK_SEC = 900.0                 # a list fetch in flight this long is hung (no overall socket deadline)
 # Cheap and quick feeds first, the big ones (AODN's WFS, CMEMS's 43 MB index) last, so the
 # first partial answers carry the most markers soonest. Unknown sources go last.
-LIVE_WARM_ORDER = ["NDBC", "CDIP", "SMHI", "MI-IE", "CEFAS", "RWS", "QLD", "AusWaves", "AODN", "CMEMS"]
+LIVE_WARM_ORDER = ["NDBC", "NDBCW", "CDIP", "SMHI", "MI-IE", "CEFAS", "GLOS", "RWS", "QLD", "AusWaves", "AODN",
+                   "IOOS", "CMEMS"]
 _LIVE_BG = {"started": False, "thread": None, "started_ts": None, "warm_ts": None, "ticks": 0,
             "last_tick_ts": None, "last_tick_s": None, "prebuilds": 0, "errors": 0, "last_error": None,
             "tz_loaded": False, "build_failures": 0}
@@ -5994,11 +6017,14 @@ def api_buoys_latest(bid):
                 resp.headers["CDN-Cache-Control"] = "no-store"
                 return resp
             try:
-                d = p.detail(local)
+                # a provider that keeps its windows' answers a few minutes takes the refresh button's
+                # "ask again" (section 63: NDBCW, GLOS, IOOS); the others answer from their list
+                d = p.detail(local, fresh_s=_refresh_s()) if getattr(p, "detail_fresh", False) else p.detail(local)
             except Exception:
                 d = {"latest": None, "recent": []}
             return _json_cached({"id": bid, "source": p.source,
-                                 "attribution_text": p.attribution_text,
+                                 # a provider may name the data's own operator (IOOS: the regional association)
+                                 "attribution_text": d.get("attribution_text") or p.attribution_text,
                                  "capabilities": dict(p.capabilities),
                                  "latest": d.get("latest"),
                                  "recent": d.get("recent", [])}, max_age=300)

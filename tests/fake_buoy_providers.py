@@ -6,6 +6,9 @@ The fixture exercises every dedup/priority path of buoy_sources.merge_stations:
   * AODN spectra buoy vs AusWaves bulk        -> spectra wins (priority 90 vs 70)
   * a stale station (latest_time older than stale_after_sec)
   * an EMPTY provider (QLD) and a RAISING provider (SMHI) -> both yield [] (fail-soft)
+  * the US widen (plan section 63): a GLOS twin of an NDBC buoy (<1 km: NDBC kept), an IOOS twin
+    of an NDBCW buoy (<1 km: IOOS kept; listed first so the pre-section-63 code, which ranks
+    both 40, keeps it too and the golden can be captured on the unchanged code), lone markers
 Frozen clock: NOW_EPOCH. Every _fetch_stations returns fresh dicts, like a real fetch.
 """
 import copy
@@ -117,7 +120,37 @@ class FakeCMEMS(_Fake):
             {"local_id": "K13X", "name": "K13", "lat": 53.2205, "lon": 3.2205, "latest_time": FRESH}]  # <1 km of RWS K13
 
 
-FAKE_CLASSES = [FakeNDBC, FakeCDIP, FakeQLD, FakeAODN, FakeAusWaves, FakeMIIE, FakeCEFAS, FakeSMHI, FakeRWS, FakeCMEMS]
+
+class FakeGLOS(_Fake):
+    source = "GLOS"; source_name = "GLOS Seagull (Great Lakes)"; source_url = "https://seagull.glos.org"
+    license_label = "Free to use and redistribute (GLOS)"; attribution_text = "Source: GLOS Seagull"
+    stale_after_sec = 6 * 3600; list_ttl_sec = 3600
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "SPOT-1360", "name": "Marquette", "lat": 46.55, "lon": -87.38},
+            {"local_id": "51001", "name": "NW Hawaii copy", "lat": 24.4005, "lon": -162.0005}]   # <1 km of NDBC 51001
+
+
+class FakeIOOS(_Fake):
+    source = "IOOS"; source_name = "U.S. IOOS regional observing systems"; source_url = "https://sensors.ioos.us"
+    license_label = "Free to use and redistribute (IOOS)"; attribution_text = "Source: U.S. IOOS"
+    stale_after_sec = 6 * 3600; list_ttl_sec = 6 * 3600
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True)
+    rows = [{"local_id": "41110", "name": "Wrightsville Beach Nearshore, NC", "lat": 34.1445, "lon": -77.7183,
+             "latest_time": FRESH, "capabilities": buoy_sources._caps(bulk=True, recent_history=True, directional=True)},
+            {"local_id": "FRFN7", "name": "Duck FRF, NC", "lat": 36.20, "lon": -75.71, "latest_time": OLD}]
+
+
+class FakeNDBCW(_Fake):
+    source = "NDBCW"; source_name = "NOAA NDBC (bulk report)"; source_url = "https://www.ndbc.noaa.gov"
+    license_label = "Public domain (US Govt)"; attribution_text = "Source: NOAA National Data Buoy Center"
+    stale_after_sec = 6 * 3600; list_ttl_sec = 1800
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True)
+    rows = [{"local_id": "44137", "name": "East Scotia Slope", "lat": 42.26, "lon": -62.03, "latest_time": FRESH},
+            {"local_id": "41110", "name": "41110", "lat": 34.144, "lon": -77.715, "latest_time": FRESH}]  # <1 km of IOOS 41110
+
+
+FAKE_CLASSES = [FakeNDBC, FakeCDIP, FakeQLD, FakeAODN, FakeAusWaves, FakeMIIE, FakeCEFAS, FakeSMHI, FakeRWS, FakeCMEMS,
+                FakeGLOS, FakeIOOS, FakeNDBCW]
 
 
 def make_providers():

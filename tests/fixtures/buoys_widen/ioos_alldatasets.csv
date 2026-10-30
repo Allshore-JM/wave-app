@@ -1,0 +1,7 @@
+datasetID,institution,minLongitude,maxLongitude,minLatitude,maxLatitude,maxTime,title
+,,degrees_east,degrees_east,degrees_north,degrees_north,UTC,
+cap2wave-capers-nearshore-wave,UNCW - Coastal Ocean Research and Monitoring Program (CORMP),-79.6188,-79.6188,32.8016,32.8016,2026-10-30T02:55:31Z,"(41065 / CAP2WAVE) Capers Nearshore Wave, SC"
+ism-secoora-cap2wave-capers-near,UNCW - Coastal Ocean Research and Monitoring Program (CORMP),-79.6559,-79.6559,32.5361,32.5361,2026-10-29T22:55:31Z,"(41065 / CAP2WAVE) Capers Nearshore Wave, SC"
+ism-secoora-41110-ilm2wave-ilm2w,UNCW - Coastal Ocean Research and Monitoring Program (CORMP),-77.7183,-77.7183,34.1445,34.1445,2026-10-29T22:00:00Z,"(41110 / ILM2WAVE / ILM2W) Wrightsville Beach Nearshore Waves (Masonboro Inlet), NC"
+gov-ndbc-45135,Environment and Climate Change Canada,-76.87,-76.87,43.78,43.78,2026-10-30T01:00:00Z,45135 - Prince Edward Pt
+edu_fit_sipf1,Florida Institute Of Technology (FIT),-80.445,-80.445,27.862,27.862,2026-10-30T02:30:00Z,"Sebastian Inlet State Park, FL (SIPF1)"

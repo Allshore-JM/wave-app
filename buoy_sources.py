@@ -23,6 +23,7 @@ import logging
 import math
 import os
 import re
+import socket
 import struct
 import time
 import threading
@@ -1872,6 +1873,7 @@ _BUOY_NUMBER_RE = re.compile(r"^(?:\d{5}|[A-Z]{4}\d)$")
 # platforms Sandettie LV, Clipper and Lomond that NDBC relays as 62304 / 62144 / 62146, 6-7 km from NDBC's
 # positions (G42 F10)
 _BUOY_ALIAS = {"cefas:8": "62304", "cefas:10": "62144", "cefas:305": "62146"}
+_CMEMS_WMO_RE = re.compile(r"^cmems:[A-Z]{2}_TS_MO_6200(\d{3})$", re.I)
 
 
 def _buoy_number(st):
@@ -1881,6 +1883,9 @@ def _buoy_number(st):
     alias = _BUOY_ALIAS.get(str(st.get("id") or "").lower())
     if alias:
         return alias
+    m = _CMEMS_WMO_RE.match(str(st.get("id") or ""))   # cmems:NO_TS_MO_6200144 is WMO 62144 (the page's linkId)
+    if m:                                               # (G42 re-check N2)
+        return "62" + m.group(1)
     if st.get("source") not in _NUMBERED_SOURCES:
         return ""
     local = str(st.get("id") or "").split(":", 1)[-1].upper()
@@ -1967,21 +1972,84 @@ def _capped_fetch(http, url, timeout, cap, one_shot=False, max_s=None):
             raise RuntimeError("%s answered %d bytes (cap %d)" % (where, len(r.content), cap))
         return r
     t0 = time.monotonic()
-    r = (requests.get if one_shot else http.get)(url, timeout=timeout, stream=True)
+    # A check between chunks never fires on a body smaller than one chunk, so a body that trickles is also cut from
+    # outside when max_s runs out (G42 re-check N4): its socket's reads get the time left as their timeout (a stall
+    # ends then), and a timer shuts the socket (a blocked read ends at once on Linux; on Windows the next read after a
+    # trickled byte does). urllib3 sets the timeout again for the next answer on a pooled connection.
+    held = {"sock": None, "shut": None, "late": False, "done": False}
+    guard = threading.Lock()
+
+    def cut():
+        with guard:
+            if held["done"]:
+                return
+            held["late"] = True
+            sock, shut = held["sock"], held["shut"]
+        for stop in (shut, sock and (lambda: sock.shutdown(socket.SHUT_RDWR))):
+            if stop:
+                try:
+                    stop()
+                except Exception:
+                    pass
+
+    def over():
+        return held["late"] or (max_s is not None and time.monotonic() - t0 >= max_s)
+
+    killer = None
+    if max_s is not None:
+        killer = threading.Timer(max_s, cut)
+        killer.daemon = True
+        killer.start()
     try:
-        n = r.headers.get("Content-Length")
-        if n and n.isdigit() and int(n) > cap:
-            raise RuntimeError("%s announced %s bytes (cap %d)" % (where, n, cap))
-        buf = bytearray()
-        for chunk in r.iter_content(65536):
-            buf += chunk
-            if len(buf) > cap:
-                raise RuntimeError("%s answered more than %d bytes (cap)" % (where, cap))
-            if max_s is not None and time.monotonic() - t0 > max_s:
-                raise RuntimeError("%s took longer than %d s" % (where, max_s))
-        return _CappedBody(r.status_code, bytes(buf), r.encoding)
+        r = (requests.get if one_shot else http.get)(url, timeout=timeout, stream=True)
+        try:
+            with guard:
+                held["sock"] = _answer_socket(r)
+                held["shut"] = getattr(r.raw, "shutdown", None)
+                late = held["late"]
+            if late:
+                cut()
+            elif max_s is not None and held["sock"] is not None:
+                try:
+                    held["sock"].settimeout(max(0.01, max_s - (time.monotonic() - t0)))
+                except Exception:
+                    pass
+            n = r.headers.get("Content-Length")
+            if n and n.isdigit() and int(n) > cap:
+                raise RuntimeError("%s announced %s bytes (cap %d)" % (where, n, cap))
+            buf = bytearray()
+            try:
+                for chunk in r.iter_content(65536):
+                    buf += chunk
+                    if len(buf) > cap:
+                        raise RuntimeError("%s answered more than %d bytes (cap)" % (where, cap))
+                    if max_s is not None and time.monotonic() - t0 > max_s:
+                        raise RuntimeError("%s took longer than %g s" % (where, max_s))
+            except (requests.RequestException, OSError, ValueError):
+                if over():
+                    raise RuntimeError("%s took longer than %g s" % (where, max_s))
+                raise
+            with guard:
+                held["done"] = True
+            return _CappedBody(r.status_code, bytes(buf), r.encoding)
+        finally:
+            r.close()
     finally:
-        r.close()
+        with guard:
+            held["done"] = True
+        if killer is not None:
+            killer.cancel()
+
+
+def _answer_socket(r):
+    """The socket a streamed answer reads from: the pooled connection's, else the one under the answer's file (a
+    server that closes after its answer leaves the connection without one). None when neither is there."""
+    raw = getattr(r, "raw", None)
+    sock = getattr(getattr(raw, "_connection", None), "sock", None)
+    if sock is None:
+        fp = getattr(getattr(raw, "_fp", None), "fp", None)
+        sock = getattr(getattr(fp, "raw", None), "_sock", None)
+    return sock if hasattr(sock, "settimeout") else None
 
 
 def _size_capped_get(http, url, timeout, cap, one_shot=False, max_s=LIST_MAX_S):
@@ -2338,7 +2406,8 @@ def _erddap_wave_newest(http, url, timeout, now=None):
     dataset has a wave height in the query's window, ("no", None) when ERDDAP answers that nothing matches (its
     404 "Your query produced no matching results"), ("unknown", None) on any other answer or failure: another 404
     ("Currently unknown datasetID" while ERDDAP reloads a dataset, G42 F6), an unreadable body (G42 F4), a body
-    over PROBE_CAP or slower than PROBE_MAX_S. A row in the future or with an impossible height does not count."""
+    over PROBE_CAP or slower than PROBE_MAX_S. A row in the future or with an impossible height does not count; an
+    answer holding only such rows is "unknown" (the sensor reports something: G42 re-check N3)."""
     try:
         r = _capped_fetch(http, url, timeout, PROBE_CAP, one_shot=True, max_s=PROBE_MAX_S)
     except (requests.RequestException, RuntimeError):
@@ -2354,17 +2423,22 @@ def _erddap_wave_newest(http, url, timeout, now=None):
         ti = rows[0].index("time")
         hi = [i for i, c in enumerate(rows[0]) if c.endswith("significant_height")]
         limit = (time.time() if now is None else now) + FUTURE_SLACK_S
-        times = []
+        times, refused = [], 0
         for row in rows[2:]:
             if len(row) <= ti or not row[ti].endswith("Z"):
                 continue
             ep = _z_epoch({"time_utc": row[ti]})
             if ep is None or ep > limit:
+                refused += ep is not None
                 continue
             if hi and not (len(row) > hi[0] and _in_range(_num_or_none(row[hi[0]]), 0.0, HS_MAX_M)):
+                if len(row) > hi[0] and _num_or_none(row[hi[0]]) is not None:
+                    refused += 1           # a number out of range: not "no wave height" (G42 re-check N3)
                 continue
             times.append(row[ti])
-        return ("yes", max(times)) if times else ("no", None)
+        if times:
+            return "yes", max(times)
+        return ("unknown", None) if refused else ("no", None)
     except Exception:                          # csv field limits, bad bytes ...: one probe never fails the list
         return "unknown", None
 
@@ -2422,13 +2496,13 @@ class GlosProvider(BuoyProvider):
                   "&datasetID=~%22obs_.*%22")
     SILENT_AFTER_S = 4 * 86400
     # The mirror itself can stall (it runs about a day behind the API): when its newest dataset is older than
-    # MIRROR_STALL_S nothing is judged by it (every activated platform listed, no probe asked), and a probe
-    # batch that answers "no" for more than NO_SHARE_MAX of at least NO_SHARE_MIN platforms is read as a mirror
-    # problem, not as that many dead sensors (its "no" verdicts are not kept) (G42 F5).
+    # MIRROR_STALL_S nothing is judged by it (every activated platform listed, no probe asked) (G42 F5). A probe's
+    # "no" is believed only for a dataset the mirror lists (its own row): a sensor off while the rest of the platform
+    # reports, which in winter is most of them (G42 re-check N1). A mirror that cannot be read keeps the last
+    # good judgement up to MIRROR_HOLD_S (held verdicts and marker times, no new probes) (G42 re-check N6).
     MIRROR_STALL_S = 2 * 86400
+    MIRROR_HOLD_S = 6 * 3600
     EARLY_START_S = 36 * 3600            # the mirror runs ~30 h behind: older than this, the platform has gone quiet
-    NO_SHARE_MIN = 10
-    NO_SHARE_MAX = 0.8
     clock = staticmethod(time.time)          # tests pin it (the mirror's dates and the obs start date)
     ROSTER_CAP = 8 << 20
     PARAMS_CAP = 16 << 20
@@ -2456,8 +2530,12 @@ class GlosProvider(BuoyProvider):
     # off (West Lake Erie 45005 and ECCC's 451xx buoys on 2026-10-30): the mirror's newest wave height decides
     # (it lags the API by about a day, hence 3 days). Asked again after PROBE_TTL; a failed answer keeps the
     # last verdict; platforms the NDBC provider lists with spectra are not asked (NDBC's marker wins there).
+    # ERDDAP leaves out rows in the future and heights outside 0-30 m, so the newest row it gives is a sane one
+    # (G42 re-check N3).
     PROBE_URL = ("https://seagull-erddap.glos.org/erddap/tabledap/obs_%d.csv?time,sea_surface_wave_significant_height"
-                 "&time%%3E=now-3days&sea_surface_wave_significant_height!=NaN&orderByMax(%%22time%%22)")
+                 "&time%%3E=now-3days&time%%3C=now%%2B1hour"
+                 "&sea_surface_wave_significant_height%%3E=0&sea_surface_wave_significant_height%%3C=30"
+                 "&sea_surface_wave_significant_height!=NaN&orderByMax(%%22time%%22)")
     PROBE_TTL = 6 * 3600
     PROBE_TIMEOUT = (3.05, 20)
 
@@ -2468,23 +2546,20 @@ class GlosProvider(BuoyProvider):
         self._params = {}                    # parameter_id -> (standard_name, depth)
         self._params_ts = 0.0
         self._probe = {}                     # obs_dataset_id -> (asked epoch, "yes" / "no", newest at the mirror)
+        self._mirror_held = None             # (silent ids, {id: maxTime epoch}, read epoch): the last good mirror read
         self._cache = _DetailCache(self.DETAIL_TTL)
 
-    def _wave_verdicts(self, cands):
-        """{local: ds} -> the locals to leave out (no wave height at the mirror within its window)."""
+    def _wave_verdicts(self, cands, listed=None, ask=True):
+        """{local: ds} -> the locals to leave out (no wave height at the mirror within its window). `listed`: the
+        datasets the mirror lists; a "no" for one it does not list is not kept (the mirror lacks it, not the sensor).
+        `ask`: False = judge by the held verdicts only (the mirror could not be read this time)."""
         now = self.clock()
-        jobs = {ds: self.PROBE_URL % ds for ds in cands.values()
-                if not (ds in self._probe and now - self._probe[ds][0] < self.PROBE_TTL)}
-        res = _wave_probes(self.http, jobs, self.PROBE_TIMEOUT, now=now)
-        answered = [s for s, _n in res.values() if s in ("yes", "no")]
-        nos = answered.count("no")
-        doubt = len(answered) >= self.NO_SHARE_MIN and nos > self.NO_SHARE_MAX * len(answered)
-        if doubt:
-            _log.warning("buoy provider %s: %d of %d wave probes answered no; read as a mirror problem, "
-                         "no platform left out by this batch", self.source, nos, len(answered))
-        for ds, (status, newest) in res.items():
-            if status == "yes" or (status == "no" and not doubt):
-                self._probe[ds] = (now, status, newest)
+        if ask:
+            jobs = {ds: self.PROBE_URL % ds for ds in cands.values()
+                    if not (ds in self._probe and now - self._probe[ds][0] < self.PROBE_TTL)}
+            for ds, (status, newest) in _wave_probes(self.http, jobs, self.PROBE_TIMEOUT, now=now).items():
+                if status == "yes" or (status == "no" and (listed is None or ds in listed)):
+                    self._probe[ds] = (now, status, newest)
         return {loc for loc, ds in cands.items() if self._probe.get(ds, (0, "yes"))[1] == "no"}
 
     def _refresh_params(self):
@@ -2511,18 +2586,24 @@ class GlosProvider(BuoyProvider):
             _log.warning("buoy provider %s: parameter list unavailable (%s)", self.source, e)
 
     def _mirror_state(self):
-        """(obs_dataset_ids whose newest data at the mirror is older than SILENT_AFTER_S, whether the mirror can be
-        trusted to judge). The mirror cannot be read, or its newest dataset is older than MIRROR_STALL_S: (empty,
-        False) -- every activated platform is then listed and no probe is asked."""
+        """(silent obs_dataset_ids (newest data at the mirror older than SILENT_AFTER_S), the datasets the mirror
+        lists, mode). mode "fresh": the mirror judges (probes asked); "held": it could not be read, the last good
+        read (up to MIRROR_HOLD_S old) judges with the held verdicts and no new probe; "off": not judged at all (a
+        stalled mirror, or nothing held) -- every activated platform listed."""
+        now = self.clock()
         try:
             hdr, rows = _erddap_rows(self.http, self.MIRROR_URL, 30)
         except requests.RequestException:
-            return set(), False
+            hdr, rows = [], []
         if not hdr or "maxTime" not in hdr:
-            return set(), False
+            held = self._mirror_held
+            if held and now - held[2] < self.MIRROR_HOLD_S:
+                _log.warning("buoy provider %s: the ERDDAP mirror could not be read; judging by the read of %.1f h ago",
+                             self.source, (now - held[2]) / 3600.0)
+                return held[0], held[1], "held"
+            return set(), {}, "off"
         ix = {c: i for i, c in enumerate(hdr)}
-        now = self.clock()
-        out, newest = set(), None
+        out, listed, newest = set(), {}, None
         for row in rows:
             try:
                 m = re.match(r"^obs_(\d+)$", row[ix["datasetID"]])
@@ -2531,6 +2612,7 @@ class GlosProvider(BuoyProvider):
                 continue
             if not m or ep is None or ep > now + FUTURE_SLACK_S:
                 continue
+            listed[int(m.group(1))] = ep
             newest = ep if newest is None else max(newest, ep)
             if now - ep > self.SILENT_AFTER_S:
                 out.add(int(m.group(1)))
@@ -2538,8 +2620,10 @@ class GlosProvider(BuoyProvider):
             if newest is not None:
                 _log.warning("buoy provider %s: the ERDDAP mirror's newest data is %.0f h old; not judging by it",
                              self.source, (now - newest) / 3600.0)
-            return set(), False
-        return out, True
+            self._mirror_held = None
+            return set(), {}, "off"
+        self._mirror_held = (out, listed, now)
+        return out, listed, "fresh"
 
     def _fetch_stations(self):
         r = _size_capped_get(self.http, self.BASE + "obs-datasets.geojson", self.timeout, self.ROSTER_CAP)
@@ -2549,7 +2633,7 @@ class GlosProvider(BuoyProvider):
             raise ValueError("GLOS roster without features")
         del doc, r                                # not kept through the ~50 s of probes (G42 F9)
         out, by_id = [], {}
-        silent, judged = self._mirror_state()
+        silent, listed, mode = self._mirror_state()
         covered = {str(x).upper() for x in _call_quietly(self._covered_ids, set(), self.source)}
         for f in feats:
             try:
@@ -2581,7 +2665,9 @@ class GlosProvider(BuoyProvider):
             out.append({"local_id": local, "name": str(p.get("platform_name") or local), "lat": lat, "lon": lon,
                         "capabilities": caps})
         del feats
-        quiet = (self._wave_verdicts({s["local_id"]: by_id[s["local_id"]] for s in out if s["local_id"] not in covered})
+        judged = mode in ("fresh", "held")
+        quiet = (self._wave_verdicts({s["local_id"]: by_id[s["local_id"]] for s in out if s["local_id"] not in covered},
+                                     listed, ask=(mode == "fresh"))
                  if judged else set())
         out = [s for s in out if s["local_id"] not in quiet]
         if judged:                          # the marker's time: its newest wave height at the mirror (G42 F11)
@@ -2594,8 +2680,9 @@ class GlosProvider(BuoyProvider):
         self._refresh_params()
         if not self._params:
             raise RuntimeError("GLOS parameter list unavailable")
-        if not out and self._dataset_by_id:   # keep-last keeps the markers: keep their windows with them (G42 F1)
-            raise ValueError("GLOS listed nothing after %d stations" % len(self._dataset_by_id))
+        if not out and self._list_cache:      # keep-last keeps the markers: keep their windows with them (G42 F1);
+            # once the keep window ends the base publishes the empty list and the next refresh accepts it (N5)
+            raise ValueError("GLOS listed nothing after %d stations" % len(self._list_cache))
         self._dataset_by_id = {k: v for k, v in by_id.items() if k not in quiet}
         return out
 
@@ -2810,7 +2897,8 @@ class IoosSensorsProvider(BuoyProvider):
     # sensor is out (44009, 62305) still looks fresh. One "newest wave height" query per station decides
     # (4 days back: never past the stated end, which allDatasets keeps within 2 days); its time is the marker's.
     # A failed answer keeps the last verdict; stations the NDBC provider lists with spectra are not asked.
-    PROBE_SUFFIX = (".csv?time,sea_surface_wave_significant_height&time%3E=now-4days"
+    PROBE_SUFFIX = (".csv?time,sea_surface_wave_significant_height&time%3E=now-4days&time%3C=now%2B1hour"
+                    "&sea_surface_wave_significant_height%3E=0&sea_surface_wave_significant_height%3C=30"
                     "&sea_surface_wave_significant_height!=NaN&orderByMax(%22time%22)")
     PROBE_TIMEOUT = (3.05, 20)
     clock = staticmethod(time.time)
@@ -2913,8 +3001,8 @@ class IoosSensorsProvider(BuoyProvider):
             when = verdict[1] if verdict and verdict[1] else maxt
             out.append({"local_id": local, "name": _ioos_name(d["title"]) or local, "lat": d["lat"],
                         "lon": d["lon"], "latest_time": when, "capabilities": caps})
-        if not out and self._ds:                # keep-last keeps the markers: keep their windows with them (G42 F1)
-            raise ValueError("IOOS listed nothing after %d stations" % len(self._ds))
+        if not out and self._list_cache:        # keep-last keeps the markers: keep their windows with them (G42 F1)
+            raise ValueError("IOOS listed nothing after %d stations" % len(self._list_cache))
         self._ds = ds
         return out
 

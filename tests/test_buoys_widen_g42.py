@@ -27,6 +27,7 @@ def test_glos_empty_refresh_keeps_the_markers_and_their_windows():
     http = glos_http()
     p, by, ok, err = glos(http=http)
     assert ok and "glos:45029" in by
+    p._list_cache = list(by.values())                     # what the base published
     held = dict(p._dataset_by_id)
     http.routes[1] = ("obs-datasets.geojson", '{"type": "FeatureCollection", "features": []}')
     lst, ok, err = p._build_station_list()
@@ -38,6 +39,7 @@ def test_glos_empty_refresh_keeps_the_markers_and_their_windows():
 def test_ioos_empty_refresh_keeps_the_markers_and_their_windows():
     http = ioos_http()
     p, by, ok, err = ioos(http=http)
+    p._list_cache = list(by.values())
     held = dict(p._ds)
     assert ok and held
     http.routes.insert(0, ("orderByMax", NO_MATCH))
@@ -45,6 +47,40 @@ def test_ioos_empty_refresh_keeps_the_markers_and_their_windows():
     lst, ok, err = p._build_station_list()
     assert not ok and "nothing" in err
     assert p._ds == held and p.detail("41065")["latest"] is not None
+
+
+def test_empty_list_accepted_once_the_base_has_published_it():       # G42 re-check N5
+    http = glos_http()
+    p, by, ok, err = glos(http=http)
+    p._list_cache = []                                    # the keep window ended: the base published []
+    http.routes[1] = ("obs-datasets.geojson", '{"type": "FeatureCollection", "features": []}')
+    lst, ok, err = p._build_station_list()
+    assert ok and lst == [] and p._dataset_by_id == {}
+    http = ioos_http()
+    p, by, ok, err = ioos(http=http)
+    p._list_cache = []
+    http.routes.insert(0, ("orderByMax", NO_MATCH))
+    p._probe = {}
+    lst, ok, err = p._build_station_list()
+    assert ok and lst == [] and p._ds == {}
+
+
+def test_empty_list_guard_through_the_base_refresh():
+    """The whole cycle on the base's own path: a good list, an empty one kept, then (past the keep window) the
+    empty list published and the maps let go on the next refresh."""
+    http = glos_http()
+    p = B.GlosProvider(http=http)
+    p.clock = staticmethod(lambda: CAPTURED)
+    assert len(p.refresh()[0]) == 3
+    http.routes[1] = ("obs-datasets.geojson", '{"type": "FeatureCollection", "features": []}')
+    p._list_ts = p._due_ts = 0
+    lst = p.refresh()[0]
+    assert len(lst) == 3 and p._dataset_by_id                 # kept, windows too
+    p._list_ok_ts -= p.keep_on_failure_sec + 1
+    p._list_ts = p._due_ts = 0
+    assert p.refresh()[0] == []                               # the base gives the markers up ...
+    p._list_ts = p._due_ts = 0
+    assert p.refresh()[0] == [] and p._dataset_by_id == {}    # ... and the next refresh the windows
 
 
 def test_glos_first_empty_list_is_an_ordinary_empty_list():
@@ -167,11 +203,23 @@ def test_ioos_empty_partitions_never_added():                       # reviewer's
 def test_probe_ignores_future_and_impossible_rows():
     def f(body):
         return B._erddap_wave_newest(FakeHttp([("x", body)]), "http://x", 5, now=CAPTURED)
+    # the newest row refused but a reading there: the sensor reports, the answer cannot say when (re-check N3)
     future = "time,sea_surface_wave_significant_height\nUTC,m\n2031-01-01T00:00:00Z,1.0\n"
-    assert f(future) == ("no", None)
+    assert f(future) == ("unknown", None)
+    impossible = "time,sea_surface_wave_significant_height\nUTC,m\n2026-10-30T01:00:00Z,99\n"
+    assert f(impossible) == ("unknown", None)
+    assert f("time,sea_surface_wave_significant_height\nUTC,m\n2026-10-30T01:00:00Z,NaN\n") == ("no", None)
     mixed = ("time,sea_surface_wave_significant_height\nUTC,m\n2026-10-30T01:00:00Z,1.0\n"
              "2026-10-30T02:00:00Z,-999\n2031-01-01T00:00:00Z,1.0\n")
     assert f(mixed) == ("yes", "2026-10-30T01:00:00Z")
+
+
+def test_probe_queries_ask_erddap_for_the_newest_sane_row():           # re-check N3
+    for url in (B.GlosProvider.PROBE_URL % 139, "x" + B.IoosSensorsProvider.PROBE_SUFFIX):
+        assert "&time%3C=now%2B1hour" in url
+        assert "&sea_surface_wave_significant_height%3E=0" in url
+        assert "&sea_surface_wave_significant_height%3C=30" in url
+        assert "%%" not in url and "orderByMax(%22time%22)" in url
 
 
 # ------------------------------------------------------------------ F4, F6, F7: probes never fail a list
@@ -231,11 +279,25 @@ def _many(n):
     return {"L%d" % i: 1000 + i for i in range(n)}
 
 
-def test_glos_probe_batch_of_nearly_all_no_is_not_believed():
+def _listed(n):
+    return {1000 + i: CAPTURED for i in range(n)}
+
+
+def test_glos_a_whole_batch_of_no_is_believed_where_the_mirror_lists_the_dataset():   # re-check N1
+    """November: most platforms send wind and temperatures with the wave sensor off. Every 'no' for a dataset the
+    mirror lists is believed, however many there are."""
     p = B.GlosProvider(http=FakeHttp([("tabledap/obs_", NO_MATCH)]))
     p.clock = staticmethod(lambda: CAPTURED)
-    assert p._wave_verdicts(_many(12)) == set()
-    assert not any(v[1] == "no" for v in p._probe.values())
+    assert p._wave_verdicts(_many(12), _listed(12)) == set(_many(12))
+    assert all(v[1] == "no" for v in p._probe.values())
+
+
+def test_glos_no_for_a_dataset_the_mirror_does_not_list_is_not_kept():
+    p = B.GlosProvider(http=FakeHttp([("tabledap/obs_", NO_MATCH)]))
+    p.clock = staticmethod(lambda: CAPTURED)
+    assert p._wave_verdicts(_many(12), {}) == set()
+    assert p._probe == {}
+    assert p._wave_verdicts(_many(12), _listed(3)) == {"L0", "L1", "L2"}
 
 
 def test_glos_probe_batch_with_some_no_leaves_those_out():
@@ -243,7 +305,73 @@ def test_glos_probe_batch_with_some_no_leaves_those_out():
         return NO_MATCH if any("obs_%d." % (1000 + i) in url for i in (0, 1, 2)) else GLOS_PROBE_YES
     p = B.GlosProvider(http=FakeHttp([("tabledap/obs_", probe)]))
     p.clock = staticmethod(lambda: CAPTURED)
-    assert p._wave_verdicts(_many(12)) == {"L0", "L1", "L2"}
+    assert p._wave_verdicts(_many(12), _listed(12)) == {"L0", "L1", "L2"}
+
+
+def test_glos_verdicts_without_asking_use_only_the_held_ones():
+    http = FakeHttp([("tabledap/obs_", NO_MATCH)])
+    p = B.GlosProvider(http=http)
+    p.clock = staticmethod(lambda: CAPTURED)
+    p._probe = {1000: (CAPTURED - 99999, "no", None)}             # an old verdict: past PROBE_TTL
+    assert p._wave_verdicts(_many(3), _listed(3), ask=False) == {"L0"}
+    assert http.calls == []
+
+
+def test_glos_unreadable_mirror_keeps_the_last_judgement():             # re-check N6
+    http = glos_http()
+    p, by, ok, err = glos(http=http)
+    assert "glos:45204" not in by and by["glos:45029"]["latest_time"]
+    http.routes[3] = ("allDatasets.csv", Resp("busy", 503))
+    n = sum("tabledap/obs_" in u for u in http.calls)
+    p._probe = {k: (v[0] - B.GlosProvider.PROBE_TTL - 1,) + tuple(v[1:]) for k, v in p._probe.items()}
+    lst, ok, err = p._build_station_list()
+    got = {s["id"]: s for s in lst}
+    assert ok and set(got) == set(by)                                  # 45204 stays out
+    assert got["glos:45029"]["latest_time"] == by["glos:45029"]["latest_time"]
+    assert sum("tabledap/obs_" in u for u in http.calls) == n          # nothing asked while the mirror is out
+    later = CAPTURED + B.GlosProvider.MIRROR_HOLD_S + 60
+    p.clock = staticmethod(lambda: later)
+    lst, ok, err = p._build_station_list()
+    got = {s["id"]: s for s in lst}
+    assert ok and "glos:45204" in got and all("latest_time" not in s for s in lst)   # past the hold: nothing judged
+
+
+def _glos_ds_of(local):
+    p, by, ok, err = glos()
+    return p._dataset_by_id[local]
+
+
+def test_glos_list_keeps_a_no_platform_the_mirror_does_not_list():      # re-check N1, through the list
+    ds = _glos_ds_of("45029")
+    mirror = "".join(l + "\n" for l in fixture("glos_mirror.csv").splitlines() if not l.startswith("obs_%d," % ds))
+    p, by, ok, err = glos(http=glos_http(mirror=mirror, probe=NO_MATCH))
+    assert ok and "glos:45029" in by and "glos:45013" not in by
+
+
+def test_glos_stalled_mirror_after_a_good_one_judges_nothing_held():    # re-check N6 / N24
+    ds = _glos_ds_of("45013")
+
+    def probe(url):
+        return NO_MATCH if "obs_%d." % ds in url else GLOS_PROBE_YES
+    http = glos_http(probe=probe)
+    p, by, ok, err = glos(http=http)
+    assert ok and "glos:45013" not in by                               # its 'no' held
+    http.routes[3] = ("allDatasets.csv", "datasetID,maxTime\n,UTC\n" +
+                      "".join("obs_%d,2026-10-26T00:00:00Z\n" % i for i in (2, 3, 88, 139, 260)))
+    lst, ok, err = p._build_station_list()
+    assert ok and "glos:45013" in {s["id"] for s in lst}               # a stalled mirror: the held 'no' not used
+    http.routes[3] = ("allDatasets.csv", Resp("busy", 503))
+    lst, ok, err = p._build_station_list()
+    ids = {s["id"] for s in lst}
+    assert ok and "glos:45013" in ids and "glos:45204" in ids           # nothing held from before the stall
+
+
+def test_glos_future_maxtime_never_makes_a_stalled_mirror_fresh():     # re-check Y26
+    old = ("datasetID,maxTime\n,UTC\n" + "".join("obs_%d,2026-10-26T00:00:00Z\n" % i for i in (2, 3, 88, 139, 260)) +
+           "obs_7,2031-01-01T00:00:00Z\n")
+    http = glos_http(mirror=old, probe=NO_MATCH)
+    p, by, ok, err = glos(http=http)
+    assert ok and "glos:45204" in by and not any("tabledap/obs_" in u for u in http.calls)
 
 
 def test_glos_quiet_platform_window_starts_before_its_last_wave_height():   # F11
@@ -287,6 +415,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(b"0\r\n\r\n")
             except OSError:
                 pass
+        elif self.path == "/drip":                         # one byte every 0.2 s: every read gets something
+            self.send_response(200)
+            self.send_header("Content-Length", "100")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b"d")
+                    self.wfile.flush()
+                    time.sleep(0.2)
+            except OSError:
+                pass
+        elif self.path == "/trickle":                      # a body smaller than one chunk that never finishes
+            self.send_response(200)
+            self.send_header("Content-Length", "12")
+            self.end_headers()
+            try:
+                self.wfile.write(b"hello")
+                self.wfile.flush()
+                time.sleep(4)
+            except OSError:
+                pass
         else:
             body = b"hello, world"
             self.send_response(404 if self.path == "/missing" else 200)
@@ -321,6 +470,79 @@ def test_capped_fetch_on_a_real_socket(server):
     assert time.monotonic() - t0 < 2.0
     with pytest.raises(RuntimeError, match="HTTP 404"):
         B._size_capped_get(sess, server + "/missing", 5, 1000)
+
+
+def test_capped_fetch_cuts_a_trickle_smaller_than_one_chunk(server):   # re-check N4
+    sess = requests.Session()
+    for path in ("/trickle", "/drip"):
+        for one_shot in (False, True):
+            t0 = time.monotonic()
+            with pytest.raises(RuntimeError, match="longer"):
+                B._capped_fetch(sess, server + path, 10, 1000, one_shot=one_shot, max_s=0.5)
+            assert time.monotonic() - t0 < 2.0, path
+    r = B._capped_fetch(sess, server + "/ok", 5, 1000, max_s=0.5)       # the timer never touches a finished read
+    time.sleep(0.7)
+    assert r.text == "hello, world"
+    assert B._capped_fetch(sess, server + "/ok", 5, 1000, max_s=0.5).text == "hello, world"
+
+
+class _StreamResp:
+    def __init__(self, body=b"ok", headers=None):
+        self.status_code = 200
+        self.encoding = "utf-8"
+        self.headers = headers or {}
+        self.raw = object()
+        self.closed = False
+        self._body = body
+
+    def iter_content(self, n):
+        yield self._body
+
+    def close(self):
+        self.closed = True
+
+
+def test_capped_fetch_one_shot_bypasses_the_session(monkeypatch):     # re-check Y36
+    class Sess(requests.Session):
+        def get(self, *a, **kw):
+            raise AssertionError("the session was asked")
+    seen = []
+
+    def plain_get(url, **kw):
+        seen.append((url, kw.get("stream")))
+        return _StreamResp()
+    monkeypatch.setattr(B.requests, "get", plain_get)
+    r = B._capped_fetch(Sess(), "http://x/a", 5, 100, one_shot=True)
+    assert r.text == "ok" and seen == [("http://x/a", True)]
+
+
+def test_capped_fetch_closes_a_refused_download():                     # re-check Y37
+    resp = _StreamResp(headers={"Content-Length": "999999"})
+
+    class Sess(requests.Session):
+        def get(self, *a, **kw):
+            return resp
+    with pytest.raises(RuntimeError, match="announced"):
+        B._capped_fetch(Sess(), "http://x/a", 5, 100)
+    assert resp.closed
+
+
+def test_ioos_window_with_an_unreadable_csv_does_not_raise():          # re-check Y46
+    huge = "time,sea_surface_wave_significant_height\nUTC,m\n\"" + "x" * 200000 + "\",1\n"
+    p, by, ok, err = ioos(http=ioos_http(one=huge))
+    d = p.detail("41065")
+    assert d["latest"] is None and d["recent"] == []
+
+
+def test_cmems_seven_digit_wmo_numbers_join_the_number_tier():         # re-check N2
+    assert B._buoy_number(st("CMEMS", "NO_TS_MO_6200144", 53.0, 1.8)) == "62144"
+    assert B._buoy_number(st("CMEMS", "GL_TS_MO_6200163", 0, 0)) == "62163"
+    assert B._buoy_number(st("CMEMS", "NO_TS_MO_Clipper", 0, 0)) == ""
+    assert B._buoy_number(st("CMEMS", "NO_TS_MO_62001440", 0, 0)) == ""
+    cm = st("CMEMS", "NO_TS_MO_6200144", 53.0, 1.80)
+    nd = st("NDBCW", "62144", 53.12, 1.95)                                 # 16 km: only the number joins them
+    kept = B.merge_stations([[cm], [nd]])
+    assert [k["id"] for k in kept] == ["ndbcw:62144"] and kept[0]["also_sources"] == ["CMEMS"]
 
 
 def test_ndbcw_window_history_size_cap():                             # reviewer's X09

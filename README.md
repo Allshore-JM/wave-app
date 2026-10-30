@@ -1486,13 +1486,16 @@ A marker is listed only when its feed had a wave height recently (test-site find
 markers opened an empty window, platforms whose wave sensor was off while their wind and temperature sensors reported).
 GLOS and IOOS ask each station once, at list time, for its newest wave height (one ERDDAP query of under 100 bytes,
 four at a time, `_wave_probes`): GLOS through its ERDDAP mirror (3 days back: the mirror lags the API by about a day;
-a verdict is kept 6 h), IOOS on the sensors ERDDAP (4 days back) at every list refresh. "Nothing matches" leaves the
-station out; ERDDAP's other 404s ("Currently unknown datasetID" while it reloads a dataset), failed and unreadable
-answers count as unknown and keep the last verdict (never asked: listed). Every probe of a refresh shares one deadline
-(`PROBE_BATCH_S`, 150 s); a probe's own download is capped (1 MB, 30 s). Stations the NDBC provider lists with spectra
-are not asked (NDBC's marker wins there). GLOS judges nothing by its mirror when the mirror's newest dataset is older than
-2 days (every activated platform listed, no probe asked), and a batch answering "no" for more than 80 % of at least 10
-platforms is read as a mirror problem (its "no" verdicts are not kept). IOOS's marker time is that newest wave height:
+a verdict is kept 6 h), IOOS on the sensors ERDDAP (4 days back) at every list refresh. The query asks ERDDAP to leave
+out rows stamped more than an hour ahead and heights outside 0-30 m, so the newest row it gives is a sane one. "Nothing
+matches" leaves the station out; ERDDAP's other 404s ("Currently unknown datasetID" while it reloads a dataset), failed
+and unreadable answers, and an answer whose rows are all refused by the reading check, count as unknown and keep the
+last verdict (never asked: listed). Every probe of a refresh shares one deadline (`PROBE_BATCH_S`, 150 s); a probe's own
+download is capped (1 MB, 30 s). Stations the NDBC provider lists with spectra are not asked (NDBC's marker wins there).
+GLOS believes a "no" only for a dataset its mirror lists (a sensor off while the platform reports; in November most of
+them), however many platforms answer so. It judges nothing by its mirror when the mirror's newest dataset is older than
+2 days (every activated platform listed, no probe asked); when the mirror cannot be read, the last good read (up to
+6 h old) judges with the verdicts in hand and no probe is asked. IOOS's marker time is that newest wave height:
 allDatasets' `maxTime` is the dataset's stated end, which can lag its rows by a day and counts every variable. Cost: the
 GLOS and IOOS list refreshes took 45-51 s on the free test instance instead of 2-9 s (background runner only); about 50
 small IOOS queries an hour and about 50 GLOS queries every 6 hours.
@@ -1500,11 +1503,14 @@ small IOOS queries an hour and about 50 GLOS queries every 6 hours.
 Every reading of the three feeds (and every probe row) passes one check, `_sane_reading` (G42): a row stamped more than
 an hour ahead of the clock is left out, so is a height outside 0-30 m (fill values such as -9999 or 9.97e36 included);
 periods outside 0-40 s, directions outside 0-360, spreads outside 0-180 and temperatures outside -5 to 40 C are blanked.
-Downloads are read in chunks under a byte cap and a time limit (`_capped_fetch`: lists 180 s, windows 20 s). A refresh that
-lists nothing after a good list keeps the markers AND the station-to-dataset maps their windows need. GLOS's list needs its
-parameter map: without it the list refresh fails (keep-last) rather than opening empty windows, and a window never fetches
-the 3.6 MB parameter list itself. CEFAS's Sandettie LV, Clipper and Lomond carry NDBC's numbers in the merge
-(`_BUOY_ALIAS`, the page's `LINK_ALIAS`), so their NDBC copies 6-7 km away are one marker.
+Downloads are read in chunks under a byte cap and a time limit (`_capped_fetch`: lists 180 s, windows 20 s, probes 30 s);
+a body that trickles is cut at the limit from outside (each socket read gets the time left as its timeout, and a timer
+shuts the socket), so no thread waits on one. A refresh that lists nothing after a good list keeps the markers AND the
+station-to-dataset maps their windows need; once the keep window (6 h) ends and the empty list is published, the next
+refresh lets the maps go too. GLOS's list needs its parameter map: without it the list refresh fails (keep-last) rather
+than opening empty windows, and a window never fetches the 3.6 MB parameter list itself. CEFAS's Sandettie LV, Clipper
+and Lomond carry NDBC's numbers in the merge (`_BUOY_ALIAS`, the page's `LINK_ALIAS`), and so do CMEMS's 7-digit WMO
+ids (`*_TS_MO_6200NNN` = 62NNN, the page's rule), so their copies a few km away are one marker.
 
 - **NDBCW: NDBC's bulk report.** `latest_obs.txt` (~100 KB, every 30 min) lists every NDBC station's newest observation;
   the NDBC provider lists only stations with a spectral file, so the stations that report waves WITHOUT one were left out

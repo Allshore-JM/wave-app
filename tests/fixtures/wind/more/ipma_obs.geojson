@@ -1,0 +1,221 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-31.1301,
+39.4582
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 7.9,
+"temperatura": 17.7,
+"idEstacao": 1200501,
+"pressao": 1026.1,
+"humidade": 56.0,
+"localEstacao": "Flores (Aeroporto)",
+"precAcumulada": 0.0,
+"idDireccVento": 8,
+"radiacao": 256.8,
+"time": "2026-10-30T18:00:00",
+"intensidadeVento": 2.2,
+"descDirVento": "NW"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-8.6596,
+40.6353
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 7.6,
+"temperatura": 16.9,
+"idEstacao": 1210702,
+"pressao": 1019.4,
+"humidade": 83.0,
+"localEstacao": "Aveiro (Universidade)",
+"precAcumulada": 0.0,
+"idDireccVento": 9,
+"radiacao": 26.7,
+"time": "2026-10-30T18:00:00",
+"intensidadeVento": 2.1,
+"descDirVento": "N"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-7.821,
+37.033
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 1.4,
+"temperatura": 21.5,
+"idEstacao": 1210881,
+"pressao": 1017.1,
+"humidade": 65.0,
+"localEstacao": "Olhão, EPPO",
+"precAcumulada": 0.0,
+"idDireccVento": 7,
+"radiacao": 0.0,
+"time": "2026-10-30T18:00:00",
+"intensidadeVento": 0.4,
+"descDirVento": "W"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-31.1301,
+39.4582
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 7.9,
+"temperatura": 15.3,
+"idEstacao": 1200501,
+"pressao": 1026.6,
+"humidade": 69.0,
+"localEstacao": "Flores (Aeroporto)",
+"precAcumulada": 0.0,
+"idDireccVento": 7,
+"radiacao": 34.2,
+"time": "2026-10-30T19:00:00",
+"intensidadeVento": 2.2,
+"descDirVento": "W"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-8.6596,
+40.6353
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 5.0,
+"temperatura": 16.0,
+"idEstacao": 1210702,
+"pressao": 1019.6,
+"humidade": 89.0,
+"localEstacao": "Aveiro (Universidade)",
+"precAcumulada": 0.0,
+"idDireccVento": 1,
+"radiacao": 0.0,
+"time": "2026-10-30T19:00:00",
+"intensidadeVento": 1.4,
+"descDirVento": "N"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-7.821,
+37.033
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 8.3,
+"temperatura": 19.6,
+"idEstacao": 1210881,
+"pressao": 1017.5,
+"humidade": 68.0,
+"localEstacao": "Olhão, EPPO",
+"precAcumulada": 0.0,
+"idDireccVento": 8,
+"radiacao": 0.0,
+"time": "2026-10-30T19:00:00",
+"intensidadeVento": 2.3,
+"descDirVento": "NW"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-31.1301,
+39.4582
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 11.5,
+"temperatura": 13.6,
+"idEstacao": 1200501,
+"pressao": 1027.1,
+"humidade": 75.0,
+"localEstacao": "Flores (Aeroporto)",
+"precAcumulada": 0.0,
+"idDireccVento": 7,
+"radiacao": 0.2,
+"time": "2026-10-30T20:00:00",
+"intensidadeVento": 3.2,
+"descDirVento": "W"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-8.6596,
+40.6353
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 5.8,
+"temperatura": 15.5,
+"idEstacao": 1210702,
+"pressao": 1019.7,
+"humidade": 93.0,
+"localEstacao": "Aveiro (Universidade)",
+"precAcumulada": 0.0,
+"idDireccVento": 1,
+"radiacao": 0.0,
+"time": "2026-10-30T20:00:00",
+"intensidadeVento": 1.6,
+"descDirVento": "N"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-7.821,
+37.033
+]
+},
+"type": "Feature",
+"properties": {
+"intensidadeVentoKM": 7.6,
+"temperatura": 18.8,
+"idEstacao": 1210881,
+"pressao": 1017.7,
+"humidade": 67.0,
+"localEstacao": "Olhão, EPPO",
+"precAcumulada": 0.0,
+"idDireccVento": 8,
+"radiacao": 0.0,
+"time": "2026-10-30T20:00:00",
+"intensidadeVento": 2.1,
+"descDirVento": "NW"
+}
+}
+]
+}

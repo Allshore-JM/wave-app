@@ -1,0 +1,244 @@
+{
+"11001": {
+"temp": [
+6.9,
+0
+],
+"humidity": [
+100,
+0
+],
+"sun10m": [
+0,
+0
+],
+"sun1h": [
+0.0,
+0
+],
+"precipitation10m": [
+0.0,
+0
+],
+"precipitation1h": [
+0.0,
+0
+],
+"precipitation3h": [
+0.0,
+0
+],
+"precipitation24h": [
+10.5,
+0
+],
+"windDirection": [
+9,
+0
+],
+"wind": [
+4.0,
+0
+]
+},
+"44132": {
+"pressure": [
+1007.5,
+0
+],
+"normalPressure": [
+1010.4,
+0
+],
+"temp": [
+14.3,
+0
+],
+"humidity": [
+86,
+0
+],
+"sun10m": [
+0,
+0
+],
+"sun1h": [
+0.0,
+0
+],
+"precipitation10m": [
+0.0,
+0
+],
+"precipitation1h": [
+0.0,
+0
+],
+"precipitation3h": [
+0.0,
+0
+],
+"precipitation24h": [
+1.0,
+0
+],
+"windDirection": [
+15,
+0
+],
+"wind": [
+1.9,
+0
+]
+},
+"14163": {
+"pressure": [
+1004.5,
+0
+],
+"normalPressure": [
+1007.7,
+0
+],
+"temp": [
+9.2,
+0
+],
+"humidity": [
+97,
+0
+],
+"visibility": [
+20000.0,
+0
+],
+"sun10m": [
+0,
+0
+],
+"sun1h": [
+0.0,
+0
+],
+"precipitation10m": [
+0.0,
+0
+],
+"precipitation1h": [
+0.0,
+0
+],
+"precipitation3h": [
+0.5,
+0
+],
+"precipitation24h": [
+0.5,
+0
+],
+"windDirection": [
+15,
+0
+],
+"wind": [
+1.1,
+0
+]
+},
+"11016": {
+"pressure": [
+1004.8,
+0
+],
+"normalPressure": [
+1006.2,
+0
+],
+"temp": [
+10.1,
+0
+],
+"humidity": [
+85,
+0
+],
+"visibility": [
+20000.0,
+0
+],
+"sun10m": [
+0,
+0
+],
+"sun1h": [
+0.0,
+0
+],
+"precipitation10m": [
+0.0,
+0
+],
+"precipitation1h": [
+0.0,
+0
+],
+"precipitation3h": [
+0.0,
+0
+],
+"precipitation24h": [
+16.5,
+0
+],
+"windDirection": [
+12,
+0
+],
+"wind": [
+3.9,
+0
+]
+},
+"11176": {
+"temp": [
+6.7,
+0
+],
+"humidity": [
+98,
+0
+],
+"sun10m": [
+0,
+0
+],
+"sun1h": [
+0.0,
+0
+],
+"precipitation10m": [
+0.0,
+0
+],
+"precipitation1h": [
+0.0,
+0
+],
+"precipitation3h": [
+0.0,
+0
+],
+"precipitation24h": [
+26.0,
+0
+],
+"windDirection": [
+0,
+0
+],
+"wind": [
+0.2,
+0
+]
+}
+}

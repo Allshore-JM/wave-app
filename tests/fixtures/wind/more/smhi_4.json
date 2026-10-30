@@ -1,0 +1,126 @@
+{
+"updated": 1793390400000,
+"parameter": {
+"key": "4",
+"name": "Vindhastighet",
+"summary": "medelvärde 10 min, 1 gång/tim",
+"unit": "meter per sekund"
+},
+"period": {
+"key": "latest-hour",
+"from": 1793386801000,
+"to": 1793390400000,
+"summary": "Data från senaste timmen",
+"sampling": "10 minuter"
+},
+"link": [
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all/period/latest-hour/data.json",
+"rel": "data",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all/period/latest-hour/data.xml",
+"rel": "data",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all/period/latest-hour/data.csv",
+"rel": "data",
+"type": "text/plain"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all/period/latest-hour.atom",
+"rel": "period",
+"type": "application/atom+xml"
+},
+{
+"href": "https://opendata-catalog.smhi.se/md/25080190-38ba-4279-a65d-d9ef8d0bf949",
+"rel": "iso19139",
+"type": "application/vnd.iso.19139+xml"
+},
+{
+"href": "https://opendata-catalog.smhi.se/md/bbcb137b-b8fc-450c-b67d-6c3239dbe0de",
+"rel": "iso19139",
+"type": "application/vnd.iso.19139+xml"
+}
+],
+"station": [
+{
+"key": "188790",
+"name": "Abisko Aut",
+"owner": "Polarforskningssekretariatet",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"from": 1538352000000,
+"to": 1793391619000,
+"height": 392.235,
+"latitude": 68.3538,
+"longitude": 18.8164,
+"value": [
+{
+"date": 1793390400000,
+"value": "2.8",
+"quality": "G"
+}
+]
+},
+{
+"key": "71420",
+"name": "Göteborg A",
+"owner": "SMHI",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"from": 920246400000,
+"to": 1793391619000,
+"height": 3.038,
+"latitude": 57.7156,
+"longitude": 11.9924,
+"value": [
+{
+"date": 1793390400000,
+"value": "0.9",
+"quality": "G"
+}
+]
+},
+{
+"key": "52350",
+"name": "Malmö A",
+"owner": "SMHI",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"from": 815184000000,
+"to": 1793391619000,
+"height": 19.757,
+"latitude": 55.5715,
+"longitude": 13.0708,
+"value": [
+{
+"date": 1793390400000,
+"value": "2.0",
+"quality": "G"
+}
+]
+},
+{
+"key": "97400",
+"name": "Stockholm-Arlanda Flygplats",
+"owner": "Swedavia",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"from": 1201824000000,
+"to": 1793391619000,
+"height": 42.0,
+"latitude": 59.6269,
+"longitude": 17.9545,
+"value": [
+{
+"date": 1793390400000,
+"value": "1.0",
+"quality": "G"
+}
+]
+}
+]
+}

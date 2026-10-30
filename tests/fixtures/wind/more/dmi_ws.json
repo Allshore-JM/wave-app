@@ -1,0 +1,93 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"type": "Feature",
+"id": "e720b1b2-e027-0986-3a1d-d507a26924cc",
+"geometry": {
+"type": "Point",
+"coordinates": [
+-50.7172,
+67.0133
+]
+},
+"properties": {
+"parameterId": "wind_speed",
+"created": "2026-10-30T20:50:38.973133Z",
+"value": 2.78,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "04231"
+}
+},
+{
+"type": "Feature",
+"id": "29d67d1f-1441-8738-8b4e-d4bcf5a39de9",
+"geometry": {
+"type": "Point",
+"coordinates": [
+12.6454,
+55.614
+]
+},
+"properties": {
+"parameterId": "wind_speed",
+"created": "2026-10-30T20:50:34.527942Z",
+"value": 2.57,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "06180"
+}
+},
+{
+"type": "Feature",
+"id": "1b27b643-3dd1-da88-5b71-6f7202672bf5",
+"geometry": {
+"type": "Point",
+"coordinates": [
+8.1413,
+56.0072
+]
+},
+"properties": {
+"parameterId": "wind_speed",
+"created": "2026-10-30T20:51:18.626911Z",
+"value": 0.0,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "06058"
+}
+},
+{
+"type": "Feature",
+"id": "a36c57d2-eeb8-4db2-c6ba-ed79f947cea0",
+"geometry": {
+"type": "Point",
+"coordinates": [
+10.6316,
+57.7364
+]
+},
+"properties": {
+"parameterId": "wind_speed",
+"created": "2026-10-30T20:51:32.289914Z",
+"value": 3.06,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "06041"
+}
+}
+],
+"timeStamp": "2026-10-30T20:58:00Z",
+"numberReturned": 69,
+"links": [
+{
+"href": "https://opendataapi.dmi.dk/v2/metObs/collections/observation/items?parameterId=wind_speed&period=latest-10-minutes&limit=1000",
+"rel": "self",
+"type": "application/geo+json",
+"title": "This document"
+},
+{
+"href": "https://opendataapi.dmi.dk/v2/metObs/collections/observation/items?parameterId=wind_speed&period=latest-10-minutes&limit=1000&offset=69",
+"rel": "next",
+"type": "application/geo+json",
+"title": "Next set of results"
+}
+]
+}

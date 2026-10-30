@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import wind_sources as WS
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SNAPSHOT = os.path.join(ROOT, "wind_stations.json")
@@ -25,6 +27,8 @@ def _tool():
 
 
 W = _tool()
+MORE_MET = ("eccc", "jma", "smhi", "fmi", "dmi", "dwd", "ipma", "mei")
+MORE = MORE_MET + ("iem",)
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +42,7 @@ def snap():
 
 def test_snapshot_shape(snap):
     doc, rows = snap
-    assert doc["fields"] == W.FIELDS == ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx"]
+    assert doc["fields"] == W.FIELDS == ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx", "net"]
     assert all(len(r) == len(W.FIELDS) for r in doc["stations"])
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", doc["captured"])
     assert "public domain" in doc["source"]
@@ -48,12 +52,18 @@ def test_ids_are_namespaced_unique_and_match_their_source(snap):
     _, rows = snap
     ids = [r["id"] for r in rows]
     assert len(ids) == len(set(ids))
-    kinds = {"coops": {"gauge"}, "ndbc": {"gauge", "buoy", "cman", "station"}, "metar": {"airport"}, "nws": set(W.NWS_KINDS)}
+    kinds = {"coops": {"gauge"}, "ndbc": {"gauge", "buoy", "cman", "station"}, "metar": {"airport"}, "nws": set(W.NWS_KINDS),
+             "iem": {"road", "airport"}}
+    kinds.update({src: {"met"} for src in MORE_MET})                  # plan section 67: national weather services
+    native_re = {"coops": r"\d{7}", "jma": r"\d{5}", "dwd": r"10\d{3}", "dmi": r"\d{5}", "fmi": r"\d{6}",
+                 "smhi": r"\d{4,6}", "ipma": r"\d{7,8}", "eccc": r"[A-Z][A-Z0-9]{3}", "mei": r"[A-Z][A-Z-]{2,23}",
+                 "iem": r"[A-Z0-9]{3,6}"}
     for r in rows:
         src, _, native = r["id"].partition(":")
         assert src == r["src"] and src in kinds, r
         assert r["kind"] in kinds[src] and r["kind"] in W.KINDS, r
-        assert re.fullmatch(r"\d{7}" if src == "coops" else r"[A-Z0-9]{3,8}", native), r
+        assert re.fullmatch(native_re.get(src, r"[A-Z0-9]{3,8}"), native), r
+        assert WS.ID_RE.fullmatch(r["id"]), r                        # the server's own id rule takes every row
 
 
 def test_names_positions_and_zones(snap):
@@ -108,6 +118,72 @@ def test_hawaii_and_counts(snap):
     for r in nws:                                                        # never within 300 m of another kept station
         assert W.too_close(others_rows(others), r["lat"], r["lon"]) is None, r
     assert not any(re.fullmatch(r"\d{5}", r["id"][4:]) for r in nws), "NDBC's buoys are NDBC's"
+
+
+# ------------------------------------------------------------------ plan section 67: the added sources
+
+def test_net_only_for_iem_rows_and_their_kind(snap):
+    _, rows = snap
+    for r in rows:
+        if r["src"] == "iem":
+            m = re.fullmatch(r"([A-Z]{2})_(RWIS|ASOS)", r["net"] or "")
+            assert m, r
+            assert r["kind"] == {"RWIS": "road", "ASOS": "airport"}[m.group(2)], r
+        else:
+            assert r["net"] is None, r
+
+
+def test_added_sources_counts_zones_and_landmarks(snap):
+    _, rows = snap
+    by = {r["id"]: r for r in rows}
+    count = {src: sum(1 for r in rows if r["src"] == src) for src in MORE}
+    bands = {"eccc": (250, 400), "jma": (480, 680), "iem": (420, 700), "smhi": (85, 140), "fmi": (80, 130),
+             "dmi": (40, 75), "dwd": (20, 45), "ipma": (65, 110), "mei": (10, 18)}
+    for src, (lo, hi) in bands.items():
+        assert lo <= count[src] <= hi, (src, count[src])          # measured 2026-10-30: 312 580 534 112 102 56 28 87 13
+    assert all(r["tz"] == "Asia/Tokyo" for r in rows if r["src"] == "jma")
+    assert all(r["tz"] in ("Europe/Lisbon", "Atlantic/Azores", "Atlantic/Madeira") for r in rows if r["src"] == "ipma")
+    assert all(r["tz"] == "Europe/Dublin" for r in rows if r["src"] == "mei")
+    assert all(r["tz"].startswith("America/") for r in rows if r["src"] in ("eccc", "iem") and r["lon"] > -170),         "North American feeds in North American zones"
+    for sid in ("jma:44132", "eccc:CAHD", "mei:MALIN-HEAD", "mei:ROCHES-POINT", "dwd:10015", "dwd:10020", "dwd:10091"):
+        assert sid in by, sid                                          # Tokyo, Halifax Dockyard, Malin Head, Helgoland ...
+    assert by["mei:ROCHES-POINT"]["name"] == "Roche's Point"
+    assert not [r["id"] for r in rows if r["src"] in MORE and r["name"] == r["name"].upper()
+                and re.search(r"[A-Z]{4,}", r["name"])],         "agency names in capitals are case-fixed (road names like 'I-94 @ US-421' have no word to fix)"
+
+
+def test_added_sources_never_duplicate_a_kept_station(snap):
+    _, rows = snap
+    metar = [r for r in rows if r["src"] == "metar"]
+    metar_ids = {r["id"].split(":")[1] for r in metar}
+    added = [r for r in rows if r["src"] in MORE]
+    for r in added:
+        native = r["id"].split(":")[1]
+        assert native not in metar_ids, r                              # ECCC's NAV CANADA files, IEM's ASOS sites
+        if r["src"] == "iem" and len(native) == 3:
+            assert not ({"K" + native, "P" + native, "T" + native} & metar_ids), r
+    grid = {}
+    for m in metar:
+        grid.setdefault((math.floor(m["lat"] * 10), math.floor(m["lon"] * 10)), []).append(m)
+    for r in added:                                                    # no added station on an airfield (500 m)
+        cy, cx = math.floor(r["lat"] * 10), math.floor(r["lon"] * 10)
+        near = [m["id"] for dy in (-1, 0, 1) for dx in (-1, 0, 1) for m in grid.get((cy + dy, cx + dx), ())
+                if W.km_between(r["lat"], r["lon"], m["lat"], m["lon"]) * 1000 <= W.AIRPORT_SPOT_M]
+        assert not near, (r["id"], near)
+    pts = sorted((r["lat"], r["lon"], r["id"]) for r in rows)
+    for r in rows:                                                     # DWD's coarse positions: 2 km from anything kept
+        if r["src"] != "dwd":
+            continue
+        close = [sid for la, lo, sid in pts if sid != r["id"] and abs(la - r["lat"]) < 0.03
+                 and W.km_between(r["lat"], r["lon"], la, lo) * 1000 <= 2000]
+        assert not close, (r["id"], close)
+
+
+def test_dwd_rows_are_german_stations(snap):
+    _, rows = snap
+    dwd = [r for r in rows if r["src"] == "dwd"]
+    assert dwd and all(r["id"].startswith("dwd:10") for r in dwd), "WMO block 10: DWD's own stations, not its SYNOP relays"
+    assert all(47.2 < r["lat"] < 55.2 and 5.8 < r["lon"] < 15.1 for r in dwd)
 
 
 def others_rows(rows):

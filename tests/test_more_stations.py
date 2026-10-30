@@ -1,0 +1,112 @@
+"""Plan section 67: the station tool for the added wind sources (tools/wind/more_stations.py): the coast-and-lake rule,
+the spot rule and DWD's German-station filter, on small inputs and the coast fixtures (no network)."""
+import importlib.util
+import os
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+
+def _tool():
+    spec = importlib.util.spec_from_file_location("wind_more_stations",
+                                                  os.path.join(ROOT, "tools", "wind", "more_stations.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+T = _tool()
+
+
+def _edges(name):
+    import point_forecast as P
+    with open(os.path.join(HERE, "fixtures", "coast", name), "rb") as f:
+        return P.decode_coast(f.read())
+
+
+# ------------------------------------------------------------------ the coast rule
+
+def test_coast_or_large_lake_shore_within_30_km_or_at_sea():
+    sea, lake = _edges("hawaii-t0.bin"), _edges("lakeoutlines-i.bin")   # the Hawaii crop + the published lake set
+    counts = {"sea": 0, "lake": 0, "offshore": 0, "inland": 0}
+    coastal = T.make_coastal(sea, lake, counts)
+    assert T.FS.CoastIndex(sea).distance_km(19.68, -155.47, 30) > 30       # the Big Island's saddle: 40 km inland
+    pos = {"honolulu": (21.31505, -157.924), "wheeler": (21.478, -158.044), "saddle": (19.68, -155.47),
+           "buoy": (19.151, -160.617), "clewiston": (26.754, -80.934), "placeholder": (-99.99, -99.99)}
+    assert coastal(pos) == {"honolulu", "wheeler", "buoy", "clewiston"}   # Clewiston: Lake Okeechobee's shore
+    assert counts == {"sea": 2, "lake": 1, "offshore": 1, "inland": 1}, counts
+
+
+# ------------------------------------------------------------------ the spot rule
+
+def _c(src, local, lat, lon, kind="met", net=None, icao=None):
+    return {"src": src, "local": local, "name": local, "lat": lat, "lon": lon, "kind": kind, "net": net, "icao": icao}
+
+
+def test_spot_rule_metar_twins_airfields_ranks_duplicates_and_dwd_2_km():
+    rows = [["metar:CWEB", "Webster", 50.0, -100.0, "airport", "metar", "America/Winnipeg", None, None, None],
+            ["metar:KX50", "X", 30.0, -90.0, "airport", "metar", "America/Chicago", None, None, None],
+            ["ndbc:ABCD1", "b", 40.0, -70.0, "station", "ndbc", "America/New_York", None, None, None]]
+    cands = [_c("iem", "R1", 60.0, 20.0, kind="road", net="AK_RWIS"),       # 44 m from jma:2: JMA ranks first
+             _c("eccc", "CWEB", 51.0, -101.0, icao="CWEB"),                 # the METAR id itself (a NAV CANADA file)
+             _c("iem", "X50", 31.0, -91.0, kind="airport", net="FL_ASOS", icao="X50"),   # 3-letter ASOS id: KX50
+             _c("jma", "11001", 30.003, -90.0),                             # 333 m from an airfield
+             _c("smhi", "1", 40.0005, -70.0),                               # 56 m from an NDBC station
+             _c("dwd", "10001", 60.0135, 20.0),                             # 1.46 km from jma:2
+             _c("dwd", "10002", 60.03, 20.0),                               # 3.3 km: kept
+             _c("jma", "2", 60.0004, 20.0),
+             _c("jma", "2", 61.0, 21.0)]                                    # the same id twice
+    kept, dropped = T.place(cands, rows)
+    assert [r[0] for r in kept] == ["jma:2", "dwd:10002"]
+    assert kept[0] == ["jma:2", "2", 60.0004, 20.0, "met", "jma", None, None, None, None]
+    why = {cid: (w, k) for cid, w, k in dropped}
+    assert why["eccc:CWEB"] == ("METAR id", "metar:CWEB")
+    assert why["iem:X50"] == ("METAR id", "metar:KX50")
+    assert why["jma:11001"] == ("spot", "metar:KX50")
+    assert why["smhi:1"] == ("spot", "ndbc:ABCD1")
+    assert why["dwd:10001"] == ("spot", "jma:2") and why["iem:R1"] == ("spot", "jma:2")
+    assert [d for d in dropped if d[1] == "duplicate id"] == [("jma:2", "duplicate id", "jma:2")]
+
+
+# ------------------------------------------------------------------ DWD: Germany's own stations
+
+def test_dwd_keeps_only_its_own_german_stations(monkeypatch):
+    listed = ["02418", "10020", "06680", "10015"]                       # Karlstad (Sweden), Sylt, Saentis, Helgoland
+
+    class M:
+        DWD_POI, DWD_CATALOG, DWD_CSV = "poi", "cat", "csv/{sid}"
+
+        @staticmethod
+        def parse_dwd_listing(text):
+            return list(listed)
+
+        @staticmethod
+        def parse_dwd_catalog(text):
+            return {s: {"name": "LIST/SYLT" if s == "10020" else "X", "lat": 55.0, "lon": 8.4, "icao": None} for s in listed}
+
+        @staticmethod
+        def parse_dwd_poi(raw):
+            return [{"t": time.time() - 600}]
+
+    class TT:
+        @staticmethod
+        def clean_name(n):
+            return n.title()
+
+    asked = []
+    monkeypatch.setattr(T, "get", lambda url, **kw: asked.append(url) or b"")
+    monkeypatch.setattr(T.time, "sleep", lambda s: None)
+    out = T.dwd(M, T.Cache(None), lambda pos: set(pos), TT)
+    assert [o["local"] for o in out] == ["10015", "10020"]
+    assert [o["name"] for o in out] == ["X", "List/Sylt"]
+    assert "csv/02418" not in asked and "csv/06680" not in asked, "other countries' stations are never read"
+
+
+def test_place_name_fixes_only_names_in_capitals():
+    class TT:
+        @staticmethod
+        def clean_name(n):
+            return n.title()
+    assert T.place_name("  ROCHES   POINT ", TT) == "Roches Point"
+    assert T.place_name("Malin Head", TT) == "Malin Head"

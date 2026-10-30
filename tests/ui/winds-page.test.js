@@ -107,6 +107,7 @@ function boot(o = {}) {
     '\nreturn { get windNoteText() { return windNoteText; }, get windStationsData() { return windStationsData; }, get activeWindId() { return activeWindId; }, ' +
     'get windDrawn() { return windDrawn; }, get windReadings() { return windReadings; }, get windFeed() { return windFeed; }, ' +
     'rebuildWindMarkers, loadWindStations, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, windRank, WIND_ALL_ZOOM, ' +
+    'windCreditFor, WIND_AGENCY_CREDIT, ' +
     'get windView() { return windView; }, tideTargets, setTideDrawn(x) { tideDrawn = x; } };';
   const layersControl = { _update: function () { notes.wind.textContent = ''; notes.tide.textContent = ''; notes.live.textContent = ''; return this; } };
   const forecastStationsData = o.forecast || [];                       // the yellow dots (a flag over one gets a hollow ring)
@@ -557,4 +558,32 @@ test('the stall note in the page: after the flags are repainted, guarded, behind
   assert.ok(TPL.includes("        windListNote = '';\n        workOutWindStall();\n        rebuildWindMarkers(true);"), 'worked out again when the station list lands (V7-4)');
   assert.ok(TPL.includes('      return windFeedNote || windStallText;'));
   assert.ok(TPL.includes(' · <a href="https://madis.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA MADIS</a>\';'));
+});
+
+test('plan section 67: the agencies credited only while one of their flags is drawn, changed once per change; their subtitles, ranks and the IEM network', async () => {
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'kind', 'src', 'tz', 'alias', 'wx', 'net'], stations: [
+    ['coops:1612340', 'Honolulu', 21.3033, -157.8645, 'gauge', 'coops', 'Pacific/Honolulu', 'OOUH1', 'awp', null],
+    ['jma:44132', 'Tokyo', 35.6917, 139.75, 'met', 'jma', 'Asia/Tokyo', null, null, null],
+    ['iem:CD004', 'Bogard', 40.5855, -121.0887, 'road', 'iem', 'America/Los_Angeles', null, null, 'CA_RWIS']] };
+  const empty = { now: NOW / 1000, stale_s: 7200, fields: ['id', 't', 's', 'g', 'd'], rows: [], missing: [] };
+  const b = boot({ list, latestAnswers: [resp(200, empty), resp(200, empty), resp(200, empty)] });
+  b.api.rebuildWindMarkers(true); await flush();
+  assert.equal(b.api.windStationsData[2].net, 'CA_RWIS', 'the network read by name');
+  assert.equal(b.api.windStationsData[0].net, null);
+  const all = b.api.windCreditFor(b.api.windStationsData.map((s) => ({ s })));
+  assert.equal(all, b.api.WIND_CREDIT + ' · ' + b.api.WIND_AGENCY_CREDIT.jma + ' · ' + b.api.WIND_AGENCY_CREDIT.iem, 'in the agencies\' order');
+  assert.equal(b.credits.count(all), 1, 'the three stations drawn: NOAA, JMA and IEM credited');
+  assert.equal(b.credits.has(b.api.WIND_CREDIT), false, 'one credit string, not two');
+  b.api.rebuildWindMarkers(false); b.api.rebuildWindMarkers(true);
+  assert.equal(b.credits.count(all), 1, 'added once');
+  assert.equal(b.api.windCreditFor([{ s: list.stations[0] && b.api.windStationsData[0] }]), b.api.WIND_CREDIT, 'NOAA stations only: the old credit');
+  b.setOn(false); b.api.rebuildWindMarkers(true);
+  assert.equal(b.credits.has(all), false, 'the layer off: no credit');
+  assert.ok(b.api.WIND_AGENCY_CREDIT.jma.indexOf('(edited)') > 0, "JMA's licence: say the data was edited");
+  assert.equal(b.api.windSubtitle(b.api.windStationsData[1]), 'Wind · JMA weather station 44132');
+  assert.equal(b.api.windSubtitle(b.api.windStationsData[2]), 'Wind · Road weather station CD004 (CA DOT)');
+  assert.equal(b.api.windSubtitle({ id: 'iem:X50', kind: 'airport', src: 'iem', net: 'FL_ASOS' }), 'Wind · Airport X50 (IEM)');
+  assert.equal(b.api.windSubtitle({ id: 'eccc:CWEB', kind: 'met', src: 'eccc' }), 'Wind · Environment Canada weather station CWEB');
+  assert.equal(b.api.windSubtitle({ id: 'mei:VALENTIA', kind: 'met', src: 'mei' }), 'Wind · Met Éireann weather station VALENTIA');
+  assert.deepEqual(['met', 'road'].map((k) => b.api.windRank({ kind: k })), [1, 2], 'a weather service station with the airports; road weather with the NWS networks');
 });

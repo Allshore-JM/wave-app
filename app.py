@@ -433,7 +433,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.26.9"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.27.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -931,7 +931,26 @@ WIND_MADIS_MAX_S = 90.0           # the whole answer (it takes 4-40 s)
 # test site two tries of one window were cut by the live fetch's read timeout, then 45 s), so their own, longer limits
 WIND_MADIS_WINDOW_TIMEOUT = (10, 100)
 WIND_MADIS_WINDOW_MAX_S = 120.0
-WIND_WARM_ORDER = ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]   # single-request feeds first; CO-OPS and NWS ask every station
+# plan section 67's feeds (wind_more.py): each on unless WIND_<SRC>=0 (WIND_ECCC, WIND_JMA, WIND_IEM, WIND_SMHI, WIND_FMI,
+# WIND_DMI, WIND_DWD, WIND_IPMA, WIND_MEI); the paced ones' units per refresh: WIND_<SRC>_PER_REFRESH (ECCC, IEM, DWD, MEI)
+WIND_MORE_ENABLED = {k: os.environ.get("WIND_" + k.upper(), "1") != "0" for k in wind_sources.MORE_SOURCES}
+
+
+def _wind_more_per_refresh():
+    out = {}
+    for k in ("eccc", "iem", "dwd", "mei"):
+        v = os.environ.get("WIND_" + k.upper() + "_PER_REFRESH")
+        if v:
+            try:
+                out[k] = max(1, min(500, int(float(v))))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return out
+
+
+WIND_MORE_PER_REFRESH = _wind_more_per_refresh()
+# single-request feeds first; the paced feeds (one request per station or network) after them
+WIND_WARM_ORDER = ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "MADIS", "MEI", "IEM", "DWD", "ECCC", "COOPS", "NWS"]
 WIND_OFF = "Wind stations are not available on this server"
 _WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
 _WINDS_LOCK = threading.Lock()
@@ -952,13 +971,22 @@ def _winds():
             _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS, WIND_COOPS_PER_REFRESH,
                                                               WIND_NWS_WORKERS, WIND_NWS_PER_REFRESH,
                                                               madis_url=WIND_MADIS_URL or None, madis_fetch=_madis_fetch,
-                                                              madis_window_fetch=_madis_window_fetch)
+                                                              madis_window_fetch=_madis_window_fetch,
+                                                              more_enabled=WIND_MORE_ENABLED,
+                                                              more_per_refresh=WIND_MORE_PER_REFRESH)
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
             madis = [p for p in _WINDS["providers"] if p.source == "MADIS"]
             _WINDS["svc"].madis = madis[0].row if madis else None
             # the NWS stations' 24 hours from MADIS (plan section 55) and whether it is still filling them in
             _WINDS["svc"].madis_hist = madis[0].hist if madis else None
             _WINDS["svc"].madis_filling = madis[0].filling if madis else None
+            # the section-67 feeds whose windows read the feed's own 24 hours (ECCC, IPMA, Met Eireann)
+            for p in _WINDS["providers"]:
+                src = p.source.lower()
+                if src in wind_sources.MORE_KEPT:
+                    _WINDS["svc"].more_hist[src] = p.hist
+                    if src != "ipma":                       # IPMA's feed brings its 24 hours at once
+                        _WINDS["svc"].more_started[src] = time.time()
         return _WINDS
 
 

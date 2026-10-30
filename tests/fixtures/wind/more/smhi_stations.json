@@ -1,0 +1,169 @@
+{
+"key": "4",
+"updated": 1793390400000,
+"title": "Vindhastighet: Välj station (sedan tidsutsnitt)",
+"summary": "medelvärde 10 min, 1 gång/tim",
+"unit": "meter per sekund",
+"valueType": "SAMPLING",
+"link": [
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4.json",
+"rel": "parameter",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4.xml",
+"rel": "parameter",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4.atom",
+"rel": "parameter",
+"type": "application/atom+xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/metadata.json",
+"rel": "metadata",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/metadata.xml",
+"rel": "metadata",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0.atom",
+"rel": "version",
+"type": "application/atom+xml"
+}
+],
+"stationSet": [
+{
+"key": "all",
+"updated": 1793390400000,
+"title": "Vindhastighet - Alla Stationer",
+"summary": "Data från alla aktiva mätstationer för senaste timmen i en fil.",
+"link": [
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all.json",
+"rel": "stationSet",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all.xml",
+"rel": "stationSet",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station-set/all.atom",
+"rel": "stationSet",
+"type": "application/atom+xml"
+}
+]
+}
+],
+"station": [
+{
+"key": "154860",
+"updated": 841535999000,
+"title": "Vindhastighet - Abelvattnet Aut",
+"summary": "Latitud: 65.5300 Longitud: 14.9700 Höjd: 665.0",
+"link": [
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/154860.json",
+"rel": "station",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/154860.xml",
+"rel": "station",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/154860.atom",
+"rel": "station",
+"type": "application/atom+xml"
+}
+],
+"name": "Abelvattnet Aut",
+"owner": "SMHI",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"id": 154860,
+"height": 665.0,
+"latitude": 65.53,
+"longitude": 14.97,
+"active": false,
+"from": 441763200000,
+"to": 841535999000
+},
+{
+"key": "188790",
+"updated": 1793390400000,
+"title": "Vindhastighet - Abisko Aut",
+"summary": "Latitud: 68.3538 Longitud: 18.8164 Höjd: 392.235",
+"link": [
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/188790.json",
+"rel": "station",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/188790.xml",
+"rel": "station",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/188790.atom",
+"rel": "station",
+"type": "application/atom+xml"
+}
+],
+"name": "Abisko Aut",
+"owner": "Polarforskningssekretariatet",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"id": 188790,
+"height": 392.235,
+"latitude": 68.3538,
+"longitude": 18.8164,
+"active": true,
+"from": 481161600000,
+"to": 1793390400000
+},
+{
+"key": "71420",
+"updated": 1793390400000,
+"title": "Vindhastighet - Göteborg A",
+"summary": "Latitud: 57.7156 Longitud: 11.9924 Höjd: 3.038",
+"link": [
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/71420.json",
+"rel": "station",
+"type": "application/json"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/71420.xml",
+"rel": "station",
+"type": "application/xml"
+},
+{
+"href": "https://opendata-download-metobs.smhi.se/api/version/1.0/parameter/4/station/71420.atom",
+"rel": "station",
+"type": "application/atom+xml"
+}
+],
+"name": "Göteborg A",
+"owner": "SMHI",
+"ownerCategory": "CLIMATE",
+"measuringStations": "CORE",
+"id": 71420,
+"height": 3.038,
+"latitude": 57.7156,
+"longitude": 11.9924,
+"active": true,
+"from": -283996800000,
+"to": 1793390400000
+}
+]
+}

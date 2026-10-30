@@ -1,0 +1,740 @@
+{
+"schema": {
+"fields": [
+{
+"name": "station",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "name",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "county",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "state",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "network",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "local_date",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "snow",
+"type": "string"
+},
+{
+"name": "snowd",
+"type": "string"
+},
+{
+"name": "snoww",
+"type": "string"
+},
+{
+"name": "utc_valid",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "local_valid",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "tmpf",
+"type": "number"
+},
+{
+"name": "max_tmpf",
+"type": "number"
+},
+{
+"name": "min_tmpf",
+"type": "number"
+},
+{
+"name": "dwpf",
+"type": "number"
+},
+{
+"name": "relh",
+"type": "number"
+},
+{
+"name": "vsby",
+"type": "number"
+},
+{
+"name": "sknt",
+"type": "number"
+},
+{
+"name": "drct",
+"type": "number"
+},
+{
+"name": "c1smv",
+"type": "string"
+},
+{
+"name": "c2smv",
+"type": "string"
+},
+{
+"name": "c3smv",
+"type": "string"
+},
+{
+"name": "c4smv",
+"type": "string"
+},
+{
+"name": "c5smv",
+"type": "string"
+},
+{
+"name": "c1tmpf",
+"type": "string"
+},
+{
+"name": "c2tmpf",
+"type": "string"
+},
+{
+"name": "c3tmpf",
+"type": "string"
+},
+{
+"name": "c4tmpf",
+"type": "string"
+},
+{
+"name": "c5tmpf",
+"type": "string"
+},
+{
+"name": "ob_pday",
+"type": "string"
+},
+{
+"name": "ob_pmonth",
+"type": "string"
+},
+{
+"name": "s_pmonth",
+"type": "string"
+},
+{
+"name": "max_sknt",
+"type": "number"
+},
+{
+"name": "max_gust",
+"type": "number"
+},
+{
+"name": "gust",
+"type": "number"
+},
+{
+"name": "mslp",
+"type": "string"
+},
+{
+"name": "pres",
+"type": "number"
+},
+{
+"name": "scond0",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "scond1",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "scond2",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "scond3",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "srad",
+"type": "string"
+},
+{
+"name": "tsf0",
+"type": "number"
+},
+{
+"name": "tsf1",
+"type": "number"
+},
+{
+"name": "tsf2",
+"type": "number"
+},
+{
+"name": "tsf3",
+"type": "number"
+},
+{
+"name": "rwis_subf",
+"type": "number"
+},
+{
+"name": "raw",
+"type": "string"
+},
+{
+"name": "phour",
+"type": "string"
+},
+{
+"name": "feel",
+"type": "number"
+},
+{
+"name": "ice_accretion_1hr",
+"type": "string"
+},
+{
+"name": "ice_accretion_3hr",
+"type": "string"
+},
+{
+"name": "ice_accretion_6hr",
+"type": "string"
+},
+{
+"name": "skyl1",
+"type": "string"
+},
+{
+"name": "skyc1",
+"type": "string"
+},
+{
+"name": "skyl2",
+"type": "string"
+},
+{
+"name": "skyc2",
+"type": "string"
+},
+{
+"name": "skyl3",
+"type": "string"
+},
+{
+"name": "skyc3",
+"type": "string"
+},
+{
+"name": "skyl4",
+"type": "string"
+},
+{
+"name": "skyc4",
+"type": "string"
+},
+{
+"name": "alti",
+"type": "string"
+},
+{
+"name": "wxcodes",
+"type": "string"
+},
+{
+"name": "utc_max_gust_ts",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "local_max_gust_ts",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "utc_max_sknt_ts",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "local_max_sknt_ts",
+"type": "string",
+"extDtype": "str"
+},
+{
+"name": "lon",
+"type": "number"
+},
+{
+"name": "lat",
+"type": "number"
+},
+{
+"name": "pday",
+"type": "string"
+}
+],
+"primaryKey": [
+"station"
+],
+"pandas_version": "1.4.0"
+},
+"data": [
+{
+"station": "CD004",
+"name": "Bogard",
+"county": "Lassen",
+"state": "CA",
+"network": "CA_RWIS",
+"local_date": "2026-10-30",
+"snow": null,
+"snowd": null,
+"snoww": null,
+"utc_valid": "2026-10-30T20:31:59Z",
+"local_valid": "2026-10-30T13:31:59",
+"tmpf": 46.94002,
+"max_tmpf": 47.840023,
+"min_tmpf": 21.740023,
+"dwpf": 31.999989,
+"relh": 55.0,
+"vsby": 1.2427424,
+"sknt": 5.6371493,
+"drct": 238.0,
+"c1smv": null,
+"c2smv": null,
+"c3smv": null,
+"c4smv": null,
+"c5smv": null,
+"c1tmpf": null,
+"c2tmpf": null,
+"c3tmpf": null,
+"c4tmpf": null,
+"c5tmpf": null,
+"ob_pday": null,
+"ob_pmonth": null,
+"s_pmonth": null,
+"max_sknt": 7.1922245,
+"max_gust": 10.691145,
+"gust": 10.691145,
+"mslp": null,
+"pres": null,
+"scond0": "Dry",
+"scond1": null,
+"scond2": null,
+"scond3": null,
+"srad": null,
+"tsf0": 63.860012,
+"tsf1": null,
+"tsf2": null,
+"tsf3": null,
+"rwis_subf": null,
+"raw": null,
+"phour": null,
+"feel": 43.735912,
+"ice_accretion_1hr": null,
+"ice_accretion_3hr": null,
+"ice_accretion_6hr": null,
+"skyl1": null,
+"skyc1": null,
+"skyl2": null,
+"skyc2": null,
+"skyl3": null,
+"skyc3": null,
+"skyl4": null,
+"skyc4": null,
+"alti": null,
+"wxcodes": null,
+"utc_max_gust_ts": "2026-10-30T20:31:59Z",
+"local_max_gust_ts": "2026-10-30T13:31:59",
+"utc_max_sknt_ts": "2026-10-30T20:02:00Z",
+"local_max_sknt_ts": "2026-10-30T13:02:00",
+"lon": -121.0886993408,
+"lat": 40.5854797363,
+"pday": null
+},
+{
+"station": "CD020",
+"name": "Weed Airport",
+"county": "Siskiyou",
+"state": "CA",
+"network": "CA_RWIS",
+"local_date": "2026-10-30",
+"snow": null,
+"snowd": null,
+"snoww": null,
+"utc_valid": "2026-10-30T20:30:05Z",
+"local_valid": "2026-10-30T13:30:05",
+"tmpf": 52.88,
+"max_tmpf": 52.88,
+"min_tmpf": 35.59999,
+"dwpf": 34.88,
+"relh": 50.0,
+"vsby": null,
+"sknt": 4.082073,
+"drct": 323.0,
+"c1smv": null,
+"c2smv": null,
+"c3smv": null,
+"c4smv": null,
+"c5smv": null,
+"c1tmpf": null,
+"c2tmpf": null,
+"c3tmpf": null,
+"c4tmpf": null,
+"c5tmpf": null,
+"ob_pday": null,
+"ob_pmonth": null,
+"s_pmonth": null,
+"max_sknt": 8.164146,
+"max_gust": 9.719222,
+"gust": 5.8315334,
+"mslp": null,
+"pres": null,
+"scond0": null,
+"scond1": null,
+"scond2": null,
+"scond3": null,
+"srad": null,
+"tsf0": null,
+"tsf1": null,
+"tsf2": null,
+"tsf3": null,
+"rwis_subf": null,
+"raw": null,
+"phour": null,
+"feel": 52.88,
+"ice_accretion_1hr": null,
+"ice_accretion_3hr": null,
+"ice_accretion_6hr": null,
+"skyl1": null,
+"skyc1": null,
+"skyl2": null,
+"skyc2": null,
+"skyl3": null,
+"skyc3": null,
+"skyl4": null,
+"skyc4": null,
+"alti": null,
+"wxcodes": null,
+"utc_max_gust_ts": "2026-10-30T12:50:05Z",
+"local_max_gust_ts": "2026-10-30T05:50:05",
+"utc_max_sknt_ts": "2026-10-30T17:35:05Z",
+"local_max_sknt_ts": "2026-10-30T10:35:05",
+"lon": -122.4529037476,
+"lat": 41.4743003845,
+"pday": null
+},
+{
+"station": "CD022",
+"name": "Anderson Grade Summit",
+"county": "Siskiyou",
+"state": "CA",
+"network": "CA_RWIS",
+"local_date": "2026-10-30",
+"snow": null,
+"snowd": null,
+"snoww": null,
+"utc_valid": "2026-10-30T20:31:14Z",
+"local_valid": "2026-10-30T13:31:14",
+"tmpf": null,
+"max_tmpf": null,
+"min_tmpf": null,
+"dwpf": null,
+"relh": null,
+"vsby": null,
+"sknt": null,
+"drct": null,
+"c1smv": null,
+"c2smv": null,
+"c3smv": null,
+"c4smv": null,
+"c5smv": null,
+"c1tmpf": null,
+"c2tmpf": null,
+"c3tmpf": null,
+"c4tmpf": null,
+"c5tmpf": null,
+"ob_pday": null,
+"ob_pmonth": null,
+"s_pmonth": null,
+"max_sknt": null,
+"max_gust": null,
+"gust": null,
+"mslp": null,
+"pres": null,
+"scond0": "Dry",
+"scond1": "Dry",
+"scond2": "Dry",
+"scond3": "Dry",
+"srad": null,
+"tsf0": 59.18,
+"tsf1": 58.640022,
+"tsf2": 52.16001,
+"tsf3": 56.840023,
+"rwis_subf": null,
+"raw": null,
+"phour": null,
+"feel": null,
+"ice_accretion_1hr": null,
+"ice_accretion_3hr": null,
+"ice_accretion_6hr": null,
+"skyl1": null,
+"skyc1": null,
+"skyl2": null,
+"skyc2": null,
+"skyl3": null,
+"skyc3": null,
+"skyl4": null,
+"skyc4": null,
+"alti": null,
+"wxcodes": null,
+"utc_max_gust_ts": null,
+"local_max_gust_ts": null,
+"utc_max_sknt_ts": null,
+"local_max_sknt_ts": null,
+"lon": -122.5818634033,
+"lat": 41.8001213074,
+"pday": null
+},
+{
+"station": "CD028",
+"name": "Hwy 80 at Donner Lake",
+"county": "Nevada",
+"state": "CA",
+"network": "CA_RWIS",
+"local_date": "2026-10-30",
+"snow": null,
+"snowd": null,
+"snoww": null,
+"utc_valid": "2026-10-30T20:31:05Z",
+"local_valid": "2026-10-30T13:31:05",
+"tmpf": 47.840023,
+"max_tmpf": 48.019978,
+"min_tmpf": 37.39999,
+"dwpf": 35.78,
+"relh": 63.0,
+"vsby": 4.660284,
+"sknt": 4.276458,
+"drct": 22.0,
+"c1smv": null,
+"c2smv": null,
+"c3smv": null,
+"c4smv": null,
+"c5smv": null,
+"c1tmpf": null,
+"c2tmpf": null,
+"c3tmpf": null,
+"c4tmpf": null,
+"c5tmpf": null,
+"ob_pday": null,
+"ob_pmonth": null,
+"s_pmonth": null,
+"max_sknt": 8.358532,
+"max_gust": 12.246221,
+"gust": 12.246221,
+"mslp": null,
+"pres": null,
+"scond0": "Dry",
+"scond1": null,
+"scond2": null,
+"scond3": null,
+"srad": null,
+"tsf0": 31.999989,
+"tsf1": null,
+"tsf2": null,
+"tsf3": null,
+"rwis_subf": 31.999989,
+"raw": null,
+"phour": null,
+"feel": 45.70732,
+"ice_accretion_1hr": null,
+"ice_accretion_3hr": null,
+"ice_accretion_6hr": null,
+"skyl1": null,
+"skyc1": null,
+"skyl2": null,
+"skyc2": null,
+"skyl3": null,
+"skyc3": null,
+"skyl4": null,
+"skyc4": null,
+"alti": null,
+"wxcodes": null,
+"utc_max_gust_ts": "2026-10-30T08:21:12Z",
+"local_max_gust_ts": "2026-10-30T01:21:12",
+"utc_max_sknt_ts": "2026-10-30T20:21:05Z",
+"local_max_sknt_ts": "2026-10-30T13:21:05",
+"lon": -120.287727356,
+"lat": 39.3319396973,
+"pday": null
+},
+{
+"station": "CD027",
+"name": "Hwy 80 at Donner Summit",
+"county": "Nevada",
+"state": "CA",
+"network": "CA_RWIS",
+"local_date": "2026-10-30",
+"snow": null,
+"snowd": null,
+"snoww": null,
+"utc_valid": "2026-10-30T15:34:02Z",
+"local_valid": "2026-10-30T08:34:02",
+"tmpf": 33.08,
+"max_tmpf": 35.41998,
+"min_tmpf": 32.18,
+"dwpf": 32.18,
+"relh": 97.0,
+"vsby": 0.31752068,
+"sknt": 11.079913,
+"drct": 57.0,
+"c1smv": null,
+"c2smv": null,
+"c3smv": null,
+"c4smv": null,
+"c5smv": null,
+"c1tmpf": null,
+"c2tmpf": null,
+"c3tmpf": null,
+"c4tmpf": null,
+"c5tmpf": null,
+"ob_pday": null,
+"ob_pmonth": null,
+"s_pmonth": null,
+"max_sknt": 18.466522,
+"max_gust": 26.047516,
+"gust": 14.773218,
+"mslp": null,
+"pres": null,
+"scond0": "Dry",
+"scond1": null,
+"scond2": null,
+"scond3": null,
+"srad": null,
+"tsf0": 31.999989,
+"tsf1": null,
+"tsf2": null,
+"tsf3": null,
+"rwis_subf": 31.999989,
+"raw": null,
+"phour": null,
+"feel": 23.79361,
+"ice_accretion_1hr": null,
+"ice_accretion_3hr": null,
+"ice_accretion_6hr": null,
+"skyl1": null,
+"skyc1": null,
+"skyl2": null,
+"skyc2": null,
+"skyl3": null,
+"skyc3": null,
+"skyl4": null,
+"skyc4": null,
+"alti": null,
+"wxcodes": null,
+"utc_max_gust_ts": "2026-10-30T07:46:02Z",
+"local_max_gust_ts": "2026-10-30T00:46:02",
+"utc_max_sknt_ts": "2026-10-30T08:11:02Z",
+"local_max_sknt_ts": "2026-10-30T01:11:02",
+"lon": -120.3478164673,
+"lat": 39.3390617371,
+"pday": null
+},
+{
+"station": "CD035",
+"name": "Hwy 80 at Bryte Bend",
+"county": "Sacramento",
+"state": "CA",
+"network": "CA_RWIS",
+"local_date": "2026-10-30",
+"snow": null,
+"snowd": null,
+"snoww": null,
+"utc_valid": "2026-10-30T20:31:01Z",
+"local_valid": "2026-10-30T13:31:01",
+"tmpf": 67.460014,
+"max_tmpf": 67.81998,
+"min_tmpf": 51.44002,
+"dwpf": 47.11998,
+"relh": 48.0,
+"vsby": 1.380749,
+"sknt": 0.7775378,
+"drct": 4.0,
+"c1smv": null,
+"c2smv": null,
+"c3smv": null,
+"c4smv": null,
+"c5smv": null,
+"c1tmpf": null,
+"c2tmpf": null,
+"c3tmpf": null,
+"c4tmpf": null,
+"c5tmpf": null,
+"ob_pday": null,
+"ob_pmonth": null,
+"s_pmonth": null,
+"max_sknt": 4.4708424,
+"max_gust": 6.99784,
+"gust": 5.8315334,
+"mslp": null,
+"pres": null,
+"scond0": "Other",
+"scond1": null,
+"scond2": null,
+"scond3": null,
+"srad": null,
+"tsf0": null,
+"tsf1": null,
+"tsf2": null,
+"tsf3": null,
+"rwis_subf": 31.999989,
+"raw": null,
+"phour": null,
+"feel": 67.460014,
+"ice_accretion_1hr": null,
+"ice_accretion_3hr": null,
+"ice_accretion_6hr": null,
+"skyl1": null,
+"skyc1": null,
+"skyl2": null,
+"skyc2": null,
+"skyl3": null,
+"skyc3": null,
+"skyl4": null,
+"skyc4": null,
+"alti": null,
+"wxcodes": null,
+"utc_max_gust_ts": "2026-10-30T18:46:02Z",
+"local_max_gust_ts": "2026-10-30T11:46:02",
+"utc_max_sknt_ts": "2026-10-30T18:56:01Z",
+"local_max_sknt_ts": "2026-10-30T11:56:01",
+"lon": -121.5447463989,
+"lat": 38.6030006409,
+"pday": null
+}
+]
+}

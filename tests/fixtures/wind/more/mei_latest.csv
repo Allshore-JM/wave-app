@@ -1,0 +1,26 @@
+Station,"Temperature (ºC)",Weather,"Wind Speed (Kts)","Wind Gust (Kts)","Wind Direction","Humidity (%)","Rainfall (mm)","Pressure (hPa)"
+Athenry,14,"Rain shower",07,,SE,92,0.2,1025
+Ballyhaise,13,Cloudy,05,,SE,84,0.0,1026
+Belmullet,12,Mist,06,,N,99,0.1,1025
+Casement,12,Fair,02,,S,85,0.0,1027
+Claremorris,14,-,05,,SE,97,0.2,1025
+Cork,11,"Fog thinning",09,,SE,100,0.3,1026
+Dublin,12,Cloudy,03,,S,88,0.0,1027
+Dunsany,13,-,09,,S,82,0.0,1027
+Finner,15,"Recent Drizzle ",06,,S,84,0.01,1025
+Gurteen,12,Cloudy,09,,SE,90,0.0,1026
+"Johnstown Castle",11,Fair,02,,S,93,0.0,1028
+Knock,13,-,08,,S,98,0.0,1025
+"Mace Head",13,Fog,,,CALM,99,0.2,1024
+"Malin Head",15,Cloudy,12,,S,81,0.0,1025
+"Markree Castle",14,-,-,,-,88,0.0,1025
+"Moore Park",12,-,05,,E,95,0.0,1027
+"Mt Dillon",14,-,02,,S,87,0.0,1026
+Mullingar,12,Fair,06,,S,87,0.0,1026
+"Newport Mayo",13,-,04,,NW,97,0.1,1025
+"Oak Park",12,Cloudy,04,,SE,90,0.0,1028
+"Phoenix Park",11,-,-,,-,92,0.0,1027
+"Roche's Point",12,"Moderate Drizzle ",10,,SE,96,0.9,1027
+Shannon,13,Cloudy,14,,SE,92,0.0,1025
+"Sherkin Island",13,"Recent Fog",11,,SE,99,0.0,1025
+Valentia,15,"Light rain ",07,,S,96,1.0,1024

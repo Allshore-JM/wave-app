@@ -1964,7 +1964,28 @@
     const WIND_CREDIT = 'Wind: <a href="https://www.ndbc.noaa.gov/" target="_blank" rel="noopener">NOAA NDBC</a> · <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">CO-OPS</a> · <a href="https://aviationweather.gov/" target="_blank" rel="noopener">NWS Aviation Weather</a> · <a href="https://api.weather.gov/" target="_blank" rel="noopener">NWS API</a> · <a href="https://madis.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA MADIS</a>';
     const WIND_KIND_TEXT = { gauge: 'NOAA tide gauge', buoy: 'NDBC buoy', cman: 'NDBC C-MAN station', station: 'NDBC station', airport: 'Airport (METAR)',
                              utility: 'HECO / HELCO / MECO station', mesonet: 'Mesonet station', raws: 'RAWS fire-weather station',
-                             cwop: 'CWOP amateur station', hads: 'HADS station', weather: 'Weather station' };   // the NWS API's networks (step 5c)
+                             cwop: 'CWOP amateur station', hads: 'HADS station', weather: 'Weather station',   // the NWS API's networks (step 5c)
+                             met: 'Weather station', road: 'Road weather station' };                           // plan section 67
+    // plan section 67: the agencies, named in the window's subtitle and credited while one of their flags is drawn
+    const WIND_AGENCY = { eccc: 'Environment Canada', jma: 'JMA', iem: 'IEM', smhi: 'SMHI', fmi: 'FMI', dmi: 'DMI', dwd: 'DWD', ipma: 'IPMA', mei: 'Met Éireann' };
+    const WIND_AGENCY_CREDIT = {
+      eccc: '<a href="https://eccc-msc.github.io/open-data/" target="_blank" rel="noopener">Environment and Climate Change Canada</a>',
+      jma: '<a href="https://www.jma.go.jp/bosai/amedas/" target="_blank" rel="noopener">Japan Meteorological Agency</a> (edited)',
+      iem: '<a href="https://mesonet.agron.iastate.edu/" target="_blank" rel="noopener">Iowa Environmental Mesonet</a>',
+      smhi: '<a href="https://www.smhi.se/data" target="_blank" rel="noopener">SMHI</a>',
+      fmi: '<a href="https://en.ilmatieteenlaitos.fi/open-data" target="_blank" rel="noopener">FMI</a>',
+      dmi: '<a href="https://www.dmi.dk/friedata" target="_blank" rel="noopener">DMI</a>',
+      dwd: '<a href="https://opendata.dwd.de/" target="_blank" rel="noopener">DWD</a>',
+      ipma: '<a href="https://www.ipma.pt/" target="_blank" rel="noopener">IPMA</a>',
+      mei: '<a href="https://www.met.ie/" target="_blank" rel="noopener">Met Éireann</a>' };
+    const WIND_AGENCY_ORDER = ['eccc', 'jma', 'iem', 'smhi', 'fmi', 'dmi', 'dwd', 'ipma', 'mei'];
+    // the layer's credit: NOAA's feeds always, then the agencies whose flags are drawn in the view
+    function windCreditFor(vis) {
+      const seen = new Set();
+      (vis || []).forEach(function (c) { if (WIND_AGENCY_CREDIT[c.s.src]) seen.add(c.s.src); });
+      const more = WIND_AGENCY_ORDER.filter(function (k) { return seen.has(k); }).map(function (k) { return WIND_AGENCY_CREDIT[k]; });
+      return WIND_CREDIT + (more.length ? ' · ' + more.join(' · ') : '');
+    }
     let windListFailedAt = -Infinity;
     let windReveal = null, windRevealKey = '';      // each station's reveal zoom (once per list)
     let windStationsData = [];
@@ -1974,7 +1995,7 @@
     let activeWindId = null;
     let windDrawn = [];                             // the drawn markers: { marker, s, lng, o, flag, label, active }
     let lastWindSig = null;
-    let windCreditShown = false;
+    let windCreditShown = null;                     // the credit string on the map (windCreditFor), or null
     let windView = null, windFeed = null;
     let windReadings = {};                          // id -> the latest reading {t, s, g, d} (static_ui/winds.js readings())
     let windByKey = new Map();                      // id#copy -> the drawn flag (rebuildWindMarkers keeps the ones that stay)
@@ -3836,10 +3857,11 @@
         return r.json();
       }).then(function (doc) {
         const f = doc.fields, ix = function (k) { return f.indexOf(k); };
-        const I = { id: ix('id'), name: ix('name'), lat: ix('lat'), lon: ix('lon'), kind: ix('kind'), src: ix('src'), tz: ix('tz'), alias: ix('alias') };
+        const I = { id: ix('id'), name: ix('name'), lat: ix('lat'), lon: ix('lon'), kind: ix('kind'), src: ix('src'), tz: ix('tz'), alias: ix('alias'), net: ix('net') };
         windStationsData = (doc.stations || []).map(function (r) {
           return { id: String(r[I.id]), name: String(r[I.name] || r[I.id]), lat: +r[I.lat], lon: +r[I.lon], kind: String(r[I.kind] || ''),
-                   src: String(r[I.src] || ''), tz: r[I.tz] || 'UTC', alias: r[I.alias] ? String(r[I.alias]) : null };
+                   src: String(r[I.src] || ''), tz: r[I.tz] || 'UTC', alias: r[I.alias] ? String(r[I.alias]) : null,
+                   net: I.net >= 0 && r[I.net] ? String(r[I.net]) : null };
         }).filter(function (st) { return Number.isFinite(st.lat) && Number.isFinite(st.lon); });
         windListNote = '';
         workOutWindStall();
@@ -3858,7 +3880,7 @@
     // it; every station at the map's last zoom; the opened station whatever its reveal zoom.
     // who keeps the flag where flags crowd (owner, 2026-10-10): gauges and buoys, then airports and NDBC stations, then
     // the NWS API's land stations, CWOP amateur stations last
-    function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' || s.kind === 'cman' || s.kind === 'station' ? 1 : s.kind === 'cwop' ? 3 : 2; }
+    function windRank(s) { return s.kind === 'gauge' || s.kind === 'buoy' ? 0 : s.kind === 'airport' || s.kind === 'cman' || s.kind === 'station' || s.kind === 'met' ? 1 : s.kind === 'cwop' ? 3 : 2; }
     function windRankOrder(a, b) { return windRank(a) - windRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
     function windRevealZooms() {
       const key = String(windStationsData.length);
@@ -3973,6 +3995,11 @@
     }
     function windSubtitle(s) {
       const local = String(s.id).split(':')[1] || s.id;
+      if (s.src === 'iem') {                          // a state DOT road-weather station or an airport through IEM
+        const state = String(s.net || '').split('_')[0];
+        return 'Wind · ' + (s.kind === 'road' ? 'Road weather station ' + local + (state ? ' (' + state + ' DOT)' : '') : 'Airport ' + local + ' (IEM)');
+      }
+      if (WIND_AGENCY[s.src]) return 'Wind · ' + WIND_AGENCY[s.src] + ' weather station ' + local;
       return 'Wind · ' + (WIND_KIND_TEXT[s.kind] || 'Station') + ' ' + local + (s.alias ? ' (NDBC ' + s.alias + ')' : '');
     }
     // the feed of latest readings: running only while the flags show (the layer on, at the gate); its answers repaint
@@ -4085,9 +4112,11 @@
       const sig = (on ? '1' : '0') + '|' + (activeWindId || '') + '|' + renderSignature(vis) + '|h:' + Array.from(hollow, function (e) { return e[0] + '=' + windDotState(e[1]); }).sort().join(',');   // the gate bit clears the layer on a zoom-out
       const want = windNoteWanted(on);
       if (want !== windNoteText) { windNoteText = want; paintWindNote(); }
-      if (map.attributionControl && map.hasLayer(windLayer) !== windCreditShown) {   // the credit while the layer is on
-        windCreditShown = !windCreditShown;
-        if (windCreditShown) map.attributionControl.addAttribution(WIND_CREDIT); else map.attributionControl.removeAttribution(WIND_CREDIT);
+      const credit = map.hasLayer(windLayer) ? windCreditFor(vis) : null;   // the credit while the layer is on (section 67:
+      if (map.attributionControl && credit !== windCreditShown) {           // with the agencies in view); changed only on a change
+        if (windCreditShown) map.attributionControl.removeAttribution(windCreditShown);
+        if (credit) map.attributionControl.addAttribution(credit);
+        windCreditShown = credit;
       }
       syncWindFeed(on);
       if (!force && sig === lastWindSig) { windTabStops(); return; }

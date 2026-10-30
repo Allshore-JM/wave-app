@@ -1969,15 +1969,19 @@ send). The stations are in the same snapshot, added by `python tools/wind/more_s
 - kept when the station reports wind now, lies within 30 km of a coastline (the site's GSHHG tier-0 file) or of a large
   lake's shore (the lake-outline set, lakes of 100 km2 and more: the Great Lakes, Winnipeg, Ladoga, Biwa ...), or at sea;
 - one per spot: never within 100 m of a kept station, within 500 m of a METAR site (an airport's own weather station is
-  the airport) nor its METAR id (ECCC's NAV CANADA files, IEM's airport sites with K / P / T, DWD's ICAO), and DWD (coarse
-  0.01-degree positions) not within 2 km of a kept station;
+  the airport) nor its METAR id (ECCC's NAV CANADA files, IEM's airport sites with K / P / T, DWD's ICAO); a weather
+  service's station within 1.5 km of a METAR site, or within 2.5 km when its name says airport (Flygplats, Lufthavn,
+  lentoasema, Aerodromo ...) or begins like the site's name, stands on that airfield and is left out (the airport keeps
+  one flag); DWD (coarse 0.01-degree positions) not within 2 km of a kept station;
 - DWD's own stations only (WMO block 10 = Germany): its station list also relays other countries' SYNOP reports, which
   are left out;
 - kinds `met` (a national weather service's station, ranked with the airports where flags crowd) and `road` (IEM's
   `XX_RWIS`, ranked with the NWS networks); IEM's airports are `airport`; the IEM network is the new field `net`.
 
-The build of 2026-10-30 added 1,824 stations (ECCC 312, JMA 580, IEM 534, SMHI 112, FMI 102, DMI 56, DWD 28, IPMA 87,
-Met Eireann 13; the snapshot holds 4,548).
+The build of 2026-10-30 added 1,786 stations (ECCC 300, JMA 575, IEM 534, SMHI 103, FMI 101, DMI 51, DWD 28, IPMA 84,
+Met Eireann 10; the snapshot holds 4,510). A rebuild keeps only the stations reporting wind at that moment, so a few come
+and go between builds; after a change to the spot rule, `--respot` places the snapshot's own rows again without asking
+any agency.
 
 The feeds (`wind_more.py`, the parsers and providers; `wind_sources.make_providers` adds them; requests through the same
 bounded fetch with the site's User-Agent):

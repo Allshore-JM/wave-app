@@ -8,7 +8,9 @@ is added when (owner, 2026-10-30):
   lakes >= 100 km2: the Great Lakes, Winnipeg, Ladoga, Biwa ...), or at sea;
 - no station is already kept at its spot: within SPOT_M of any kept station, within AIRPORT_SPOT_M of a METAR site (an
   airport's own weather station is the airport), the METAR id itself (ECCC's NAV CANADA files, IEM's ASOS sites, DWD's
-  ICAO), and for DWD (coarse 0.01-degree positions) within DWD_NEAR_M of a kept station. Order:
+  ICAO), a national weather service's station on an airfield (within AIRFIELD_M of a METAR site, or within
+  AIRFIELD_NAMED_M when its name says airport or begins like the site's), and for DWD (coarse 0.01-degree positions)
+  within DWD_NEAR_M of a kept station. Order:
   SPOT_RANK_MORE (the national services, then DWD, then IEM), id.
 
 Kinds: "met" (a national weather service's station), "road" (a state DOT road-weather station, IEM XX_RWIS), "airport"
@@ -21,8 +23,10 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -37,6 +41,10 @@ COAST_KM = FS.COAST_KM
 SPOT_M = FS.SPOT_M
 AIRPORT_SPOT_M = FS.AIRPORT_SPOT_M
 DWD_NEAR_M = 2000.0
+AIRFIELD_M = 1500.0                                            # a weather service's station this near a METAR site is
+AIRFIELD_NAMED_M = 2500.0                                      # the airfield's (as is one up to 2.5 km whose name says so)
+AIRFIELD_WORDS = re.compile(r"\b(airport|aeroport|aeroporto|aerodromo|aerodrome|flygplats|lufthavn|flyvestation|"
+                            r"lentoasema|lentokentta|flughafen|flugplatz|airfield|intl|arpt)\b")
 DWD_WMO_BLOCK = "10"                                           # DWD's own stations: WMO block 10 = Germany (its
                                                                # poi list also relays other countries' SYNOP reports)
 SPOT_RANK_MORE = {"eccc": 4, "jma": 4, "smhi": 4, "fmi": 4, "dmi": 4, "ipma": 4, "mei": 4, "dwd": 5, "iem": 6}
@@ -269,6 +277,10 @@ class Spots:
             self.metar_ids.add(r[0][6:])
 
     def near(self, lat, lon, metres, only_src=None):
+        return next(iter(self.near_all(lat, lon, metres, only_src)), None)
+
+    def near_all(self, lat, lon, metres, only_src=None):
+        out = []
         cy, cx = math.floor(lat * 10), math.floor(lon * 10)
         for dy in (-1, 0, 1):
             for dx in (-1, 0, 1):
@@ -276,8 +288,36 @@ class Spots:
                     if only_src and k[5] != only_src:
                         continue
                     if FS.km_between(lat, lon, k[2], k[3]) * 1000 <= metres:
-                        return k
+                        out.append(k)
+        return out
+
+
+FOLD_LETTERS = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ð": "d", "Ð": "D", "þ": "th",
+                              "Þ": "Th", "ł": "l", "Ł": "L", "œ": "oe", "Œ": "OE"})   # letters NFKD does not split
+
+
+def fold(name):
+    """A name for comparing: no accents, lower case, words of letters and digits."""
+    n = str(name or "").translate(FOLD_LETTERS)
+    n = unicodedata.normalize("NFKD", n).encode("ascii", "ignore").decode("ascii").lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", n).split())
+
+
+def airfield(c, spots):
+    """The METAR site whose airfield a national weather service's station stands on: within AIRFIELD_M, or within
+    AIRFIELD_NAMED_M when the station's name says airport or begins like the METAR site's name. None for road
+    weather stations (IEM's airports are matched by their METAR id)."""
+    if c["kind"] != "met":
         return None
+    near = spots.near(c["lat"], c["lon"], AIRFIELD_M, only_src="metar")
+    if near:
+        return near
+    name = fold(c["name"])
+    first = name.split(" ")[0] if name else ""
+    for k in spots.near_all(c["lat"], c["lon"], AIRFIELD_NAMED_M, only_src="metar"):
+        if AIRFIELD_WORDS.search(name) or (first and fold(k[1]).split(" ")[0] == first):
+            return k
+    return None
 
 
 def metar_twin(c, spots):
@@ -303,6 +343,10 @@ def place(cands, rows):
         twin = metar_twin(c, spots)
         if twin:
             dropped.append((cid, "METAR id", "metar:" + twin))
+            continue
+        k = airfield(c, spots)
+        if k:
+            dropped.append((cid, "airfield", k[0]))
             continue
         k = spots.near(c["lat"], c["lon"], AIRPORT_SPOT_M, only_src="metar")
         k = k or spots.near(c["lat"], c["lon"], DWD_NEAR_M if c["src"] == "dwd" else SPOT_M)
@@ -348,6 +392,26 @@ def make_coastal(sea_edges, lake_edges, counts):
     return coastal
 
 
+def respot(out_path, doc, rows, only):
+    """The snapshot's rows of the sources `only` placed again by the spot rule (positions, names, zones kept)."""
+    cands, old = [], {}
+    for r in doc["stations"]:
+        r = list(r) + [None] * (len(FS.FIELDS) - len(r))
+        if r[5] not in only:
+            continue
+        src, _, local = r[0].partition(":")
+        old[r[0]] = r
+        cands.append({"src": src, "local": local, "name": r[1], "lat": r[2], "lon": r[3], "kind": r[4], "net": r[9],
+                      "icao": None})
+    new, dropped = place(cands, rows)
+    for r in new:
+        r[6] = old[r[0]][6]
+    print(f"respot: {len(dropped)} left out {dropped}", flush=True)
+    FS.write_doc(out_path, rows + sorted(new, key=lambda r: r[0]), doc["source"], captured=doc.get("captured"))
+    print(f"wrote {out_path}: {len(rows) + len(new)} stations", flush=True)
+    return 0
+
+
 # ---------------------------------------------------------------------------------------------- the build
 
 def main(argv=None):
@@ -357,6 +421,8 @@ def main(argv=None):
     ap.add_argument("--coast", default=None, help="a local copy of world-i.bin")
     ap.add_argument("--lakes", default=None, help="a local copy of lakeoutlines-i.bin")
     ap.add_argument("--only", default=",".join(GATHER), help="sources to (re)build, comma-separated")
+    ap.add_argument("--respot", action="store_true", help="no network: place the snapshot's own rows of --only again "
+                    "(after a change to the spot rule), so nothing comes or goes with the agencies' current answers")
     args = ap.parse_args(argv)
     os.environ.setdefault("LIVE_BACKGROUND", "0")
     import app as A
@@ -370,6 +436,8 @@ def main(argv=None):
     only = [s.strip() for s in args.only.split(",") if s.strip()]
     rows = [list(r) + [None] * (len(FS.FIELDS) - len(r)) for r in doc["stations"] if r[5] not in only]
     print(f"kept {len(rows)} rows of {len(doc['stations'])}; building {only}", flush=True)
+    if args.respot:
+        return respot(args.out, doc, rows, only)
 
     sea_raw = open(args.coast, "rb").read() if args.coast else get(FS.COAST_URL)
     lake_raw = open(args.lakes, "rb").read() if args.lakes else get(LAKES_URL)

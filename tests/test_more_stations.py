@@ -63,7 +63,7 @@ def test_spot_rule_metar_twins_airfields_ranks_duplicates_and_dwd_2_km():
     why = {cid: (w, k) for cid, w, k in dropped}
     assert why["eccc:CWEB"] == ("METAR id", "metar:CWEB")
     assert why["iem:X50"] == ("METAR id", "metar:KX50")
-    assert why["jma:11001"] == ("spot", "metar:KX50")
+    assert why["jma:11001"] == ("airfield", "metar:KX50")             # a weather service's station on the airfield
     assert why["smhi:1"] == ("spot", "ndbc:ABCD1")
     assert why["dwd:10001"] == ("spot", "jma:2") and why["iem:R1"] == ("spot", "jma:2")
     assert [d for d in dropped if d[1] == "duplicate id"] == [("jma:2", "duplicate id", "jma:2")]
@@ -110,3 +110,36 @@ def test_place_name_fixes_only_names_in_capitals():
             return n.title()
     assert T.place_name("  ROCHES   POINT ", TT) == "Roches Point"
     assert T.place_name("Malin Head", TT) == "Malin Head"
+
+
+# ------------------------------------------------------------------ the airfield rule (step 4 finding)
+
+def test_a_weather_services_station_on_an_airfield_is_the_airports():
+    rows = [["metar:EKCH", "Kobenhavn Intl", 55.618, 12.656, "airport", "metar", "Europe/Paris", None, None, None],
+            ["metar:EIDW", "Dublin Arpt", 53.421, -6.270, "airport", "metar", "Europe/Dublin", None, None, None]]
+    cands = [_c("dmi", "06180", 55.614, 12.645),                           # 0.8 km: the airfield's own station
+             _c("mei", "DUBLIN", 53.428, -6.241),                          # 2.1 km, named like the airport
+             _c("smhi", "1", 55.635, 12.656),                              # 1.9 km, another name: kept
+             _c("dmi", "2", 55.618, 12.68),                                # 1.5 km +: "Flygplats" in its name
+             _c("iem", "R9", 55.62, 12.648, kind="road", net="AK_RWIS")]   # 0.6 km road weather: the 500 m rule only
+    cands[3]["name"] = "Kastrup Flygplats"
+    kept, dropped = T.place(cands, rows)
+    why = {cid: (w, k) for cid, w, k in dropped}
+    assert why["dmi:06180"] == ("airfield", "metar:EKCH") and why["mei:DUBLIN"] == ("airfield", "metar:EIDW")
+    assert why["dmi:2"] == ("airfield", "metar:EKCH")
+    assert [r[0] for r in kept] == ["smhi:1", "iem:R9"]
+    assert T.fold("Københavns  Lufthavn!") == "kobenhavns lufthavn"
+
+
+def test_respot_places_the_snapshots_rows_again_without_the_network(tmp_path):
+    src = {"source": "S", "captured": "2026-10-30T21:35:05Z", "fields": T.FS.FIELDS, "stations": [
+        ["metar:EKCH", "Kobenhavn Intl", 55.618, 12.656, "airport", "metar", "Europe/Paris", None, None, None],
+        ["dmi:06180", "Københavns Lufthavn", 55.614, 12.645, "met", "dmi", "Europe/Paris", None, None, None],
+        ["dmi:06183", "Drogden Fyr", 55.536, 12.712, "met", "dmi", "Europe/Paris", None, None, None]]}
+    f = tmp_path / "w.json"
+    import json
+    f.write_text(json.dumps(src), encoding="utf-8")
+    assert T.main(["--respot", "--out", str(f), "--only", "dmi"]) == 0
+    doc = json.loads(f.read_text(encoding="utf-8"))
+    assert [r[0] for r in doc["stations"]] == ["metar:EKCH", "dmi:06183"]
+    assert doc["captured"] == "2026-10-30T21:35:05Z" and doc["stations"][1][6] == "Europe/Paris"

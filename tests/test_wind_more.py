@@ -67,10 +67,12 @@ def test_jma_map_directions_calm_and_quality():
     assert M.jma_map_name(t) == re.sub(r"\D", "", fx("jma_time.txt").strip()[:16]) + "00"
 
 
-def test_jma_point_file_has_gusts_ascending():
+def test_jma_point_file_ascending_without_the_days_highest_gust():
     rows = M.parse_jma_point(fx("jma_point_44132.json"))
     assert len(rows) >= 6 and [r["t"] for r in rows] == sorted(r["t"] for r in rows)
-    assert any(r["g"] is not None for r in rows)
+    doc = json.loads(fx("jma_point_44132.json"))
+    assert all("gustTime" in e for e in doc.values())                 # the file's "gust" is the day's highest so far
+    assert all(r["g"] is None for r in rows) and rows[0]["s"] == 2.2
     table = M.parse_jma_table(fx("jma_table.json"))
     assert table["11001"] == {"name": "Cape Soya", "lat": 45.52, "lon": 141.935}
 
@@ -283,7 +285,7 @@ def test_history_dispatch_per_source(clock):
     f = Fetch({"point/44132/": fx("jma_point_44132.json"), "10637-BEOB": fx("dwd_10637.csv", "rb")})
     svc = _svc(st, f, now=1793394000.0 + 3 * 3600)
     status, out = svc.history("jma:44132")
-    assert status == "ok" and out["source"] == W.ATTRIBUTION["jma"] and len(out["t"]) >= 6 and any(out["g"])
+    assert status == "ok" and out["source"] == W.ATTRIBUTION["jma"] and len(out["t"]) >= 6 and not any(out.get("g") or [])
     status, out = svc.history("dwd:10637")
     assert status == "ok" and len(out["t"]) >= 20 and out["at"]
     status, out = svc.history("ipma:1210881")                        # no series hooked: no history, never an error

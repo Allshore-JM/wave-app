@@ -1478,8 +1478,19 @@ AODN 50, GLOS 49, IOOS 47, NDBCW 45, CMEMS 30), so a buoy two feeds list keeps t
 `also_sources`. Feeds that name buoys by NDBC / WMO number (NDBC, NDBCW, GLOS, IOOS) also merge two markers of the SAME
 number up to 300 km apart (`merge_stations`' number tier): the IOOS ERDDAP's positions for NDBC buoys can be the corner of
 a range, 133 km from NDBC's own (41056 on 2026-10-30). Measured in one in-process merge of all thirteen live feeds
-(2026-10-30): 567 markers before, 658 after (+91): GLOS 45, IOOS 39, NDBCW 15 kept; IOOS's copies of 154 NDBC buoys hidden
-under them; six UK North Sea platforms now come from NDBC's hourly report instead of Copernicus's copy.
+(2026-10-30, with the wave-height check below): 567 markers before, 656 after (+89): GLOS 34, IOOS 45, NDBCW 17 kept;
+IOOS's copies of 154 NDBC buoys hidden under them; six UK North Sea platforms now come from NDBC's hourly report instead
+of Copernicus's copy.
+
+A marker is listed only when its feed had a wave height recently (test-site finding V3-1: 16 of the first 101 new
+markers opened an empty window, platforms whose wave sensor was off while their wind and temperature sensors reported).
+GLOS and IOOS ask each station once, at list time, for its newest wave height (one ERDDAP query of under 100 bytes,
+four at a time, `_wave_probes`): GLOS through its ERDDAP mirror (3 days back: the mirror lags the API by about a day;
+a verdict is kept 6 h), IOOS on the sensors ERDDAP (4 days back) at every list refresh. "Nothing matches" leaves the
+station out; a failed answer keeps the last verdict (never asked: listed). Stations the NDBC provider lists with spectra
+are not asked (NDBC's marker wins there). IOOS's marker time is that newest wave height: allDatasets' `maxTime` is the
+dataset's stated end, which can lag its rows by a day and counts every variable. Cost: the GLOS and IOOS list
+refreshes take about 22-24 s instead of 2-9 s (background runner only); about 100 small queries every 6 hours.
 
 - **NDBCW: NDBC's bulk report.** `latest_obs.txt` (~100 KB, every 30 min) lists every NDBC station's newest observation;
   the NDBC provider lists only stations with a spectral file, so the stations that report waves WITHOUT one were left out
@@ -1495,10 +1506,12 @@ under them; six UK North Sea platforms now come from NDBC's hourly report instea
   and redistribute; not intended for legal use" (the credit names GLOS and its partner buoys).
 - **IOOS: the IOOS sensors ERDDAP** (Axiom Data Science, for U.S. IOOS): every regional association's wave datasets. Two
   requests every 6 hours: the wave-height category index (each dataset's variables are in its summary) and `allDatasets`
-  (positions and the newest time, last 2 days). A dataset whose positions span more than 0.2 degrees (a glider, a
+  (positions and the newest time, last 2 days), then the wave-height check above. A dataset whose positions span more
+  than 0.2 degrees (a glider, a
   Saildrone, a re-deployed buoy) is left out; datasets of the same buoy (a network's copy and the regional association's)
   are one marker, the newest wins. A window's 24 hours are one tabledap CSV naming only that dataset's own variables (ERDDAP
-  refuses a query naming one it lacks); rows whose QARTOD aggregate flag is 4 (failed) are dropped; swell / wind-sea
+  refuses a query naming one it lacks), starting no later than the dataset's stated end (ERDDAP also refuses a time
+  constraint past it although newer rows exist: gov-ndbc-46004 on 2026-10-30); rows whose QARTOD aggregate flag is 4 (failed) are dropped; swell / wind-sea
   partitions when the dataset has them. The window's credit names the dataset's operator (its `institution`). "Free to use
   and redistribute; not intended for legal use."
 

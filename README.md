@@ -1389,8 +1389,9 @@ hour-rule shade, no mode buttons).
 
 ## Live buoys: background refresh (plan section 36, UI asset 1.17.1)
 
-The "Live buoys" layer merges ten agencies' station lists (NDBC, CDIP, QLD, AODN, AusWaves, Marine Institute, CEFAS,
-SMHI, RWS, Copernicus). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
+The "Live buoys" layer merges the agencies' station lists (ten at the time: NDBC, CDIP, QLD, AODN, AusWaves, Marine
+Institute, CEFAS, SMHI, RWS, Copernicus; thirteen since plan section 63, which added NDBC's bulk report, GLOS and IOOS:
+see "Live buoys: the US widen" below). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
 request and answered only when all of them had: every 30 minutes one visitor waited for a refresh, after a restart every
 visitor waited for every feed, and one slow agency held everyone's markers (the Marine Institute's ERDDAP once timed out
 three times: 124 s). Now nothing a visitor asks for waits for an agency.
@@ -1406,7 +1407,8 @@ The server (`buoy_sources.py`, `app.py`):
   the first seconds after a start), never at import: a gunicorn master that preloads the app forks its workers after the
   import, and a worker would inherit the locks the master's threads held but none of the threads. (Any forked child also
   resets every lock and flag of the service: `os.register_at_fork`.) Its first pass queues every agency, cheapest first
-  (NDBC, CDIP, SMHI, MI-IE, CEFAS, RWS, QLD, AusWaves, AODN, CMEMS), then it loads the time-zone finder; after that it
+  (NDBC, NDBCW, CDIP, SMHI, MI-IE, CEFAS, GLOS, RWS, QLD, AusWaves, AODN, IOOS, CMEMS: `LIVE_WARM_ORDER`), then it
+  loads the time-zone finder; after that it
   runs whenever an agency publishes a new list (it is woken) and at least every 30 s (2 s until every agency has answered
   once): it queues the refreshes that are due and rebuilds the merged list. Refreshes run on `LIVE_REFRESH_WORKERS`
   background threads in that order.
@@ -1466,6 +1468,44 @@ Environment variables (all optional):
 
 Gunicorn: the service runs one scheduler per worker process; the site runs one worker (with threads), so each agency is
 asked once per refresh. More workers would each run their own scheduler (correct, but more feed traffic).
+
+## Live buoys: the US widen (plan section 63)
+
+Three more feeds join the "Live buoys" layer (`buoy_sources.py`: `NdbcBulkProvider`, `GlosProvider`,
+`IoosSensorsProvider`; listed in `app._build_buoy_providers`, refreshed by the background service like the others). Each
+ranks below every national feed with spectra in the dedup order (`_station_priority`: NDBC 100, spectra 90 ... CDIP 55,
+AODN 50, GLOS 49, IOOS 47, NDBCW 45, CMEMS 30), so a buoy two feeds list keeps the richer marker and names the other in
+`also_sources`. Feeds that name buoys by NDBC / WMO number (NDBC, NDBCW, GLOS, IOOS) also merge two markers of the SAME
+number up to 300 km apart (`merge_stations`' number tier): the IOOS ERDDAP's positions for NDBC buoys can be the corner of
+a range, 133 km from NDBC's own (41056 on 2026-10-30). Measured in one in-process merge of all thirteen live feeds
+(2026-10-30): 567 markers before, 658 after (+91): GLOS 45, IOOS 39, NDBCW 15 kept; IOOS's copies of 154 NDBC buoys hidden
+under them; six UK North Sea platforms now come from NDBC's hourly report instead of Copernicus's copy.
+
+- **NDBCW: NDBC's bulk report.** `latest_obs.txt` (~100 KB, every 30 min) lists every NDBC station's newest observation;
+  the NDBC provider lists only stations with a spectral file, so the stations that report waves WITHOUT one were left out
+  (Canada's DFO buoys, Great Lakes partner buoys, CORMP, CBIBS, UK platforms ...). Ids `ndbcw:<id>`, shown by number like
+  NDBC's; names from NDBC's `activestations.xml`. Height, dominant and mean period, mean direction where measured (DFO's
+  buoys have none), water temperature; a window's 24 hours from `realtime2/<id>.txt`. Korea's KMA buoys (22101-22108)
+  are left out: they arrive with placeholder values. Public domain.
+- **GLOS: the Great Lakes Observing System's Seagull API** (anonymous JSON). The roster lists the platforms; those
+  `activated` with a wave height are listed (seasonal: buoys come out of the water November-April); a platform silent for
+  more than 4 days by GLOS's ERDDAP mirror is left out. The API names series by numeric parameter ids, mapped through its
+  parameter list (read once a day); temperatures are stored in kelvin. A window's 24 hours are one `obs` request; the period
+  and direction are filled from the nearest earlier reading within 30 minutes (GLOS stamps them minutes apart). "Free to use
+  and redistribute; not intended for legal use" (the credit names GLOS and its partner buoys).
+- **IOOS: the IOOS sensors ERDDAP** (Axiom Data Science, for U.S. IOOS): every regional association's wave datasets. Two
+  requests every 6 hours: the wave-height category index (each dataset's variables are in its summary) and `allDatasets`
+  (positions and the newest time, last 2 days). A dataset whose positions span more than 0.2 degrees (a glider, a
+  Saildrone, a re-deployed buoy) is left out; datasets of the same buoy (a network's copy and the regional association's)
+  are one marker, the newest wins. A window's 24 hours are one tabledap CSV naming only that dataset's own variables (ERDDAP
+  refuses a query naming one it lacks); rows whose QARTOD aggregate flag is 4 (failed) are dropped; swell / wind-sea
+  partitions when the dataset has them. The window's credit names the dataset's operator (its `institution`). "Free to use
+  and redistribute; not intended for legal use."
+
+Known limits: NDBCW and most IOOS buoys give bulk parameters only (no spectra); GLOS Spotters' wind is an estimate from the
+wave data (GLOS); Canada's DFO buoys report hourly without direction. Tests: `tests/test_buoys_widen.py` on real answers
+cut by `tests/capture_buoy_widen_fixtures.py`; the three fakes in `tests/fake_buoy_providers.py` are in the live-stations
+golden (captured on the code before this section: the new code merges them identically).
 
 ## Tide stations (plan section 38, UI asset 1.18.6)
 
@@ -1867,7 +1907,8 @@ the button). A new station or a close drops a refresh still on its way (no verdi
 everything but the spectra the window shows keeps the whole view and reports a failure (G39 V3-1).
 The "15 minutes" is the data's age when the tab is shown again, not how long the tab was hidden. Most non-NDBC buoys
 (CDIP, QLD, AusWaves, the European feeds) are shown from their feed's own copy, refreshed every 5-30 minutes: for them
-the button only replaces the browser's copy; only NDBC buoys and AODN's spectra are asked of the agency again. The live and tide windows remember when their data last loaded: an
+the button only replaces the browser's copy; NDBC buoys, AODN's spectra and (plan section 63) the NDBC bulk-report,
+GLOS and IOOS buoys' 24 hours are asked of the agency again. The live and tide windows remember when their data last loaded: an
 open, expanded window whose data is 15 minutes old or more refreshes once when its tab is shown again or it is expanded
 from its chip (`STATION_STALE_MS`). The wind window already asks again every 5 minutes by itself (and when shown), so
 only its button is new.
@@ -1892,6 +1933,7 @@ routes' cache headers are unchanged; without the header nothing changes. Where i
 | `/api/tides/<id>/observed` | `TideService.observed` (15 min); the tide predictions are the same all day and are only revalidated |
 | `/api/ndbc/station/<id>/components` | `NDBC_COMPONENT_CACHE` (30 min); `/wave-summary` reads NDBC on every request already |
 | `/api/buoys/<id>/components` | `AODNProvider.spectrum` (20 min); `/api/buoys/<id>/latest` stays the feed's copy (refreshed every 5-30 min) |
+| `/api/buoys/<id>/latest` (NDBCW, GLOS, IOOS) | the provider's 24-hour answer (5 min, `_DetailCache`); one request to NDBC / GLOS / IOOS's ERDDAP |
 
 ## The TLS trust list (plan section 57)
 

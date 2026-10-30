@@ -505,6 +505,14 @@
         a.setAttribute('href', href); a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener');
         line.appendChild(a);
       } else line.appendChild(doc.createTextNode(d.source || src));
+      // the licence text where the agency's licence asks for a link to it (CC BY 4.0 ...: G44 P3-9)
+      if (d.licence_url && /^https:\/\//.test(String(d.licence_url))) {
+        var lic = el('a', '', 'licence');
+        lic.setAttribute('href', String(d.licence_url)); lic.setAttribute('target', '_blank'); lic.setAttribute('rel', 'noopener');
+        line.appendChild(doc.createTextNode(' ('));
+        line.appendChild(lic);
+        line.appendChild(doc.createTextNode(')'));
+      }
       els.meta.appendChild(line);
       // mesonet observations: NOAA's disclaimer (MADIS's restrictions page asks pages showing them to carry one: G35)
       if (d.disclaimer) els.meta.appendChild(el('div', 'wind-disclaimer', String(d.disclaimer)));

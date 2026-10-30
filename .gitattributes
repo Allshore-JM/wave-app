@@ -5,3 +5,4 @@
 *.ico binary
 # Captured upstream files: kept byte for byte (a CRLF checkout changed what the readers' tests see: G41 A P3-7).
 tests/fixtures/nwps/** -text
+tests/fixtures/buoys_widen/** -text

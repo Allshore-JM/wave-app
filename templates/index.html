@@ -2217,7 +2217,7 @@
     // (e.g. "ndbc:46221" -> "46221") and prefer the station name for other sources.
     function buoyDisplayLabel(s) {
       const id = s.id || '';
-      if (/^ndbc:/i.test(id)) return id.replace(/^ndbc:/i, '');
+      if (/^ndbcw?:/i.test(id)) return id.replace(/^ndbcw?:/i, '');   // NDBC and its bulk report (section 63)
       return s.name || id.replace(/^[a-z]+:/i, '');
     }
 

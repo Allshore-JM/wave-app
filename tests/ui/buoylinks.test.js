@@ -364,3 +364,16 @@ test('the page wiring: the block between its markers, the two buttons, the canva
     'a dot\'s own open forgets the back link (R1-3)');
   assert.ok(TPL.includes("          rebuildLiveBuoyMarkers(!info.same);        // an unchanged list keeps its markers (no rebuild, no flash)\n          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B26: after the live list lands');
 });
+
+test('section 63: NDBC bulk-report buoys show their number like NDBC; GLOS and IOOS numbers link to their forecast points', () => {
+  assert.equal(buoyDisplayLabel({ id: 'ndbcw:44137', name: 'East Scotia Slope' }), '44137');
+  assert.equal(buoyDisplayLabel({ id: 'ndbc:46221', name: 'Santa Monica Bay' }), '46221');
+  assert.equal(buoyDisplayLabel({ id: 'glos:SPOT-1360', name: 'Marquette' }), 'Marquette');
+  assert.equal(buoyDisplayLabel({ id: 'ioos:FRFN7', name: '' }), 'FRFN7');
+  const b = boot({ forecast: [], live: [] }), A = b.api;
+  assert.equal(A.linkId('ndbcw:44137'), '44137');
+  assert.equal(A.linkId('glos:45029'), '45029');
+  assert.equal(A.linkId('ioos:41110'), '41110');
+  const fp = { id: '45029', lat: 42.90, lon: -86.27 };
+  assert.equal(A.linkFor({ id: 'glos:45029', lat: 42.9, lon: -86.272 }, [fp]).s, fp);
+});

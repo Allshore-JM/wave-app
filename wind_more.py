@@ -269,12 +269,13 @@ def jma_map_name(t):
     return datetime.fromtimestamp(int(t), JST).strftime("%Y%m%d%H%M00")
 
 
-def _jma_reading(t, e, gust=True):
+def _jma_reading(t, e):
+    """No gust: JMA's "gust" (with its "gustTime") is the day's highest gust so far, kept from midnight JST, not the
+    10-minute gust."""
     s = _jma_val(e, "wind")
     d = jma_direction(e["windDirection"][0]) if isinstance(e.get("windDirection"), list) and \
         e["windDirection"][1:2] and e["windDirection"][1] in JMA_QUALITY_OK else None
-    g = _jma_val(e, "gust") if gust else None
-    r = W.reading(t, s, g, d)
+    r = W.reading(t, s, None, d)
     return _wx(r, at=_jma_val(e, "temp"), rh=_jma_val(e, "humidity"), p=_jma_val(e, "normalPressure"))
 
 
@@ -285,7 +286,7 @@ def parse_jma_map(doc, t):
     out = {}
     for sid, e in (doc or {}).items():
         if isinstance(e, dict):
-            r = _jma_reading(t, e, gust=False)
+            r = _jma_reading(t, e)
             if r:
                 out[str(sid)] = r
     return out

@@ -1998,7 +1998,7 @@ bounded fetch with the site's User-Agent):
   (keep-last); HTTP 403 / 429 pauses a paced feed 5 minutes.
 
 A window's 24 hours (`/api/wind/<id>/history`, an explicit dispatch per source; an unknown source has none): from the
-agency for JMA (the 3-hour point files, 10-minute rows with gusts), IEM (obhistory per UTC day), SMHI (latest-day per
+agency for JMA (the 3-hour point files, 10-minute rows; their "gust" is the day's highest gust so far, so it is not shown), IEM (obhistory per UTC day), SMHI (latest-day per
 parameter), FMI (one WFS answer), DMI (each parameter over the window) and DWD (the poi CSV), behind a budget of 30
 requests a minute per agency (an empty budget answers "busy", asked again in a moment); from the feed's own memory for
 ECCC, IPMA and Met Eireann (IPMA's feed brings 24 hours at once; ECCC and Met Eireann windows show the hours since the

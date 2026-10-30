@@ -77,3 +77,68 @@ verdicts checked against GLOS's API; refresh peaks IOOS 20.4 MB, GLOS 13.3 MB, N
   The harness was stopped and its profile removed.
 - Memory on the stream-parsing build (the 40-minute watch before the fix round): it settled at 166 MB, against 190 MB at
   the same uptime for the build before it.
+
+## F11 completed (@ 2bbc8ec, test @ b67a89a)
+
+- IOOS: the list refreshes every hour (`list_ttl_sec` 3600); the category index is read every 6 h and a failed read keeps
+  the held one up to a day. A marker's time is its newest wave height (the probe's answer), so a buoy whose wave sensor
+  stopped turns grey 6 h later.
+- GLOS: a marker's time is its newest wave height at the ERDDAP mirror; markers turn grey after 2 days (the mirror runs
+  ~30 h behind) and leave the map after 3; a stalled mirror gives no times. A quiet platform's window starts a day before
+  its last wave height when that is over 36 h old.
+- On the test site (@ b67a89a): 649 markers, GLOS 32 all with times and none grey; IOOS 3 grey (41053, 41056, SIPF1).
+
+## Re-check of the fix round (one fresh reviewer, 2f04538..2bbc8ec)
+
+**0 P0, 0 P1, 1 P2, 6 P3.** Report and scripts: scratch `g42/recheck/` (recheck-report.md, scripts/, mut_results.txt).
+Verdicts: F1-F6, F9 and F12-F17 FIXED; F7 and F8 PARTLY (N4); F10 NOT FIXED (N2); F11 FIXED with caveats (N1, N6).
+
+| # | Rank | Finding | Outcome |
+|---|---|---|---|
+| N1 | P2 | The "no"-share rule (more than 80 % of 10+ answers = a mirror problem) locks in when the season makes most "no" answers real: as the Great Lakes buoys come out, the met-only platforms answer "no" every hour, no verdict is ever stored, and they stay listed all winter with empty windows and no time | Fixed: the share rule is gone; a "no" is believed only for a dataset the mirror lists (its own row there), however many answer so |
+| N2 | P3 | The CMEMS copies of Clipper and Lomond (6200144 / 6200146) stood alone 6-7 km from the CEFAS markers after F10 | Fixed: `_buoy_number` reads CMEMS's `XX_TS_MO_6200NNN` as 62NNN (the page's `linkId` rule) |
+| N3 | P3 | A probe whose newest row was refused (in the future, or an impossible height) answered "no": one bad row hid a station (a row stamped 2027 for a year) | Fixed: both probe queries ask ERDDAP for rows up to an hour ahead and heights 0-30 m only; an answer with only refused rows is "unknown" (NaN-only rows stay "no") |
+| N4 | P3 | `max_s` was checked only between 64-KB chunks, so it never bounded a body under 64 KB that dripped (window and probe bodies are 1-5 KB); leaked probe threads piled up | Fixed: each socket read gets the time left as its timeout (a stall ends at `max_s`) and a timer at `max_s` shuts the socket (a drip ends with its next byte); the socket is found under the answer's file when the connection has none (a server that closes after its answer). Probe threads now end at the probe's limit, so they cannot pile up |
+| N5 | P3 | The F1 guard compared with the provider's own map, never cleared, so after the 6-h keep window a real empty list was refused for good (an error and 5-min retries all winter) | Fixed: the guard reads the base's published list; once the base publishes the empty list, the next refresh accepts it |
+| N6 | P3 | One unreadable mirror answer dropped the held "no" verdicts and every GLOS marker time for that hour | Fixed: the last good mirror read is kept up to 6 h (`MIRROR_HOLD_S`); while the mirror cannot be read, it judges with the verdicts in hand and asks no new probe |
+| N7 | P3 | Four of the reviewer's mutants survived (Y36 one-shot, Y46 IOOS csv.Error, Y26 future maxTime, Y37 close on refusal) | Fixed: a test each |
+
+FOUND WHILE FIXING N4 (Windows only): shutting a socket from another thread does not end a read already waiting on it
+(the read waits in `select`), and for a server that closes after its answer the connection holds no socket (`sock` is
+None; the socket sits under the answer's file). Hence the per-read timeout: a read that waits ends at the limit on any system,
+and the shut socket ends a drip with its next byte. app.py's `_capped_get` (section 22/53) has the same two limits; recorded for a later change
+(Render runs Linux, where the shutdown works; R2 / S3 / NOMADS keep their connections open).
+
+## Fix round 2 (@ b281971, test @ 87cd7cf)
+
+- Code: `buoy_sources.py` (`_wave_verdicts(cands, listed, ask)`, `_mirror_state` -> (silent, listed, mode) with
+  `MIRROR_HOLD_S` 6 h, the probe queries' sane-row constraints and the "refused rows = unknown" rule, `_capped_fetch`'s
+  per-read timeout and shutdown timer with `_answer_socket`, the guards on `_list_cache`, `_CMEMS_WMO_RE`), README.
+- Tests: `tests/test_buoys_widen_g42.py` 53 (+17): the winter batch, "no" only for a listed dataset (unit and through the
+  list), held judgement, a stall after a good read, the future maxTime, the probe queries, refused-only answers, the
+  empty-list guard on the base's own refresh cycle, a silent trickle and a drip on a real socket (both under 2 s with a
+  0.5-s limit), one-shot, close on refusal, IOOS csv.Error, the CMEMS numbers.
+- Mutants (scratch `g42/fix/mut_n.py`): 24 of the round's own, all killed after two list-level tests were added for the
+  first survivors (N02, N24 / N06). One survivor (N19, a 10-ms timeout set by the timer) showed that step was redundant:
+  removed. The earlier sets re-run: G42's own 26 of 26 still applicable killed (G12 re-targeted and killed; G16, G32
+  covered code removed with the share rule; G21, G22 replaced by N20, N21), F11's 8 of 8, the extra 2 of 2. G03 (the
+  between-chunk time check) now survives: the socket cut ends the same reads first; kept as a backup for an answer
+  whose socket cannot be found.
+- The reviewer's reproduction scripts on the fixed code: winter 11 of 13 no-wave platforms left out every hour (was 0);
+  the 2027 row and the spike give "unknown" (was "no"); the empty list accepted after 6 h, refresh hourly (was an error
+  and 5-min retries); a 503 mirror keeps the held verdicts and times; drips cut at 1.0 / 1.3 s with a 1-s limit (was
+  9.8 / 10.1 s); probe threads with the limit at 2 s: never more than 4 at once, 0 left after (was 4 / 8 / 12, exit held).
+- Suites: pytest 1,844, Node 1,061.
+
+## Test-site verification of fix round 2 (test @ 87cd7cf, 2026-10-30)
+
+- Deploy: the new instance answered from 17:19:51 UTC with 0 failed polls; every one of the 13 feeds published with no
+  error (GLOS 48 s, IOOS 49 s).
+- Markers: 652 (GLOS 34, IOOS 45, NDBCW 16). N2 live: cefas:10 and cefas:305 now carry `also_sources` NDBCW and CMEMS;
+  no CMEMS copy of Clipper or Lomond stands alone. GLOS: 33 of 34 markers with a time; glos:45175's probe was "unknown"
+  at that refresh (the mirror answered "yes" when asked again: kept listed without a time, asked again next refresh).
+  Three IOOS markers grey (41053, 41056 7 h; SIPF1 21 h), as before.
+- Every new marker's window: 0 empty of 95. The agencies' own data: 24 of 24 windows (8 per feed) equal the newest wave
+  height and time.
+- Browser (headless Chrome with its own profile, trusted clicks and taps): desktop 1280x800 and phone 375x812, one window
+  per feed with 24-25 history rows and the refresh header; no problems; the harness stopped and its profile removed.

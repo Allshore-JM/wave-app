@@ -148,8 +148,15 @@ def test_parse_ndbc_realtime_waves_rows_and_limit():
 
 # ------------------------------------------------------------------ GLOS Seagull
 
-def glos_http(mirror=None, params=None, roster=None):
+# the mirror's "newest wave height" answer, as ERDDAP writes it (header, units, one row)
+GLOS_PROBE_YES = "time,sea_surface_wave_significant_height\nUTC,m\n2026-10-28T23:50:00Z,0.20900000631809235\n"
+IOOS_PROBE_YES = "time,sea_surface_wave_significant_height\nUTC,m\n2026-10-30T03:00:00Z,1.2\n"
+NO_MATCH = Resp('Error {\n    code=404;\n    message="Not Found: Your query produced no matching results. (nRows = 0)";\n}\n', 404)
+
+
+def glos_http(mirror=None, params=None, roster=None, probe=None):
     return FakeHttp([
+        ("tabledap/obs_", probe if probe is not None else GLOS_PROBE_YES),
         ("obs-datasets.geojson", roster if roster is not None else fixture("glos_roster.geojson")),
         ("api/v1/parameters", params if params is not None else fixture("glos_parameters.json")),
         ("allDatasets.csv", mirror if mirror is not None else fixture("glos_mirror.csv")),
@@ -224,16 +231,18 @@ def test_kelvin_rule():
 
 # ------------------------------------------------------------------ IOOS sensors
 
-def ioos_http(live=None, index=None, one=None):
+def ioos_http(live=None, index=None, one=None, probe=None):
     return FakeHttp([
         ("categorize/standard_name", index if index is not None else fixture("ioos_index.csv")),
         ("allDatasets.csv", live if live is not None else fixture("ioos_alldatasets.csv")),
         ("tabledap/cap2wave-capers-nearshore-wave.csv", one if one is not None else fixture("ioos_cap2wave.csv")),
+        ("orderByMax", probe if probe is not None else IOOS_PROBE_YES),
     ])
 
 
-def ioos(http=None):
-    p = B.IoosSensorsProvider(http=http or ioos_http())
+def ioos(http=None, covered=None, now=CAPTURED):
+    p = B.IoosSensorsProvider(http=http or ioos_http(), covered_ids=(lambda: covered) if covered is not None else None)
+    p.clock = staticmethod(lambda: now)
     lst, ok, err = p._build_station_list()
     return p, {s["id"]: s for s in lst}, ok, err
 
@@ -245,7 +254,7 @@ def test_ioos_ids_names_and_copies():
     assert by["ioos:41065"]["name"] == "Capers Nearshore Wave, SC"
     # two datasets of 41065 (the network's and the regional association's copy): the newer is kept
     assert p._ds["41065"]["dataset"] == "cap2wave-capers-nearshore-wave"
-    assert by["ioos:41065"]["latest_time"] == "2026-10-30T02:55:31Z"
+    assert by["ioos:41065"]["latest_time"] == "2026-10-30T03:55:31Z"     # its newest wave height (maxTime: 02:55:31)
     assert by["ioos:45135"]["name"] == "45135 - Prince Edward Pt"
 
 
@@ -260,7 +269,7 @@ def test_ioos_detail_names_only_the_datasets_variables_and_its_operator():
     http = ioos_http()
     p, by, ok, err = ioos(http=http)
     d = p.detail("41065")
-    url = [u for u in http.calls if "cap2wave-capers-nearshore-wave.csv" in u][0]
+    url = [u for u in http.calls if "cap2wave-capers-nearshore-wave.csv" in u and "orderByMax" not in u][0]
     cols = url.split(".csv?", 1)[1].split("&", 1)[0].split(",")
     assert cols[0] == "time" and "sea_surface_wave_significant_height" in cols
     assert all(c in p._ds["41065"]["vars"] for c in cols)          # ERDDAP refuses a variable it lacks
@@ -479,3 +488,91 @@ def test_glos_parameter_list_read_once_a_day():
     p, by, ok, err = glos(http=http)
     p._build_station_list()
     assert sum("api/v1/parameters" in u for u in http.calls) == 1
+
+
+# ------------------------------------------------------------------ section 63 test-site finding V3-1
+# A marker whose wave sensor is silent opened an empty window (GLOS 45005 and ECCC's 451xx; IOOS 44009, 62305), and
+# IOOS's stated time range could lag its rows by a day (gov-ndbc-46004): the window query was refused.
+
+def test_glos_platform_without_a_recent_wave_height_left_out_and_verdicts_kept():
+    def probe(url):
+        return NO_MATCH if "obs_3.csv" in url else GLOS_PROBE_YES
+    http = glos_http(probe=probe)
+    p, by, ok, err = glos(http=http)
+    assert ok and "glos:45029" not in by and {"glos:45013", "glos:SPOT-1360"} <= set(by)
+    assert p.detail("45029") == {"latest": None, "recent": []}           # nothing to open
+    asked = [u for u in http.calls if "tabledap/obs_" in u]
+    assert sorted(asked) == sorted(B.GlosProvider.PROBE_URL % ds for ds in (2, 3, 139))   # the silent 260 is not asked
+    n = len(http.calls)
+    p._build_station_list()                                              # within PROBE_TTL: nothing asked again
+    assert len([u for u in http.calls[n:] if "tabledap/obs_" in u]) == 0
+    http.routes[0] = ("tabledap/obs_", Resp("down", 503))                # past the TTL the mirror fails: verdicts kept
+    p.clock = staticmethod(lambda: CAPTURED + B.GlosProvider.PROBE_TTL + 1)
+    n = len(http.calls)
+    lst, ok, err = p._build_station_list()
+    assert len([u for u in http.calls[n:] if "tabledap/obs_" in u]) == 3
+    ids = {s["id"] for s in lst}
+    assert "glos:45029" not in ids and "glos:45013" in ids
+
+
+def test_glos_unknown_probe_keeps_the_platform_and_ndbc_covered_ones_are_not_asked():
+    p, by, ok, err = glos(http=glos_http(probe=Resp("down", 500)))
+    assert {"glos:45013", "glos:45029", "glos:SPOT-1360"} <= set(by)      # never asked successfully: listed
+    http = glos_http(probe=NO_MATCH)
+    p = B.GlosProvider(http=http, covered_ids=lambda: {"45029", "45013"})
+    p.clock = staticmethod(lambda: CAPTURED)
+    lst, ok, err = p._build_station_list()
+    ids = {s["id"] for s in lst}
+    assert ids == {"glos:45013", "glos:45029"}                            # NDBC lists them: not asked, kept
+    assert all("obs_2.csv" not in u and "obs_3.csv" not in u for u in http.calls)
+
+
+def test_ioos_station_without_a_recent_wave_height_left_out_and_its_time_from_the_probe():
+    def probe(url):
+        return NO_MATCH if "gov-ndbc-45135" in url else IOOS_PROBE_YES
+    http = ioos_http(probe=probe)
+    p, by, ok, err = ioos(http=http)
+    assert ok and "ioos:45135" not in by and "ioos:41110" in by
+    assert by["ioos:41110"]["latest_time"] == "2026-10-30T03:00:00Z"     # the probe's newest, not maxTime 2026-10-29T22:00
+    p, by, ok, err = ioos(http=ioos_http(probe=Resp("x", 502)))
+    assert by["ioos:41110"]["latest_time"] == "2026-10-29T22:00:00Z"     # unknown: kept with maxTime
+    http = ioos_http(probe=NO_MATCH)
+    p, by, ok, err = ioos(http=http, covered={"45135", "41110"})
+    assert {"ioos:45135", "ioos:41110"} <= set(by) and "ioos:SIPF1" not in by
+    assert all("gov-ndbc-45135" not in u for u in http.calls)
+
+
+def test_ioos_window_never_starts_after_the_datasets_stated_end():
+    http = ioos_http()
+    p, by, ok, err = ioos(http=http)
+    p._ds["41065"]["maxtime"] = "2026-10-29T00:00:00Z"                    # stated end a day behind (gov-ndbc-46004)
+    p.detail("41065")
+    url = [u for u in http.calls if "cap2wave-capers-nearshore-wave.csv" in u and "orderByMax" not in u][-1]
+    assert "&time%3E=2026-10-28T23:00:00Z&" in url
+    p._cache = B._DetailCache(300)
+    p._ds["41065"]["maxtime"] = "2026-10-30T04:00:00Z"
+    p.detail("41065")
+    url = [u for u in http.calls if "cap2wave-capers-nearshore-wave.csv" in u and "orderByMax" not in u][-1]
+    assert "&time%3E=2026-10-29T04:25:00Z&" in url                        # 24 hours back (the clock is pinned)
+
+
+def test_erddap_wave_newest_rules():
+    def f(body):
+        return B._erddap_wave_newest(FakeHttp([("x", body)]), "http://x", 5)
+    assert f(IOOS_PROBE_YES) == ("yes", "2026-10-30T03:00:00Z")
+    assert f(NO_MATCH) == ("no", None)
+    assert f("time,sea_surface_wave_significant_height\nUTC,m\n2026-10-30T03:00:00Z,NaN\n") == ("no", None)
+    assert f(Resp("x", 500)) == ("unknown", None) and f("not,a,csv\n1,2,3\n") == ("unknown", None)
+    two = "time,sea_surface_wave_significant_height\nUTC,m\n2026-10-30T01:00:00Z,1\n2026-10-30T03:00:00Z,NaN\n"
+    assert f(two) == ("yes", "2026-10-30T01:00:00Z")
+
+
+def test_ioos_verdict_kept_when_a_later_probe_fails():
+    def probe(url):
+        return NO_MATCH if "gov-ndbc-45135" in url else IOOS_PROBE_YES
+    http = ioos_http(probe=probe)
+    p, by, ok, err = ioos(http=http)
+    assert "ioos:45135" not in by
+    http.routes[-1] = ("orderByMax", Resp("x", 503))
+    lst, ok, err = p._build_station_list()
+    assert ok and "ioos:45135" not in {s["id"] for s in lst} and "ioos:41110" in {s["id"] for s in lst}

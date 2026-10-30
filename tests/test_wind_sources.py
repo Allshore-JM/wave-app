@@ -367,7 +367,7 @@ def test_snapshot_loads_and_ids_validate():
     lst = W.client_list(doc)
     assert lst["fields"] == doc["fields"] and len(lst["stations"]) == len(stations)
     assert not W.valid_id("coops:1612340/x") and not W.valid_id("ndbc:oouh1") and not W.valid_id(5)
-    assert set(W.by_source(stations)) == {"coops", "ndbc", "metar", "nws"}
+    assert set(W.by_source(stations)) == {"coops", "ndbc", "metar", "nws"} | set(W.MORE_SOURCES)   # + plan section 67
 
 
 # ------------------------------------------------------------------ providers
@@ -1783,8 +1783,12 @@ def test_history_nws_falls_back_on_madis():
     assert "disclaimer" not in madis_svc(history_fetch(), MADIS_T, {}).history("ndbc:51003")[1]
 
 
+MORE_FEEDS = ("JMA", "SMHI", "FMI", "DMI", "IPMA", "MEI", "IEM", "DWD", "ECCC")      # plan section 67
+
+
 def test_app_wires_the_madis_backup(monkeypatch):
-    assert A.WIND_WARM_ORDER == ["NDBC", "METAR", "MADIS", "COOPS", "NWS"]
+    assert A.WIND_WARM_ORDER == ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "MADIS", "MEI", "IEM", "DWD", "ECCC",
+                                 "COOPS", "NWS"]                       # plan section 67's feeds among them
     assert A.WIND_MADIS_URL == W.MADIS_HI_URL, "on by default (env WIND_MADIS_URL; empty = off)"
     calls = []
 
@@ -1839,7 +1843,8 @@ def test_app_wires_the_madis_backup(monkeypatch):
     monkeypatch.setattr(A, "WIND_MADIS_URL", "")
     monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
     w = A._winds()
-    assert [p.source for p in w["providers"]] == ["NDBC", "METAR", "COOPS", "NWS"] and w["svc"].madis is None
+    assert [p.source for p in w["providers"] if p.source not in MORE_FEEDS] == ["NDBC", "METAR", "COOPS", "NWS"]
+    assert w["svc"].madis is None and "MADIS" not in [p.source for p in w["providers"]]
     assert w["svc"].madis_hist is None and w["svc"].madis_filling is None
 
 

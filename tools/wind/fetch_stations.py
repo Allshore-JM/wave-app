@@ -38,6 +38,7 @@ Sources (public domain, NOAA / NWS):
   station already kept. --nws-cache keeps the probe answers for NWS_CACHE_S so an interrupted run resumes.
 
 Run:  python tools/wind/fetch_stations.py --sensors-cache <file> --nws-cache <file>   (writes ../../wind_stations.json)
+then  python tools/wind/more_stations.py --cache <dir>   (adds plan section 67's sources: Canada, Japan, IEM, Europe)
 The site never asks these lists at runtime: re-run now and then and commit the file."""
 import argparse
 import csv
@@ -74,7 +75,7 @@ NWS_PAUSE_S = 0.75              # between probes: ~80 requests a minute at most
 NWS_CACHE_S = 12 * 3600         # a cached probe answer younger than this is reused
 NWS_SKIP_PROVIDERS = {"NOS-NWLON", "ASOS", "OTHER-MTR", "NONFEDAWOS"}   # tide gauges and airports: the other feeds' (upper case)
 NWS_KINDS = ("utility", "mesonet", "raws", "cwop", "hads", "weather")
-FIELDS = ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx"]
+FIELDS = ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx", "net"]   # net: an IEM station's network (section 67)
 COOPS_WX_SENSORS = {"Air Temperature": "a", "Water Temperature": "w", "Barometric Pressure": "p", "Relative Humidity": "h"}
 NWS_ABBREVIATIONS = {"AFS", "AFB", "PHB", "MCBH", "USGS", "USCG", "NERR", "NWS", "NPS", "HVO", "UH", "HQ", "ARS", "SCAN",
                      "CRN", "FAA", "PMRF", "USDA", "NOAA", "NASA", "WWTP", "STP", "DOFAW", "NAR", "CPD", "MXAK"}
@@ -85,7 +86,7 @@ US_STATES = {"AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "
              "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC", "PR", "VI", "GU",
              "AS", "MP"}
 DIST_RE = re.compile(r"(\d+)(nm|km|mi)$", re.I)
-KINDS = ("gauge", "buoy", "cman", "station", "airport") + NWS_KINDS
+KINDS = ("gauge", "buoy", "cman", "station", "airport") + NWS_KINDS + ("met", "road")   # met, road: section 67
 COAST_KM = 30.0                 # owner, 2026-10-09: airports within 30 km of the coast only
 OFFSHORE_METAR = True           # a METAR site at sea (an offshore platform) is no inland airport: kept
 ALIAS_M = 300.0                 # an NDBC station this close to a kept CO-OPS gauge is that gauge
@@ -556,6 +557,7 @@ def write_doc(path, rows, source, captured=None):
         f.write('{"source":%s,"captured":%s,"fields":%s,"stations":[\n' % (
             json.dumps(source), json.dumps(captured or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")),
             json.dumps(FIELDS)))
+        rows = [list(r) + [None] * (len(FIELDS) - len(r)) for r in rows]      # rows built before `net` (section 67)
         f.write(",\n".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")) for r in rows))
         f.write("\n]}\n")
 
@@ -565,15 +567,15 @@ def respot(path):
     capture time is kept). NWS rows were placed against the other rows when the snapshot was built and are kept."""
     with open(path, encoding="utf-8") as f:
         doc = json.load(f)
-    assert doc["fields"] == FIELDS, doc["fields"]
+    assert doc["fields"] == FIELDS[:len(doc["fields"])], doc["fields"]
     rows = doc["stations"]
-    base = [r for r in rows if r[5] != "nws"]
+    base = [r for r in rows if r[5] in SPOT_RANK and r[5] != "nws"]     # section 67's sources: tools/wind/more_stations.py
     kept, dropped = one_per_spot(base)
     keep = {r[0] for r in kept}
     renamed = []
     out = []
     for r in rows:
-        if r[5] != "nws" and r[0] not in keep:
+        if r[5] in SPOT_RANK and r[5] != "nws" and r[0] not in keep:
             continue
         if r[5] in ("ndbc", "metar"):
             name = _fix_case(r[1], places=True)

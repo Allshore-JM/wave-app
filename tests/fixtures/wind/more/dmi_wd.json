@@ -1,0 +1,93 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"type": "Feature",
+"id": "e4eba864-ba37-1795-dea2-055cbb077c2e",
+"geometry": {
+"type": "Point",
+"coordinates": [
+-50.7172,
+67.0133
+]
+},
+"properties": {
+"parameterId": "wind_dir",
+"created": "2026-10-30T20:50:38.971678Z",
+"value": 209.0,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "04231"
+}
+},
+{
+"type": "Feature",
+"id": "c7741562-b28b-a5f2-f513-3baab666ec92",
+"geometry": {
+"type": "Point",
+"coordinates": [
+12.6454,
+55.614
+]
+},
+"properties": {
+"parameterId": "wind_dir",
+"created": "2026-10-30T20:50:34.526713Z",
+"value": 332.0,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "06180"
+}
+},
+{
+"type": "Feature",
+"id": "b4eed85b-bdd1-95fb-c2c1-80cbe075249b",
+"geometry": {
+"type": "Point",
+"coordinates": [
+8.1413,
+56.0072
+]
+},
+"properties": {
+"parameterId": "wind_dir",
+"created": "2026-10-30T20:51:18.626142Z",
+"value": 0.0,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "06058"
+}
+},
+{
+"type": "Feature",
+"id": "924a6a5f-83b7-a258-3b6d-41bdec07eb74",
+"geometry": {
+"type": "Point",
+"coordinates": [
+10.6316,
+57.7364
+]
+},
+"properties": {
+"parameterId": "wind_dir",
+"created": "2026-10-30T20:51:32.289636Z",
+"value": 275.8,
+"observed": "2026-10-30T20:50:00Z",
+"stationId": "06041"
+}
+}
+],
+"timeStamp": "2026-10-30T20:59:21Z",
+"numberReturned": 69,
+"links": [
+{
+"href": "https://opendataapi.dmi.dk/v2/metObs/collections/observation/items?parameterId=wind_dir&period=latest-10-minutes&limit=1000",
+"rel": "self",
+"type": "application/geo+json",
+"title": "This document"
+},
+{
+"href": "https://opendataapi.dmi.dk/v2/metObs/collections/observation/items?parameterId=wind_dir&period=latest-10-minutes&limit=1000&offset=69",
+"rel": "next",
+"type": "application/geo+json",
+"title": "Next set of results"
+}
+]
+}

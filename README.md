@@ -1953,6 +1953,53 @@ be read counts as "the tile exists". The station layers draw every station from 
 | `WIND_REFRESH_WORKERS` | `2` | The wind feeds' own refresh threads (1-4), apart from the live buoys' `LIVE_REFRESH_WORKERS`. |
 | `WIND_NWS_PER_REFRESH` | `25` | Stations the NWS API feed asks per minute, in turn (1-500); 25 of Hawaii's ~300 = every station about every 12 minutes. |
 | `WIND_MADIS_URL` | the Hawaii query of MADIS's public viewer | The NWS stations' MADIS backup (plan section 52); empty = off. |
+| `WIND_ECCC`, `WIND_JMA`, `WIND_IEM`, `WIND_SMHI`, `WIND_FMI`, `WIND_DMI`, `WIND_DWD`, `WIND_IPMA`, `WIND_MEI` | `1` | `0` turns that section-67 feed off (its flags then say "no reading"). |
+| `WIND_ECCC_PER_REFRESH`, `WIND_IEM_PER_REFRESH`, `WIND_DWD_PER_REFRESH`, `WIND_MEI_PER_REFRESH` | 60, 8, 15, 4 | Files, networks or stations the paced feeds ask per refresh. |
+
+### More countries (plan section 67, UI asset 1.27.0)
+
+Nine more feeds, owner 2026-10-30 (all anonymous; each credited on the map while one of its flags is drawn in the view,
+and in the window's source line with its licence wording): Environment and Climate Change Canada (MSC Datamart SWOB-ML,
+ECCC Data Servers End-use Licence), the Japan Meteorological Agency (AMeDAS, Public Data License 1.0: "Source: Japan
+Meteorological Agency website", and we say the data was edited), the Iowa Environmental Mesonet (state DOT road
+weather networks and airport networks; "any lawful purpose"), SMHI, FMI, DWD and Met Eireann (CC BY 4.0), DMI (open
+data) and IPMA (non-profit use with credit; IPMA asks for an e-mail notification to webmaster@ipma.pt, the owner's to
+send). The stations are in the same snapshot, added by `python tools/wind/more_stations.py --cache DIR` after
+`fetch_stations.py` (it keeps the other rows and rebuilds only its own; one-station answers are kept 12 h in DIR):
+- kept when the station reports wind now, lies within 30 km of a coastline (the site's GSHHG tier-0 file) or of a large
+  lake's shore (the lake-outline set, lakes of 100 km2 and more: the Great Lakes, Winnipeg, Ladoga, Biwa ...), or at sea;
+- one per spot: never within 100 m of a kept station, within 500 m of a METAR site (an airport's own weather station is
+  the airport) nor its METAR id (ECCC's NAV CANADA files, IEM's airport sites with K / P / T, DWD's ICAO), and DWD (coarse
+  0.01-degree positions) not within 2 km of a kept station;
+- DWD's own stations only (WMO block 10 = Germany): its station list also relays other countries' SYNOP reports, which
+  are left out;
+- kinds `met` (a national weather service's station, ranked with the airports where flags crowd) and `road` (IEM's
+  `XX_RWIS`, ranked with the NWS networks); IEM's airports are `airport`; the IEM network is the new field `net`.
+
+The build of 2026-10-30 added 1,824 stations (ECCC 312, JMA 580, IEM 534, SMHI 112, FMI 102, DMI 56, DWD 28, IPMA 87,
+Met Eireann 13; the snapshot holds 4,548).
+
+The feeds (`wind_more.py`, the parsers and providers; `wind_sources.make_providers` adds them; requests through the same
+bounded fetch with the site's User-Agent):
+- one answer a refresh: JMA (latest_time.txt, then that time's map file, 10 min; m/s and a 16-point direction, quality
+  flags 0 / 1 kept; no gust in the map), SMHI (the latest hour of speed, direction and gust, 20 min; quality R left out),
+  FMI (one WFS answer over Finland for the last 30 minutes, 10 min), DMI (the last 10 minutes of wind_speed, wind_dir and
+  wind_max: the highest 3-second mean, 10 min), IPMA (observations.json, every station's last 24 hours, 30 min; an
+  8-class direction);
+- paced: IEM (currents.json per network, 8 networks every 2 minutes; knots), DWD (one poi CSV per station, 15 every 5
+  minutes; km/h; the CSV's newest rows), Met Eireann (prodapi observations/<station>/today, 4 every 5 minutes; km/h,
+  local time), ECCC (the latest folder's listing every 5 minutes, then only the files listed newer than the one last
+  read, 60 at most; km/h; an element whose qa_summary is under 15 is left out: suppressed, missing, error, doubtful);
+- each station keeps its newest reading until a newer one or 6 hours; a whole fetch that fails keeps the last list
+  (keep-last); HTTP 403 / 429 pauses a paced feed 5 minutes.
+
+A window's 24 hours (`/api/wind/<id>/history`, an explicit dispatch per source; an unknown source has none): from the
+agency for JMA (the 3-hour point files, 10-minute rows with gusts), IEM (obhistory per UTC day), SMHI (latest-day per
+parameter), FMI (one WFS answer), DMI (each parameter over the window) and DWD (the poi CSV), behind a budget of 30
+requests a minute per agency (an empty budget answers "busy", asked again in a moment); from the feed's own memory for
+ECCC, IPMA and Met Eireann (IPMA's feed brings 24 hours at once; ECCC and Met Eireann windows show the hours since the
+server started, with the note "Earlier hours are not kept after a server restart."). Links in the window: JMA's AMeDAS
+page, IEM's site page, Met Eireann's observations page.
 
 ## The station windows' refresh button (plan section 56, UI asset 1.26.4)
 

@@ -412,12 +412,16 @@
     rows.forEach(function (r) { if (best === null || Math.abs(r.t - t) < Math.abs(best.t - t)) best = r; });
     return best && Math.abs(best.t - t) <= within ? best : null;
   }
-  function sourceLink(src, id) {
+  function sourceLink(src, id, net) {
     var local = String(id || '').split(':')[1] || '';
     if (src === 'ndbc') return 'https://www.ndbc.noaa.gov/station_page.php?station=' + encodeURIComponent(local.toLowerCase());
     if (src === 'coops') return 'https://tidesandcurrents.noaa.gov/stationhome.html?id=' + encodeURIComponent(local);
     if (src === 'metar') return 'https://aviationweather.gov/data/metar/?ids=' + encodeURIComponent(local) + '&hours=24';
     if (src === 'nws') return 'https://www.weather.gov/wrh/timeseries?site=' + encodeURIComponent(local);   // a page, not JSON (G28 B-10)
+    // plan section 67: the agencies' own station pages where they have one (the others: the plain source text)
+    if (src === 'jma') return 'https://www.jma.go.jp/bosai/amedas/#amdno=' + encodeURIComponent(local);
+    if (src === 'iem' && net) return 'https://mesonet.agron.iastate.edu/sites/site.php?station=' + encodeURIComponent(local) + '&network=' + encodeURIComponent(net);
+    if (src === 'mei') return 'https://www.met.ie/latest-reports/observations';
     return null;
   }
 
@@ -494,7 +498,7 @@
       if (d.note) lines.push(d.note + (/[.!?]$/.test(d.note) ? '' : '.'));
       if (latest() && flagState(latest(), now(), st.unit, staleS()).stale) lines.push('The latest reading is more than ' + Math.round(staleS() / 3600) + ' hours old.');
       lines.forEach(function (t) { els.meta.appendChild(el('div', '', t)); });
-      var line = el('div', ''), href = sourceLink(src, d.id);
+      var line = el('div', ''), href = sourceLink(src, d.id, d.net);
       line.appendChild(doc.createTextNode('Source: '));
       if (href) {
         var a = el('a', '', d.source || src);

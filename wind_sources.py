@@ -70,7 +70,23 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                "madis": "NOAA MADIS (madis.ncep.noaa.gov): HECO / HELCO / MECO, University of Hawaii, RAWS, CWOP and "
                         "other networks",
                "nws+madis": "NWS API observations (api.weather.gov) and NOAA MADIS (madis.ncep.noaa.gov): HECO / "
-                            "HELCO / MECO, University of Hawaii, RAWS, CWOP and other networks"}
+                            "HELCO / MECO, University of Hawaii, RAWS, CWOP and other networks",
+               # plan section 67 (the feeds and their licences: wind_more.SOURCES)
+               "eccc": "Environment and Climate Change Canada (dd.weather.gc.ca, SWOB-ML); ECCC Data Servers End-use "
+                       "Licence",
+               "jma": "Japan Meteorological Agency website (www.jma.go.jp, AMeDAS), converted and thinned by "
+                      "allshoresurf.com; Public Data License 1.0",
+               "iem": "Iowa Environmental Mesonet, Iowa State University (mesonet.agron.iastate.edu): state DOT road "
+                      "weather and airport stations",
+               "smhi": "SMHI, Swedish Meteorological and Hydrological Institute (opendata.smhi.se), CC BY 4.0",
+               "fmi": "Finnish Meteorological Institute (opendata.fmi.fi), CC BY 4.0",
+               "dmi": "DMI, Danish Meteorological Institute (opendataapi.dmi.dk)",
+               "dwd": "Deutscher Wetterdienst (opendata.dwd.de), CC BY 4.0",
+               "ipma": "IPMA, Instituto Portugues do Mar e da Atmosfera (api.ipma.pt)",
+               "mei": "Met Eireann (met.ie), CC BY 4.0"}
+MORE_SOURCES = ("eccc", "jma", "iem", "smhi", "fmi", "dmi", "dwd", "ipma", "mei")   # plan section 67 (wind_more.py)
+MORE_KEPT = ("eccc", "ipma", "mei")             # their windows' 24 hours are the feed's own, kept in memory
+MORE_RESTART_NOTE = "Earlier hours are not kept after a server restart."
 # NOAA's restrictions page for MADIS asks pages that show mesonet observations to carry an accuracy disclaimer: shown in
 # the window of every NWS-network station (HECO / UH / RAWS / CWOP ...), whichever feed brought the reading (G35).
 MESONET_DISCLAIMER = ("NOAA and its data providers disclaim liability of any kind whatsoever, including, without "
@@ -158,7 +174,7 @@ METAR_WX = {"RA": "rain", "DZ": "drizzle", "SN": "snow", "SG": "snow grains", "G
             "PO": "dust whirls", "DS": "dust storm", "SS": "sandstorm", "PY": "spray"}
 METAR_WX_DESC = {"SH": "showers", "TS": "thunderstorm", "FZ": "freezing", "BL": "blowing", "DR": "drifting",
                  "MI": "shallow", "BC": "patches of", "PR": "partial"}
-ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}")
+ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}|(eccc|jma|iem|smhi|fmi|dmi|dwd|ipma|mei):[A-Z0-9][A-Z0-9_-]{1,15}")
 COOPS_NO_DATA_RE = re.compile(r"no data was found", re.I)   # the only CO-OPS message that means "nothing for the station"
 NO_NEW = object()                              # a paced station answered without a new reading: keep the one in hand
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
@@ -1287,7 +1303,7 @@ class MadisProvider(WindProvider):
 
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
                    nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None, madis_backfill=True,
-                   madis_window_fetch=None):
+                   madis_window_fetch=None, more=True, more_enabled=None, more_per_refresh=None):
     """The providers over the snapshot's stations, in warm order (cheap, quick feeds first); with madis_url the NWS
     stations' MADIS backup too (its own fetch: the viewer is slow), which also back-fills their 24 hours (plan section
     55) unless madis_backfill is False (madis_window_fetch: the windows' fetch, default madis_fetch)."""
@@ -1300,6 +1316,9 @@ def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER
     if madis_url:
         out.append(MadisProvider(groups.get("nws", {}), madis_fetch or fetch, madis_url, backfill=madis_backfill,
                                  window_fetch=madis_window_fetch))
+    if more:                                    # plan section 67: Canada, Japan, IEM, Europe (more_enabled: env switches)
+        import wind_more
+        out += wind_more.make_providers(groups, fetch, more_enabled, more_per_refresh)
     return out
 
 
@@ -1420,6 +1439,9 @@ class WindHistory:
         self.madis = None                     # local id -> the station's latest MADIS reading or None (plan section 52 D)
         self.madis_hist = None                # (local id, since) -> the station's MADIS readings since (plan section 55)
         self.madis_filling = None             # () -> True while MADIS is still back-filling the earlier hours
+        self.more_hist = {}                   # src -> (local id, since) -> the feed's own 24 hours (plan section 67)
+        self.more_buckets = {}                # src -> TokenBucket: each section-67 agency's window budget
+        self.more_started = {}                # src -> when its in-memory feed started (the restart note)
         self._reset_locks()
         self._cache = OrderedDict()           # key -> (expires, status, payload, built, asked)
         _SERVICES.add(self)
@@ -1646,6 +1668,22 @@ class WindHistory:
             raise WindError(str(exc) or "fetch failed") from None
         return [r for r in parse_nws_observations(doc) if r["t"] >= since]
 
+    def _more(self, src, local, st, since, now):
+        """(rows, note) of a section-67 station: the feed's own 24 hours in memory (ECCC, IPMA, Met Eireann: with a
+        note when the server has not run 24 hours yet), else its agency's history behind the agency's budget."""
+        if src in MORE_KEPT:
+            get = self.more_hist.get(src)
+            rows = get(local, since) if get else []
+            started = self.more_started.get(src)
+            note = MORE_RESTART_NOTE if rows and started and started > since else None
+            return rows or [], note
+        import wind_more
+        bucket = self.more_buckets.get(src)
+        if bucket is None:
+            bucket = self.more_buckets.setdefault(src, TokenBucket(wind_more.BUCKET_PER_MIN))
+        self._take(bucket, wind_more.SOURCES[src]["short"])
+        return wind_more.history(src, local, st, since, self._fetch, now) or [], None
+
     def history(self, sid, fresh_s=None):
         """fresh_s: a refresh from the wind window (plan section 56): an answer at least that old is built again."""
         st = self.stations.get(sid) if valid_id(sid) else None
@@ -1689,7 +1727,9 @@ class WindHistory:
                 rows = rows + extra
             if self.madis_filling and self.madis_filling():
                 partial, filling = True, True
-        else:
+        elif src in MORE_SOURCES:                                      # plan section 67
+            rows, note = self._more(src, local, st, since, now)
+        elif src == "coops":
             self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:
                 rows = self._coops(local, since)
@@ -1705,6 +1745,8 @@ class WindHistory:
                     rows = self._ndbc(st["alias"], since)              # NDBC's relay of the gauge
                 except WindNoFile:
                     rows, no_file = [], True
+        else:                                                          # a source with no history (never served)
+            rows = []
         rows = sorted({r["t"]: r for r in rows}.values(), key=lambda r: r["t"])[-HISTORY_ROWS:]
         if not rows:
             note = NDBC_NO_FILE if no_file else NO_HISTORY
@@ -1712,7 +1754,8 @@ class WindHistory:
             if r.get("rh") is None and r.get("at") is not None and r.get("dp") is not None:
                 r["rh"] = humidity_from(r["at"], r["dp"])
         out = {"id": sid, "name": st.get("name"), "kind": st.get("kind"), "src": src, "tz": st.get("tz"),
-               "alias": st.get("alias"), "lat": st.get("lat"), "lon": st.get("lon"), "hours": HISTORY_S // 3600,
+               "alias": st.get("alias"), "net": st.get("net"), "lat": st.get("lat"), "lon": st.get("lon"),
+               "hours": HISTORY_S // 3600,
                "units": {"s": "m/s", "g": "m/s", "d": "deg", "at": "degC", "wt": "degC", "dp": "degC", "rh": "%",
                          "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],

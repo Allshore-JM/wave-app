@@ -1,0 +1,30 @@
+[
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-7.821,
+37.033
+]
+},
+"type": "Feature",
+"properties": {
+"idEstacao": 1210881,
+"localEstacao": "Olhão, EPPO"
+}
+},
+{
+"geometry": {
+"type": "Point",
+"coordinates": [
+-31.1301,
+39.45819
+]
+},
+"type": "Feature",
+"properties": {
+"idEstacao": 1200501,
+"localEstacao": "Flores (Aeródromo)"
+}
+}
+]

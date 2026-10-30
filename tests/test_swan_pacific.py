@@ -277,6 +277,8 @@ def test_the_cycle_age_and_the_wind_rule():
         assert A._swan_wind_final(cyc) and A._old_run_wind_final(cyc)
         blank = (cyc, "Location : 52202", None, [["d", "t"] + [None] * 18 + [None, None, 1.0]], "Pacific/Guam", None)
         assert A._forecast_entry_ttl(blank) == A._FORECAST_CACHE_TTL, "an old table's blank wind cells are final"
+        A._swan_now = lambda: PUBLISHED - 1 + 48 * 3600                    # exactly 48.0 h: final (the NWPS edge too)
+        assert A._swan_wind_final(cyc) and A._forecast_entry_ttl(blank) == A._FORECAST_CACHE_TTL
         A._swan_now = lambda: PUBLISHED + 47.99 * 3600
         assert not A._swan_wind_final(cyc) and not A._old_run_wind_final(cyc)
         assert A._forecast_entry_ttl(blank) == A._WIND_NEG_TTL, "a fresh table's blank wind cells may still heal"
@@ -299,6 +301,10 @@ def test_the_payload_carries_the_age_and_falls_back_to_gfs_past_72_h(site, monke
     assert p["model"] == "SWAN" and p["swan_available"] is True and p["nwps_available"] is True
     assert p["swan_age_hours"] == 35.9 and "nwps_age_hours" not in p and p["error"] is None
     assert p["graph_header"]["cycle"] == "PacIOOS SWAN updated 20261029 23 UTC" and gfs_calls == []
+    A._FORECAST_CACHE.clear()
+    site.now = hours(72) - 1                                            # exactly 72.0 h by the cycle line: still SWAN
+    p = A.compute_forecast_payload("52202", None, "US", "SWAN", compact=True)
+    assert p["model"] == "SWAN" and p["swan_available"] is True and p["swan_age_hours"] == 72.0 and gfs_calls == []
     A._FORECAST_CACHE.clear()
     site.now = hours(72.5)                                              # the read itself found the table too old
     p = A.compute_forecast_payload("52202", None, "US", "SWAN", compact=True)

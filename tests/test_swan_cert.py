@@ -111,9 +111,13 @@ def test_the_one_exception_is_cwa_without_the_strict_flag_and_nothing_else():
     text = open(os.path.join(REPO, TLS_EXCEPTION), encoding="utf-8").read()
     assert sorted({m.group(0) for m in WEAKENING.finditer(text)}) == ["ssl_context"]
     assert cwa_tls.HOST == "https://opendata.cwa.gov.tw/"
-    ctx, default = cwa_tls.context(), ssl.create_default_context()
+    import requests.adapters
+    # the context requests itself verifies with, but for the one flag (G45 F-13)
+    ctx, default = cwa_tls.context(), requests.adapters._preloaded_ssl_context
     assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
     assert ctx.verify_flags == default.verify_flags & ~ssl.VERIFY_X509_STRICT
+    assert ctx.options == default.options and ctx.minimum_version == default.minimum_version >= ssl.TLSVersion.TLSv1_2
+    assert ctx.maximum_version == default.maximum_version and ctx.hostname_checks_common_name is False
     assert ctx.cert_store_stats()["x509_ca"] ==         ssl.create_default_context(cafile=certifi.where()).cert_store_stats()["x509_ca"] > 100
     for session in (app.HTTP, app._POINT_HTTP):
         adapter = session.get_adapter("https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001")
@@ -123,3 +127,5 @@ def test_the_one_exception_is_cwa_without_the_strict_flag_and_nothing_else():
                       "https://cwaopendata.s3.ap-northeast-1.amazonaws.com/x", "http://opendata.cwa.gov.tw/x"):
             assert not isinstance(session.get_adapter(other), cwa_tls.CwaAdapter), other
     assert app.HTTP.get_adapter(cwa_tls.HOST).max_retries.total == app.HTTP.get_adapter("https://x.org/").max_retries.total
+    proxied = app.HTTP.get_adapter(cwa_tls.HOST).proxy_manager_for("http://proxy.example:3128")
+    assert proxied.connection_pool_kw["ssl_context"].verify_flags == ctx.verify_flags      # the proxy path too

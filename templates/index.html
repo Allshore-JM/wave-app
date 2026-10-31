@@ -1961,6 +1961,7 @@
     const WIND_GAP_PX = 40;                         // flags (40 px) closer than this on screen overlap: the less important waits
     const WIND_CELL_PX = 64;                        // the reveal grid: >= WIND_GAP_PX, and a divisor of the world's width
     const WIND_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this
+    const WIND_LIST_RELOAD_MS = 60000;              // readings of stations the list lacks: the list asked again, at most this often
     const WIND_CREDIT = 'Wind: <a href="https://www.ndbc.noaa.gov/" target="_blank" rel="noopener">NOAA NDBC</a> · <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">CO-OPS</a> · <a href="https://aviationweather.gov/" target="_blank" rel="noopener">NWS Aviation Weather</a> · <a href="https://api.weather.gov/" target="_blank" rel="noopener">NWS API</a> · <a href="https://madis.ncep.noaa.gov/" target="_blank" rel="noopener">NOAA MADIS</a>';
     const WIND_KIND_TEXT = { gauge: 'NOAA tide gauge', buoy: 'NDBC buoy', cman: 'NDBC C-MAN station', station: 'NDBC station', airport: 'Airport (METAR)',
                              utility: 'HECO / HELCO / MECO station', mesonet: 'Mesonet station', raws: 'RAWS fire-weather station',
@@ -1994,6 +1995,8 @@
     let windReveal = null, windRevealKey = '';      // each station's reveal zoom (once per list)
     let windStationsData = [];
     let windListPromise = null;
+    let windIdSet = null;                           // the listed ids (readings of others: the list is asked again)
+    let windListAskedAt = -Infinity;
     let windListNote = '';                          // the list's own state ('loading…', 'unavailable')
     let windFeedNote = '';                          // the feed's ('loading…', 'loading more…', 'retrying…', 'unavailable')
     let activeWindId = null;
@@ -2854,6 +2857,9 @@
     function fmtPeriod(s) {
       return isNum(s) ? Number(s).toFixed(1) + ' s' : '—';
     }
+    // a reading's Peak period card: when it has a peak period, or no other period to show (CWA's buoys: a mean period
+    // only; QLD's: a zero-crossing period only): the table's Tp column follows the same rule (G45 F-19)
+    function wantsPeak(o) { return isNum(o.tp_s) || (!isNum(o.mean_period_s) && !isNum(o.tz_s)); }
     function fmtDir(d) {
       const n = Number(d);
       if (d === null || d === undefined || !Number.isFinite(n)) return '—';
@@ -2897,7 +2903,7 @@
 
     function buildRecentTable(recent, useMetric, tz) {
       if (!recent || !recent.length) return '';
-      const hasPeriod = recent.some(o => o.mean_period_s != null || o.tz_s != null);
+      const hasPeriod = recent.some(o => isNum(o.mean_period_s) || isNum(o.tz_s));
       const hasTp = recent.some(o => isNum(o.tp_s)) || !hasPeriod;   // CWA's buoys give a mean period only
       const hasSST = recent.some(o => o.sst_c != null);
       const heightUnit = useMetric ? 'm' : 'ft';
@@ -2913,7 +2919,7 @@
         (hasSST ? '<th>SST<br><span class="small">' + tempUnit + '</span></th>' : '') + '</tr>';
 
       const body = recent.map(o => {
-        const pd = (o.tz_s != null) ? o.tz_s : o.mean_period_s;
+        const pd = isNum(o.tz_s) ? o.tz_s : o.mean_period_s;
         return '<tr>' +
           '<td class="text-nowrap">' + (o.time_utc ? fmtTimeInTz(o.time_utc, tz) : '—') + '</td>' +
           '<td>' + fmtHeightM(o.hs_m, useMetric).replace(' ' + heightUnit, '') + '</td>' +
@@ -3074,7 +3080,7 @@
       } else {
         const metrics = [['Sig. Height', fmtHeightM(o.hs_m, useMetric)]];
         if (o.hmax_m != null) metrics.push(['Max Height', fmtHeightM(o.hmax_m, useMetric)]);
-        if (isNum(o.tp_s) || o.mean_period_s == null) metrics.push(['Peak Period', fmtPeriod(o.tp_s)]);
+        if (wantsPeak(o)) metrics.push(['Peak Period', fmtPeriod(o.tp_s)]);
         if (o.mean_period_s != null) metrics.push(['Mean Period', fmtPeriod(o.mean_period_s)]);
         if (o.tz_s != null) metrics.push(['Zero-cross Tz', fmtPeriod(o.tz_s)]);
         metrics.push(['Direction', fmtDir(o.dir_deg)]);
@@ -3855,9 +3861,10 @@
     // tab is hidden) and are painted into the drawn flags IN PLACE: the markers, their listeners and the focus stay.
     // The helpers it shares with the tide block (keyOpens, refocusMarker, setTabStops, focusMapAfterClose)
     // are above.
-    function loadWindStations() {
+    function loadWindStations(quiet) {
       if (windListPromise) return windListPromise;
-      windListNote = 'loading…';
+      if (!quiet) windListNote = 'loading…';
+      windListAskedAt = Date.now();
       windListPromise = fetch('/api/wind/stations', { headers: { Accept: 'application/json' } }).then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -3869,10 +3876,15 @@
                    src: String(r[I.src] || ''), tz: r[I.tz] || 'UTC', alias: r[I.alias] ? String(r[I.alias]) : null,
                    net: I.net >= 0 && r[I.net] ? String(r[I.net]) : null };
         }).filter(function (st) { return Number.isFinite(st.lat) && Number.isFinite(st.lon); });
+        windIdSet = new Set(windStationsData.map(function (st) { return st.id; }));
         windListNote = '';
         workOutWindStall();
         rebuildWindMarkers(true);
       }, function () {
+        if (quiet && windIdSet) {                     // the list in hand stands; asked again with the next readings
+          windListPromise = Promise.resolve();
+          return;
+        }
         windListPromise = null;                       // asked again on a pan or zoom WIND_LIST_RETRY_MS later
         windListFailedAt = Date.now();
         windListNote = 'unavailable';
@@ -4018,6 +4030,20 @@
       });
       return windFeed;
     }
+    // Stations KNMI's and Frost's feeds find at run time join the server's list after their first reading: a page
+    // loaded before then would never show them (G45 F-14). Readings of an id the list lacks: the list is asked again
+    // (the server answers 304 while it is unchanged).
+    function reloadWindListIfNew(readings) {
+      if (!windIdSet || Date.now() - windListAskedAt < WIND_LIST_RELOAD_MS) return false;
+      for (const id in readings) {
+        if (!windIdSet.has(id)) {
+          windListPromise = null;
+          loadWindStations(true);
+          return true;
+        }
+      }
+      return false;
+    }
     function syncWindFeed(on) {
       const feed = on ? ensureWindFeed() : windFeed;
       if (!feed) return;
@@ -4032,6 +4058,7 @@
               });
             }
             windReadings = fresh;
+            reloadWindListIfNew(fresh);
             if (payload && Number.isFinite(payload.stale_s)) windStaleS = payload.stale_s;
             refreshWindFlags();
             windLastFeed = { payload: payload, missing: missing };

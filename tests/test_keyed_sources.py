@@ -365,7 +365,9 @@ def test_knmi_feed_reads_the_newest_file_then_back_fills_and_finds_its_stations(
     assert all(c[1]["Authorization"] == SECRET for c in api)
     assert all("Authorization" not in c[1] for c in f.calls if "s3.example" in c[0])
     assert p.filling() and p.extra_stations()[0] == 1
-    assert {s["id"] for s in p.extra_stations()[1]} == {"knmi:06201", "knmi:06260", "knmi:06310"}
+    # 06310 is in the file without a wind reading: found, not listed until it reports (G45 F-7)
+    assert {s["id"] for s in p.extra_stations()[1]} == {"knmi:06201", "knmi:06260"}
+    assert "06310" in p.stations and p.status()["found"] == 3 and p.status()["listed"] == 2
 
 
 def test_knmi_errors_never_show_the_signed_address(clock):
@@ -395,6 +397,9 @@ def test_found_stations_join_the_site_list_and_the_history_route(monkeypatch):
            "stations": [["ndbc:51003", "Buoy", 19.1, -160.6, "buoy", "ndbc", "Pacific/Honolulu", None, None, None]]}
     p = FakeDiscovered(lambda *a, **k: b"", SECRET)
     p._set_stations({"SN47300": {"name": "Utsira Fyr", "lat": 59.3, "lon": 4.9}})
+    now = __import__("time").time()
+    assert p.extra_stations() == (0, [])                             # found, not reported yet: not listed (G45 F-7)
+    p._merge({"SN47300": [W.reading(now - 60, 5.0, None, 200.0)]}, now)
     svc = W.WindHistory(dict(base), lambda *a, **k: b"")
     w = {"svc": svc, "list": A._json_payload_and_etag(W.client_list(doc)), "providers": [p], "stations": dict(base),
          "base_stations": base, "base_doc": doc, "extra_key": None}
@@ -407,6 +412,8 @@ def test_found_stations_join_the_site_list_and_the_history_route(monkeypatch):
     assert A._wind_sync_extras(w) is False                           # unchanged: nothing rebuilt
     p._set_stations({"SN47300": {"name": "Utsira Fyr", "lat": 59.3, "lon": 4.9},
                      "SN18700": {"name": "Oslo", "lat": 59.9, "lon": 10.7}})
+    assert A._wind_sync_extras(w) is False                           # Oslo has not reported: the list stands
+    p._merge({"SN18700": [W.reading(now - 30, 3.0, None, 90.0)]}, now)
     assert A._wind_sync_extras(w) is True and "frost:SN18700" in w["stations"]
     assert c.get("/api/wind/frost:SN99999/history").status_code == 404
 
@@ -451,7 +458,10 @@ def test_the_found_stations_keep_one_flag_per_spot_and_count_what_they_leave_out
                      "SN47300": {"name": "Utsira Fyr", "lat": 59.3, "lon": 4.9},
                      "SN47301": {"name": "Utsira Havn", "lat": 59.3003, "lon": 4.9}})
     assert sorted(p.stations) == ["SN47300"] and set(p.left_out) == {"SN39040", "SN47301"}
-    assert p.status()["left_out"] == 2 and p.extra_stations()[0] == 1
+    assert p.status()["left_out"] == 2 and p.extra_stations()[0] == 0
+    now = __import__("time").time()
+    p._merge({k: [W.reading(now - 60, 4.0, None, 180.0)] for k in ("SN39040", "SN47300", "SN47301")}, now)
+    assert p.extra_stations()[0] == 1 and [s["id"] for s in p.extra_stations()[1]] == ["frost:SN47300"]
 
 
 def test_the_runtime_spot_rule_matches_the_snapshot_tool():
@@ -660,3 +670,388 @@ def test_the_buoy_feeds_are_built_only_with_their_keys(monkeypatch):
     monkeypatch.setenv("CWA_API_KEY", "b")
     assert {"CCO", "CWA"} <= {p.source for p in A._build_buoy_providers()}
     monkeypatch.setattr(A, "_BUOY_PROVIDERS", None)
+
+
+# ============================================================================================== G45 fix round
+
+def _bst(id_, source, name, lat, lon):
+    return {"id": id_, "source": source, "name": name, "lat": lat, "lon": lon, "capabilities": {}}
+
+
+def test_g45_cco_buoys_merge_with_their_cefas_and_cmems_copies():
+    """G45 F-1: the live pairs of 2026-10-31 (CEFAS "<site> Waverider", CMEMS "RyeBayDWR" and the WMO-numbered
+    6201045 = Scarborough), 1.6-8.7 km apart."""
+    km = 1.0 / 111.195
+    pairs = [(_bst("cco:75", "CCO", "Penzance", 50.11, -5.50),
+              _bst("cefas:200", "CEFAS", "Penzance Waverider", 50.11 + 1.65 * km, -5.50)),
+             (_bst("cco:72", "CCO", "Hornsea", 53.90, -0.10),
+              _bst("cefas:219", "CEFAS", "Hornsea Waverider", 53.90 + 8.73 * km, -0.10)),
+             (_bst("cco:79", "CCO", "Rye Bay", 50.85, 0.80),
+              _bst("cmems:NO_TS_MO_RyeBayDWR", "CMEMS", "RyeBayDWR", 50.85 + 1.82 * km, 0.80)),
+             (_bst("cco:108", "CCO", "Scarborough", 54.29, -0.30),
+              _bst("cmems:NO_TS_MO_6201045", "CMEMS", "6201045", 54.29 + 2.08 * km, -0.30))]
+    for cco, copy in pairs:
+        kept = B.merge_stations([[dict(cco)], [dict(copy)]])
+        assert [k["id"] for k in kept] == [cco["id"]], (cco["name"], copy["name"])
+        assert kept[0]["also_sources"] == [copy["source"]]
+    assert B._name_key("Penzance Waverider") == B._name_key("Penzance") == "PENZANCE"
+    assert B._name_key("RyeBayDWR") == "RYEBAY" and B._name_key("DWR") == "DWR"
+    assert B._name_key("Chesil") != B._name_key("Weymouth Waverider")
+    # two different sites stay two markers
+    assert len(B.merge_stations([[_bst("cco:84", "CCO", "Weymouth", 50.60, -2.40)],
+                                 [_bst("cefas:208", "CEFAS", "Boscombe Waverider", 50.62, -2.38)]])) == 2
+
+
+def test_g45_signed_addresses_are_cut_from_requests_own_error_texts():
+    """G45 F-2: requests names the path only (no scheme) in its connection errors."""
+    import socket
+    import requests
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    url = ("http://127.0.0.1:%d/f.nc?X-Amz-Algorithm=AWS4&X-Amz-Credential=AKIA%%2F2026&X-Amz-Security-Token=TOKSECRET"
+           "&X-Amz-Signature=SIGSECRET" % port)
+    text = ""
+    try:
+        requests.get(url, timeout=1)
+    except requests.RequestException as exc:
+        text = "%s: %s" % (type(exc).__name__, exc)
+    assert "SIGSECRET" in text
+    out = K.KnmiProvider(lambda *a, **k: b"", SECRET)._clean(Exception(text))
+    assert "SIGSECRET" not in out and "TOKSECRET" not in out and "?[signed]" in out
+
+
+def test_g45_log_records_never_carry_a_key_in_a_url():
+    """G45 F-3: urllib3's "Retrying ... url" warning (query included) passes through the filter."""
+    import logging
+    K.install_log_redaction()
+    K.install_log_redaction()                                     # once only
+    lg = logging.getLogger("urllib3.connectionpool")
+    assert sum(isinstance(f, K.RedactFilter) for f in lg.filters) == 1
+    seen = []
+
+    class H(logging.Handler):
+        def emit(self, record):
+            seen.append(self.format(record))
+    h = H()
+    lg.addHandler(h)
+    old = lg.level
+    lg.setLevel(logging.WARNING)
+    try:
+        lg.warning("Retrying (%r) after connection broken by '%r': %s", "Retry(total=1)", "x",
+                   "/api/v1/rest/datastore/O-B0075-001?format=JSON&Authorization=CWA-REAL-KEY-1")
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old)
+    assert seen and "CWA-REAL-KEY-1" not in seen[0] and "Authorization=[key]" in seen[0]
+    for name in ("urllib3.util.retry", "urllib3.connection", "urllib3.poolmanager", "requests"):
+        assert any(isinstance(f, K.RedactFilter) for f in logging.getLogger(name).filters), name
+
+
+def test_g45_the_spot_rule_finds_a_metar_flag_east_or_west_at_every_latitude():
+    """G45 F-4: 0.05-degree cells and a 3 x 3 search missed 1.4-2.5 km east-west north of 63 N."""
+    import math
+    for lat, metres, out in ((67.3, 2400, "named so"), (70.0, 2000, "named so"), (78.2, 1400, "METAR 1400 m"),
+                             (80.5, 1400, "METAR 1400 m"), (60.0, 2400, "named so")):
+        spots = K.SpotIndex([_st("metar", "Tromso Airport", lat, 19.9999)])
+        east = 19.9999 + metres / (111195.0 * math.cos(math.radians(lat)))
+        why = spots.stands_on({"name": "Tromso Vi", "lat": lat, "lon": east})
+        assert why and out in why, (lat, metres, why)
+        far = 19.9999 + 2600 / (111195.0 * math.cos(math.radians(lat)))
+        assert spots.stands_on({"name": "Kvaloya", "lat": lat, "lon": far}) is None
+    assert K._CELL == 0.1
+
+
+def test_g45_a_failed_sources_call_keeps_the_frost_list_and_its_readings(clock):
+    """G45 F-5: with the stations known, a failing daily /sources call no longer stops the readings."""
+    clock.t = 1793497200 + 300
+    state = {"sources_fail": False}
+
+    def sources(u):
+        if state["sources_fail"]:
+            raise IOError("HTTP 503")
+        return json.dumps(FROST_SOURCES).encode()
+
+    def obs(url):
+        ids = url.split("sources=", 1)[1].split("&", 1)[0].split(",")
+        return json.dumps(frost_obs(ids, t=W.iso_z(clock.t - 300))).encode()
+    p = K.FrostProvider(FakeFetch({"/sources/": sources, "/observations/": obs}), SECRET, mask())
+    assert len(p.list_stations()) == 3
+    state["sources_fail"] = True
+    clock.t += K.FrostProvider.sources_ttl + 10
+    p._list_ts = 0
+    lst = p.list_stations()
+    assert len(lst) == 3 and not p.status()["last_error"] and "503" in p.list_error
+    assert clock.t - p._sources_at == pytest.approx(K.FrostProvider.sources_ttl - K.FrostProvider.SOURCES_RETRY)
+    st = p.status()
+    assert st["sources_seen"]["in_mask"] == 3 and st["list_error"] and SECRET not in json.dumps(st)
+
+
+def test_g45_a_failed_station_list_keeps_the_cwa_buoys_going(clock):
+    """G45 F-5 (buoys): the 24-hour station list call failing with a list in hand: the readings go on."""
+    clock.t = 1793469600
+    state = {"fail": False}
+    locs = fx("cwa_buoy_stations.json")["records"]["SeaSurfaceObs"]["Location"]
+
+    def ans(url):
+        if "O-B0076-001" in url:
+            if state["fail"]:
+                return Resp(503, {})
+            return Resp(200, {"cwaopendata": {"Resources": {"Resource": {"Data": {"SeaSurfaceObs": {"Location": locs}}}}}})
+        return Resp(200, fx("cwa_buoy_obs.json"))
+    http = FakeHttp(ans)
+    p = B.CwaBuoyProvider(SECRET, http=http)
+    lists = lambda: sum("O-B0076-001" in c[0] for c in http.calls)     # noqa: E731
+    assert len(p.list_stations()) == 2
+    n = lists()
+    state["fail"] = True
+    clock.t += B.CwaBuoyProvider.STATIONS_TTL + 10
+    p._list_ts = 0
+    assert len(p.list_stations()) == 2 and "503" in p.list_error and not p.status()["last_error"]
+    assert lists() == n + 1
+    clock.t += 600                                               # within the hour: not asked again
+    p._list_ts = 0
+    p.list_stations()
+    assert lists() == n + 1
+    state["fail"] = False                                        # an hour later: asked, then once a day only
+    clock.t += 3600
+    p._list_ts = 0
+    p.list_stations()
+    m = lists()
+    assert m == n + 2 and p.list_error is None
+    clock.t += 1800
+    p._list_ts = 0
+    p.list_stations()
+    assert lists() == m
+
+
+def test_g45_a_cco_window_is_one_capped_attempt_and_asks_by_id(clock, monkeypatch):
+    """G45 F-6 / F-21 / F-8 / F-18: the window's download on a visitor's thread is one attempt under DETAIL_MAX_S;
+    asked by the sensor's id when CCO gives one; a row ahead of the clock never becomes the latest; 49 half-hours."""
+    clock.t = 1793450000                                         # 2026-10-31T12:33:20Z
+    calls = []
+    real = B._size_capped_get
+
+    def capped(http, url, timeout, cap, one_shot=False, max_s=B.LIST_MAX_S, headers=None):
+        calls.append((url, timeout, one_shot, max_s, dict(headers or {})))
+        return real(http, url, timeout, cap, one_shot=one_shot, max_s=max_s, headers=headers)
+    monkeypatch.setattr(B, "_size_capped_get", capped)
+    rows = [("Dawlish", 50.57, -3.43, "20261031#%02d%02d00" % divmod(m, 60), {"id": "103"}) for m in range(0, 721, 30)]
+    rows.append(("Dawlish", 50.57, -3.43, "20261105#120000", {"id": "103", "hs": 9.0}))       # 5 days ahead
+    doc = cco_doc(rows)
+    listing = cco_doc([("Dawlish", 50.57, -3.43, "20261031#120000", {"id": "103"})])
+    p = B.CcoProvider(SECRET, http=FakeHttp(lambda u: Resp(200, doc if "sensor=" in u else listing)))
+    assert [e["id"] for e in p.list_stations()] == ["cco:103"]
+    d = p.detail("103")
+    url, timeout, one_shot, max_s, headers = calls[-1]
+    assert "sensor=103" in url and one_shot is True and max_s == B.DETAIL_MAX_S and timeout == B.CcoProvider.DETAIL_TIMEOUT
+    assert headers["X-API-Key"] == SECRET and headers["Referer"] == "https://allshoresurf.com/"
+    assert calls[0][2] is False and calls[0][3] == B.LIST_MAX_S                   # the list: the runner's download
+    assert d["latest"]["time_utc"] == "2026-10-31T12:00:00Z" and d["latest"]["hs_m"] == 1.2
+    assert all(r["hs_m"] != 9.0 for r in d["recent"])
+    assert len(d["recent"]) == 25 and d["recent"][-1]["time_utc"] == "2026-10-31T00:00:00Z"   # every half-hour kept
+    assert d["latest"]["dir_kind"] == "from"
+
+
+def test_g45_cco_window_keeps_49_half_hours():
+    rows = [{"time_utc": "2026-10-%02dT%02d:%02d:00Z" % (30 + (m // 1440), (m // 60) % 24, m % 60), "hs_m": 1.0}
+            for m in range(0, 1441, 30)]
+    assert len(rows) == 49 and len(B._recent_window(rows, max_rows=B.CcoProvider.WINDOW_ROWS)) == 49
+
+
+def test_g45_cco_quality_flags_of_several_digits_blank_the_wave_fields():
+    """G45 F-9: CCO's pages print the flag as four positions ("0000"); any flagged position blanks the waves; the
+    single codes keep their mapping (1 = Hs)."""
+    out = B.parse_cco_features(cco_doc([("A", 50.0, -5.0, "20261031#120000", {"QCflag": "0000"}),
+                                        ("B", 50.1, -5.0, "20261031#120000", {"QCflag": "0100"}),
+                                        ("C", 50.2, -5.0, "20261031#120000", {"QCflag": 1}),
+                                        ("D", 50.3, -5.0, "20261031#120000", {"QCflag": "inf"}),
+                                        ("E", 50.4, -5.0, "20261031#120000", {"QCflag": None})]))
+    a, b, c, d, e = (o[4] for o in out)
+    assert a["hs_m"] == 1.2 and a["tp_s"] == 11.1
+    assert b["hs_m"] is None and b["tp_s"] is None and b["dir_deg"] is None and b["sst_c"] == 14.2
+    assert c["hs_m"] is None and c["hmax_m"] is None and c["sst_c"] == 14.2           # code 1 (CCO_BAD): the waves, not SST
+    assert d["hs_m"] == 1.2 and e["hs_m"] == 1.2
+    assert B._cco_qc_values(cco_doc([("A", 50, -5, "x", {"QCflag": "0000"}), ("B", 50, -5, "x", {"QCflag": "0000"}),
+                                     ("C", 50, -5, "x", {"QCflag": 2})])) == {"0000": 2, "2": 1}
+
+
+def test_g45_the_classic_reader_refuses_impossible_record_counts_fast():
+    """G45 F-10: a streaming record count (0xFFFFFFFF) or more records than bytes: NcError at once."""
+    import time as _t
+    data = bytes(cdf_file())
+    for n in (0xFFFFFFFF, 10 ** 6):
+        bad = data[:4] + struct.pack(">I", n) + data[8:]
+        t0 = _t.monotonic()
+        with pytest.raises(K.NcError):
+            K.read_netcdf(bad)
+        assert _t.monotonic() - t0 < 1.0
+    for cut in range(8, len(data), 7):                          # cut anywhere: NcError, never a struct / index error
+        try:
+            K.read_netcdf(data[:cut])
+        except K.NcError:
+            pass
+
+
+def test_g45_packed_knmi_variables_are_unpacked_and_gff_is_the_gust():
+    """G45 F-17 and the gust variable's order (K-4: gff, KNMI's 10-minute gust, before fx)."""
+    import h5py
+    buf = io.BytesIO()
+    with h5py.File(buf, "w") as h:
+        h["station"] = np.array([b"06260", b"06310"])
+        h["lat"] = np.array([52.0989, 51.4414])
+        h["lon"] = np.array([5.1797, 3.5958])
+        tm = h.create_dataset("time", data=np.array([float(KNMI_T + 631152000)]))
+        tm.attrs["units"] = b"seconds since 1950-01-01 00:00:00"
+        ff = h.create_dataset("ff", data=np.array([[52], [-32767]], dtype="int16"))
+        ff.attrs["scale_factor"] = np.array([0.1])
+        ff.attrs["add_offset"] = np.array([0.0])
+        ff.attrs["_FillValue"] = np.array([-32767], dtype="int16")
+        h.create_dataset("dd", data=np.array([[180.0], [90.0]]))
+        h.create_dataset("gff", data=np.array([[8.0], [6.0]]))
+        h.create_dataset("fx", data=np.array([[12.0], [11.0]]))
+    st, obs = K.parse_knmi(buf.getvalue())
+    assert obs["06260"][0]["s"] == pytest.approx(5.2) and obs["06260"][0]["g"] == 8.0
+    assert "06310" not in obs and set(st) == {"06260", "06310"}
+    assert K._fill({"_FillValue": np.array([-9999.0])}) == -9999.0 and K._fill({"_FillValue": "x"}) is None
+
+
+def test_g45_a_failing_knmi_file_is_given_up_and_filling_follows_the_files(clock, monkeypatch):
+    """G45 F-11 / F-12: a file failing FILE_TRIES times is not asked again; filling() ends when every file of the
+    last 24 hours is read or given up; the left-out stations stay counted between files."""
+    import time as _t
+    base = KNMI_T
+    clock.t = base + 120
+    monkeypatch.setattr(K, "KNMI_BACKFILL", 1)
+    names = ["KMDS__OPER_P___10M_OBS_L2_%s.nc" % _t.strftime("%Y%m%d%H%M", _t.gmtime(base - 600 * i)) for i in range(3)]
+    bad = names[1]
+    asked = []
+
+    def url_for(u):
+        name = u.split("/files/", 1)[1].split("/url", 1)[0]
+        asked.append(name)
+        return json.dumps({"temporaryDownloadUrl": "https://s3.example/%s?X-Amz-Signature=s" % name}).encode()
+
+    def file_for(u):
+        if u.split("/")[-1].split("?")[0] == bad:
+            raise IOError("HTTP 500")
+        return knmi_hdf5()
+    spots = K.SpotIndex([_st("metar", "Vlissingen Airport", 51.4414, 3.5958)])
+    p = K.KnmiProvider(FakeFetch({"/files?": {"files": [{"filename": n} for n in names]}, "/url": url_for,
+                                  "s3.example": file_for}), SECRET, spots)
+    for _ in range(6):
+        p._list_ts = 0
+        p.list_stations()
+    assert asked.count(bad) == K.KnmiProvider.FILE_TRIES and bad in p._read
+    assert not p.filling()
+    assert p.status()["left_out"] == 1 and "06310" in p.left_out           # kept on the refreshes with no new file
+    n = len(asked)
+    p._list_ts = 0
+    p.list_stations()
+    assert len(asked) == n                                                 # nothing left to ask
+    q = K.KnmiProvider(FakeFetch({"/files?": IOError("HTTP 503")}), SECRET)
+    assert q.filling()                                                     # never listed: still filling
+
+
+def test_g45_frost_asks_for_gusts_again_an_hour_after_a_refusal(clock):
+    """G45 F-15."""
+    clock.t = 1793497200 + 300
+    state = {"refuse": True}
+
+    def obs(url):
+        if "wind_speed_of_gust" in url and state["refuse"]:
+            raise IOError("HTTP 400")
+        ids = url.split("sources=", 1)[1].split("&", 1)[0].split(",")
+        return json.dumps(frost_obs(ids, gust="wind_speed_of_gust" in url)).encode()
+    p = K.FrostProvider(FakeFetch({"/sources/": FROST_SOURCES, "/observations/": obs}), SECRET, mask())
+    p.list_stations()
+    assert p._gust is None and p.status()["gust"] is False
+    state["refuse"] = False
+    clock.t += 1800
+    p._list_ts = 0
+    p.list_stations()
+    assert p._gust is None
+    clock.t += 1900
+    p._list_ts = 0
+    lst = p.list_stations()
+    assert p._gust == K.FROST_GUST and any(e["wind"][1] == 9.5 for e in lst)
+
+
+def test_g45_frost_latest_asks_for_one_recent_reading_and_a_404_batch_is_ordinary(clock):
+    """Mutant gaps: maxage / limit in the latest request; a batch Frost has no data for is not a failure."""
+    clock.t = 1793497200 + 300
+    urls = []
+
+    def obs(url):
+        urls.append(url)
+        raise IOError("HTTP 404")
+    p = K.FrostProvider(FakeFetch({"/sources/": FROST_SOURCES, "/observations/": obs}), SECRET, mask())
+    assert p.list_stations() == [] and not p.status()["last_error"]
+    assert urls and all("referencetime=latest" in u and "maxage=PT2H" in u and "limit=1" in u for u in urls)
+
+
+def test_g45_cwa_times_without_an_offset_are_taipei_time():
+    """G45 F-16: never the server's own zone."""
+    assert K.cwa_time("2026-11-01T01:50:00") == K.cwa_time("2026-11-01T01:50:00+08:00") == 1793469000
+    assert B._cwa_z("2026-11-01T01:50:00") == "2026-10-31T17:50:00Z" == B._cwa_z("2026-11-01T01:50:00+08:00")
+
+
+def test_g45_a_cwa_buoy_row_ahead_of_the_clock_is_left_out():
+    """G45 F-8 (buoys)."""
+    doc = json.loads(json.dumps(fx("cwa_buoy_obs.json")))
+    loc = doc["records"]["SeaSurfaceObs"]["Location"][0]
+    sid = loc["Station"]["StationID"]
+    times = loc["StationObsTimes"]["StationObsTime"]
+    ahead = json.loads(json.dumps(times[-1]))
+    ahead["DataTime"] = "2026-11-06T01:00:00+08:00"
+    times.append(ahead)
+    now = 1793469600
+    assert B.parse_cwa_buoy_obs(doc, now)[sid][-1]["time_utc"] != "2026-11-05T17:00:00Z"
+    assert B.parse_cwa_buoy_obs(doc, now + 6 * 86400)[sid][-1]["time_utc"] == "2026-11-05T17:00:00Z"
+
+
+def test_g45_knmi_and_cwa_windows_are_the_feeds_own_memory():
+    """Mutant gap: KNMI's and CWA's windows come from the feed's memory (never an agency request)."""
+    def boom(*a, **k):
+        raise AssertionError("no request for a KNMI / CWA window")
+    svc = W.WindHistory({}, boom)
+    rows = [W.reading(1793469000, 4.0, None, 200.0)]
+    for src in ("knmi", "cwa"):
+        svc.more_hist[src] = lambda local, since, r=rows: list(r)
+        got, _note, short = svc._more(src, "06260", {}, 1793469000 - 86400, 1793469600)
+        assert got == rows and short is False
+    svc.more_filling["knmi"] = lambda: True
+    assert svc._more("knmi", "06260", {}, 0, 1793469600)[2] is True
+
+
+def test_g45_a_found_station_never_replaces_a_snapshot_row_and_the_version_moves_only_with_the_list(monkeypatch):
+    """Mutant gaps (C5): a found id equal to a snapshot id keeps the snapshot's row; an unchanged list never bumps the
+    version (no ETag churn)."""
+    base = {"frost:SN47300": {"id": "frost:SN47300", "name": "Snapshot row", "lat": 59.3, "lon": 4.9, "kind": "met",
+                              "src": "frost", "tz": "Europe/Oslo", "alias": None, "wx": None, "net": None}}
+    doc = {"captured": "x", "source": "test",
+           "fields": ["id", "name", "lat", "lon", "kind", "src", "tz", "alias", "wx", "net"],
+           "stations": [["frost:SN47300", "Snapshot row", 59.3, 4.9, "met", "frost", "Europe/Oslo", None, None, None]]}
+    p = FakeDiscovered(lambda *a, **k: b"", SECRET)
+    p._set_stations({"SN47300": {"name": "Found row", "lat": 59.31, "lon": 4.91}})
+    now = __import__("time").time()
+    p._merge({"SN47300": [W.reading(now - 60, 5.0, None, 200.0)]}, now)
+    v = p.extra_stations()[0]
+    for _ in range(3):
+        p._set_stations({"SN47300": {"name": "Found row", "lat": 59.31, "lon": 4.91}})
+        p._merge({"SN47300": [W.reading(now - 30, 5.0, None, 200.0)]}, now)
+    assert p.extra_stations()[0] == v
+    svc = W.WindHistory(dict(base), lambda *a, **k: b"")
+    w = {"svc": svc, "list": A._json_payload_and_etag(W.client_list(doc)), "providers": [p], "stations": dict(base),
+         "base_stations": base, "base_doc": doc, "extra_key": None}
+    monkeypatch.setattr(A, "WIND_ENABLED", True)
+    monkeypatch.setattr(A, "_WINDS", w)
+    A._wind_sync_extras(w)
+    assert w["stations"]["frost:SN47300"]["name"] == "Snapshot row"
+    rows = A.app.test_client().get("/api/wind/stations").get_json()["stations"]
+    assert [r[1] for r in rows if r[0] == "frost:SN47300"] == ["Snapshot row"]
+
+
+def test_g45_lh_is_an_airport_word():
+    assert K.AIRFIELD_WORDS.search("sogndal lh storehaugfjellet") and not K.AIRFIELD_WORDS.search("lhasa")

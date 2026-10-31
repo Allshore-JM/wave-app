@@ -3357,7 +3357,9 @@ def parse_cwa_buoy_obs(doc):
                 continue
             we = t.get("WeatherElements") or {}
             wind = we.get("PrimaryAnemometer") or {}
-            obs = {"time_utc": _cwa_z(t.get("DataTime")), "hs_m": _cwa_val(we.get("WaveHeight"), 0, 30),
+            ot = t.get("ObsTime") if isinstance(t.get("ObsTime"), dict) else {}
+            stamp = t.get("DataTime") or t.get("DateTime") or ot.get("DateTime")    # the file says DataTime
+            obs = {"time_utc": _cwa_z(stamp), "hs_m": _cwa_val(we.get("WaveHeight"), 0, 30),
                    "mean_period_s": _cwa_val(we.get("WavePeriod"), 0, 40), "tp_s": None,
                    "dir_deg": _cwa_val(we.get("WaveDirection"), 0, 360), "sst_c": _cwa_val(we.get("SeaTemperature"), -5, 40),
                    "wind_speed_ms": _cwa_val(wind.get("WindSpeed"), 0, 120),
@@ -3367,6 +3369,18 @@ def parse_cwa_buoy_obs(doc):
         if sid and rows:
             out[sid] = sorted({o["time_utc"]: o for o in rows}.values(), key=lambda o: o["time_utc"])
     return out
+
+
+def _cwa_shape(doc, obs, stations):
+    """What an answer without a usable reading held: counts and field NAMES only (never values), for the log."""
+    locs = _cwa_locations(doc)
+    first = locs[0] if locs and isinstance(locs[0], dict) else {}
+    times = (first.get("StationObsTimes") or {}).get("StationObsTime") if isinstance(first.get("StationObsTimes"), dict) else None
+    t0 = (times[0] if isinstance(times, list) and times else times) if times else None
+    top = sorted(doc)[:6] if isinstance(doc, dict) else type(doc).__name__
+    return "top %s; %d locations, keys %s; time keys %s; %d stations with readings, %d listed, %d in both" % (
+        top, len(locs), sorted(first)[:6], sorted(t0)[:8] if isinstance(t0, dict) else type(t0).__name__,
+        len(obs), len(stations), len(set(obs) & set(stations)))
 
 
 class CwaBuoyProvider(BuoyProvider):
@@ -3418,7 +3432,8 @@ class CwaBuoyProvider(BuoyProvider):
                 self._stations, self._stations_at = found, now
         if not self._stations:
             raise RuntimeError("no CWA station with a wave sensor")
-        obs = parse_cwa_buoy_obs(self._get("O-B0075-001"))
+        doc = self._get("O-B0075-001")
+        obs = parse_cwa_buoy_obs(doc)
         out = []
         for sid, st in sorted(self._stations.items()):
             rows = obs.get(sid)
@@ -3426,7 +3441,7 @@ class CwaBuoyProvider(BuoyProvider):
                 out.append({"local_id": sid, "name": st["name"], "lat": st["lat"], "lon": st["lon"],
                             "latest_time": rows[-1]["time_utc"]})
         if not out:
-            raise RuntimeError("the CWA answer holds no wave reading")
+            raise RuntimeError("the CWA answer holds no wave reading (%s)" % _cwa_shape(doc, obs, self._stations))
         self._obs = obs
         return out
 

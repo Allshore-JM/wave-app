@@ -753,7 +753,8 @@ def test_g45_the_spot_rule_finds_a_metar_flag_east_or_west_at_every_latitude():
     """G45 F-4: 0.05-degree cells and a 3 x 3 search missed 1.4-2.5 km east-west north of 63 N."""
     import math
     for lat, metres, out in ((67.3, 2400, "named so"), (70.0, 2000, "named so"), (78.2, 1400, "METAR 1400 m"),
-                             (80.5, 1400, "METAR 1400 m"), (60.0, 2400, "named so")):
+                             (80.5, 1400, "METAR 1400 m"), (60.0, 2400, "named so"),
+                             (78.2, 2400, "named so"), (80.5, 2400, "named so")):
         spots = K.SpotIndex([_st("metar", "Tromso Airport", lat, 19.9999)])
         east = 19.9999 + metres / (111195.0 * math.cos(math.radians(lat)))
         why = spots.stands_on({"name": "Tromso Vi", "lat": lat, "lon": east})
@@ -860,6 +861,22 @@ def test_g45_cco_window_keeps_49_half_hours():
     assert len(rows) == 49 and len(B._recent_window(rows, max_rows=B.CcoProvider.WINDOW_ROWS)) == 49
 
 
+def test_g45_cco_detail_keeps_49_half_hours(clock):
+    """F-18 through the provider: a day of half-hourly rows (both ends) comes back whole, not thinned."""
+    import time as _t
+    clock.t = 1793450000                                         # 2026-10-31T12:33:20Z
+    end = 1793448000                                             # 2026-10-31T12:00:00Z
+    rows = [("Dawlish", 50.57, -3.43, _t.strftime("%Y%m%d#%H%M%S", _t.gmtime(end - 1800 * i)), {"id": "103"})
+            for i in range(49)]
+    doc = cco_doc(rows)
+    listing = cco_doc([("Dawlish", 50.57, -3.43, "20261031#120000", {"id": "103"})])
+    p = B.CcoProvider(SECRET, http=FakeHttp(lambda u: Resp(200, doc if "sensor=" in u else listing)))
+    p.list_stations()
+    d = p.detail("103")
+    assert len(d["recent"]) == 49
+    assert d["recent"][0]["time_utc"] == "2026-10-31T12:00:00Z" and d["recent"][-1]["time_utc"] == "2026-10-30T12:00:00Z"
+
+
 def test_g45_cco_quality_flags_of_several_digits_blank_the_wave_fields():
     """G45 F-9: CCO's pages print the flag as four positions ("0000"); any flagged position blanks the waves; the
     single codes keep their mapping (1 = Hs)."""
@@ -884,7 +901,7 @@ def test_g45_the_classic_reader_refuses_impossible_record_counts_fast():
     for n in (0xFFFFFFFF, 10 ** 6):
         bad = data[:4] + struct.pack(">I", n) + data[8:]
         t0 = _t.monotonic()
-        with pytest.raises(K.NcError):
+        with pytest.raises(K.NcError, match="record count"):
             K.read_netcdf(bad)
         assert _t.monotonic() - t0 < 1.0
     for cut in range(8, len(data), 7):                          # cut anywhere: NcError, never a struct / index error
@@ -900,8 +917,10 @@ def test_g45_packed_knmi_variables_are_unpacked_and_gff_is_the_gust():
     buf = io.BytesIO()
     with h5py.File(buf, "w") as h:
         h["station"] = np.array([b"06260", b"06310"])
-        h["lat"] = np.array([52.0989, 51.4414])
-        h["lon"] = np.array([5.1797, 3.5958])
+        la = h.create_dataset("lat", data=np.array([520989, 514414], dtype="int32"))
+        la.attrs["scale_factor"] = np.array([1e-4])
+        lo = h.create_dataset("lon", data=np.array([51797, 35958], dtype="int32"))
+        lo.attrs["scale_factor"] = np.array([1e-4])
         tm = h.create_dataset("time", data=np.array([float(KNMI_T + 631152000)]))
         tm.attrs["units"] = b"seconds since 1950-01-01 00:00:00"
         ff = h.create_dataset("ff", data=np.array([[52], [-32767]], dtype="int16"))
@@ -914,6 +933,7 @@ def test_g45_packed_knmi_variables_are_unpacked_and_gff_is_the_gust():
     st, obs = K.parse_knmi(buf.getvalue())
     assert obs["06260"][0]["s"] == pytest.approx(5.2) and obs["06260"][0]["g"] == 8.0
     assert "06310" not in obs and set(st) == {"06260", "06310"}
+    assert st["06260"]["lat"] == pytest.approx(52.0989) and st["06310"]["lon"] == pytest.approx(3.5958)
     assert K._fill({"_FillValue": np.array([-9999.0])}) == -9999.0 and K._fill({"_FillValue": "x"}) is None
 
 

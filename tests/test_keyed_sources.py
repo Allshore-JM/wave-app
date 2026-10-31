@@ -1055,3 +1055,38 @@ def test_g45_a_found_station_never_replaces_a_snapshot_row_and_the_version_moves
 
 def test_g45_lh_is_an_airport_word():
     assert K.AIRFIELD_WORDS.search("sogndal lh storehaugfjellet") and not K.AIRFIELD_WORDS.search("lhasa")
+
+
+def test_g45_the_copy_of_a_copy_joins_the_kept_marker_within_ten_km():
+    """Test site, after the F-1 fix: CMEMS's 6201000 sits on CEFAS's "Penzance Waverider" (hidden under CCO's
+    Penzance 1.7 km away) and must join CCO's marker, not stand alone; a third copy farther than 10 km from the kept
+    marker stays apart."""
+    km = 1.0 / 111.195
+    cco = _bst("cco:75", "CCO", "Penzance", 50.11, -5.50)
+    cefas = _bst("cefas:200", "CEFAS", "Penzance Waverider", 50.11 + 1.65 * km, -5.50)
+    cmems = _bst("cmems:NO_TS_MO_6201000", "CMEMS", "6201000", 50.11 + 1.95 * km, -5.50)
+    kept = B.merge_stations([[dict(cco)], [dict(cefas)], [dict(cmems)]])
+    assert [k["id"] for k in kept] == ["cco:75"] and kept[0]["also_sources"] == ["CEFAS", "CMEMS"]
+    far_cefas = _bst("cefas:9", "CEFAS", "Penzance Waverider", 50.11 + 9.5 * km, -5.50)
+    far_cmems = _bst("cmems:NO_TS_MO_6201999", "CMEMS", "6201999", 50.11 + 10.4 * km, -5.50)
+    kept = B.merge_stations([[dict(cco)], [dict(far_cefas)], [dict(far_cmems)]])
+    assert sorted(k["id"] for k in kept) == ["cco:75", "cmems:NO_TS_MO_6201999"]
+
+
+def test_g45_frost_asks_for_svalbard_apart(clock):
+    """G45 F-20: country=NO names nothing north of 72.5 N; Svalbard and Jan Mayen are asked with country=SJ (a failure
+    of that call leaves them out, the rest stands)."""
+    clock.t = 1793497200 + 300
+    sj = {"data": [{"id": "SN99710", "name": "BJORNOYA", "geometry": {"coordinates": [19.0012, 74.5035]}}]}
+
+    def obs(url):
+        ids = url.split("sources=", 1)[1].split("&", 1)[0].split(",")
+        return json.dumps(frost_obs(ids)).encode()
+    p = K.FrostProvider(FakeFetch({"country=SJ": sj, "/sources/": FROST_SOURCES, "/observations/": obs}), SECRET, mask())
+    ids = {e["id"] for e in p.list_stations()}
+    assert "frost:SN99710" in ids and p.stations["SN99710"]["tz"] == "Arctic/Longyearbyen"
+    assert p.status()["sources_seen"]["north_of_72_5"] >= 1
+    q = K.FrostProvider(FakeFetch({"country=SJ": IOError("HTTP 500"), "/sources/": FROST_SOURCES, "/observations/": obs}),
+                        SECRET, mask())
+    assert {e["id"] for e in q.list_stations()} == {"frost:SN18700", "frost:SN47300", "frost:SN99840"}
+    assert "HTTP 500" in q.list_error

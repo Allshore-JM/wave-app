@@ -41,6 +41,7 @@ KNMI_LIST = KNMI_API + "/files?maxKeys={n}&orderBy=lastModified&sorting=desc"
 KNMI_URL = KNMI_API + "/files/{name}/url"
 FROST = "https://frost.met.no"
 FROST_SOURCES = FROST + "/sources/v0.jsonld?types=SensorSystem&elements=wind_speed&country=NO&fields=id,name,geometry,masl"
+FROST_SOURCES_SJ = FROST_SOURCES.replace("country=NO", "country=SJ")
 FROST_OBS = FROST + "/observations/v0.jsonld?sources={src}&referencetime={ref}&elements={el}&timeoffsets=default&levels=default"
 FROST_LATEST = "&maxage=PT2H&limit=1"
 FROST_GUST = "max(wind_speed_of_gust PT10M)"
@@ -853,6 +854,15 @@ class FrostProvider(DiscoveredProvider):
 
     def _sources_now(self, now):
         found = parse_frost_sources(json.loads(self._fetch(FROST_SOURCES, MAX_JSON, self.headers)))
+        sj_error = None
+        # Svalbard and Jan Mayen are a country of their own in Frost (country=NO named nothing north of 72.5 N on
+        # 2026-10-31: G45 F-20); asked apart, a failure of that call leaves them out this time
+        try:
+            for k, v in parse_frost_sources(json.loads(self._fetch(FROST_SOURCES_SJ, MAX_JSON, self.headers))).items():
+                found.setdefault(k, v)
+        except Exception as exc:                         # noqa: BLE001
+            if "HTTP 404" not in str(exc) and "HTTP 412" not in str(exc):
+                sj_error = self._clean(exc)
         mask = self.mask or CoastMask.load(MASK_PATH)
         self.mask = mask
         kept = {}
@@ -863,7 +873,7 @@ class FrostProvider(DiscoveredProvider):
         if not kept:
             raise RuntimeError("no Frost source inside the coast mask")
         self._set_stations(kept)
-        self._sources_at, self.list_error = now, None
+        self._sources_at, self.list_error = now, sj_error
         self.sources_seen = {"sources": len(found), "in_mask": len(kept),
                              "north_of_72_5": sum(1 for x in found.values() if x["lat"] > 72.5)}
 

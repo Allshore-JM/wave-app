@@ -57,3 +57,70 @@ own pages and files, and a headless Chrome (its own profile, never signed in) wi
   request the snapshot tool cannot make without the key on the laptop).
 - CWA wind windows hold only the hours since the server started (as ECCC's), KNMI's fill in about 45 minutes.
 - Frost's coast map follows the owner's section-67 rule, so stations near Norway's large lakes (Mjøsa) are kept.
+
+## G45: one fresh reviewer (2026-10-31)
+
+One fresh reviewer read `git diff 1343465..1f85ecd` and the test site @ 51de019 (its report and scripts are in the
+session scratch `g45/`). **P0 0, P1 2, P2 9, P3 12 (+ test gaps); 48 mutants, 30 killed.** It confirmed the parts
+that matter most: no key or signed address in any answer (40 buoy windows, 7 wind histories, every list); all 268 CWA
+wind rows and all 26 CWA buoys equal CWA's own files; CCO's windows equal CCO's page; the TLS exception is exactly one
+flag for one host; the found stations follow the snapshot tool's spot rule.
+
+### Findings and what was done
+
+| # | Finding | Outcome |
+|---|---|---|
+| F-1 (P1) | CCO's buoys drawn twice beside their CEFAS "<site> Waverider" / CMEMS "<site>DWR" or numbered copies at 6-7 UK spots | Fixed: the dedup's name key strips WAVERIDER and a trailing DWR; `_MATCH_NAME_ALIAS` names the numbered copy (6201045 = Scarborough). Found on the test site after this fix: a copy that matches a copy already hidden (CMEMS 6201000 on CEFAS's Penzance Waverider, under CCO's Penzance 1.7 km away) stood alone: it now joins that copy's kept marker within 10 km (7ea4380). |
+| F-2 (P2) | KNMI's signed download address not cut from error texts | Fixed: `_SIGNED` cuts any query holding a signature, token or X-Amz part, with or without a scheme. |
+| F-3 (P2) | The CWA key could reach urllib3's "Retrying ..." warning | Fixed: a log filter on the urllib3 and requests loggers, installed at the app's start, redacts the key and signed queries (a leak script with the app imported: 0 appearances). |
+| F-4 (P2) | The spot index missed METAR flags east or west of a found station north of 63 N | Fixed: 0.1-degree cells, and the east-west search widens with the latitude. |
+| F-5 (P2) | A failed daily station-list call stopped every reading refresh (Frost, CWA buoys) | Fixed: the list in hand stays and is asked again in an hour; `/healthz` shows `list_error`. |
+| F-6 (P1) | A CCO window could hold a visitor's request thread about 2 minutes | Fixed: a window is one attempt under 20 s, size-capped, one request at a time per sensor; the list stays on the background runner. |
+| F-7 (P2) | 23 % of Frost's flags never had a reading | Fixed: a found station is listed once it has brought a reading. |
+| F-8 (P2) | A row stamped in the future became the latest reading (CCO, CWA buoys) | Fixed: rows ahead of the clock are left out. |
+| F-9 (P2) | CCO's quality flag: mapping unsourced, CCO prints it as four digits | Fixed: a code of several digits with any digit not 0 blanks every wave field; single codes keep the mapping; `/healthz` lists the values seen (live: "9" and none only). |
+| F-10 (P2) | KNMI's classic-NetCDF reader could spin forever on a 300-byte file | Fixed: a streaming or impossible record count is refused at once; record bounds checked; parse errors become NcError. |
+| F-11 (P2) | A failing KNMI file was re-read every 2 minutes for 24 h | Fixed: given up after 3 tries; "filling" follows the files KNMI lists. |
+| F-12 (P3) | KNMI's `left_out` dropped to 0 between files | Fixed: each file starts from every station found so far. |
+| F-13 (P3) | `cwa_tls` not built like requests' own context | Fixed: urllib3's context, certifi's list, minus the strict flag; the test compares with requests' preloaded context and checks the proxy path. |
+| F-14 (P3) | Stations found after the page loaded were missing until a reload | Fixed: the page asks for the wind list again (at most once a minute) when the readings name a station it lacks. |
+| F-15 (P3) | Frost dropped the gust element for the life of the process on any HTTP 400 | Fixed: asked again an hour after a refusal. |
+| F-16 (P3) | CWA wind read a time without an offset in the server's zone | Fixed: taken as Taipei's (buoys too). |
+| F-17 (P3) | KNMI's reader ignored `scale_factor` / `add_offset` | Fixed: packed values and positions are unpacked; the fill value is read before unpacking. |
+| F-18 (P3) | A CCO window showed every other reading | Fixed: 49 half-hours (both ends of the day) kept. |
+| F-19 (P3) | Card and table disagreed for a buoy with only a zero-crossing period | Fixed: the card's peak-period rule is the table's (`wantsPeak`). |
+| F-20 (P3) | No Frost station north of 72.5 N | Found on the test site: Frost lists Svalbard and Jan Mayen as their own country (SJ). Fixed: a second source call (7ea4380); a failure of that call leaves them out until the next day's list. |
+| F-21 (P3) | CCO windows asked by sensor name | Fixed: by id when the answer carries one. |
+| F-22 (P3) | CCO / CWA buoy reads checked the size after reading the whole body | Fixed: `_size_capped_get` with headers. |
+| F-23 (P3) | KNMI's request budget wording | Fixed in the README (about 40 an hour, about 300 in the 45 minutes after a start; KNMI allows 1,000). |
+| Test gaps | 18 surviving mutants | Pinned (the reviewer's list: QC 1, direction kind, the 24-h list TTL, "LH", the cell size, back-fill, gust order, maxage, a found station never replacing a snapshot row, KNMI windows from memory, naive buoy times, Frost batch 404, version stable, TLS minimum / proxy). |
+
+Commits: 137ae25 (the fixes), 43e4abb (golden, own commit), 7ea4380 (the two test-site follow-ups), f527aef (pins),
+0c1b2d9 (README).
+
+### Mutants of the fix round
+
+32 mutants on a scratch copy, after pytest: 26 killed at first. Of the six left, five were test gaps and are pinned
+(f527aef): the spot rule two cells east north of 77 N, the record count refused by its own check, packed station
+positions, the CCO window's 49 rows through `detail()`, and the Svalbard call (the first version of that mutant was a
+no-op; two real ones are killed). The last, "recompute the found list when it is unchanged", is equivalent: the same
+list gives the same stations and the version moves only with the listed set. 31 of 32 killed.
+
+### Test site after the fixes
+
+`test` @ 41a83db (the fixes), then @ a19b95f (the follow-ups and pins), live 20:34:45 UTC with no failed request.
+Checks with `/healthz`, the site's answers and the agencies' pages:
+
+- CCO: 45 sensors; every one of the 45 markers has no other feed's marker within 10 km (673 markers; 678 before the
+  follow-up: five standalone CMEMS copies, 6201000 / 6201004 / 6201007 / 6201008 / 6201019 near Penzance, Minehead,
+  Weymouth and Chesil, Boscombe and Hornsea, now join CCO's markers). Windows: 49 rows over 24 hours (Penzance, Scarborough). Quality flag values: "9" x 3, none x 67.
+- CWA buoys: 26. KNMI: 45 listed, all with a reading, 24 left out on METAR flags. CWA wind: 268, all with a reading.
+- Frost: 909 sources (34 north of 72.5 N), 764 inside the coast map, 529 listed (all with a reading), 77 left out;
+  29 Svalbard / Jan Mayen stations listed (Bjørnøya, Hopen, Edgeøya, Kongsøya, Sørkappøya, Hornsund ...); gust on.
+- No key-shaped text (`Authorization=` values, signed parameters, JWTs) in `/healthz`, the lists or the windows.
+- Suites at f527aef + README: pytest 2,066 passed, Node 1,067 passed.
+
+### Owner awareness (unchanged from step 2, plus)
+
+- The Svalbard call is separate: if Frost refuses it, Svalbard's stations are missing until the next day's list
+  (`/healthz` names the error); the rest of Norway is unaffected.

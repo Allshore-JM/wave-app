@@ -366,8 +366,15 @@ def parse_frost_sources(doc):
             continue
         if not re.fullmatch(r"SN\d{1,8}", sid) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
-        out[sid] = {"name": frost_name(s.get("name") or sid), "lat": round(lat, 4), "lon": round(lon, 4)}
+        name = frost_name(s.get("name") or sid)
+        out[sid] = {"name": name, "lat": round(lat, 4), "lon": round(lon, 4),
+                    "kind": "road" if FROST_ROAD.match(name) else "met"}
     return out
+
+
+# Frost's road weather stations (Statens vegvesen) are named by their road ("E6 Andelva", "Rv15 Grotli", "Fv17 ..."):
+# kind "road", as IEM's road weather networks (ranked below the weather services' stations where flags crowd).
+FROST_ROAD = re.compile(r"(?:E|Rv|Fv|Kv)\d{1,4}\b")
 
 
 _SMALL = {"I", "PA", "VED", "OG", "AV"}
@@ -588,7 +595,11 @@ class SpotIndex:
         for d, src, site in near:
             if src != "metar":
                 continue
-            if d <= AIRPORT_SPOT_M or d <= AIRFIELD_M:
+            if d <= AIRPORT_SPOT_M:
+                return "on an airfield (METAR %.0f m)" % d
+            if s.get("kind", "met") != "met":            # the airfield distances are for weather services' stations
+                continue
+            if d <= AIRFIELD_M:
                 return "on an airfield (METAR %.0f m)" % d
             if AIRFIELD_WORDS.search(name) or (first and site.split(" ")[0] == first):
                 return "on an airfield (METAR %.0f m, named so)" % d

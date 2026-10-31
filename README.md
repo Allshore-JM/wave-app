@@ -2069,7 +2069,9 @@ Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check
 - **Frost wind** (`wind_keyed.FrostProvider`): Norway's stations with a wind sensor from Frost's source list once a day,
   kept within 30 km of the sea or at sea by the committed map `tools/wind/norway_coast30.bin` (0.05-degree cells built
   from the site's world coastline by `tools/wind/more_stations.py --norway-mask`); readings every 10 minutes, 50 stations
-  a request (speed, direction and the 10-minute gust; Frost refusing the gust element leaves it out). A window's
+  a request (speed, direction and the 10-minute gust; Frost refusing the gust element leaves it out). The road
+  weather stations Frost relays (Statens vegvesen, named by their road: "E6 Andelva", "Rv15 Grotli") are road
+  weather stations on the map, as IEM's. A window's
   24 hours are one Frost request for that station, behind a budget of 30 windows a minute. Svalbard's stations keep
   Arctic/Longyearbyen time. NLOD 2.0 / CC BY 4.0, "Data from The Norwegian Meteorological Institute".
 - **CWA wind** (`wind_keyed.CwaWindProvider`): the 10-minute observations O-A0003-001 every 10 minutes; the stations

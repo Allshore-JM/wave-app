@@ -430,6 +430,17 @@ def test_a_found_station_is_left_out_where_the_map_has_a_flag():
     assert "ndbc" in spots.stands_on({"name": "Fyr", "lat": 60.0 + 80 * m_lat, "lon": 5.0})
     assert spots.stands_on({"name": "Fyr", "lat": 60.0 + 150 * m_lat, "lon": 5.0}) is None   # not a METAR site
     assert spots.stands_on({"name": "Hasvik Havn", "lat": 70.4867 + 2000 * m_lat, "lon": 22.1397})   # begins like it
+    road = {"name": "E39 Sogndal", "lat": 61.156 + 1400 * m_lat, "lon": 7.137, "kind": "road"}
+    assert spots.stands_on(road) is None                                   # the airfield rule is the weather services'
+    assert spots.stands_on(dict(road, lat=61.156 + 400 * m_lat))           # the airport's own spot: still out
+
+
+def test_frost_road_stations_are_road_weather_stations():
+    doc = {"data": [{"id": "SN1", "name": "E6 ANDELVA", "geometry": {"coordinates": [10.1, 60.1]}},
+                    {"id": "SN2", "name": "RV15 STRYNEFJELLET - GROTÅA", "geometry": {"coordinates": [7.5, 61.9]}},
+                    {"id": "SN3", "name": "EIDSVOLL", "geometry": {"coordinates": [11.2, 60.3]}}]}
+    got = K.parse_frost_sources(doc)
+    assert [got[k]["kind"] for k in ("SN1", "SN2", "SN3")] == ["road", "road", "met"]
 
 
 def test_the_found_stations_keep_one_flag_per_spot_and_count_what_they_leave_out():

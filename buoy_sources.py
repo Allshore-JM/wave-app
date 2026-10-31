@@ -1853,15 +1853,26 @@ def _name_key(name):
     if not name:
         return ""
     n = name.upper()
-    for w in ("WAVENET", "BUOY", "SITE", "STATION", "IRELAND", "WAVE", "OFFSHORE", "INSHORE"):
+    # "WAVERIDER" before "WAVE" (CEFAS names its copies of CCO's buoys "<site> Waverider": "WAVE" alone left
+    # "PENZANCERIDER"), and a trailing "DWR" (Datawell Directional WaveRider: CMEMS's "RyeBayDWR") (G45 F-1)
+    for w in ("WAVERIDER", "WAVENET", "BUOY", "SITE", "STATION", "IRELAND", "WAVE", "OFFSHORE", "INSHORE"):
         n = n.replace(w, " ")
-    return re.sub(r"[^A-Z0-9]", "", n)
+    n = re.sub(r"[^A-Z0-9]", "", n)
+    return n[:-3] if n.endswith("DWR") and len(n) > 5 else n
+
+
+# A copy named by its WMO number only, matched on its site's name (G45 F-1: CMEMS's 6201045 is CCO's Scarborough
+# buoy, 2.1 km apart, the same readings)
+_MATCH_NAME_ALIAS = {"cmems:NO_TS_MO_6201045": "Scarborough"}
 
 
 def _match_name(st):
     """The name the dedup compares. AODN markers are named "<site> - <institution>", so their full name
     never equalled another network's name for the same buoy (2026-10-03: Storm Bay, Wilsons Prom, Mission
     Beach, Inverloch drawn twice 1.7-2.5 km apart); they are matched on the site name alone."""
+    alias = _MATCH_NAME_ALIAS.get(str(st.get("id") or ""))
+    if alias:
+        return alias
     name = st.get("name") or ""
     if st.get("source") == "AODN":
         return name.split(" - ")[0]
@@ -1964,14 +1975,16 @@ LIST_MAX_S = 180            # a list download that has not finished after this i
 DETAIL_MAX_S = 20           # a window's download (a visitor's request thread)
 
 
-def _capped_fetch(http, url, timeout, cap, one_shot=False, max_s=None):
+def _capped_fetch(http, url, timeout, cap, one_shot=False, max_s=None, headers=None):
     """GET url with its body read in chunks under `cap` bytes and `max_s` seconds in all: a feed that answers 300 MB,
     or a trickle, is cut off before it fills the instance's memory or holds a thread (G42 F7, F8). Any status is
     returned (a caller reads an error page's text). `one_shot`: no automatic retries (a visitor's request thread). A
-    test's fake http (not a requests.Session) is called as is and its body checked against the cap."""
+    test's fake http (not a requests.Session) is called as is and its body checked against the cap. `headers`: the
+    request's own headers (a key, a Referer)."""
     where = url.split("?")[0]
+    extra = {"headers": headers} if headers else {}
     if not isinstance(http, requests.Session):
-        r = http.get(url, timeout=timeout)
+        r = http.get(url, timeout=timeout, **extra)
         if len(r.content) > cap:
             raise RuntimeError("%s answered %d bytes (cap %d)" % (where, len(r.content), cap))
         return r
@@ -2005,7 +2018,7 @@ def _capped_fetch(http, url, timeout, cap, one_shot=False, max_s=None):
         killer.daemon = True
         killer.start()
     try:
-        r = (requests.get if one_shot else http.get)(url, timeout=timeout, stream=True)
+        r = (requests.get if one_shot else http.get)(url, timeout=timeout, stream=True, **extra)
         try:
             with guard:
                 held["sock"] = _answer_socket(r)
@@ -2056,11 +2069,11 @@ def _answer_socket(r):
     return sock if hasattr(sock, "settimeout") else None
 
 
-def _size_capped_get(http, url, timeout, cap, one_shot=False, max_s=LIST_MAX_S):
+def _size_capped_get(http, url, timeout, cap, one_shot=False, max_s=LIST_MAX_S, headers=None):
     """GET url and return the response after checking its size: a body larger than `cap`
     bytes raises (a feed that suddenly answers 50 MB must not reach the list builder), and so
     does a download past `max_s` seconds. `one_shot`: no automatic retries (a visitor's request thread)."""
-    r = _capped_fetch(http, url, timeout, cap, one_shot=one_shot, max_s=max_s)
+    r = _capped_fetch(http, url, timeout, cap, one_shot=one_shot, max_s=max_s, headers=headers)
     if r.status_code != 200:
         raise RuntimeError("HTTP %s from %s" % (r.status_code, url.split("?")[0]))
     return r
@@ -3157,9 +3170,26 @@ CCO_BAD = {"hs_m": (1, 9), "tp_s": (1, 2, 9), "mean_period_s": (1, 2, 9), "dir_d
            "dir_spread_deg": (1, 2, 3, 6, 9), "sst_c": (8, 9)}
 
 
-def parse_cco_features(doc):
+def _cco_qc(v):
+    """CCO's quality flag: a single code (CCO_BAD says which fields it marks bad), or "bad" for a code of several digits
+    with any digit not 0 (CCO's pages print the flag as four positions, "0000"; their meaning is not published, so any
+    flagged position blanks the wave fields: G45 F-9), or None (no flag / all zeros / unreadable)."""
+    t = str(v if v is not None else "").strip()
+    if not t or t.lower() in ("none", "null", "nan"):
+        return None
+    if re.fullmatch(r"\d{2,8}", t):
+        return "bad" if t.strip("0") else None
+    try:
+        x = float(t)
+    except ValueError:
+        return None
+    return int(x) if math.isfinite(x) and x == int(x) else None
+
+
+def parse_cco_features(doc, ids=None):
     """[(sensor id, name, lat, lon, obs)] of a CCO GeoJSON answer; obs carries the bulk wave parameters (SI, direction
-    FROM) with the fields the quality flag marks bad left out."""
+    FROM) with the fields the quality flag marks bad left out. `ids`: a set given gets the sensor ids that came from
+    the answer's own id property (CCO's history is asked by id then, else by name)."""
     out = []
     for f in (doc or {}).get("features") or ():
         if not isinstance(f, dict):
@@ -3171,19 +3201,21 @@ def parse_cco_features(doc):
         except (KeyError, TypeError, ValueError, IndexError):
             continue
         name = " ".join(str(p.get("sensor") or p.get("name") or "").split())
-        sid = next((str(p[k]) for k in ("id", "sensor_id", "sensorId", "sensorid") if p.get(k) not in (None, "")), None)
-        sid = re.sub(r"[^A-Za-z0-9_-]", "_", sid or name).strip("_")[:40]
+        own = next((str(p[k]) for k in ("id", "sensor_id", "sensorId", "sensorid") if p.get(k) not in (None, "")), None)
+        sid = re.sub(r"[^A-Za-z0-9_-]", "_", own or name).strip("_")[:40]
         if not sid or not (-90 <= lat <= 90 and -180 <= lon <= 180):
             continue
-        try:
-            qc = int(float(p.get("QCflag")))
-        except (TypeError, ValueError):
-            qc = None
+        if ids is not None and own is not None and sid == own:
+            ids.add(sid)
+        qc = _cco_qc(p.get("QCflag"))
         obs = {"time_utc": _cco_time(p.get("date") or p.get("time")),
                "hs_m": _num(p.get("hs"), 0, 30), "hmax_m": _num(p.get("hmax"), 0, 60), "tp_s": _num(p.get("tp"), 0, 40),
                "mean_period_s": _num(p.get("tz"), 0, 40), "dir_deg": _num(p.get("pdir"), 0, 360),
                "dir_spread_deg": _num(p.get("spread"), 0, 180), "sst_c": _num(p.get("sst"), -5, 40), "dir_kind": "from"}
-        if qc is not None:
+        if qc == "bad":
+            for k in ("hs_m", "hmax_m", "tp_s", "mean_period_s", "dir_deg", "dir_spread_deg"):
+                obs[k] = None
+        elif qc is not None:
             for k, bad in CCO_BAD.items():
                 if qc in bad:
                     obs[k] = None
@@ -3213,32 +3245,45 @@ class CcoProvider(BuoyProvider):
     DETAIL_TTL = 600
     LIST_MAX_AGE = 4 * 86400                                  # sensors silent longer are left out (CMEMS's rule)
 
+    DETAIL_TIMEOUT = (3.05, 15)
+    WINDOW_ROWS = 49                                          # 24 hours of half-hourly readings, both ends kept
+
     def __init__(self, key, http=None):
         super().__init__(http)
         self._key = key
         self._latest_by_id = {}
         self._names = {}
+        self._own_ids = set()
         self._detail = {}
+        self._detail_locks = {}
+        self._locks_lock = threading.Lock()
+        self._qc_seen = {}
 
     def _headers(self):
         return {"X-API-Key": self._key, "Referer": "https://allshoresurf.com/", "Accept": "application/geo+json",
                 "User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"}
 
-    def _get(self, url):
+    def _get(self, url, window=False):
+        """The answer as JSON: the list on the refresh runner (retries, LIST_MAX_S), a window on a visitor's thread (one
+        attempt, DETAIL_MAX_S in all: G45 F-6); the body read under MAX bytes either way (F-22)."""
         try:
-            r = self.http.get(url, headers=self._headers(), timeout=self.timeout)
-            if r.status_code != 200:
-                raise RuntimeError("HTTP %s from CCO" % r.status_code)
-            if len(r.content) > self.MAX:
-                raise RuntimeError("the CCO answer is too large")
+            if window:
+                r = _size_capped_get(self.http, url, self.DETAIL_TIMEOUT, self.MAX, one_shot=True, max_s=DETAIL_MAX_S,
+                                     headers=self._headers())
+            else:
+                r = _size_capped_get(self.http, url, self.timeout, self.MAX, headers=self._headers())
             return r.json()
         except Exception as exc:                              # noqa: BLE001
-            raise RuntimeError(_redact_key("%s: %s" % (type(exc).__name__, exc), self._key)) from None
+            msg = re.sub(r"from https://coastalmonitoring\.org\S*", "from CCO", "%s: %s" % (type(exc).__name__, exc))
+            raise RuntimeError(_redact_key(msg, self._key)) from None
 
     def _fetch_stations(self):
         latest, meta = {}, {}
         now = time.time()
-        for sid, name, lat, lon, obs in parse_cco_features(self._get(self.BASE)):
+        doc = self._get(self.BASE)
+        self._qc_seen = _cco_qc_values(doc)
+        own = set()
+        for sid, name, lat, lon, obs in parse_cco_features(doc, own):
             if obs.get("hs_m") is None or not obs.get("time_utc"):
                 continue
             ep = _z_epoch(obs)                                # a retired sensor's last reading (West Anglesey: 2016)
@@ -3253,6 +3298,7 @@ class CcoProvider(BuoyProvider):
             raise RuntimeError("the CCO answer holds no wave reading")
         self._latest_by_id = latest
         self._names.update({sid: m[0] for sid, m in meta.items()})
+        self._own_ids = own
         return [{"local_id": sid, "name": meta[sid][0], "lat": meta[sid][1], "lon": meta[sid][2],
                  "latest_time": latest[sid]["time_utc"]} for sid in sorted(latest)]
 
@@ -3263,30 +3309,55 @@ class CcoProvider(BuoyProvider):
             self.list_stations()
         if local_id not in self._latest_by_id:
             return {"latest": None, "recent": []}
-        now = time.time()
+        ttl = self.DETAIL_TTL if fresh_s is None else min(self.DETAIL_TTL, fresh_s)
         hit = self._detail.get(local_id)
-        if hit and now - hit[0] < (self.DETAIL_TTL if fresh_s is None else min(self.DETAIL_TTL, fresh_s)):
+        if hit and time.time() - hit[0] < ttl:
             return hit[1]
-        sensor = self._names.get(local_id) or local_id
-        try:
-            doc = self._get(self.BASE + "?duration=24&sensor=" + requests.utils.quote(sensor))
-            obs = sorted((o for (s, _n, _la, _lo, o) in parse_cco_features(doc)
-                          if s == local_id and o.get("time_utc") and o.get("hs_m") is not None),
-                         key=lambda o: o["time_utc"])
-        except RuntimeError:
-            obs = []
-        latest = self._latest_by_id.get(local_id)
-        if obs and (latest is None or obs[-1]["time_utc"] >= latest["time_utc"]):
-            latest = obs[-1]
-        out = {"latest": latest, "recent": _recent_window(obs) if obs else []}
-        if obs:                                               # a failed window is asked again next time
-            self._detail[local_id] = (now, out)
-        return out
+        with self._locks_lock:
+            lock = self._detail_locks.setdefault(local_id, threading.Lock())
+        with lock:                                            # one request per sensor at a time (G45 F-6)
+            now = time.time()
+            hit = self._detail.get(local_id)
+            if hit and now - hit[0] < ttl:
+                return hit[1]
+            # by the sensor's id when the answer carries one (a renamed sensor keeps its rows: G45 F-21)
+            sensor = local_id if local_id in self._own_ids else (self._names.get(local_id) or local_id)
+            try:
+                doc = self._get(self.BASE + "?duration=24&sensor=" + requests.utils.quote(sensor), window=True)
+                obs = sorted((o for (s, _n, _la, _lo, o) in parse_cco_features(doc)
+                              if s == local_id and o.get("time_utc") and o.get("hs_m") is not None
+                              and (_z_epoch(o) or 0) <= now + FUTURE_SLACK_S),     # a row ahead of the clock: G45 F-8
+                             key=lambda o: o["time_utc"])
+            except RuntimeError:
+                obs = []
+            latest = self._latest_by_id.get(local_id)
+            if obs and (latest is None or obs[-1]["time_utc"] >= latest["time_utc"]):
+                latest = obs[-1]
+            out = {"latest": latest, "recent": _recent_window(obs, max_rows=self.WINDOW_ROWS) if obs else []}
+            if obs:                                           # a failed window is asked again next time
+                self._detail[local_id] = (now, out)
+            return out
+
+    def status(self, now=None):
+        st = super().status(now)
+        st["qc"] = dict(self._qc_seen)                        # the quality flag's values seen (G45 F-9: CCO's format)
+        return st
 
     def latest(self, local_id):
         if local_id not in self._latest_by_id:
             self.list_stations()
         return self._latest_by_id.get(local_id)
+
+
+def _cco_qc_values(doc, limit=12):
+    """{flag value: count} of an answer's QCflag values (at most `limit` values: values only, for /healthz)."""
+    seen = {}
+    for f in (doc or {}).get("features") or ():
+        if isinstance(f, dict):
+            v = str((f.get("properties") or {}).get("QCflag"))[:12]
+            if v in seen or len(seen) < limit:
+                seen[v] = seen.get(v, 0) + 1
+    return seen
 
 
 def _cwa_val(v, lo=None, hi=None):
@@ -3330,20 +3401,26 @@ def parse_cwa_buoy_stations(doc):
     return out
 
 
+_TAIPEI = timezone(timedelta(hours=8))
+
+
 def _cwa_z(s):
+    """CWA's ISO time as YYYY-MM-DDTHH:MM:SSZ; a time without an offset is Taipei's (CWA's own zone: G45 F-16)."""
     try:
         d = datetime.fromisoformat(str(s).strip())
     except (TypeError, ValueError):
         return None
     if d.tzinfo is None:
-        return None
+        d = d.replace(tzinfo=_TAIPEI)
     return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def parse_cwa_buoy_obs(doc):
+def parse_cwa_buoy_obs(doc, now=None):
     """{StationID: [obs oldest first]} of O-B0075-001 (hourly, the last 48 hours). WavePeriod is a MEAN period (CWA's
-    buoys report no peak period): mean_period_s, never tp_s. Directions FROM."""
+    buoys report no peak period): mean_period_s, never tp_s. Directions FROM. A row more than FUTURE_SLACK_S ahead
+    of the clock is left out (G45 F-8)."""
     out = {}
+    ahead = (time.time() if now is None else now) + FUTURE_SLACK_S
     for loc in _cwa_locations(doc):
         if not isinstance(loc, dict):
             continue
@@ -3364,7 +3441,7 @@ def parse_cwa_buoy_obs(doc):
                    "dir_deg": _cwa_val(we.get("WaveDirection"), 0, 360), "sst_c": _cwa_val(we.get("SeaTemperature"), -5, 40),
                    "wind_speed_ms": _cwa_val(wind.get("WindSpeed"), 0, 120),
                    "wind_dir_deg": _cwa_val(wind.get("WindDirection"), 0, 360), "dir_kind": "from"}
-            if obs["time_utc"] and obs["hs_m"] is not None:
+            if obs["time_utc"] and obs["hs_m"] is not None and (_z_epoch(obs) or 0) <= ahead:
                 rows.append(obs)
         if sid and rows:
             out[sid] = sorted({o["time_utc"]: o for o in rows}.values(), key=lambda o: o["time_utc"])
@@ -3404,6 +3481,7 @@ class CwaBuoyProvider(BuoyProvider):
     FILE_API = "https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/%s?Authorization=%s&downloadType=WEB&format=JSON"
     MAX = 16 * 1024 * 1024
     STATIONS_TTL = 24 * 3600
+    STATIONS_RETRY = 3600                                     # a failed list call, with a list in hand: asked again after
 
     def __init__(self, key, http=None):
         super().__init__(http)
@@ -3411,29 +3489,35 @@ class CwaBuoyProvider(BuoyProvider):
         self._stations = {}
         self._stations_at = 0.0
         self._obs = {}
+        self.list_error = None
 
     def _get(self, dataset, file=False):
         try:
-            r = self.http.get((self.FILE_API if file else self.API) % (dataset, self._key), timeout=self.timeout,
-                              headers={"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"})
-            if r.status_code != 200:
-                raise RuntimeError("HTTP %s from CWA %s" % (r.status_code, dataset))
-            if len(r.content) > self.MAX:
-                raise RuntimeError("the CWA answer is too large")
+            r = _size_capped_get(self.http, (self.FILE_API if file else self.API) % (dataset, self._key), self.timeout,
+                                 self.MAX, headers={"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"})
             return r.json()
         except Exception as exc:                              # noqa: BLE001
-            raise RuntimeError(_redact_key("%s: %s" % (type(exc).__name__, exc), self._key)) from None
+            msg = "%s: %s" % (type(exc).__name__, exc)
+            msg = re.sub(r"from https://opendata\.cwa\.gov\.tw/\S+", "from CWA %s" % dataset, msg)
+            raise RuntimeError(_redact_key(msg, self._key)) from None
 
     def _fetch_stations(self):
         now = time.time()
         if not self._stations or now - self._stations_at > self.STATIONS_TTL:
-            found = parse_cwa_buoy_stations(self._get("O-B0076-001", file=True))
+            try:
+                found = parse_cwa_buoy_stations(self._get("O-B0076-001", file=True))
+            except RuntimeError as exc:
+                if not self._stations:
+                    raise
+                # the list in hand stands and the readings go on (G45 F-5); the list is asked again in an hour
+                found, self.list_error = None, str(exc)
+                self._stations_at = now - self.STATIONS_TTL + self.STATIONS_RETRY
             if found:
-                self._stations, self._stations_at = found, now
+                self._stations, self._stations_at, self.list_error = found, now, None
         if not self._stations:
             raise RuntimeError("no CWA station with a wave sensor")
         doc = self._get("O-B0075-001")
-        obs = parse_cwa_buoy_obs(doc)
+        obs = parse_cwa_buoy_obs(doc, now)
         out = []
         for sid, st in sorted(self._stations.items()):
             rows = obs.get(sid)

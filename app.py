@@ -958,6 +958,7 @@ WIND_MORE_PER_REFRESH = _wind_more_per_refresh()
 # plan section 69: the feeds that need a key (KNMI_API_KEY, FROST_CLIENT_ID, CWA_API_KEY in the environment); a source
 # without its key is left out. The keys are passed to the feeds and Frost's windows only: never logged or shown.
 WIND_KEYS = wind_keyed.keys_from_env()
+wind_keyed.install_log_redaction()               # urllib3 names the URLs it retries: never with a key (G45 F-3)
 # single-request feeds first; the paced feeds (one request per station or network) after them
 WIND_WARM_ORDER = ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "CWA", "KNMI", "FROST", "MADIS", "MEI", "IEM",
                    "DWD", "ECCC", "COOPS", "NWS"]

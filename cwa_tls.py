@@ -11,13 +11,17 @@ import ssl
 
 import certifi
 from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
 
 HOST = "https://opendata.cwa.gov.tw/"
 
 
 def context():
-    """The default verifying context on certifi's list, without the strict X.509 flag."""
-    ctx = ssl.create_default_context(cafile=certifi.where())
+    """The context requests itself verifies with (urllib3's default on certifi's list: TLS 1.2 at least, no session
+    tickets, the hostname by its subjectAltName only), without the strict X.509 flag (G45 F-13: not the ssl module's
+    default context, which differs from requests' in two more respects)."""
+    ctx = create_urllib3_context()
+    ctx.load_verify_locations(certifi.where())
     ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     return ctx
 

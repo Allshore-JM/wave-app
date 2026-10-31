@@ -22,6 +22,7 @@ import base64
 import calendar
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -29,7 +30,7 @@ import struct
 import threading
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import buoy_sources
 import wind_more as M
@@ -67,7 +68,7 @@ FROST_BATCH = 50                                 # sources per latest request
 KNMI_LIST_N = 150                                # the list call's names: 24 h of 10-minute files and a margin
 KNMI_BACKFILL = 6                                # older files read per refresh while the 24 hours are not complete
 _KEY_IN_URL = re.compile(r"(Authorization=)[^&\s'\"]+", re.I)
-_SIGNED = re.compile(r"(https?://[^\s'\"?]+)\?[^\s'\"]*(?:Signature|X-Amz-|sig=|token=)[^\s'\"]*", re.I)
+_SIGNED = re.compile(r"\?[^\s'\"]*(?:Signature|X-Amz-|sig=|token=)[^\s'\"]*", re.I)
 
 
 def keys_from_env(env=None):
@@ -83,7 +84,34 @@ def redact(text, keys=()):
         if k:
             s = s.replace(k, "[key]")
     s = _KEY_IN_URL.sub(r"\1[key]", s)
-    return _SIGNED.sub(r"\1?[signed]", s)
+    return _SIGNED.sub("?[signed]", s)
+
+
+class RedactFilter(logging.Filter):
+    """A log record's text redacted (a key in a query, a signed address): urllib3 names the URL it retries, query
+    included (G45 F-3: CWA's key would reach any handler a deployment adds)."""
+
+    def filter(self, record):
+        try:
+            msg = record.getMessage()
+        except Exception:                                # noqa: BLE001
+            return True
+        clean = redact(msg)
+        if clean != msg:
+            record.msg, record.args = clean, None
+        return True
+
+
+LOG_REDACTED = ("urllib3.connectionpool", "urllib3.connection", "urllib3.poolmanager", "urllib3.util.retry",
+                "requests")
+
+
+def install_log_redaction():
+    """The filter on the loggers that name request URLs (a logger's filters see its own records: each named here)."""
+    for name in LOG_REDACTED:
+        lg = logging.getLogger(name)
+        if not any(isinstance(f, RedactFilter) for f in lg.filters):
+            lg.addFilter(RedactFilter())
 
 
 def frost_auth(client_id):
@@ -139,7 +167,18 @@ _CDF_TYPES = {1: ("b", 1), 2: ("c", 1), 3: ("h", 2), 4: ("i", 4), 5: ("f", 4), 6
 
 
 def _read_cdf(data):
-    """The classic NetCDF formats (CDF-1, CDF-2): enough for a file of fixed-size and record variables."""
+    """The classic NetCDF formats (CDF-1, CDF-2): enough for a file of fixed-size and record variables. A file this
+    reader cannot read raises NcError (G45 F-10: never a struct or index error, never a loop over a count the file
+    cannot hold)."""
+    try:
+        return _read_cdf_body(data)
+    except NcError:
+        raise
+    except (struct.error, IndexError, KeyError, ValueError, OverflowError, MemoryError) as exc:
+        raise NcError("unreadable classic NetCDF file (%s)" % type(exc).__name__) from None
+
+
+def _read_cdf_body(data):
     import numpy as np
     pos = [4]
     off64 = data[3] == 2
@@ -178,6 +217,8 @@ def _read_cdf(data):
         return out
 
     numrecs = u32()
+    if numrecs == 0xFFFFFFFF or numrecs > len(data):     # STREAMING, or more records than the file has bytes
+        raise NcError("unusable record count %d" % numrecs)
     tag, n = u32(), u32()
     dims = []
     for _ in range(n if tag == 10 else 0):
@@ -208,6 +249,8 @@ def _read_cdf(data):
             per *= s
         dt = {"b": ">i1", "c": "S1", "h": ">i2", "i": ">i4", "f": ">f4", "d": ">f8"}[code]
         if is_rec:
+            if numrecs and begin + (numrecs - 1) * recsize + per * size > len(data):
+                raise NcError("the file is short")
             chunks = [data[begin + r * recsize: begin + r * recsize + per * size] for r in range(numrecs)]
             raw = b"".join(chunks)
             shape = [numrecs] + shape[1:]
@@ -280,14 +323,30 @@ def _col(arr, i, n):
     return v if math.isfinite(v) else None
 
 
+def _scalar(v):
+    """An attribute's value as one float (h5py gives 1-element arrays, the classic reader a number or a list), or
+    None."""
+    import numpy as np
+    try:
+        a = np.asarray(v, dtype=float).ravel()
+        x = float(a[0]) if a.size else None
+    except (TypeError, ValueError, IndexError):
+        return None
+    return x if x is not None and math.isfinite(x) else None
+
+
 def _fill(attrs):
     for k in ("_FillValue", "missing_value"):
-        v = attrs.get(k)
-        try:
-            return float(v[0] if isinstance(v, (list, tuple)) else v)
-        except (TypeError, ValueError, IndexError):
-            continue
+        x = _scalar(attrs.get(k))
+        if x is not None:
+            return x
     return None
+
+
+def _packing(attrs):
+    """(scale, offset) of a packed variable (CF scale_factor / add_offset), (1, 0) when not packed."""
+    sf, off = _scalar(attrs.get("scale_factor")), _scalar(attrs.get("add_offset"))
+    return (1.0 if sf is None else sf), (0.0 if off is None else off)
 
 
 def parse_knmi(data, file_name=None):
@@ -310,17 +369,25 @@ def parse_knmi(data, file_name=None):
         if not m:
             raise
         t = calendar.timegm(time.strptime(m.group(1), "%Y%m%d%H%M"))
-    lat, lon = need["lat"][0], need["lon"][0]
+    lat, lon = need["lat"], need["lon"]
     fields = {}
     for k in ("s", "d", "g", "at", "rh", "p"):
         v = _pick(vars_, k)
-        fields[k] = (v[0], _fill(v[1])) if v is not None else None
+        fields[k] = (v[0], _fill(v[1]), _packing(v[1])) if v is not None else None
+
+    def unpack(var, i):
+        """Station i's value of (values, attrs): the fill value refused before unpacking (G45 F-17)."""
+        x = _col(var[0], i, n)
+        if x is None or x == _fill(var[1]):
+            return None
+        sf, off = _packing(var[1])
+        return x * sf + off
     stations, out = {}, {}
     for i, sid in enumerate(ids):
         sid = re.sub(r"[^A-Za-z0-9_-]", "", sid)[:16]
         if not sid:
             continue
-        la, lo = _col(lat, i, n), _col(lon, i, n)
+        la, lo = unpack(lat, i), unpack(lon, i)
         if la is None or lo is None or not (-90 <= la <= 90 and -180 <= lo <= 360):
             continue
         stations[sid] = {"name": names[i] if i < len(names) and names[i] else sid, "lat": round(la, 4),
@@ -331,7 +398,9 @@ def parse_knmi(data, file_name=None):
             if f is None:
                 return None
             x = _col(f[0], i, n)
-            return None if x is None or (f[1] is not None and x == f[1]) else x
+            if x is None or (f[1] is not None and x == f[1]):
+                return None
+            return x * f[2][0] + f[2][1]
         r = W.reading(t, val("s"), val("g"), val("d"))
         if r is None:
             continue
@@ -479,11 +548,15 @@ def _cwa_num(v, lo=-1e9, hi=1e9):
 
 
 def cwa_time(s):
-    """Epoch seconds of CWA's ISO time with an offset ("2026-11-01T01:50:00+08:00")."""
+    """Epoch seconds of CWA's ISO time ("2026-11-01T01:50:00+08:00"); a time without an offset is Taipei's (CWA's own
+    zone; never the server's: G45 F-16)."""
     try:
-        return int(datetime.fromisoformat(str(s).strip()).timestamp())
+        d = datetime.fromisoformat(str(s).strip())
     except (TypeError, ValueError):
         return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone(timedelta(seconds=TAIPEI_OFFSET)))
+    return int(d.timestamp())
 
 
 def cwa_wgs84(st):
@@ -537,7 +610,8 @@ AIRFIELD_WORDS = re.compile(r"\b(airport|aeroport|aeroporto|aerodromo|aerodrome|
                             r"lufthamn|lh|flyplass|vliegveld|vliegbasis|airbase)\b")   # + Norwegian / Dutch forms
 _FOLD = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ð": "d", "Ð": "D", "þ": "th",
                        "Þ": "Th", "ł": "l", "Ł": "L", "œ": "oe", "Œ": "OE"})
-_CELL = 0.05                                     # degrees: a 3 x 3 block of cells holds every point within 2.5 km
+_CELL = 0.1                                      # degrees (the snapshot tool's grid); near() widens its east-west
+                                                 # search with the latitude (G45 F-4: 0.05 deg missed north of 63 N)
 
 
 def fold(name):
@@ -571,11 +645,13 @@ class SpotIndex:
         self._cells.setdefault(self._key(lat, lon), []).append((lat, lon, str(s.get("src") or ""), fold(s.get("name"))))
 
     def near(self, lat, lon, metres):
-        """[(distance m, src, folded name)] of the stations within metres (at most 2.5 km), nearest first."""
+        """[(distance m, src, folded name)] of the stations within metres, nearest first."""
         cy, cx = self._key(lat, lon)
+        ny = int(math.ceil(metres / (111195.0 * _CELL)))
+        nx = int(math.ceil(metres / (111195.0 * _CELL * max(math.cos(math.radians(min(abs(lat), 89.0))), 0.02))))
         out = []
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
+        for dy in range(-ny, ny + 1):
+            for dx in range(-min(nx, 400), min(nx, 400) + 1):
                 for la, lo, src, name in self._cells.get((cy + dy, cx + dx), ()):
                     d = _metres(lat, lon, la, lo)
                     if d <= metres:
@@ -636,11 +712,14 @@ class DiscoveredProvider(KeyedProvider):
         self._extra_version = 0
         self._spots = spots                      # SpotIndex of the snapshot's stations (None: nothing to compare with)
         self.left_out = {}                       # local -> why (a station already on the map at its spot)
+        self.candidates = {}                     # every station found, left out or not (KNMI starts each file from it)
+        self._heard = set()                      # stations that have brought a reading: only these are listed (G45 F-7)
 
     def _set_stations(self, found):
         """found {local: {name, lat, lon}} -> self.stations (snapshot-shaped dicts) without the stations that would
         stand on a flag already on the map (one flag per spot, the airport's METAR first; among the found ones the
         first by id); bumps the version on a change."""
+        self.candidates = dict(found)
         new, left, own = {}, {}, SpotIndex()
         for local in sorted(found):
             s = found[local]
@@ -654,17 +733,32 @@ class DiscoveredProvider(KeyedProvider):
                           "alias": None, "wx": None, "net": None}
         self.left_out = left
         if new != self.stations:
+            listed = self._listed()
             self.stations = new
+            if self._listed() != listed:
+                self._extra_version += 1
+
+    def _listed(self):
+        return [(k, s) for k, s in sorted(self.stations.items()) if k in self._heard]
+
+    def _merge(self, obs, now):
+        super()._merge(obs, now)
+        heard = {k for k, rows in (obs or {}).items() if rows and k in self.stations}
+        if heard - self._heard:
+            self._heard |= heard
             self._extra_version += 1
 
     def status(self, now=None):
         st = super().status(now)
         st["left_out"] = len(self.left_out)
+        st["listed"] = len(self._listed())
+        st["found"] = len(self.stations)
         return st
 
     def extra_stations(self):
-        """(version, [station dict]) of the stations found so far."""
-        return self._extra_version, [dict(s) for _k, s in sorted(self.stations.items())]
+        """(version, [station dict]) of the stations found so far that have brought a reading (a station the agency
+        lists but that never reports is not put on the map: G45 F-7)."""
+        return self._extra_version, [dict(s) for _k, s in self._listed()]
 
 
 class KnmiProvider(DiscoveredProvider):
@@ -674,9 +768,13 @@ class KnmiProvider(DiscoveredProvider):
     tz = "Europe/Amsterdam"
     empty_fails = False                          # a refresh with no new file is ordinary
 
+    FILE_TRIES = 3                               # a file that fails this often is given up (G45 F-11)
+
     def __init__(self, fetch, key, spots=None):
         super().__init__(fetch, key, spots)
-        self._read = set()                       # file names read (kept for 25 hours)
+        self._read = set()                       # file names read or given up (kept for 25 hours)
+        self._fails = {}                         # file name -> failed reads
+        self._pending = None                     # files of the last 24 hours not read yet (None: not listed yet)
         self.headers = knmi_auth(key)
 
     def _file(self, name):
@@ -692,12 +790,15 @@ class KnmiProvider(DiscoveredProvider):
         cut = now - M.SERIES_S
         fresh = [n for n in names if n not in self._read and (knmi_file_time(n) or now) >= cut]
         ask = fresh[:1 + KNMI_BACKFILL]
-        out, found, errors = {}, dict(self.stations), []
+        out, found, errors = {}, dict(self.candidates), []
         for name in ask:
             try:
                 st, obs = parse_knmi(self._file(name), name)
             except Exception as exc:                     # noqa: BLE001
                 errors.append(self._clean(exc))
+                self._fails[name] = self._fails.get(name, 0) + 1
+                if self._fails[name] >= self.FILE_TRIES:
+                    self._read.add(name)                 # given up: never asked again
                 continue
             self._read.add(name)
             for k, s in st.items():
@@ -705,15 +806,18 @@ class KnmiProvider(DiscoveredProvider):
             for k, rows in obs.items():
                 out.setdefault(k, []).extend(rows)
         self._read = {n for n in self._read if (knmi_file_time(n) or now) >= now - M.SERIES_S - 3600}
+        self._fails = {n: k for n, k in self._fails.items() if n not in self._read and n in names}
+        self._pending = sum(1 for n in fresh if n not in self._read)
         if ask and len(errors) == len(ask):
             raise RuntimeError("every KNMI file failed (%s)" % errors[-1])
-        if found:
+        if found and found != self.candidates:
             self._set_stations(found)
         return out
 
     def filling(self):
-        """True while the 24 hours are not read yet (fewer than ~140 files since the start)."""
-        return len(self._read) < 140
+        """True while files of the last 24 hours in KNMI's list are not read yet (or the list was never read): the
+        files KNMI has, not a count (G45 F-11: an outage at KNMI leaves fewer than 144)."""
+        return self._pending is None or self._pending > 0
 
 
 class FrostProvider(DiscoveredProvider):
@@ -729,10 +833,25 @@ class FrostProvider(DiscoveredProvider):
         self.mask = mask
         self._sources_at = 0.0
         self._gust = FROST_GUST                  # dropped (None) when Frost refuses the element
+        self._gust_off_at = 0.0                  # when it was dropped (asked again an hour later: G45 F-15)
+        self.list_error = None
+        self.sources_seen = {}                   # counts of the last sources answer (for /healthz)
+
+    SOURCES_RETRY = 3600                         # a failed sources call, with a list in hand: asked again after
 
     def _sources(self, now):
         if self.stations and now - self._sources_at < self.sources_ttl:
             return
+        try:
+            self._sources_now(now)
+        except Exception as exc:                         # noqa: BLE001
+            if not self.stations:
+                raise
+            # the list in hand stands and the readings go on (G45 F-5); the sources are asked again in an hour
+            self.list_error = self._clean(exc)
+            self._sources_at = now - self.sources_ttl + self.SOURCES_RETRY
+
+    def _sources_now(self, now):
         found = parse_frost_sources(json.loads(self._fetch(FROST_SOURCES, MAX_JSON, self.headers)))
         mask = self.mask or CoastMask.load(MASK_PATH)
         self.mask = mask
@@ -744,7 +863,9 @@ class FrostProvider(DiscoveredProvider):
         if not kept:
             raise RuntimeError("no Frost source inside the coast mask")
         self._set_stations(kept)
-        self._sources_at = now
+        self._sources_at, self.list_error = now, None
+        self.sources_seen = {"sources": len(found), "in_mask": len(kept),
+                             "north_of_72_5": sum(1 for x in found.values() if x["lat"] > 72.5)}
 
     def _elements(self):
         return "wind_speed,wind_from_direction" + ("," + self._gust if self._gust else "")
@@ -758,13 +879,15 @@ class FrostProvider(DiscoveredProvider):
             if "HTTP 404" in msg or "HTTP 412" in msg:   # no data for these sources now: an ordinary answer
                 return {}
             if "HTTP 400" in msg and self._gust:         # the gust element refused: asked again without it
-                self._gust = None
+                self._gust, self._gust_off_at = None, buoy_sources.time.time()
                 return self._batch(ids)
             raise
 
     def _readings(self):
         now = buoy_sources.time.time()
         self._sources(now)
+        if self._gust is None and now - self._gust_off_at >= 3600:
+            self._gust = FROST_GUST
         ids = sorted(self.stations)
         out, errors, n = {}, [], 0
         deadline = now + M.REFRESH_S
@@ -781,6 +904,14 @@ class FrostProvider(DiscoveredProvider):
         if n and len(errors) == n:
             raise RuntimeError("every Frost request failed (%s)" % errors[-1])
         return out
+
+
+    def status(self, now=None):
+        st = super().status(now)
+        st["sources_seen"] = dict(self.sources_seen)
+        st["list_error"] = self.list_error
+        st["gust"] = bool(self._gust)
+        return st
 
 
 class CwaWindProvider(KeyedProvider):

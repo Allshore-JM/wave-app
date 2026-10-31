@@ -106,7 +106,7 @@ function boot(o = {}) {
   const code = 'let liveNoteText = "";\n' + TIDE_STATE + WIND_STATE + NOTE.replace("    let liveNoteText = '';\n", '') + TIDE_BLOCK + WIND_BLOCK +
     '\nreturn { get windNoteText() { return windNoteText; }, get windStationsData() { return windStationsData; }, get activeWindId() { return activeWindId; }, ' +
     'get windDrawn() { return windDrawn; }, get windReadings() { return windReadings; }, get windFeed() { return windFeed; }, ' +
-    'rebuildWindMarkers, loadWindStations, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, windRank, WIND_ALL_ZOOM, ' +
+    'rebuildWindMarkers, loadWindStations, reloadWindListIfNew, openWindStation, closeWindWindow, windWindowClosed, windZone, refreshWindFlags, syncWindNote, paintWindNote, WIND_CREDIT, windSubtitle, windRank, WIND_ALL_ZOOM, ' +
     'windCreditFor, WIND_AGENCY_CREDIT, ' +
     'get windView() { return windView; }, tideTargets, setTideDrawn(x) { tideDrawn = x; } };';
   const layersControl = { _update: function () { notes.wind.textContent = ''; notes.tide.textContent = ''; notes.live.textContent = ''; return this; } };
@@ -117,7 +117,7 @@ function boot(o = {}) {
     'forecastLayer', 'pointLayer', 'savedPointsData', code)(
     window, doc, fetch, map, L, windLayer, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => {}, () => unit, (iso, tz) => tz + '!',
-    class { constructor(type) { this.type = type; } }, windWin, null, layersControl, 11, Object.assign(function () {}, { now: () => NOW }), forecastStationsData,
+    class { constructor(type) { this.type = type; } }, windWin, null, layersControl, 11, Object.assign(function () {}, { now: () => (o.clock ? o.clock.t : NOW) }), forecastStationsData,
     forecastLayer, pointLayer, savedPointsData);
   api.container = container;
   return { api, notes, doc, events, windLayer, credits, fetchCalls, loads, clears, units, zones, view, toolClicks, saves, windWin, timerQ, docListeners,
@@ -539,7 +539,7 @@ test('re-check F-3: the feed stopped (the layer unticked, the map below the gate
   const make = new Function('let windStationsData = [{ id: "nws:016HE", tz: "Pacific/Honolulu" }, { id: "nws:011HI", tz: "Pacific/Honolulu" }];\n' +
     'let windReadings = {}, windStaleS = 7200, windFeedNote = "", feedLog = [], handlers = null;\n' +
     'const windFeed = { start(h) { feedLog.push("start"); handlers = h; }, stop() { feedLog.push("stop"); } };\n' +
-    'function ensureWindFeed() { return windFeed; } function refreshWindFlags() {} function syncWindNote() {}\n' + SYNC +
+    'function ensureWindFeed() { return windFeed; } function refreshWindFlags() {} function syncWindNote() {} function reloadWindListIfNew() {}\n' + SYNC +
     '\nreturn { sync: syncWindFeed, data: (p) => handlers.onData(p, { readings: {}, partial: [] }), list: (l) => { windStationsData = l; workOutWindStall(); }, ' +
     'text: () => windStallText, last: () => windLastFeed, log: () => feedLog };');
   const w = make();
@@ -586,4 +586,32 @@ test('plan section 67: the agencies credited only while one of their flags is dr
   assert.equal(b.api.windSubtitle({ id: 'eccc:CWEB', kind: 'met', src: 'eccc' }), 'Wind · Environment Canada weather station CWEB');
   assert.equal(b.api.windSubtitle({ id: 'mei:VALENTIA', kind: 'met', src: 'mei' }), 'Wind · Met Éireann weather station VALENTIA');
   assert.deepEqual(['met', 'road'].map((k) => b.api.windRank({ kind: k })), [1, 2], 'a weather service station with the airports; road weather with the NWS networks');
+});
+
+test('readings of a station the list lacks (found by KNMI / Frost after the page loaded): the list asked again quietly, at most once a minute; a failure keeps the list in hand (G45 F-14)', async () => {
+  const clock = { t: NOW };
+  const knmi = ['knmi:06260', 'De Bilt', 52.1, 5.18, 'met', 'knmi', 'Europe/Amsterdam', null];
+  const LIST2 = { fields: LIST.fields, stations: LIST.stations.concat([knmi]) };
+  const LATEST2 = Object.assign({}, LATEST, { rows: LATEST.rows.concat([['knmi:06260', NOW / 1000 - 300, 3.0, null, 200]]) });
+  const b = boot({ clock, listAnswers: [resp(200, LIST), resp(200, LIST2), new Error('offline')], latestAnswers: [resp(200, LATEST2)] });
+  const lists = () => b.fetchCalls.filter((u) => u === '/api/wind/stations').length;
+  b.api.rebuildWindMarkers(true); await flush();
+  assert.equal(lists(), 1, 'within a minute of the list: not asked again');
+  assert.ok('knmi:06260' in b.api.windReadings && !b.api.windStationsData.some((st) => st.id === 'knmi:06260'));
+  clock.t += 61000;
+  assert.equal(b.api.reloadWindListIfNew(b.api.windReadings), true);
+  assert.equal(b.notes.wind.textContent, '', 'quietly: no "loading" note');
+  await flush();
+  assert.equal(lists(), 2);
+  assert.ok(b.api.windStationsData.some((st) => st.id === 'knmi:06260'), 'the new station is on the page');
+  assert.equal(b.api.reloadWindListIfNew({ 'frost:SN1': {} }), false, 'not twice within a minute');
+  clock.t += 61000;
+  assert.equal(b.api.reloadWindListIfNew(b.api.windReadings), false, 'every id known: not asked');
+  assert.equal(b.api.reloadWindListIfNew({ 'frost:SN1': {} }), true);
+  await flush();
+  assert.equal(lists(), 3);
+  assert.equal(b.api.windStationsData.length, 4, 'the failed reload keeps the list in hand');
+  assert.equal(b.notes.wind.textContent, '', 'and says nothing');
+  b.api.rebuildWindMarkers(false); await flush();
+  assert.equal(lists(), 3, 'a pan does not ask again after the quiet failure');
 });

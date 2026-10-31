@@ -2037,39 +2037,55 @@ an airport's METAR flag first. A found station within 100 m of a station already
 site, or within 2.5 km of one when its name says airport (Lufthavn, Lufthamn, "LH", Airport ...) or begins like the
 site's name, is left out (`wind_keyed.SpotIndex`; a test pins the numbers to the snapshot tool's). On 2026-10-31 that
 left out 24 of KNMI's 71 stations (its North Sea platforms and airports, which have METAR flags) and 74 of Frost's 729;
-`/healthz` gives each feed's `left_out` count.
+`/healthz` gives each feed's `left_out`, `found` and `listed` counts. The spot grid is the tool's 0.1 degree, searched
+as far east and west as the distance needs at the latitude (G45 F-4). A found station joins the site's list after its
+first reading (an agency lists stations that never report: 151 of Frost's did on 2026-10-31, G45 F-7); a page loaded
+before then asks for the list again when the readings name a station it does not know (at most once a minute; the
+server answers 304 while the list is unchanged).
 
 Keys never leave the server: they are read from the environment when the feeds are built and never appear in an answer,
 a page, `/healthz` or a log line. CCO's goes in the `X-API-Key` header (with `Referer: https://allshoresurf.com/`: the
 key is bound to the site's domain), KNMI's in `Authorization`, Frost's as the HTTP Basic user (empty password). CWA's
 API takes its key in the address, so every error text and status line passes through `wind_keyed.redact()` (the key and
-the query's `Authorization=` value replaced by `[key]`); KNMI's temporary signed download addresses are cut the same way.
+the query's `Authorization=` value replaced by `[key]`); KNMI's temporary signed download addresses are cut the same way,
+also where an error text gives the path without the host (G45 F-2). urllib3 names the address it retries, query
+included, in its own warnings: `wind_keyed.install_log_redaction()` (called at the app's start) puts the same redaction
+on urllib3's and requests' loggers, so no handler a deployment adds ever sees a key (G45 F-3).
 Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check that it is in no status, log or answer.
 
 - **CCO buoys** (`buoy_sources.CcoProvider`): `latest.geojson` every 30 minutes (one feature per sensor: height, max
   height, peak and mean period, peak direction, spread, water temperature; CCO's quality flag blanks the fields it marks
-  bad); a sensor whose newest wave height is more than 4 days old is left out (the file still lists retired sensors:
-  West Anglesey's last reading is from 2016). A window's 24 hours are one `duration=24` request for that sensor (kept
-  10 minutes; the refresh button asks again). CCO's times are GMT (its own pages say so). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. The page shows
+  bad: a single code by `CCO_BAD`; a code of several digits, as CCO's own pages print it ("0000"), with any digit not 0
+  blanks every wave field, since the positions' meaning is not published; `/healthz` lists the flag values seen); a
+  sensor whose newest wave height is more than 4 days old is left out (the file still lists retired sensors: West
+  Anglesey's last reading is from 2016). A window's 24 hours (all 49 half-hours) are one `duration=24` request for that
+  sensor, by its id: one attempt under 20 s on the visitor's thread, one at a time per sensor (kept 10 minutes; the
+  refresh button asks again); a row ahead of the clock is left out. CCO's times are GMT (its own pages say so). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. CEFAS relays them as "<site> Waverider" and CMEMS as "<site>DWR" or by a WMO number (6201045 = Scarborough): the dedup's name key strips those words, and `_MATCH_NAME_ALIAS` names the numbered copy. The page shows
   CCO's required sentence: "Real time data displayed on this page are from the Regional Coastal Monitoring Programme,
   made freely available under the terms of the Open Government Licence. Please note that these are real-time data and
   are not quality-controlled."
 - **CWA buoys** (`buoy_sources.CwaBuoyProvider`): the station list O-B0076-001 once a day through CWA's file API (it is
   a file, not a REST dataset; the stations with a wave sensor), the readings O-B0075-001 (every station's last 48 hours, hourly) every 30 minutes: one answer serves the
   markers and every window. CWA's wave period is a MEAN period: it is shown as the mean period, never as the peak period.
+  A failing station-list call keeps the list in hand and is asked again in an hour; a time without an offset is
+  Taipei's; a row ahead of the clock is left out.
   Dedup rank 60. Open Government Data License v1.0.
 - **KNMI wind** (`wind_keyed.KnmiProvider`): KNMI publishes one NetCDF file of every station every 10 minutes. Every
   2 minutes the feed lists the newest file names (one call), and reads the newest file it has not read (two calls: its
   temporary address, then the file); while the window's 24 hours are not complete it also reads up to 6 older files a
-  refresh, so the 24 hours fill in about 45 minutes after a start (the window says the earlier hours are still loading).
+  refresh, so the 24 hours fill in about 45 minutes after a start (the window says the earlier hours are still loading
+  while KNMI's list holds files of the last 24 hours not read yet; a file that fails 3 times is given up).
   The stations come from the files themselves (every station kept: the Netherlands lies near the sea or the IJsselmeer).
   The reader takes NetCDF-4 (HDF5, through h5py) and classic NetCDF; it finds the variables by a list of names
-  (`KNMI_NAMES`) and names what it misses. About 40 requests an hour, about 300 in the first 45 minutes after a
+  (`KNMI_NAMES`; the gust is `gff`, KNMI's 10-minute gust) and names what it misses; packed variables (CF `scale_factor`
+  / `add_offset`) are unpacked; a classic file whose counts it cannot hold is refused (never read on). About 40 requests an hour, about 300 in the first 45 minutes after a
   start (KNMI allows 1,000 an hour). CC BY 4.0, KNMI.
 - **Frost wind** (`wind_keyed.FrostProvider`): Norway's stations with a wind sensor from Frost's source list once a day,
   kept within 30 km of the sea or at sea by the committed map `tools/wind/norway_coast30.bin` (0.05-degree cells built
   from the site's world coastline by `tools/wind/more_stations.py --norway-mask`); readings every 10 minutes, 50 stations
-  a request (speed, direction and the 10-minute gust; Frost refusing the gust element leaves it out). The road
+  a request (speed, direction and the 10-minute gust; Frost refusing the gust element leaves it out for an hour). A
+  failing source-list call keeps the list in hand and is asked again in an hour; `/healthz` gives the last list's
+  counts (`sources_seen`). The road
   weather stations Frost relays (Statens vegvesen, named by their road: "E6 Andelva", "Rv15 Grotli") are road
   weather stations on the map, as IEM's. A window's
   24 hours are one Frost request for that station, behind a budget of 30 windows a minute. Svalbard's stations keep

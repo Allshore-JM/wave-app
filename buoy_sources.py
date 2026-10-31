@@ -1919,6 +1919,12 @@ def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0, number_ra
     allst = [st for lst in provider_lists for st in lst]
     allst.sort(key=_station_priority, reverse=True)   # stable: ties keep provider order
     kept, keptkey, keptnum = [], [], []
+    hidden = []                                       # (copy, its name key, its number, the kept marker)
+
+    def same(a, akey, anum, st, nk, num, dist):
+        return (dist <= radius_km or (len(nk) >= 2 and nk == akey and dist <= name_radius_km)
+                or (num and num == anum and dist <= number_radius_km))
+
     for st in allst:
         nk = _name_key(_match_name(st))
         num = _buoy_number(st)
@@ -1926,12 +1932,22 @@ def merge_stations(provider_lists, radius_km=1.0, name_radius_km=10.0, number_ra
         for idx, k in enumerate(kept):
             if k["source"] == st["source"]:
                 continue
-            dist = haversine_km(k["lat"], k["lon"], st["lat"], st["lon"])
-            if (dist <= radius_km or (len(nk) >= 2 and nk == keptkey[idx] and dist <= name_radius_km)
-                    or (num and num == keptnum[idx] and dist <= number_radius_km)):
+            if same(k, keptkey[idx], keptnum[idx], st, nk, num, haversine_km(k["lat"], k["lon"], st["lat"], st["lon"])):
                 dup = k
                 break
+        if dup is None:
+            # the copy of a copy: a third network's marker of a buoy whose second copy is already hidden joins the kept
+            # marker (G45 test site: CMEMS's 6201000 sits on CEFAS's "Penzance Waverider", itself CCO's Penzance
+            # 1.7 km away), when that marker is within name_radius_km
+            for h, hkey, hnum, k in hidden:
+                if h["source"] == st["source"] or k["source"] == st["source"]:
+                    continue
+                if (same(h, hkey, hnum, st, nk, num, haversine_km(h["lat"], h["lon"], st["lat"], st["lon"]))
+                        and haversine_km(k["lat"], k["lon"], st["lat"], st["lon"]) <= name_radius_km):
+                    dup = k
+                    break
         if dup is not None:
+            hidden.append((st, nk, num, dup))
             st = dict(st, dup_of=dup["id"])
             dup.setdefault("also_sources", [])
             if st["source"] not in dup["also_sources"]:

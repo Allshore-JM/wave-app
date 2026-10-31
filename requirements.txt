@@ -6,5 +6,6 @@ pytz
 timezonefinder==6.5.9
 beautifulsoup4
 h5netcdf==1.6.4
+h5py
 numpy
 ephem==4.2.1

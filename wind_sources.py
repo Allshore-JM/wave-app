@@ -84,14 +84,23 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                "dwd": "Deutscher Wetterdienst (opendata.dwd.de), CC BY 4.0, units converted by allshoresurf.com",
                "ipma": "IPMA, Instituto Portugues do Mar e da Atmosfera (api.ipma.pt), units converted by "
                        "allshoresurf.com",
-               "mei": "Met Eireann (met.ie), CC BY 4.0, units converted by allshoresurf.com"}
+               "mei": "Met Eireann (met.ie), CC BY 4.0, units converted by allshoresurf.com",
+               # plan section 69 (the feeds that need a key: wind_keyed.py)
+               "knmi": "KNMI, Royal Netherlands Meteorological Institute (dataplatform.knmi.nl), CC BY 4.0, units "
+                       "converted by allshoresurf.com",
+               "frost": "Data from The Norwegian Meteorological Institute (MET Norway, frost.met.no), CC BY 4.0",
+               "cwa": "Central Weather Administration (Taiwan), O-A0003-001. The Open Data is made available to the "
+                      "public under the Open Government Data License, https://data.gov.tw/license"}
 CC_BY = "https://creativecommons.org/licenses/by/4.0/"
 # the licence text a window's source line links to (G44 P3-9: CC BY 4.0 asks for a link to the licence)
 LICENCE_URL = {"smhi": CC_BY, "fmi": CC_BY, "dmi": CC_BY, "dwd": CC_BY, "mei": CC_BY,
                "jma": "https://www.jma.go.jp/jma/en/copyright.html",
-               "eccc": "https://eccc-msc.github.io/open-data/licence/readme_en/"}
+               "eccc": "https://eccc-msc.github.io/open-data/licence/readme_en/",
+               "knmi": CC_BY, "frost": CC_BY, "cwa": "https://data.gov.tw/license"}
 MORE_SOURCES = ("eccc", "jma", "iem", "smhi", "fmi", "dmi", "dwd", "ipma", "mei")   # plan section 67 (wind_more.py)
 MORE_KEPT = ("eccc", "ipma", "mei")             # their windows' 24 hours are the feed's own, kept in memory
+KEYED_SOURCES = ("knmi", "frost", "cwa")        # plan section 69 (wind_keyed.py): the agencies that need a key
+KEYED_KEPT = ("knmi", "cwa")                    # their windows' 24 hours are the feed's own, kept in memory
 MORE_RESTART_NOTE = "Earlier hours are not kept after a server restart."
 MORE_RESTART_EMPTY = "No readings since the server restarted; earlier hours are not kept after a restart."
 # NOAA's restrictions page for MADIS asks pages that show mesonet observations to carry an accuracy disclaimer: shown in
@@ -125,6 +134,7 @@ NWS_FEED_MAX = 512 * 1024                      # a row is ~3 KB
 NWS_HISTORY_LIMIT = 500                        # the API's most per request (a 5-minute station has 288 rows in 24 h)
 NWS_HISTORY_MAX = 4 * 1024 * 1024
 NWS_BUCKET_PER_MIN = 30                        # histories; with the feed's 25 a minute the server stays under ~55 a minute
+BUCKET_KEYED_PER_MIN = 30                      # Frost's windows a minute (plan section 69)
 COOPS_ON_DEMAND_PER_MIN = 30                   # CO-OPS requests a minute for windows (wind histories AND tide windows share
 COOPS_ON_DEMAND_BURST = 15                     # it: G28 A-1); at most this many at once. The feed's own 24 a minute come on top
 NDBC_HISTORY_PER_MIN = 30                      # NDBC realtime2 files (0.2-1 MB each) for the windows
@@ -181,7 +191,8 @@ METAR_WX = {"RA": "rain", "DZ": "drizzle", "SN": "snow", "SG": "snow grains", "G
             "PO": "dust whirls", "DS": "dust storm", "SS": "sandstorm", "PY": "spray"}
 METAR_WX_DESC = {"SH": "showers", "TS": "thunderstorm", "FZ": "freezing", "BL": "blowing", "DR": "drifting",
                  "MI": "shallow", "BC": "patches of", "PR": "partial"}
-ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}|(eccc|jma|iem|smhi|fmi|dmi|dwd|ipma|mei):[A-Z0-9][A-Z0-9_-]{1,15}")
+ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}|(eccc|jma|iem|smhi|fmi|dmi|dwd|ipma|mei|knmi|frost|cwa)"
+                   r":[A-Z0-9][A-Z0-9_-]{1,15}")
 COOPS_NO_DATA_RE = re.compile(r"no data was found", re.I)   # the only CO-OPS message that means "nothing for the station"
 NO_NEW = object()                              # a paced station answered without a new reading: keep the one in hand
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
@@ -1310,7 +1321,8 @@ class MadisProvider(WindProvider):
 
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
                    nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None, madis_backfill=True,
-                   madis_window_fetch=None, more=True, more_enabled=None, more_per_refresh=None):
+                   madis_window_fetch=None, more=True, more_enabled=None, more_per_refresh=None, keyed=None,
+                   keyed_mask=None):
     """The providers over the snapshot's stations, in warm order (cheap, quick feeds first); with madis_url the NWS
     stations' MADIS backup too (its own fetch: the viewer is slow), which also back-fills their 24 hours (plan section
     55) unless madis_backfill is False (madis_window_fetch: the windows' fetch, default madis_fetch)."""
@@ -1326,6 +1338,9 @@ def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER
     if more:                                    # plan section 67: Canada, Japan, IEM, Europe (more_enabled: env switches)
         import wind_more
         out += wind_more.make_providers(groups, fetch, more_enabled, more_per_refresh)
+    if keyed:                                   # plan section 69: the feeds whose key is set ({source: key})
+        import wind_keyed
+        out += wind_keyed.make_providers(groups, fetch, keyed, keyed_mask)
     return out
 
 
@@ -1449,6 +1464,8 @@ class WindHistory:
         self.more_hist = {}                   # src -> (local id, since) -> the feed's own 24 hours (plan section 67)
         self.more_buckets = {}                # src -> TokenBucket: each section-67 agency's window budget
         self.more_started = {}                # src -> when its in-memory feed started (the restart note)
+        self.more_filling = {}                # src -> () -> True while the feed still reads its earlier hours (KNMI)
+        self.keyed = {}                       # plan section 69: {source: key} (Frost's windows ask with it)
         self._reset_locks()
         self._cache = OrderedDict()           # key -> (expires, status, payload, built, asked)
         _SERVICES.add(self)
@@ -1679,14 +1696,24 @@ class WindHistory:
         """(rows, note, short) of a section-67 station: the feed's own 24 hours in memory (ECCC, IPMA, Met Eireann:
         with a note when the server has not run 24 hours yet, and kept only a minute while it holds no row of the
         station: the feed may read it any moment, G44 P3-7), else its agency's history behind the agency's budget."""
-        if src in MORE_KEPT:
+        if src in MORE_KEPT or src in KEYED_KEPT:
             get = self.more_hist.get(src)
             rows = get(local, since) if get else []
+            filling = self.more_filling.get(src)
+            if filling and filling():                  # KNMI reads its earlier files after a start: they come in
+                return rows, None, True
             started = self.more_started.get(src)
             young = bool(started and started > since)
             if not rows:
                 return [], (MORE_RESTART_EMPTY if young else None), young
             return rows, (MORE_RESTART_NOTE if young else None), False
+        if src in KEYED_SOURCES:                       # Frost: the station's 24 hours, behind its own budget
+            import wind_keyed
+            bucket = self.more_buckets.get(src)
+            if bucket is None:
+                bucket = self.more_buckets.setdefault(src, TokenBucket(BUCKET_KEYED_PER_MIN))
+            self._take(bucket, wind_keyed.SOURCES[src]["short"])
+            return wind_keyed.history(src, local, since, now, self._fetch, self.keyed) or [], None, False
         import wind_more
         bucket = self.more_buckets.get(src)
         if bucket is None:
@@ -1737,8 +1764,10 @@ class WindHistory:
                 rows = rows + extra
             if self.madis_filling and self.madis_filling():
                 partial, filling = True, True
-        elif src in MORE_SOURCES:                                      # plan section 67
+        elif src in MORE_SOURCES or src in KEYED_SOURCES:              # plan sections 67 and 69
             rows, note, partial = self._more(src, local, st, since, now)
+            if partial and (self.more_filling.get(src) or (lambda: False))():
+                filling = True
         elif src == "coops":
             self._take(self.coops_bucket, "CO-OPS")                    # the wind rows; the products take theirs as they go
             try:

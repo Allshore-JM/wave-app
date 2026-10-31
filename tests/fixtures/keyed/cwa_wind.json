@@ -1,0 +1,229 @@
+{
+ "success": "true",
+ "records": {
+  "Station": [
+   {
+    "StationName": "基隆",
+    "StationId": "466940",
+    "ObsTime": {
+     "DateTime": "2026-11-01T02:00:00+08:00"
+    },
+    "GeoInfo": {
+     "Coordinates": [
+      {
+       "CoordinateName": "TWD67",
+       "CoordinateFormat": "decimal degrees",
+       "StationLatitude": "25.135104",
+       "StationLongitude": "121.732242"
+      },
+      {
+       "CoordinateName": "WGS84",
+       "CoordinateFormat": "decimal degrees",
+       "StationLatitude": "25.133314",
+       "StationLongitude": "121.740475"
+      }
+     ],
+     "StationAltitude": "26.7",
+     "CountyName": "基隆市",
+     "TownName": "仁愛區",
+     "CountyCode": "10017",
+     "TownCode": "10017040"
+    },
+    "WeatherElement": {
+     "Weather": "多雲",
+     "VisibilityDescription": ">30",
+     "SunshineDuration": "0.0",
+     "Now": {
+      "Precipitation": "0.0"
+     },
+     "WindDirection": "270.0",
+     "WindSpeed": "0.3",
+     "AirTemperature": "23.9",
+     "RelativeHumidity": "81",
+     "AirPressure": "1014.4",
+     "UVIndex": "0",
+     "Max10MinAverage": {
+      "WindSpeed": "1.1",
+      "Occurred_at": {
+       "WindDirection": "240.0",
+       "DateTime": "2026-11-01T01:50:00+08:00"
+      }
+     },
+     "GustInfo": {
+      "PeakGustSpeed": "2.3",
+      "Occurred_at": {
+       "WindDirection": "250.0",
+       "DateTime": "2026-11-01T01:47:00+08:00"
+      }
+     },
+     "DailyExtreme": {
+      "DailyHigh": {
+       "TemperatureInfo": {
+        "AirTemperature": "24.2",
+        "Occurred_at": {
+         "DateTime": "2026-11-01T00:01:00+08:00"
+        }
+       }
+      },
+      "DailyLow": {
+       "TemperatureInfo": {
+        "AirTemperature": "23.9",
+        "Occurred_at": {
+         "DateTime": "2026-11-01T01:50:00+08:00"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "StationName": "臺中",
+    "StationId": "467490",
+    "ObsTime": {
+     "DateTime": "2026-11-01T02:00:00+08:00"
+    },
+    "GeoInfo": {
+     "Coordinates": [
+      {
+       "CoordinateName": "TWD67",
+       "CoordinateFormat": "decimal degrees",
+       "StationLatitude": "24.147494",
+       "StationLongitude": "120.675919"
+      },
+      {
+       "CoordinateName": "WGS84",
+       "CoordinateFormat": "decimal degrees",
+       "StationLatitude": "24.145736",
+       "StationLongitude": "120.684075"
+      }
+     ],
+     "StationAltitude": "84.0",
+     "CountyName": "臺中市",
+     "TownName": "北區",
+     "CountyCode": "66000",
+     "TownCode": "66000050"
+    },
+    "WeatherElement": {
+     "Weather": "多雲",
+     "VisibilityDescription": "21-30",
+     "SunshineDuration": "0.0",
+     "Now": {
+      "Precipitation": "0.0"
+     },
+     "WindDirection": "0.0",
+     "WindSpeed": "0.2",
+     "AirTemperature": "24.8",
+     "RelativeHumidity": "79",
+     "AirPressure": "1006.6",
+     "UVIndex": "0",
+     "Max10MinAverage": {
+      "WindSpeed": "0.6",
+      "Occurred_at": {
+       "WindDirection": "140.0",
+       "DateTime": "2026-11-01T01:16:00+08:00"
+      }
+     },
+     "GustInfo": {
+      "PeakGustSpeed": "1.6",
+      "Occurred_at": {
+       "WindDirection": "140.0",
+       "DateTime": "2026-11-01T01:10:00+08:00"
+      }
+     },
+     "DailyExtreme": {
+      "DailyHigh": {
+       "TemperatureInfo": {
+        "AirTemperature": "25.4",
+        "Occurred_at": {
+         "DateTime": "2026-11-01T01:06:00+08:00"
+        }
+       }
+      },
+      "DailyLow": {
+       "TemperatureInfo": {
+        "AirTemperature": "24.8",
+        "Occurred_at": {
+         "DateTime": "2026-11-01T01:59:00+08:00"
+        }
+       }
+      }
+     }
+    }
+   },
+   {
+    "StationName": "臺南",
+    "StationId": "467410",
+    "ObsTime": {
+     "DateTime": "2026-11-01T02:00:00+08:00"
+    },
+    "GeoInfo": {
+     "Coordinates": [
+      {
+       "CoordinateName": "TWD67",
+       "CoordinateFormat": "decimal degrees",
+       "StationLatitude": "22.995039",
+       "StationLongitude": "120.196846"
+      },
+      {
+       "CoordinateName": "WGS84",
+       "CoordinateFormat": "decimal degrees",
+       "StationLatitude": "22.993280",
+       "StationLongitude": "120.204920"
+      }
+     ],
+     "StationAltitude": "40.8",
+     "CountyName": "臺南市",
+     "TownName": "中西區",
+     "CountyCode": "67000",
+     "TownCode": "67000370"
+    },
+    "WeatherElement": {
+     "Weather": "多雲",
+     "VisibilityDescription": "21-30",
+     "SunshineDuration": "0.0",
+     "Now": {
+      "Precipitation": "0.0"
+     },
+     "WindDirection": "170.0",
+     "WindSpeed": "1.0",
+     "AirTemperature": "26.3",
+     "RelativeHumidity": "73",
+     "AirPressure": "1013.9",
+     "UVIndex": "0",
+     "Max10MinAverage": {
+      "WindSpeed": "1.6",
+      "Occurred_at": {
+       "WindDirection": "140.0",
+       "DateTime": "2026-11-01T01:45:00+08:00"
+      }
+     },
+     "GustInfo": {
+      "PeakGustSpeed": "2.3",
+      "Occurred_at": {
+       "WindDirection": "130.0",
+       "DateTime": "2026-11-01T01:29:00+08:00"
+      }
+     },
+     "DailyExtreme": {
+      "DailyHigh": {
+       "TemperatureInfo": {
+        "AirTemperature": "26.7",
+        "Occurred_at": {
+         "DateTime": "2026-11-01T00:02:00+08:00"
+        }
+       }
+      },
+      "DailyLow": {
+       "TemperatureInfo": {
+        "AirTemperature": "26.0",
+        "Occurred_at": {
+         "DateTime": "2026-11-01T01:48:00+08:00"
+        }
+       }
+      }
+     }
+    }
+   }
+  ]
+ }
+}

@@ -23,6 +23,7 @@ import point_forecast
 import gfs_bulletins
 import sky
 import tide_sources
+import wind_keyed
 import wind_sources
 
 app = Flask(__name__)
@@ -949,10 +950,15 @@ def _wind_more_per_refresh():
 
 
 WIND_MORE_PER_REFRESH = _wind_more_per_refresh()
+# plan section 69: the feeds that need a key (KNMI_API_KEY, FROST_CLIENT_ID, CWA_API_KEY in the environment); a source
+# without its key is left out. The keys are passed to the feeds and Frost's windows only: never logged or shown.
+WIND_KEYS = wind_keyed.keys_from_env()
 # single-request feeds first; the paced feeds (one request per station or network) after them
-WIND_WARM_ORDER = ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "MADIS", "MEI", "IEM", "DWD", "ECCC", "COOPS", "NWS"]
+WIND_WARM_ORDER = ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "CWA", "KNMI", "FROST", "MADIS", "MEI", "IEM",
+                   "DWD", "ECCC", "COOPS", "NWS"]
 WIND_OFF = "Wind stations are not available on this server"
-_WINDS = {"svc": None, "list": None, "providers": None, "stations": None}
+_WINDS = {"svc": None, "list": None, "providers": None, "stations": None, "base_stations": None, "base_doc": None,
+          "extra_key": None}
 _WINDS_LOCK = threading.Lock()
 _WIND_MEMO = {"key": None, "payload": None, "etag": None, "built_ts": None, "build_s": None}
 _WIND_BUILD_LOCK = threading.Lock()
@@ -967,13 +973,15 @@ def _winds():
         if _WINDS["svc"] is None:
             stations, doc = wind_sources.load_stations(WIND_STATIONS_PATH)
             _WINDS["stations"] = stations
+            _WINDS["base_stations"], _WINDS["base_doc"] = stations, doc
             _WINDS["list"] = _json_payload_and_etag(wind_sources.client_list(doc))
             _WINDS["providers"] = wind_sources.make_providers(stations, _points_fetch, WIND_COOPS_WORKERS, WIND_COOPS_PER_REFRESH,
                                                               WIND_NWS_WORKERS, WIND_NWS_PER_REFRESH,
                                                               madis_url=WIND_MADIS_URL or None, madis_fetch=_madis_fetch,
                                                               madis_window_fetch=_madis_window_fetch,
                                                               more_enabled=WIND_MORE_ENABLED,
-                                                              more_per_refresh=WIND_MORE_PER_REFRESH)
+                                                              more_per_refresh=WIND_MORE_PER_REFRESH,
+                                                              keyed=WIND_KEYS)
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
             madis = [p for p in _WINDS["providers"] if p.source == "MADIS"]
             _WINDS["svc"].madis = madis[0].row if madis else None
@@ -983,11 +991,45 @@ def _winds():
             # the section-67 feeds whose windows read the feed's own 24 hours (ECCC, IPMA, Met Eireann)
             for p in _WINDS["providers"]:
                 src = p.source.lower()
-                if src in wind_sources.MORE_KEPT:
+                if src in wind_sources.MORE_KEPT or src in wind_sources.KEYED_KEPT:
                     _WINDS["svc"].more_hist[src] = p.hist
                     if src != "ipma":                       # IPMA's feed brings its 24 hours at once
                         _WINDS["svc"].more_started[src] = time.time()
+                if hasattr(p, "filling"):                   # KNMI reads its earlier files after a start
+                    _WINDS["svc"].more_filling[src] = p.filling
+            _WINDS["svc"].keyed = WIND_KEYS
         return _WINDS
+
+
+def _wind_sync_extras(w=None):
+    """Plan section 69: the stations KNMI's and Frost's feeds found at run time join the snapshot's (the station list
+    the page reads, the ids the table and the windows accept). Rebuilt only when a feed's list of them changed; the
+    snapshot's own rows are never replaced. True when the list was rebuilt."""
+    w = w or _winds()
+    got = []
+    for p in w["providers"]:
+        if hasattr(p, "extra_stations"):
+            version, lst = p.extra_stations()
+            got.append((p.source, version, lst))
+    key = tuple((src, v) for src, v, _lst in got)
+    with _WINDS_LOCK:
+        if not got or w.get("extra_key") == key:
+            return False
+        stations = dict(w["base_stations"])
+        doc = w["base_doc"]
+        fields = doc["fields"]
+        rows = [list(r) for r in doc["stations"]]
+        for _src, _v, lst in got:
+            for st in lst:
+                if st["id"] in stations or not wind_sources.valid_id(st["id"]):
+                    continue
+                stations[st["id"]] = st
+                rows.append([st.get(f) for f in fields])
+        w["list"] = _json_payload_and_etag(wind_sources.client_list(dict(doc, stations=rows)))
+        w["stations"] = stations
+        w["svc"].stations = stations
+        w["extra_key"] = key
+    return True
 
 
 def _madis_fetch(url: str, max_bytes: int, headers=None) -> bytes:
@@ -1035,6 +1077,7 @@ def _wind_memo_bytes(key, providers, snaps):
             if _WIND_MEMO["key"] == key:
                 return _WIND_MEMO["payload"], _WIND_MEMO["etag"]
         t0 = time.monotonic()
+        _wind_sync_extras()                       # stations found at run time first (plan section 69)
         lists = {p.source.lower(): (snap[0] if snap is not None else None) for p, snap in zip(providers, snaps)}
         newest = {p.source.lower(): p.newest_t() for p in providers if hasattr(p, "newest_t")}
         doc = wind_sources.build_latest(_winds()["stations"], lists, time.time(), newest)
@@ -1146,6 +1189,7 @@ def api_wind_stations():
     if not WIND_ENABLED:
         return _wind_uncached({"error": WIND_OFF}, 503)
     try:
+        _wind_sync_extras()
         payload, etag = _winds()["list"]
     except Exception:
         return _wind_uncached({"error": WIND_OFF}, 503)
@@ -5664,6 +5708,12 @@ def _build_buoy_providers():
             buoy_sources.GlosProvider(http=HTTP, covered_ids=_ndbc_spectral_ids),
             buoy_sources.IoosSensorsProvider(http=HTTP, covered_ids=_ndbc_spectral_ids),
         ]
+        # plan section 69: the feeds that need a key, only when it is set (CCO_API_KEY, CWA_API_KEY); not in
+        # LIVE_WARM_ORDER, so they warm after the anonymous feeds
+        if os.environ.get("CCO_API_KEY", "").strip():
+            _BUOY_PROVIDERS.append(buoy_sources.CcoProvider(os.environ["CCO_API_KEY"].strip(), http=HTTP))
+        if os.environ.get("CWA_API_KEY", "").strip():
+            _BUOY_PROVIDERS.append(buoy_sources.CwaBuoyProvider(os.environ["CWA_API_KEY"].strip(), http=HTTP))
         _break_providers(_BUOY_PROVIDERS)
     return _BUOY_PROVIDERS
 

@@ -52,9 +52,9 @@ AIRFIELD_WORDS = re.compile(r"\b(airport|aeroport|aeroporto|aerodromo|aerodrome|
                             r"lentoasema|lentokentta|flughafen|flugplatz|airfield|intl|arpt)\b")
 DWD_WMO_BLOCK = "10"                                           # DWD's own stations: WMO block 10 = Germany (its
                                                                # poi list also relays other countries' SYNOP reports)
-SPOT_RANK_MORE = {"eccc": 4, "jma": 4, "smhi": 4, "fmi": 4, "dmi": 4, "ipma": 4, "mei": 4, "dwd": 5, "iem": 6}
+SPOT_RANK_MORE = {"eccc": 4, "jma": 4, "smhi": 4, "fmi": 4, "dmi": 4, "ipma": 4, "mei": 4, "cwa": 4, "dwd": 5, "iem": 6}
 FIXED_TZ = {"jma": "Asia/Tokyo", "fmi": "Europe/Helsinki", "smhi": "Europe/Stockholm", "dwd": "Europe/Berlin",
-            "mei": "Europe/Dublin"}
+            "mei": "Europe/Dublin", "cwa": "Asia/Taipei"}
 CACHE_S = 12 * 3600
 PAUSE_S = 0.25                                                 # between one-station reads (ECCC, DWD, Met Eireann)
 IEM_PAUSE_S = 1.0
@@ -263,8 +263,21 @@ def mei(M, cache, coastal, TT):
     return out
 
 
+def cwa(M, cache, coastal, TT):
+    """Plan section 69: CWA's 10-minute stations from the keyless copy of O-A0003-001 (the feed reads the same file with
+    the key); the names are CWA's own (Chinese)."""
+    import wind_keyed as K
+    st, now = K.parse_cwa_wind(json.loads(get(K.CWA_S3.format(id=K.CWA_WIND))))
+    cand = {sid: st[sid] for sid in now if sid in st}
+    near = coastal({sid: (s["lat"], s["lon"]) for sid, s in cand.items()})
+    out = [{"src": "cwa", "local": sid, "name": cand[sid]["name"], "lat": cand[sid]["lat"], "lon": cand[sid]["lon"],
+            "kind": "met", "net": None, "icao": None} for sid in sorted(near)]
+    print(f"CWA: {len(st)} stations, {len(cand)} with wind now, {len(near)} coastal", flush=True)
+    return out
+
+
 GATHER = {"eccc": eccc, "jma": jma, "iem": iem, "smhi": smhi, "fmi": fmi, "dmi": dmi, "dwd": dwd, "ipma": ipma,
-          "mei": mei}
+          "mei": mei, "cwa": cwa}
 
 
 # ---------------------------------------------------------------------------------------------- the spot rule
@@ -435,6 +448,28 @@ def make_coastal(sea_edges, lake_edges, counts):
     return coastal
 
 
+def norway_mask(coastal, path, lat0=57.5, lat1=81.0, lon0=-10.0, lon1=34.0, step=0.05):
+    """Plan section 69: tools/wind/norway_coast30.bin, the cells (step degrees) whose centre the coast rule keeps (within
+    COAST_KM of the sea or a large lake, or at sea), so the server keeps Frost's coastal stations without the coast
+    data. Format: wind_keyed.CoastMask."""
+    import numpy as np
+    rows, cols = int(round((lat1 - lat0) / step)), int(round((lon1 - lon0) / step))
+    pos = {}
+    for r in range(rows):
+        for c in range(cols):
+            pos[(r, c)] = (lat0 + (r + 0.5) * step, lon0 + (c + 0.5) * step)
+    keep = coastal(pos)
+    bits = np.zeros(rows * cols, dtype=bool)
+    for r, c in keep:
+        bits[r * cols + c] = True
+    head = json.dumps({"lat0": lat0, "lon0": lon0, "step": step, "rows": rows, "cols": cols,
+                       "rule": "within %g km of the sea or a lake >= 100 km2 (GSHHG), or at sea" % COAST_KM})
+    with open(path, "wb") as f:
+        f.write(head.encode("ascii") + bytes([10]) + np.packbits(bits).tobytes())
+    print(f"wrote {path}: {rows} x {cols} cells, {int(bits.sum())} kept", flush=True)
+    return 0
+
+
 def respot(out_path, doc, rows, only):
     """The snapshot's rows of the sources `only` placed again by the spot rule (positions, names kept; zones kept
     except FIXED_TZ's)."""
@@ -465,6 +500,8 @@ def main(argv=None):
     ap.add_argument("--coast", default=None, help="a local copy of world-i.bin")
     ap.add_argument("--lakes", default=None, help="a local copy of lakeoutlines-i.bin")
     ap.add_argument("--only", default=",".join(GATHER), help="sources to (re)build, comma-separated")
+    ap.add_argument("--norway-mask", default=None, help="write the Frost coast mask (plan section 69) to this path "
+                    "and stop")
     ap.add_argument("--respot", action="store_true", help="no network: place the snapshot's own rows of --only again "
                     "(after a change to the spot rule), so nothing comes or goes with the agencies' current answers")
     args = ap.parse_args(argv)
@@ -488,6 +525,8 @@ def main(argv=None):
     sea_edges, lake_edges = P.decode_coast(sea_raw), P.decode_coast(lake_raw)
     counts = {"sea": 0, "lake": 0, "offshore": 0, "inland": 0}
     coastal = make_coastal(sea_edges, lake_edges, counts)
+    if args.norway_mask:
+        return norway_mask(coastal, args.norway_mask)
 
     cache = Cache(os.path.join(args.cache, "more_stations_cache.json") if args.cache else None)
     cands, failed = [], []
@@ -515,6 +554,8 @@ def main(argv=None):
     source = doc["source"]
     extra = ("; plan section 67: ECCC SWOB-ML, JMA AMeDAS, Iowa Environmental Mesonet, SMHI, FMI, DMI, DWD, IPMA and "
              "Met Eireann station lists; lake shores GSHHG 2.3.7 level 2")
+    if "cwa" in only:
+        extra += "; plan section 69: CWA O-A0003-001 stations"
     if extra not in source:
         source += extra
     FS.write_doc(args.out, out, source)

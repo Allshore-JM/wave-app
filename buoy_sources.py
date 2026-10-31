@@ -3385,6 +3385,9 @@ class CwaBuoyProvider(BuoyProvider):
     list_ttl_sec = 1800
     timeout = 40
     API = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/%s?format=JSON&Authorization=%s"
+    # The station list O-B0076-001 is a file, not a REST dataset (CWA's API document; the REST call answers 404):
+    # CWA's file API with the same key.
+    FILE_API = "https://opendata.cwa.gov.tw/fileapi/v1/opendataapi/%s?Authorization=%s&downloadType=WEB&format=JSON"
     MAX = 16 * 1024 * 1024
     STATIONS_TTL = 24 * 3600
 
@@ -3395,9 +3398,9 @@ class CwaBuoyProvider(BuoyProvider):
         self._stations_at = 0.0
         self._obs = {}
 
-    def _get(self, dataset):
+    def _get(self, dataset, file=False):
         try:
-            r = self.http.get(self.API % (dataset, self._key), timeout=self.timeout,
+            r = self.http.get((self.FILE_API if file else self.API) % (dataset, self._key), timeout=self.timeout,
                               headers={"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"})
             if r.status_code != 200:
                 raise RuntimeError("HTTP %s from CWA %s" % (r.status_code, dataset))
@@ -3410,7 +3413,7 @@ class CwaBuoyProvider(BuoyProvider):
     def _fetch_stations(self):
         now = time.time()
         if not self._stations or now - self._stations_at > self.STATIONS_TTL:
-            found = parse_cwa_buoy_stations(self._get("O-B0076-001"))
+            found = parse_cwa_buoy_stations(self._get("O-B0076-001", file=True))
             if found:
                 self._stations, self._stations_at = found, now
         if not self._stations:

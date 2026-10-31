@@ -2032,6 +2032,13 @@ environment (on both Render services), and without it the feed is simply absent:
 | `KNMI_API_KEY` | KNMI Data Platform (the Netherlands) | wind stations `knmi:<station>` |
 | `FROST_CLIENT_ID` | MET Norway Frost | wind stations `frost:<SN id>` |
 
+The stations KNMI and Frost name at run time follow the snapshot's rule (plan sections 39 and 67): one flag per spot,
+an airport's METAR flag first. A found station within 100 m of a station already on the map, within 1.5 km of a METAR
+site, or within 2.5 km of one when its name says airport (Lufthavn, Lufthamn, "LH", Airport ...) or begins like the
+site's name, is left out (`wind_keyed.SpotIndex`; a test pins the numbers to the snapshot tool's). On 2026-10-31 that
+left out 24 of KNMI's 71 stations (its North Sea platforms and airports, which have METAR flags) and 74 of Frost's 729;
+`/healthz` gives each feed's `left_out` count.
+
 Keys never leave the server: they are read from the environment when the feeds are built and never appear in an answer,
 a page, `/healthz` or a log line. CCO's goes in the `X-API-Key` header (with `Referer: https://allshoresurf.com/`: the
 key is bound to the site's domain), KNMI's in `Authorization`, Frost's as the HTTP Basic user (empty password). CWA's
@@ -2041,8 +2048,9 @@ Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check
 
 - **CCO buoys** (`buoy_sources.CcoProvider`): `latest.geojson` every 30 minutes (one feature per sensor: height, max
   height, peak and mean period, peak direction, spread, water temperature; CCO's quality flag blanks the fields it marks
-  bad); a window's 24 hours are one `duration=24` request for that sensor (kept 10 minutes; the refresh button asks
-  again). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. The page shows
+  bad); a sensor whose newest wave height is more than 4 days old is left out (the file still lists retired sensors:
+  West Anglesey's last reading is from 2016). A window's 24 hours are one `duration=24` request for that sensor (kept
+  10 minutes; the refresh button asks again). CCO's times are GMT (its own pages say so). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. The page shows
   CCO's required sentence: "Real time data displayed on this page are from the Regional Coastal Monitoring Programme,
   made freely available under the terms of the Open Government Licence. Please note that these are real-time data and
   are not quality-controlled."
@@ -2131,6 +2139,14 @@ revocation, so the protection is the trust list itself:
   environment (`bundle_is_certifi`: false when `REQUESTS_CA_BUNDLE` or `CURL_CA_BUNDLE` points elsewhere) and which of
   those two and `SSL_CERT_FILE` are set on the host (`env_override`; requests ignores `SSL_CERT_FILE`); never part of
   `ok`.
+- **One exception: Taiwan CWA** (plan section 69, owner 2026-10-31). `opendata.cwa.gov.tw`'s chain ends at "TWCA
+  Global Root CA", a root in certifi's list without the Subject Key Identifier extension; Python 3.13 (the site's Python
+  on Render) turns OpenSSL's strict X.509 checks on by default and refuses it ("Missing Subject Key Identifier").
+  `cwa_tls.py` mounts, for that host only and on the two sessions that reach it (`app.HTTP` for the buoys,
+  `app._POINT_HTTP` for the wind feed), an adapter whose context is the default verifying context on certifi's list
+  without the strict flag: the chain is still verified and the hostname checked. Checked live: CWA answers through it,
+  while a wrong host, an expired, a self-signed and an untrusted-root certificate and both eMudhra test hosts are still
+  refused. `tests/test_swan_cert.py` lets that file, and no other site module, set a context, and pins its flags.
 - **The publishers.** The six micromamba workflows pin `certifi` and `ca-certificates` (urllib's downloads use conda's
   OpenSSL list, the R2 uploads botocore's) and list both in the step summary. coast-build's pip jobs install certifi so
   botocore uses it; its `curl` downloads pass certifi's file and an empty CA folder (`--cacert "$CA" --capath

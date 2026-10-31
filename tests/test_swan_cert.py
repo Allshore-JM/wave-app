@@ -40,9 +40,16 @@ def test_no_extra_roots_are_kept():
         assert not hasattr(app, name)
 
 
+# The one exception (plan section 69, owner 2026-10-31): Taiwan CWA's chain without the strict X.509 flag, pinned below.
+TLS_EXCEPTION = "cwa_tls.py"
+
+
 def test_no_site_module_changes_how_requests_verify():
     assert "app.py" in SITE_FILES and "buoy_sources.py" in SITE_FILES and len(SITE_FILES) >= 8
+    assert TLS_EXCEPTION in SITE_FILES
     for name in SITE_FILES:
+        if name == TLS_EXCEPTION:
+            continue
         text = open(os.path.join(REPO, name), encoding="utf-8").read()
         hits = [m.group(0) for m in WEAKENING.finditer(text)]
         assert not hits, (name, hits)
@@ -96,3 +103,23 @@ def test_healthz_carries_the_tls_key(monkeypatch):
     monkeypatch.setattr(app, "_tls_health", lambda: {"certifi": "9.9.9"})
     body = app.app.test_client().get("/healthz").get_json()
     assert body["tls"] == {"certifi": "9.9.9"}
+
+
+def test_the_one_exception_is_cwa_without_the_strict_flag_and_nothing_else():
+    import ssl
+    import cwa_tls
+    text = open(os.path.join(REPO, TLS_EXCEPTION), encoding="utf-8").read()
+    assert sorted({m.group(0) for m in WEAKENING.finditer(text)}) == ["ssl_context"]
+    assert cwa_tls.HOST == "https://opendata.cwa.gov.tw/"
+    ctx, default = cwa_tls.context(), ssl.create_default_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+    assert ctx.verify_flags == default.verify_flags & ~ssl.VERIFY_X509_STRICT
+    assert ctx.cert_store_stats()["x509_ca"] ==         ssl.create_default_context(cafile=certifi.where()).cert_store_stats()["x509_ca"] > 100
+    for session in (app.HTTP, app._POINT_HTTP):
+        adapter = session.get_adapter("https://opendata.cwa.gov.tw/api/v1/rest/datastore/O-A0003-001")
+        assert isinstance(adapter, cwa_tls.CwaAdapter)
+        assert adapter.poolmanager.connection_pool_kw["ssl_context"].verify_flags == ctx.verify_flags
+        for other in ("https://www.pacioos.hawaii.edu/x", "https://opendata.cwa.gov.tw.example.com/x",
+                      "https://cwaopendata.s3.ap-northeast-1.amazonaws.com/x", "http://opendata.cwa.gov.tw/x"):
+            assert not isinstance(session.get_adapter(other), cwa_tls.CwaAdapter), other
+    assert app.HTTP.get_adapter(cwa_tls.HOST).max_retries.total == app.HTTP.get_adapter("https://x.org/").max_retries.total

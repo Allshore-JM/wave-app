@@ -28,6 +28,7 @@ import re
 import struct
 import threading
 import time
+import unicodedata
 from datetime import datetime, timezone
 
 import buoy_sources
@@ -516,6 +517,84 @@ def parse_cwa_wind(doc):
 
 # ============================================================================================== the feeds
 
+# ============================================================================================== one flag per spot
+
+# The snapshot's rule (tools/wind/fetch_stations.py and more_stations.py, plan sections 39 and 67), applied to the
+# stations KNMI and Frost name at run time, which the snapshot tool never sees (a test pins the numbers to the tool's).
+SPOT_M = 100.0                                   # never within this of a station already on the map
+AIRPORT_SPOT_M = 500.0                           # an airport's own weather station: the airport's METAR flag stands
+AIRFIELD_M = 1500.0                              # a weather service's station this near a METAR site is the airfield's,
+AIRFIELD_NAMED_M = 2500.0                        # and so is one up to 2.5 km whose name says airport or begins like it
+AIRFIELD_WORDS = re.compile(r"\b(airport|aeroport|aeroporto|aerodromo|aerodrome|flygplats|lufthavn|flyvestation|"
+                            r"lentoasema|lentokentta|flughafen|flugplatz|airfield|intl|arpt|"
+                            r"lufthamn|lh|flyplass|vliegveld|vliegbasis|airbase)\b")   # + Norwegian / Dutch forms
+_FOLD = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ð": "d", "Ð": "D", "þ": "th",
+                       "Þ": "Th", "ł": "l", "Ł": "L", "œ": "oe", "Œ": "OE"})
+_CELL = 0.05                                     # degrees: a 3 x 3 block of cells holds every point within 2.5 km
+
+
+def fold(name):
+    """A name for comparing: no accents, lower case, words of letters and digits (more_stations.fold)."""
+    n = unicodedata.normalize("NFKD", str(name or "").translate(_FOLD)).encode("ascii", "ignore").decode("ascii").lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", n).split())
+
+
+def _metres(lat1, lon1, lat2, lon2):
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    h = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 6371000.0 * 2 * math.asin(min(1.0, math.sqrt(h)))
+
+
+class SpotIndex:
+    """The map's stations by 0.05-degree cell: which station a found station would stand on."""
+
+    def __init__(self, stations=()):
+        self._cells = {}
+        for s in stations:
+            self.add(s)
+
+    def _key(self, lat, lon):
+        return int(math.floor(lat / _CELL)), int(math.floor(lon / _CELL))
+
+    def add(self, s):
+        try:
+            lat, lon = float(s["lat"]), float(s["lon"])
+        except (KeyError, TypeError, ValueError):
+            return
+        self._cells.setdefault(self._key(lat, lon), []).append((lat, lon, str(s.get("src") or ""), fold(s.get("name"))))
+
+    def near(self, lat, lon, metres):
+        """[(distance m, src, folded name)] of the stations within metres (at most 2.5 km), nearest first."""
+        cy, cx = self._key(lat, lon)
+        out = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for la, lo, src, name in self._cells.get((cy + dy, cx + dx), ()):
+                    d = _metres(lat, lon, la, lo)
+                    if d <= metres:
+                        out.append((d, src, name))
+        return sorted(out)
+
+    def stands_on(self, s):
+        """Why the found station s would duplicate a flag already on the map (a short reason), else None."""
+        lat, lon = float(s["lat"]), float(s["lon"])
+        near = self.near(lat, lon, AIRFIELD_NAMED_M)
+        if not near:
+            return None
+        if near[0][0] <= SPOT_M:
+            return "within %d m of a %s station" % (SPOT_M, near[0][1])
+        name = fold(s.get("name"))
+        first = name.split(" ")[0] if name else ""
+        for d, src, site in near:
+            if src != "metar":
+                continue
+            if d <= AIRPORT_SPOT_M or d <= AIRFIELD_M:
+                return "on an airfield (METAR %.0f m)" % d
+            if AIRFIELD_WORDS.search(name) or (first and site.split(" ")[0] == first):
+                return "on an airfield (METAR %.0f m, named so)" % d
+        return None
+
+
 class KeyedProvider(M.MoreProvider):
     """A section-69 feed: wind_more's feed with this module's source text and a key (never shown anywhere)."""
     meta = None
@@ -541,20 +620,36 @@ class DiscoveredProvider(KeyedProvider):
     kind = "met"
     tz = "UTC"
 
-    def __init__(self, fetch, key):
+    def __init__(self, fetch, key, spots=None):
         super().__init__({}, fetch, key)
         self._extra_version = 0
+        self._spots = spots                      # SpotIndex of the snapshot's stations (None: nothing to compare with)
+        self.left_out = {}                       # local -> why (a station already on the map at its spot)
 
     def _set_stations(self, found):
-        """found {local: {name, lat, lon}} -> self.stations (snapshot-shaped dicts); bumps the version on a change."""
-        new = {}
-        for local, s in found.items():
+        """found {local: {name, lat, lon}} -> self.stations (snapshot-shaped dicts) without the stations that would
+        stand on a flag already on the map (one flag per spot, the airport's METAR first; among the found ones the
+        first by id); bumps the version on a change."""
+        new, left, own = {}, {}, SpotIndex()
+        for local in sorted(found):
+            s = found[local]
+            why = (self._spots.stands_on(s) if self._spots is not None else None) or                 (("within %d m of a %s station" % (SPOT_M, self.source)) if own.near(s["lat"], s["lon"], SPOT_M) else None)
+            if why:
+                left[local] = why
+                continue
+            own.add({"lat": s["lat"], "lon": s["lon"], "src": self.key, "name": s["name"]})
             new[local] = {"id": "%s:%s" % (self.key, local), "name": s["name"], "lat": s["lat"], "lon": s["lon"],
                           "kind": s.get("kind") or self.kind, "src": self.key, "tz": s.get("tz") or self.tz,
                           "alias": None, "wx": None, "net": None}
+        self.left_out = left
         if new != self.stations:
             self.stations = new
             self._extra_version += 1
+
+    def status(self, now=None):
+        st = super().status(now)
+        st["left_out"] = len(self.left_out)
+        return st
 
     def extra_stations(self):
         """(version, [station dict]) of the stations found so far."""
@@ -568,8 +663,8 @@ class KnmiProvider(DiscoveredProvider):
     tz = "Europe/Amsterdam"
     empty_fails = False                          # a refresh with no new file is ordinary
 
-    def __init__(self, fetch, key):
-        super().__init__(fetch, key)
+    def __init__(self, fetch, key, spots=None):
+        super().__init__(fetch, key, spots)
         self._read = set()                       # file names read (kept for 25 hours)
         self.headers = knmi_auth(key)
 
@@ -617,8 +712,8 @@ class FrostProvider(DiscoveredProvider):
     empty_fails = False
     sources_ttl = 24 * 3600
 
-    def __init__(self, fetch, key, mask=None):
-        super().__init__(fetch, key)
+    def __init__(self, fetch, key, mask=None, spots=None):
+        super().__init__(fetch, key, spots)
         self.headers = frost_auth(key)
         self.mask = mask
         self._sources_at = 0.0
@@ -689,12 +784,16 @@ class CwaWindProvider(KeyedProvider):
 
 def make_providers(groups, fetch, keys, mask=None):
     """The section-69 feeds whose key is set (keys: {source: key}); groups: the snapshot's {src: {local: station}}
-    (CWA's stations are in the snapshot; KNMI's and Frost's are found at run time)."""
+    (CWA's stations are in the snapshot; KNMI's and Frost's are found at run time, and left out where the snapshot
+    already has a flag at their spot)."""
     out = []
+    spots = None
+    if keys.get("knmi") or keys.get("frost"):
+        spots = SpotIndex(s for g in groups.values() for s in g.values())
     if keys.get("knmi"):
-        out.append(KnmiProvider(fetch, keys["knmi"]))
+        out.append(KnmiProvider(fetch, keys["knmi"], spots))
     if keys.get("frost"):
-        out.append(FrostProvider(fetch, keys["frost"], mask))
+        out.append(FrostProvider(fetch, keys["frost"], mask, spots))
     if keys.get("cwa") and groups.get("cwa"):
         out.append(CwaWindProvider(groups["cwa"], fetch, keys["cwa"]))
     return out

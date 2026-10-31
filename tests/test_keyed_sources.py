@@ -21,6 +21,7 @@ import wind_more as M  # noqa: E402
 import wind_sources as W  # noqa: E402
 
 FX = os.path.join(os.path.dirname(__file__), "fixtures", "keyed")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECRET = "sk-test-KEY-0123456789abcdef"
 
 
@@ -410,6 +411,54 @@ def test_found_stations_join_the_site_list_and_the_history_route(monkeypatch):
     assert c.get("/api/wind/frost:SN99999/history").status_code == 404
 
 
+def _st(src, name, lat, lon):
+    return {"id": "%s:x" % src, "name": name, "lat": lat, "lon": lon, "src": src}
+
+
+def test_a_found_station_is_left_out_where_the_map_has_a_flag():
+    spots = K.SpotIndex([_st("metar", "Sogndal/Haukasen Arpt", 61.156, 7.137), _st("ndbc", "Buoy", 60.0, 5.0),
+                         _st("metar", "Hasvik Arpt", 70.4867, 22.1397)])
+    m_lat = 1.0 / 111195.0                                       # degrees of latitude a metre
+    assert K.SpotIndex().stands_on({"name": "x", "lat": 61.156, "lon": 7.137}) is None
+    assert K.SpotIndex().near(61.0, 7.0, 3000) == []
+    for metres, name, out in ((0, "Sogndal Lufthamn", True), (400, "Fjellet", True), (1400, "Fjellet", True),
+                              (1600, "Fjellet", False), (2200, "Sogndal LH - Storehaugfjellet", True),
+                              (2200, "Sogndal sentrum", True), (2200, "Kaupanger", False),
+                              (2600, "Sogndal Lufthamn", False)):
+        why = spots.stands_on({"name": name, "lat": 61.156 + metres * m_lat, "lon": 7.137})
+        assert (why is not None) is out, (metres, name, why)
+    assert "ndbc" in spots.stands_on({"name": "Fyr", "lat": 60.0 + 80 * m_lat, "lon": 5.0})
+    assert spots.stands_on({"name": "Fyr", "lat": 60.0 + 150 * m_lat, "lon": 5.0}) is None   # not a METAR site
+    assert spots.stands_on({"name": "Hasvik Havn", "lat": 70.4867 + 2000 * m_lat, "lon": 22.1397})   # begins like it
+
+
+def test_the_found_stations_keep_one_flag_per_spot_and_count_what_they_leave_out():
+    spots = K.SpotIndex([_st("metar", "Kristiansand Arpt", 58.204, 8.085)])
+    p = FakeDiscovered(lambda *a, **k: b"", SECRET)
+    p._spots = spots
+    p._set_stations({"SN39040": {"name": "Kjevik", "lat": 58.204, "lon": 8.085},
+                     "SN47300": {"name": "Utsira Fyr", "lat": 59.3, "lon": 4.9},
+                     "SN47301": {"name": "Utsira Havn", "lat": 59.3003, "lon": 4.9}})
+    assert sorted(p.stations) == ["SN47300"] and set(p.left_out) == {"SN39040", "SN47301"}
+    assert p.status()["left_out"] == 2 and p.extra_stations()[0] == 1
+
+
+def test_the_runtime_spot_rule_matches_the_snapshot_tool():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("wind_more_stations_k69",
+                                                  os.path.join(ROOT, "tools", "wind", "more_stations.py"))
+    t = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(t)
+    assert (K.SPOT_M, K.AIRPORT_SPOT_M, K.AIRFIELD_M, K.AIRFIELD_NAMED_M) ==         (t.SPOT_M, t.AIRPORT_SPOT_M, t.AIRFIELD_M, t.AIRFIELD_NAMED_M)
+    words = t.AIRFIELD_WORDS.pattern.split("(", 1)[1].rsplit(")", 1)[0].split("|")
+    assert words and all(K.AIRFIELD_WORDS.search(w) for w in words)
+    for name in ("Tromsø - Holt", "Vardø Lufthavn - Domen", "Bodø VI", "Æra", "Göteborg"):
+        assert K.fold(name) == t.fold(name)
+    p = K.make_providers({"metar": {"metar:ENBR": _st("metar", "Bergen Arpt", 60.29, 5.22)}},
+                         lambda *a, **k: b"", {"knmi": "k", "frost": "f"})
+    assert all(q._spots is not None and q._spots.near(60.29, 5.22, 10) for q in p)
+
+
 def test_the_keyed_providers_are_built_only_with_their_keys():
     groups = {"cwa": {k: v for k, v in cwa_snapshot_stations().items()}}
     assert K.make_providers(groups, lambda *a: b"", {}) == []
@@ -492,6 +541,16 @@ def test_cco_feed_sends_the_key_in_a_header_with_the_site_as_referer(clock):
     d = p.detail("Dawlish")
     assert d["latest"]["hs_m"] == 1.2 and "sensor=Dawlish" in http.calls[-1][0] and "duration=24" in http.calls[-1][0]
     assert p.attribution_text.startswith("Real time data displayed on this page are from the Regional Coastal")
+
+
+def test_cco_leaves_out_sensors_silent_for_four_days(clock):
+    clock.t = 1793450000                                         # 2026-10-31T12:33:20Z
+    http = FakeHttp(lambda u: Resp(200, cco_doc([("Dawlish", 50.57, -3.43, "20261031#120000", {}),
+                                                 ("Port Isaac", 50.59, -4.83, "20261027#130000", {}),   # 3 d 23.6 h
+                                                 ("Scarborough", 54.3, -0.35, "20261027#123000", {}),   # 4 d 0.1 h
+                                                 ("West Anglesey", 53.2, -4.7, "20161219#115900", {}),
+                                                 ("Ahead", 50.1, -5.0, "20261031#134000", {})])))       # 67 min ahead
+    assert [e["id"] for e in B.CcoProvider(SECRET, http=http).list_stations()] == ["cco:Dawlish", "cco:Port_Isaac"]
 
 
 def test_cco_window_keeps_only_its_own_sensor(clock):

@@ -2846,9 +2846,10 @@
       if (m === null || m === undefined || !Number.isFinite(n)) return '—';
       return useMetric ? n.toFixed(2) + ' m' : (n * 3.28084).toFixed(1) + ' ft';
     }
+    // a reading that is a number (Number(null) is 0: a missing period printed "0.0 s", plan section 69)
+    function isNum(v) { return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)); }
     function fmtPeriod(s) {
-      const n = Number(s);
-      return Number.isFinite(n) ? n.toFixed(1) + ' s' : '—';
+      return isNum(s) ? Number(s).toFixed(1) + ' s' : '—';
     }
     function fmtDir(d) {
       const n = Number(d);
@@ -2894,6 +2895,7 @@
     function buildRecentTable(recent, useMetric, tz) {
       if (!recent || !recent.length) return '';
       const hasPeriod = recent.some(o => o.mean_period_s != null || o.tz_s != null);
+      const hasTp = recent.some(o => isNum(o.tp_s)) || !hasPeriod;   // CWA's buoys give a mean period only
       const hasSST = recent.some(o => o.sst_c != null);
       const heightUnit = useMetric ? 'm' : 'ft';
       const tempUnit = useMetric ? '°C' : '°F';
@@ -2902,7 +2904,7 @@
       const head =
         '<tr><th>Time' + (abbr ? '<br><span class="small">' + abbr + '</span>' : '') + '</th>' +
         '<th>Hs<br><span class="small">' + heightUnit + '</span></th>' +
-        '<th>Tp<br><span class="small">sec</span></th>' +
+        (hasTp ? '<th>Tp<br><span class="small">sec</span></th>' : '') +
         (hasPeriod ? '<th>Avg&nbsp;Pd<br><span class="small">sec</span></th>' : '') +
         '<th>Dir</th>' +
         (hasSST ? '<th>SST<br><span class="small">' + tempUnit + '</span></th>' : '') + '</tr>';
@@ -2912,8 +2914,8 @@
         return '<tr>' +
           '<td class="text-nowrap">' + (o.time_utc ? fmtTimeInTz(o.time_utc, tz) : '—') + '</td>' +
           '<td>' + fmtHeightM(o.hs_m, useMetric).replace(' ' + heightUnit, '') + '</td>' +
-          '<td>' + (Number.isFinite(Number(o.tp_s)) ? Number(o.tp_s).toFixed(1) : '—') + '</td>' +
-          (hasPeriod ? '<td>' + (Number.isFinite(Number(pd)) ? Number(pd).toFixed(1) : '—') + '</td>' : '') +
+          (hasTp ? '<td>' + (isNum(o.tp_s) ? Number(o.tp_s).toFixed(1) : '—') + '</td>' : '') +
+          (hasPeriod ? '<td>' + (isNum(pd) ? Number(pd).toFixed(1) : '—') + '</td>' : '') +
           '<td class="text-nowrap">' + fmtDir(o.dir_deg) + '</td>' +
           (hasSST ? '<td>' + (Number.isFinite(Number(o.sst_c)) ? fmtTemp(o.sst_c, useMetric).replace(' ' + tempUnit, '') : '—') + '</td>' : '') +
           '</tr>';
@@ -3069,7 +3071,7 @@
       } else {
         const metrics = [['Sig. Height', fmtHeightM(o.hs_m, useMetric)]];
         if (o.hmax_m != null) metrics.push(['Max Height', fmtHeightM(o.hmax_m, useMetric)]);
-        metrics.push(['Peak Period', fmtPeriod(o.tp_s)]);
+        if (isNum(o.tp_s) || o.mean_period_s == null) metrics.push(['Peak Period', fmtPeriod(o.tp_s)]);
         if (o.mean_period_s != null) metrics.push(['Mean Period', fmtPeriod(o.mean_period_s)]);
         if (o.tz_s != null) metrics.push(['Zero-cross Tz', fmtPeriod(o.tz_s)]);
         metrics.push(['Direction', fmtDir(o.dir_deg)]);

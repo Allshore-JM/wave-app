@@ -3211,6 +3211,7 @@ class CcoProvider(BuoyProvider):
     BASE = "https://coastalmonitoring.org/observations/waves/latest.geojson"
     MAX = 4 * 1024 * 1024
     DETAIL_TTL = 600
+    LIST_MAX_AGE = 4 * 86400                                  # sensors silent longer are left out (CMEMS's rule)
 
     def __init__(self, key, http=None):
         super().__init__(http)
@@ -3236,8 +3237,12 @@ class CcoProvider(BuoyProvider):
 
     def _fetch_stations(self):
         latest, meta = {}, {}
+        now = time.time()
         for sid, name, lat, lon, obs in parse_cco_features(self._get(self.BASE)):
             if obs.get("hs_m") is None or not obs.get("time_utc"):
+                continue
+            ep = _z_epoch(obs)                                # a retired sensor's last reading (West Anglesey: 2016)
+            if ep is None or ep < now - self.LIST_MAX_AGE or ep > now + 3600:
                 continue
             old = latest.get(sid)
             if old is not None and old["time_utc"] >= obs["time_utc"]:

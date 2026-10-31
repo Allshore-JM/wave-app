@@ -23,6 +23,7 @@ import point_forecast
 import gfs_bulletins
 import sky
 import tide_sources
+import cwa_tls
 import wind_keyed
 import wind_sources
 
@@ -165,6 +166,9 @@ def _build_http_session() -> requests.Session:
         adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=16)  # 3 concurrent buoy taps x 5 files
         s.mount("https://", adapter)
         s.mount("http://", adapter)
+        cwa_tls.mount(s, max_retries=retry)        # Taiwan CWA's chain: without the strict X.509 flag (cwa_tls.py)
+    else:
+        cwa_tls.mount(s)
     return s
 
 
@@ -570,6 +574,7 @@ def _points_root() -> str:
 
 
 _POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are asked for once
+cwa_tls.mount(_POINT_HTTP)             # the CWA wind feed's fetch (plan section 69: cwa_tls.py)
 
 
 def _points_fetch(url: str, max_bytes: int, headers=None, retry_dropped=False) -> bytes:

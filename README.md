@@ -2054,8 +2054,8 @@ Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check
   CCO's required sentence: "Real time data displayed on this page are from the Regional Coastal Monitoring Programme,
   made freely available under the terms of the Open Government Licence. Please note that these are real-time data and
   are not quality-controlled."
-- **CWA buoys** (`buoy_sources.CwaBuoyProvider`): the station list O-B0076-001 once a day (the stations with a wave
-  sensor), the readings O-B0075-001 (every station's last 48 hours, hourly) every 30 minutes: one answer serves the
+- **CWA buoys** (`buoy_sources.CwaBuoyProvider`): the station list O-B0076-001 once a day through CWA's file API (it is
+  a file, not a REST dataset; the stations with a wave sensor), the readings O-B0075-001 (every station's last 48 hours, hourly) every 30 minutes: one answer serves the
   markers and every window. CWA's wave period is a MEAN period: it is shown as the mean period, never as the peak period.
   Dedup rank 60. Open Government Data License v1.0.
 - **KNMI wind** (`wind_keyed.KnmiProvider`): KNMI publishes one NetCDF file of every station every 10 minutes. Every

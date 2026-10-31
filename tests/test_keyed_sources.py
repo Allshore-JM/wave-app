@@ -594,11 +594,17 @@ def test_cwa_buoy_feed_serves_the_list_and_the_windows_from_one_answer(clock):
     clock.t = 1793469600
 
     def ans(url):
-        return Resp(200, fx("cwa_buoy_stations.json") if "O-B0076-001" in url else fx("cwa_buoy_obs.json"))
+        if "O-B0076-001" in url:                                 # the station list: a file (the file API's shape)
+            if "/fileapi/" not in url:
+                return Resp(404, {})
+            locs = fx("cwa_buoy_stations.json")["records"]["SeaSurfaceObs"]["Location"]
+            return Resp(200, {"cwaopendata": {"Resources": {"Resource": {"Data": {"SeaSurfaceObs": {"Location": locs}}}}}})
+        return Resp(200, fx("cwa_buoy_obs.json"))
     http = FakeHttp(ans)
     p = B.CwaBuoyProvider(SECRET, http=http)
     lst = p.list_stations()
     assert {e["id"] for e in lst} == {"cwa:46694A", "cwa:46761F"}
+    assert "/fileapi/v1/opendataapi/O-B0076-001?" in http.calls[0][0] and "/api/v1/rest/datastore/O-B0075-001?" in http.calls[1][0]
     n = len(http.calls)
     d = p.detail("46694A")
     assert d["latest"]["hs_m"] == 1.3 and d["recent"] and len(http.calls) == n      # no new request for a window
@@ -606,7 +612,7 @@ def test_cwa_buoy_feed_serves_the_list_and_the_windows_from_one_answer(clock):
 
 def test_cwa_buoy_failure_redacts_the_key(clock):
     clock.t = 1793469600
-    url = B.CwaBuoyProvider.API % ("O-B0076-001", SECRET)
+    url = B.CwaBuoyProvider.FILE_API % ("O-B0076-001", SECRET)
     p = B.CwaBuoyProvider(SECRET, http=FakeHttp(lambda u: IOError("Max retries exceeded with url: " + url)))
     p.list_stations()
     s = json.dumps(p.status())

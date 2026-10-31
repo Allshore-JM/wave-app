@@ -167,4 +167,4 @@ def test_an_airports_own_station_stands_for_its_field_among_the_new_rows():
 
 def test_fixed_zones_cover_the_one_country_agencies():
     assert T.FIXED_TZ == {"jma": "Asia/Tokyo", "fmi": "Europe/Helsinki", "smhi": "Europe/Stockholm",
-                          "dwd": "Europe/Berlin", "mei": "Europe/Dublin"}
+                          "dwd": "Europe/Berlin", "mei": "Europe/Dublin", "cwa": "Asia/Taipei"}   # cwa: plan section 69

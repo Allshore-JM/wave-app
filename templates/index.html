@@ -1964,7 +1964,8 @@
                              cwop: 'CWOP amateur station', hads: 'HADS station', weather: 'Weather station',   // the NWS API's networks (step 5c)
                              met: 'Weather station', road: 'Road weather station' };                           // plan section 67
     // plan section 67: the agencies, named in the window's subtitle and credited while one of their flags is drawn
-    const WIND_AGENCY = { eccc: 'Environment Canada', jma: 'JMA', iem: 'IEM', smhi: 'SMHI', fmi: 'FMI', dmi: 'DMI', dwd: 'DWD', ipma: 'IPMA', mei: 'Met Éireann' };
+    const WIND_AGENCY = { eccc: 'Environment Canada', jma: 'JMA', iem: 'IEM', smhi: 'SMHI', fmi: 'FMI', dmi: 'DMI', dwd: 'DWD', ipma: 'IPMA', mei: 'Met Éireann',
+                          knmi: 'KNMI', frost: 'MET Norway', cwa: 'CWA' };   // plan section 69: the agencies that need a key
     const WIND_AGENCY_CREDIT = {
       eccc: '<a href="https://eccc-msc.github.io/open-data/" target="_blank" rel="noopener">Environment and Climate Change Canada</a>',
       jma: '<a href="https://www.jma.go.jp/bosai/amedas/" target="_blank" rel="noopener">Japan Meteorological Agency</a> (edited)',
@@ -1974,8 +1975,11 @@
       dmi: '<a href="https://www.dmi.dk/friedata" target="_blank" rel="noopener">DMI</a>',
       dwd: '<a href="https://opendata.dwd.de/" target="_blank" rel="noopener">DWD</a>',
       ipma: '<a href="https://www.ipma.pt/" target="_blank" rel="noopener">IPMA</a>',
-      mei: '<a href="https://www.met.ie/" target="_blank" rel="noopener">Met Éireann</a>' };
-    const WIND_AGENCY_ORDER = ['eccc', 'jma', 'iem', 'smhi', 'fmi', 'dmi', 'dwd', 'ipma', 'mei'];
+      mei: '<a href="https://www.met.ie/" target="_blank" rel="noopener">Met Éireann</a>',
+      knmi: '<a href="https://dataplatform.knmi.nl/" target="_blank" rel="noopener">KNMI</a>',
+      frost: '<a href="https://www.met.no/en/free-meteorological-data/Licensing-and-crediting" target="_blank" rel="noopener">MET Norway</a>',
+      cwa: '<a href="https://opendata.cwa.gov.tw/" target="_blank" rel="noopener">CWA</a> (<a href="https://data.gov.tw/license" target="_blank" rel="noopener">OGDL</a>)' };
+    const WIND_AGENCY_ORDER = ['eccc', 'jma', 'iem', 'smhi', 'fmi', 'dmi', 'dwd', 'ipma', 'mei', 'knmi', 'frost', 'cwa'];
     // the layer's credit: NOAA's feeds always, then the agencies whose flags are drawn in the view
     function windCreditFor(vis) {
       const seen = new Set();

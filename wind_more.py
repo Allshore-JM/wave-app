@@ -728,9 +728,11 @@ class MoreProvider(W.WindProvider):
     key = ""
     empty_fails = True                           # one answer for every station: one with no reading at all failed
 
+    meta = None                                  # a feed of another module (plan section 69) brings its own source text
+
     def __init__(self, stations, fetch):
         super().__init__(stations, fetch)
-        meta = SOURCES[self.key]
+        meta = self.meta or SOURCES[self.key]
         self.source_name, self.source_url = meta["name"], meta["url"]
         lic = meta["licence"]
         self.attribution_text = lic if re.match(r"(Data )?Source:", lic) else "Source: " + lic

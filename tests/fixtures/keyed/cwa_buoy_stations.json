@@ -1,0 +1,222 @@
+{
+ "success": "true",
+ "records": {
+  "SeaSurfaceObs": {
+   "Location": [
+    {
+     "Station": {
+      "StationID": "46761F",
+      "StationName": "成功浮球式波浪站",
+      "StationNameEN": "Chenggong Wave Station",
+      "StationLongitude": "121.4201",
+      "StationLatitude": "23.1325",
+      "StationAttribute": "浮球站",
+      "StationAttributeEN": "Buoy Station",
+      "StationAddress": "三仙臺海岬北面約700公尺，水深約28公尺",
+      "StationAddressEN": "About 700 meters north of Sanxiantai Cape, the water depth is about 28 meters",
+      "County": {
+       "CountyName": "臺東縣",
+       "CountyNameEN": "Taitung County"
+      },
+      "Town": {
+       "TownName": "成功鎮",
+       "TownNameEN": "Chenggong Township"
+      },
+      "Area": {
+       "AreaName": "成功大武沿海",
+       "AreaNameEN": "Chenggong Dawu inshore"
+      },
+      "StationChargeIns": "交通部中央氣象署",
+      "StationChargeInsEN": "Central Weather Administration  Ministry of Transportation and Communications"
+     },
+     "Description": null,
+     "Sequence": "0",
+     "StationObsStatus": {
+      "StationStatus": "1",
+      "ObservedPropertyNames": "WaveHeight,WaveDirection,WaveDirectionDescription,WavePeriod,SeaTemperature",
+      "ObservedProperties": {
+       "WaveHeight": {
+        "ObsStatus": "1"
+       },
+       "WaveDirection": {
+        "ObsStatus": "1"
+       },
+       "WaveDirectionDescription": {
+        "ObsStatus": "1"
+       },
+       "WavePeriod": {
+        "ObsStatus": "1"
+       },
+       "SeaTemperature": {
+        "ObsStatus": "1"
+       }
+      },
+      "StationObsTimes": null
+     }
+    },
+    {
+     "Station": {
+      "StationID": "46694A",
+      "StationName": "龍洞資料浮標",
+      "StationNameEN": "Longdong Buoy",
+      "StationLongitude": "121.9222",
+      "StationLatitude": "25.0975",
+      "StationAttribute": "浮標站",
+      "StationAttributeEN": "Data Buoy Station",
+      "StationAddress": "龍洞遊艇港外海，離岸約0.26公里，該處水深約26公尺",
+      "StationAddressEN": "At sea, about 0.26km from Longdong Boat Harbor, with water depth of about 26m",
+      "County": {
+       "CountyName": "新北市",
+       "CountyNameEN": "New Taipei City"
+      },
+      "Town": {
+       "TownName": "貢寮區",
+       "TownNameEN": "Gongliao District"
+      },
+      "Area": {
+       "AreaName": "彭佳嶼基隆海面",
+       "AreaNameEN": "Pengjiayu-Keelung inshore"
+      },
+      "StationChargeIns": "交通部中央氣象署",
+      "StationChargeInsEN": "Central Weather Administration  Ministry of Transportation and Communications"
+     },
+     "Description": null,
+     "Sequence": "2",
+     "StationObsStatus": {
+      "StationStatus": "1",
+      "ObservedPropertyNames": "WaveHeight,WaveDirection,WaveDirectionDescription,WavePeriod,WindSpeed,WindScale,WindDirection,WindDirectionDescription,MaximumWindSpeed,MaximumWindScale,SeaTemperature,Temperature,StationPressure,CurrentDirection,CurrentDirectionDescription,CurrentSpeed,CurrentSpeedInKnots",
+      "ObservedProperties": {
+       "TideHeight": {
+        "ObsStatus": "0"
+       },
+       "TideLevel": {
+        "ObsStatus": "0"
+       },
+       "WaveHeight": {
+        "ObsStatus": "1"
+       },
+       "WaveDirection": {
+        "ObsStatus": "1"
+       },
+       "WaveDirectionDescription": {
+        "ObsStatus": "1"
+       },
+       "WavePeriod": {
+        "ObsStatus": "1"
+       },
+       "WindSpeed": {
+        "ObsStatus": "1"
+       },
+       "WindScale": {
+        "ObsStatus": "1"
+       },
+       "WindDirection": {
+        "ObsStatus": "1"
+       },
+       "WindDirectionDescription": {
+        "ObsStatus": "1"
+       },
+       "MaximumWindSpeed": {
+        "ObsStatus": "1"
+       },
+       "MaximumWindScale": {
+        "ObsStatus": "1"
+       },
+       "SeaTemperature": {
+        "ObsStatus": "1"
+       },
+       "Temperature": {
+        "ObsStatus": "1"
+       },
+       "StationPressure": {
+        "ObsStatus": "1"
+       },
+       "CurrentDirection": {
+        "ObsStatus": "1"
+       },
+       "CurrentDirectionDescription": {
+        "ObsStatus": "1"
+       },
+       "CurrentSpeed": {
+        "ObsStatus": "1"
+       },
+       "CurrentSpeedInKnots": {
+        "ObsStatus": "1"
+       }
+      },
+      "StationObsTimes": null
+     }
+    },
+    {
+     "Station": {
+      "StationID": "C4A06",
+      "StationName": "淡海潮位站",
+      "StationNameEN": "Danhai",
+      "StationLongitude": "121.4075",
+      "StationLatitude": "25.1839",
+      "StationAttribute": "潮位站",
+      "StationAttributeEN": "Tidal Station",
+      "StationAddress": "漁人碼頭第3泊地外堤",
+      "StationAddressEN": "Tamsui District Fishing Port in New Taipei City",
+      "County": {
+       "CountyName": "新北市",
+       "CountyNameEN": "New Taipei City"
+      },
+      "Town": {
+       "TownName": "淡水區",
+       "TownNameEN": "Danshui District"
+      },
+      "Area": {
+       "AreaName": "彭佳嶼基隆海面",
+       "AreaNameEN": "Pengjiayu-Keelung inshore"
+      },
+      "StationChargeIns": "交通部中央氣象署",
+      "StationChargeInsEN": "Central Weather Administration  Ministry of Transportation and Communications"
+     },
+     "Description": null,
+     "Sequence": "4",
+     "StationObsStatus": {
+      "StationStatus": "1",
+      "ObservedPropertyNames": "TideHeight,TideLevel,SeaTemperature",
+      "ObservedProperties": {
+       "TideHeight": {
+        "ObsStatus": "1"
+       },
+       "TideLevel": {
+        "ObsStatus": "1"
+       },
+       "WindSpeed": {
+        "ObsStatus": "0"
+       },
+       "WindScale": {
+        "ObsStatus": "0"
+       },
+       "WindDirection": {
+        "ObsStatus": "0"
+       },
+       "WindDirectionDescription": {
+        "ObsStatus": "0"
+       },
+       "MaximumWindSpeed": {
+        "ObsStatus": "0"
+       },
+       "MaximumWindScale": {
+        "ObsStatus": "0"
+       },
+       "SeaTemperature": {
+        "ObsStatus": "1"
+       },
+       "Temperature": {
+        "ObsStatus": "0"
+       },
+       "StationPressure": {
+        "ObsStatus": "0"
+       }
+      },
+      "StationObsTimes": null
+     }
+    }
+   ]
+  }
+ }
+}

@@ -1499,6 +1499,10 @@ def _station_priority(st):
         return 60
     if src == "SMHI":                  # Sweden (bulk + history)
         return 60
+    if src == "CWA":                   # Taiwan (bulk, mean period, 48 h; plan section 69)
+        return 60
+    if src == "CCO":                   # UK Channel Coastal Observatory: the programme's own buoys, 30-min, with
+        return 59                      # spread and 24 h (plan section 69): above CEFAS's latest-only copies
     if src == "CEFAS":                 # UK WaveNet aggregate (latest-only)
         return 58
     if src == "CDIP":
@@ -3100,6 +3104,329 @@ class IoosSensorsProvider(BuoyProvider):
         base = "Source: %s, via the U.S. IOOS sensor map (Axiom Data Science). " % inst if inst else \
             "Source: U.S. IOOS regional ocean observing systems via the IOOS sensor map (Axiom Data Science). "
         return base + "Data under the operator's terms; not intended for legal use."
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Plan section 69: the buoy feeds that need a key (CCO_API_KEY, CWA_API_KEY in the environment). A key is never put in
+# a message, a log line or an answer: CCO's goes in a request header; CWA's must go in the URL's query, so every error
+# text passes through _redact_key first.
+
+_KEY_QUERY = re.compile(r"(Authorization=)[^&\s'\"]+", re.I)
+
+
+def _redact_key(text, key):
+    s = str(text or "")
+    if key:
+        s = s.replace(key, "[key]")
+    return _KEY_QUERY.sub(r"\1[key]", s)
+
+
+def _num(v, lo=None, hi=None):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(x) or (lo is not None and x < lo) or (hi is not None and x > hi):
+        return None
+    return x
+
+
+def _cco_time(v):
+    """CCO's time ("YYYYMMDD#HHMMSS", or ISO with or without a zone) as YYYY-MM-DDTHH:MM:SSZ (UTC when no zone)."""
+    s = str(v or "").strip()
+    if re.search(r"(Z|[+-]\d\d:?\d\d)$", s) and "T" in s:
+        try:
+            d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            pass
+    m = re.search(r"(\d{4})-?(\d\d)-?(\d\d)\D?(\d\d):?(\d\d):?(\d\d)", s)
+    if not m:
+        return None
+    try:
+        d = datetime(*(int(x) for x in m.groups()), tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+CCO_BAD = {"hs_m": (1, 9), "tp_s": (1, 2, 9), "mean_period_s": (1, 2, 9), "dir_deg": (1, 2, 3, 6, 9),
+           "dir_spread_deg": (1, 2, 3, 6, 9), "sst_c": (8, 9)}
+
+
+def parse_cco_features(doc):
+    """[(sensor id, name, lat, lon, obs)] of a CCO GeoJSON answer; obs carries the bulk wave parameters (SI, direction
+    FROM) with the fields the quality flag marks bad left out."""
+    out = []
+    for f in (doc or {}).get("features") or ():
+        if not isinstance(f, dict):
+            continue
+        p = f.get("properties") or {}
+        try:
+            lon, lat = (f.get("geometry") or {})["coordinates"][:2]
+            lat, lon = float(lat), float(lon)
+        except (KeyError, TypeError, ValueError, IndexError):
+            continue
+        name = " ".join(str(p.get("sensor") or p.get("name") or "").split())
+        sid = next((str(p[k]) for k in ("id", "sensor_id", "sensorId", "sensorid") if p.get(k) not in (None, "")), None)
+        sid = re.sub(r"[^A-Za-z0-9_-]", "_", sid or name).strip("_")[:40]
+        if not sid or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        try:
+            qc = int(float(p.get("QCflag")))
+        except (TypeError, ValueError):
+            qc = None
+        obs = {"time_utc": _cco_time(p.get("date") or p.get("time")),
+               "hs_m": _num(p.get("hs"), 0, 30), "hmax_m": _num(p.get("hmax"), 0, 60), "tp_s": _num(p.get("tp"), 0, 40),
+               "mean_period_s": _num(p.get("tz"), 0, 40), "dir_deg": _num(p.get("pdir"), 0, 360),
+               "dir_spread_deg": _num(p.get("spread"), 0, 180), "sst_c": _num(p.get("sst"), -5, 40), "dir_kind": "from"}
+        if qc is not None:
+            for k, bad in CCO_BAD.items():
+                if qc in bad:
+                    obs[k] = None
+            if obs["hs_m"] is None:
+                obs["hmax_m"] = None
+        out.append((sid, name or sid, lat, lon, obs))
+    return out
+
+
+class CcoProvider(BuoyProvider):
+    """UK Channel Coastal Observatory (Regional Coastal Monitoring Programme): every wave sensor's latest reading in
+    one answer, a sensor's 24 hours on demand. The key goes in X-API-Key; it is bound to allshoresurf.com, so every
+    request names the site in Referer."""
+    source = "CCO"
+    source_name = "Channel Coastal Observatory (UK)"
+    source_url = "https://coastalmonitoring.org/realtimedata/"
+    license_label = "Open Government Licence"
+    attribution_text = ("Real time data displayed on this page are from the Regional Coastal Monitoring Programme, made "
+                        "freely available under the terms of the Open Government Licence. Please note that these are "
+                        "real-time data and are not quality-controlled.")
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    timeout = 40
+    BASE = "https://coastalmonitoring.org/observations/waves/latest.geojson"
+    MAX = 4 * 1024 * 1024
+    DETAIL_TTL = 600
+
+    def __init__(self, key, http=None):
+        super().__init__(http)
+        self._key = key
+        self._latest_by_id = {}
+        self._names = {}
+        self._detail = {}
+
+    def _headers(self):
+        return {"X-API-Key": self._key, "Referer": "https://allshoresurf.com/", "Accept": "application/geo+json",
+                "User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"}
+
+    def _get(self, url):
+        try:
+            r = self.http.get(url, headers=self._headers(), timeout=self.timeout)
+            if r.status_code != 200:
+                raise RuntimeError("HTTP %s from CCO" % r.status_code)
+            if len(r.content) > self.MAX:
+                raise RuntimeError("the CCO answer is too large")
+            return r.json()
+        except Exception as exc:                              # noqa: BLE001
+            raise RuntimeError(_redact_key("%s: %s" % (type(exc).__name__, exc), self._key)) from None
+
+    def _fetch_stations(self):
+        latest, meta = {}, {}
+        for sid, name, lat, lon, obs in parse_cco_features(self._get(self.BASE)):
+            if obs.get("hs_m") is None or not obs.get("time_utc"):
+                continue
+            old = latest.get(sid)
+            if old is not None and old["time_utc"] >= obs["time_utc"]:
+                continue
+            latest[sid] = obs
+            meta[sid] = (name, lat, lon)
+        if not latest:
+            raise RuntimeError("the CCO answer holds no wave reading")
+        self._latest_by_id = latest
+        self._names.update({sid: m[0] for sid, m in meta.items()})
+        return [{"local_id": sid, "name": meta[sid][0], "lat": meta[sid][1], "lon": meta[sid][2],
+                 "latest_time": latest[sid]["time_utc"]} for sid in sorted(latest)]
+
+    detail_fresh = True                                       # the window's refresh button (plan section 56)
+
+    def detail(self, local_id, fresh_s=None):
+        if local_id not in self._latest_by_id:
+            self.list_stations()
+        if local_id not in self._latest_by_id:
+            return {"latest": None, "recent": []}
+        now = time.time()
+        hit = self._detail.get(local_id)
+        if hit and now - hit[0] < (self.DETAIL_TTL if fresh_s is None else min(self.DETAIL_TTL, fresh_s)):
+            return hit[1]
+        sensor = self._names.get(local_id) or local_id
+        try:
+            doc = self._get(self.BASE + "?duration=24&sensor=" + requests.utils.quote(sensor))
+            obs = sorted((o for (s, _n, _la, _lo, o) in parse_cco_features(doc)
+                          if s == local_id and o.get("time_utc") and o.get("hs_m") is not None),
+                         key=lambda o: o["time_utc"])
+        except RuntimeError:
+            obs = []
+        latest = self._latest_by_id.get(local_id)
+        if obs and (latest is None or obs[-1]["time_utc"] >= latest["time_utc"]):
+            latest = obs[-1]
+        out = {"latest": latest, "recent": _recent_window(obs) if obs else []}
+        if obs:                                               # a failed window is asked again next time
+            self._detail[local_id] = (now, out)
+        return out
+
+    def latest(self, local_id):
+        if local_id not in self._latest_by_id:
+            self.list_stations()
+        return self._latest_by_id.get(local_id)
+
+
+def _cwa_val(v, lo=None, hi=None):
+    if v is None or str(v).strip() in ("None", "-", "", "-99", "-999"):
+        return None
+    return _num(v, lo, hi)
+
+
+def _cwa_locations(doc):
+    """The SeaSurfaceObs Location list wherever the answer holds it (REST: records; the file: cwaopendata)."""
+    todo, n = [doc], 0
+    while todo and n < 20000:
+        o = todo.pop(0)
+        n += 1
+        if isinstance(o, dict):
+            sso = o.get("SeaSurfaceObs")
+            if isinstance(sso, dict) and isinstance(sso.get("Location"), list):
+                return sso["Location"]
+            todo.extend(v for v in o.values() if isinstance(v, (dict, list)))
+        elif isinstance(o, list):
+            todo.extend(v for v in o if isinstance(v, (dict, list)))
+    return []
+
+
+def parse_cwa_buoy_stations(doc):
+    """{StationID: {name, lat, lon}} of O-B0076-001: the stations whose observed properties include WaveHeight."""
+    out = {}
+    for loc in _cwa_locations(doc):
+        if not isinstance(loc, dict):
+            continue
+        st = loc.get("Station") or {}
+        sid = str(st.get("StationID") or "").strip()
+        props = str((loc.get("StationObsStatus") or {}).get("ObservedPropertyNames") or "")
+        if not re.fullmatch(r"[A-Za-z0-9]{2,12}", sid) or "WaveHeight" not in props:
+            continue
+        lat, lon = _num(st.get("StationLatitude"), -90, 90), _num(st.get("StationLongitude"), -180, 180)
+        if lat is None or lon is None:
+            continue
+        name = " ".join(str(st.get("StationNameEN") or st.get("StationName") or sid).split())
+        out[sid] = {"name": name, "lat": lat, "lon": lon}
+    return out
+
+
+def _cwa_z(s):
+    try:
+        d = datetime.fromisoformat(str(s).strip())
+    except (TypeError, ValueError):
+        return None
+    if d.tzinfo is None:
+        return None
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_cwa_buoy_obs(doc):
+    """{StationID: [obs oldest first]} of O-B0075-001 (hourly, the last 48 hours). WavePeriod is a MEAN period (CWA's
+    buoys report no peak period): mean_period_s, never tp_s. Directions FROM."""
+    out = {}
+    for loc in _cwa_locations(doc):
+        if not isinstance(loc, dict):
+            continue
+        sid = str((loc.get("Station") or {}).get("StationID") or "").strip()
+        times = (loc.get("StationObsTimes") or {}).get("StationObsTime") or []
+        if isinstance(times, dict):
+            times = [times]
+        rows = []
+        for t in times:
+            if not isinstance(t, dict):
+                continue
+            we = t.get("WeatherElements") or {}
+            wind = we.get("PrimaryAnemometer") or {}
+            obs = {"time_utc": _cwa_z(t.get("DataTime")), "hs_m": _cwa_val(we.get("WaveHeight"), 0, 30),
+                   "mean_period_s": _cwa_val(we.get("WavePeriod"), 0, 40), "tp_s": None,
+                   "dir_deg": _cwa_val(we.get("WaveDirection"), 0, 360), "sst_c": _cwa_val(we.get("SeaTemperature"), -5, 40),
+                   "wind_speed_ms": _cwa_val(wind.get("WindSpeed"), 0, 120),
+                   "wind_dir_deg": _cwa_val(wind.get("WindDirection"), 0, 360), "dir_kind": "from"}
+            if obs["time_utc"] and obs["hs_m"] is not None:
+                rows.append(obs)
+        if sid and rows:
+            out[sid] = sorted({o["time_utc"]: o for o in rows}.values(), key=lambda o: o["time_utc"])
+    return out
+
+
+class CwaBuoyProvider(BuoyProvider):
+    """Taiwan Central Weather Administration buoys: the station list (O-B0076-001) once a day and every station's last
+    48 hours (O-B0075-001) in one answer, serving the list, the latest reading and the windows. The key goes in the
+    URL's query (CWA takes it nowhere else): every error text is redacted."""
+    source = "CWA"
+    source_name = "Central Weather Administration (Taiwan)"
+    source_url = "https://opendata.cwa.gov.tw/"
+    license_label = "Open Government Data License"
+    attribution_text = ("Source: Central Weather Administration (Taiwan), marine observations O-B0075-001. The Open Data "
+                        "is made available to the public under the Open Government Data License, "
+                        "https://data.gov.tw/license")
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    timeout = 40
+    API = "https://opendata.cwa.gov.tw/api/v1/rest/datastore/%s?format=JSON&Authorization=%s"
+    MAX = 16 * 1024 * 1024
+    STATIONS_TTL = 24 * 3600
+
+    def __init__(self, key, http=None):
+        super().__init__(http)
+        self._key = key
+        self._stations = {}
+        self._stations_at = 0.0
+        self._obs = {}
+
+    def _get(self, dataset):
+        try:
+            r = self.http.get(self.API % (dataset, self._key), timeout=self.timeout,
+                              headers={"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"})
+            if r.status_code != 200:
+                raise RuntimeError("HTTP %s from CWA %s" % (r.status_code, dataset))
+            if len(r.content) > self.MAX:
+                raise RuntimeError("the CWA answer is too large")
+            return r.json()
+        except Exception as exc:                              # noqa: BLE001
+            raise RuntimeError(_redact_key("%s: %s" % (type(exc).__name__, exc), self._key)) from None
+
+    def _fetch_stations(self):
+        now = time.time()
+        if not self._stations or now - self._stations_at > self.STATIONS_TTL:
+            found = parse_cwa_buoy_stations(self._get("O-B0076-001"))
+            if found:
+                self._stations, self._stations_at = found, now
+        if not self._stations:
+            raise RuntimeError("no CWA station with a wave sensor")
+        obs = parse_cwa_buoy_obs(self._get("O-B0075-001"))
+        out = []
+        for sid, st in sorted(self._stations.items()):
+            rows = obs.get(sid)
+            if rows:
+                out.append({"local_id": sid, "name": st["name"], "lat": st["lat"], "lon": st["lon"],
+                            "latest_time": rows[-1]["time_utc"]})
+        if not out:
+            raise RuntimeError("the CWA answer holds no wave reading")
+        self._obs = obs
+        return out
+
+    def detail(self, local_id):
+        if local_id not in self._obs:
+            self.list_stations()
+        rows = self._obs.get(local_id) or []
+        return {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
 
     def latest(self, local_id):
         return self.detail(local_id)["latest"]

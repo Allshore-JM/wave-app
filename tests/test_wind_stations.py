@@ -27,7 +27,7 @@ def _tool():
 
 
 W = _tool()
-MORE_MET = ("eccc", "jma", "smhi", "fmi", "dmi", "dwd", "ipma", "mei")
+MORE_MET = ("eccc", "jma", "smhi", "fmi", "dmi", "dwd", "ipma", "mei", "cwa")   # cwa: plan section 69
 MORE = MORE_MET + ("iem",)
 
 
@@ -57,7 +57,7 @@ def test_ids_are_namespaced_unique_and_match_their_source(snap):
     kinds.update({src: {"met"} for src in MORE_MET})                  # plan section 67: national weather services
     native_re = {"coops": r"\d{7}", "jma": r"\d{5}", "dwd": r"10\d{3}", "dmi": r"\d{5}", "fmi": r"\d{6}",
                  "smhi": r"\d{4,6}", "ipma": r"\d{7,8}", "eccc": r"[A-Z][A-Z0-9]{3}", "mei": r"[A-Z][A-Z-]{2,23}",
-                 "iem": r"[A-Z0-9]{3,6}"}
+                 "iem": r"[A-Z0-9]{3,6}", "cwa": r"[A-Z0-9]{6}"}
     for r in rows:
         src, _, native = r["id"].partition(":")
         assert src == r["src"] and src in kinds, r

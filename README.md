@@ -2020,6 +2020,55 @@ with the note "Earlier hours are not kept after a server restart."; a station th
 says so and is asked again in a minute). Links in the window: JMA's AMeDAS
 page, IEM's site page, Met Eireann's observations page.
 
+## Feeds that need a key (plan section 69)
+
+Four agencies gave the site a key (registered in plan section 68); each feed is built only when its key is in the
+environment (on both Render services), and without it the feed is simply absent:
+
+| Environment variable | Feed | Kind |
+|---|---|---|
+| `CCO_API_KEY` | UK Channel Coastal Observatory (coastalmonitoring.org) | live buoys `cco:<sensor>` |
+| `CWA_API_KEY` | Taiwan Central Weather Administration (opendata.cwa.gov.tw) | live buoys `cwa:<station>` and wind stations `cwa:<station>` |
+| `KNMI_API_KEY` | KNMI Data Platform (the Netherlands) | wind stations `knmi:<station>` |
+| `FROST_CLIENT_ID` | MET Norway Frost | wind stations `frost:<SN id>` |
+
+Keys never leave the server: they are read from the environment when the feeds are built and never appear in an answer,
+a page, `/healthz` or a log line. CCO's goes in the `X-API-Key` header (with `Referer: https://allshoresurf.com/`: the
+key is bound to the site's domain), KNMI's in `Authorization`, Frost's as the HTTP Basic user (empty password). CWA's
+API takes its key in the address, so every error text and status line passes through `wind_keyed.redact()` (the key and
+the query's `Authorization=` value replaced by `[key]`); KNMI's temporary signed download addresses are cut the same way.
+Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check that it is in no status, log or answer.
+
+- **CCO buoys** (`buoy_sources.CcoProvider`): `latest.geojson` every 30 minutes (one feature per sensor: height, max
+  height, peak and mean period, peak direction, spread, water temperature; CCO's quality flag blanks the fields it marks
+  bad); a window's 24 hours are one `duration=24` request for that sensor (kept 10 minutes; the refresh button asks
+  again). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. The page shows
+  CCO's required sentence: "Real time data displayed on this page are from the Regional Coastal Monitoring Programme,
+  made freely available under the terms of the Open Government Licence. Please note that these are real-time data and
+  are not quality-controlled."
+- **CWA buoys** (`buoy_sources.CwaBuoyProvider`): the station list O-B0076-001 once a day (the stations with a wave
+  sensor), the readings O-B0075-001 (every station's last 48 hours, hourly) every 30 minutes: one answer serves the
+  markers and every window. CWA's wave period is a MEAN period: it is shown as the mean period, never as the peak period.
+  Dedup rank 60. Open Government Data License v1.0.
+- **KNMI wind** (`wind_keyed.KnmiProvider`): KNMI publishes one NetCDF file of every station every 10 minutes. Every
+  2 minutes the feed lists the newest file names (one call), and reads the newest file it has not read (two calls: its
+  temporary address, then the file); while the window's 24 hours are not complete it also reads up to 6 older files a
+  refresh, so the 24 hours fill in about 45 minutes after a start (the window says the earlier hours are still loading).
+  The stations come from the files themselves (every station kept: the Netherlands lies near the sea or the IJsselmeer).
+  The reader takes NetCDF-4 (HDF5, through h5py) and classic NetCDF; it finds the variables by a list of names
+  (`KNMI_NAMES`) and names what it misses. About 40 requests an hour, about 300 in the first 45 minutes after a
+  start (KNMI allows 1,000 an hour). CC BY 4.0, KNMI.
+- **Frost wind** (`wind_keyed.FrostProvider`): Norway's stations with a wind sensor from Frost's source list once a day,
+  kept within 30 km of the sea or at sea by the committed map `tools/wind/norway_coast30.bin` (0.05-degree cells built
+  from the site's world coastline by `tools/wind/more_stations.py --norway-mask`); readings every 10 minutes, 50 stations
+  a request (speed, direction and the 10-minute gust; Frost refusing the gust element leaves it out). A window's
+  24 hours are one Frost request for that station, behind a budget of 30 windows a minute. Svalbard's stations keep
+  Arctic/Longyearbyen time. NLOD 2.0 / CC BY 4.0, "Data from The Norwegian Meteorological Institute".
+- **CWA wind** (`wind_keyed.CwaWindProvider`): the 10-minute observations O-A0003-001 every 10 minutes; the stations
+  within 30 km of the coast are in the snapshot (`python tools/wind/more_stations.py --only cwa`, built from CWA's
+  keyless copy of the same file on its public S3 bucket); a window's 24 hours are the feed's own memory since the server
+  started (as ECCC's). CWA's "day's peak gust" is not a 10-minute gust and is not shown.
+
 ## The station windows' refresh button (plan section 56, UI asset 1.26.4)
 
 **The page.** Each of the three windows has a circular-arrow button before its minimise button (`#lwRefresh`,

@@ -621,6 +621,21 @@ def test_cwa_buoy_feed_serves_the_list_and_the_windows_from_one_answer(clock):
     assert d["latest"]["hs_m"] == 1.3 and d["recent"] and len(http.calls) == n      # no new request for a window
 
 
+def test_cwa_buoy_times_as_datetime_and_an_unreadable_answer_says_what_it_held(clock):
+    clock.t = 1793469600
+    doc = fx("cwa_buoy_obs.json")
+    for loc in doc["records"]["SeaSurfaceObs"]["Location"]:
+        for t in loc["StationObsTimes"]["StationObsTime"]:
+            t["DateTime"] = t.pop("DataTime")
+    assert B.parse_cwa_buoy_obs(doc)["46694A"][-1]["time_utc"] == "2026-10-31T17:00:00Z"
+    bad = {"success": "true", "records": {"SeaSurfaceObs": {"Location": [{"Station": {"StationID": "46694A"},
+                                                                          "StationObsTimes": {"StationObsTime": [{"When": "x"}]}}]}}}
+    p = B.CwaBuoyProvider(SECRET, http=FakeHttp(lambda u: Resp(200, fx("cwa_buoy_stations.json") if "O-B0076" in u else bad)))
+    p.list_stations()
+    err = p.status()["last_error"]
+    assert "no wave reading" in err and "time keys ['When']" in err and "1 locations" in err and SECRET not in err
+
+
 def test_cwa_buoy_failure_redacts_the_key(clock):
     clock.t = 1793469600
     url = B.CwaBuoyProvider.FILE_API % ("O-B0076-001", SECRET)

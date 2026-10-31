@@ -2056,11 +2056,14 @@ Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check
 - **CCO buoys** (`buoy_sources.CcoProvider`): `latest.geojson` every 30 minutes (one feature per sensor: height, max
   height, peak and mean period, peak direction, spread, water temperature; CCO's quality flag blanks the fields it marks
   bad: a single code by `CCO_BAD`; a code of several digits, as CCO's own pages print it ("0000"), with any digit not 0
-  blanks every wave field, since the positions' meaning is not published; `/healthz` lists the flag values seen); a
+  blanks every wave field, since the positions' meaning is not published; `/healthz` lists the flag values seen: on
+  2026-10-31 only single codes, "9" and none); a
   sensor whose newest wave height is more than 4 days old is left out (the file still lists retired sensors: West
   Anglesey's last reading is from 2016). A window's 24 hours (all 49 half-hours) are one `duration=24` request for that
   sensor, by its id: one attempt under 20 s on the visitor's thread, one at a time per sensor (kept 10 minutes; the
-  refresh button asks again); a row ahead of the clock is left out. CCO's times are GMT (its own pages say so). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. CEFAS relays them as "<site> Waverider" and CMEMS as "<site>DWR" or by a WMO number (6201045 = Scarborough): the dedup's name key strips those words, and `_MATCH_NAME_ALIAS` names the numbered copy. The page shows
+  refresh button asks again); a row ahead of the clock is left out. CCO's times are GMT (its own pages say so). Dedup rank 59, just above CEFAS (58): CCO's own buoys report every 30 minutes with direction. CEFAS relays them as "<site> Waverider" and CMEMS as "<site>DWR" or by a WMO number (6201045 = Scarborough): the dedup's name key strips those words, and `_MATCH_NAME_ALIAS` names the numbered copy. A copy that matches a copy
+  already hidden joins that copy's kept marker when it lies within 10 km of it (CMEMS's 6201000 matches CEFAS's
+  "Penzance Waverider", which is hidden under CCO's Penzance 1.7 km away). The page shows
   CCO's required sentence: "Real time data displayed on this page are from the Regional Coastal Monitoring Programme,
   made freely available under the terms of the Open Government Licence. Please note that these are real-time data and
   are not quality-controlled."
@@ -2088,8 +2091,9 @@ Tests (`tests/test_keyed_sources.py`) feed each provider a made-up key and check
   counts (`sources_seen`). The road
   weather stations Frost relays (Statens vegvesen, named by their road: "E6 Andelva", "Rv15 Grotli") are road
   weather stations on the map, as IEM's. A window's
-  24 hours are one Frost request for that station, behind a budget of 30 windows a minute. Svalbard's stations keep
-  Arctic/Longyearbyen time. NLOD 2.0 / CC BY 4.0, "Data from The Norwegian Meteorological Institute".
+  24 hours are one Frost request for that station, behind a budget of 30 windows a minute. Frost lists Svalbard and Jan
+  Mayen as a country of their own (SJ: `country=NO` names nothing north of 72.5 N), so they are a second source call;
+  if it fails they are left out until the next day's list (`/healthz` says why). They keep Arctic/Longyearbyen time. NLOD 2.0 / CC BY 4.0, "Data from The Norwegian Meteorological Institute".
 - **CWA wind** (`wind_keyed.CwaWindProvider`): the 10-minute observations O-A0003-001 every 10 minutes; the stations
   within 30 km of the coast are in the snapshot (`python tools/wind/more_stations.py --only cwa`, built from CWA's
   keyless copy of the same file on its public S3 bucket); a window's 24 hours are the feed's own memory since the server

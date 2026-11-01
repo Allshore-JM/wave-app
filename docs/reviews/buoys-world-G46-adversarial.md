@@ -36,3 +36,39 @@ not match. Fixed @ f1dd7de: a Copernicus id that is a plain 5-digit number count
 (`_CMEMS_NUM_RE`, beside the `_TS_MO_6200NNN` rule), so the copy joins NDBC's marker within the number radius. On the
 real list only those three change (Mallorca's 61499 has no twin). Test + 2 of 2 mutants killed. Live on the test site
 @ c37400b: the three copies gone, 769 markers.
+
+## Step 3: G46 (one fresh reviewer, 074ccd7..ed11bb6)
+
+Report: scratch `g46/g46-report.md`. **0 P0, 1 P1, 5 P2, 2 P3 groups.** Held up: the suites; dedup on the real lists (no
+new marker within 15 km of another network's, the only hidden ones the three Antilles copies); KMA's real node (32
+stations, no duplicates, the peak rule's one drop correct); SiMCosta's filter, epoch times, partitions, FROM directions,
+disclaimer-only terms; Copernicus's float32 variables without scale factors, VDIR FROM, a silent host costing no more
+than before. Mutants 46 applied, 31 killed (survivors listed in the report).
+
+| Finding | Severity | Outcome |
+|---|---|---|
+| F1 Meteo-France's relays carry a 0-3 code in VTPK; with a 3-4 s mean the ratio rule kept "2-3 s peaks" (6100001 live) | P1 | Fixed: `_vtpk_is_code` drops a file's VTPK column when every value is a whole number 0-3 and one is 0 or 1 (verified on 6100001 / 6100002 / 6200001: codes; the Bothnian Sea, RON, NIOT, the Canaries: periods) |
+| F2 "Europe unchanged" was false: 22 new European platforms; the column rule fills windows empty on production (6200025, Troll-A, Soller); the 2-s floor dropped real Bothnian 1.8-1.9 s peaks | P2 | The first two are intended (recorded in the README); the floor is 1 s now (the relays are caught by the code rule) |
+| F3 drifters drawn at the middle of the day's box (up to 60 km across; the fixture drifter 11.9 km off) | P2 | Fixed: the newest fix of the newest file, read when the index shows the file grown (cache per file and end time); the box's middle when unreadable |
+| F4 a requests timeout / reset on one SiMCosta platform, the list, or a secondary KMA variable failed the whole feed | P2 | Fixed: those handlers catch `requests.RequestException` and `OSError` too |
+| F5 SiMCosta with every platform failing republished the old rows as a good refresh, forever | P2 | Fixed: every platform failing is a failed refresh (keep-last, its expiry, `/healthz`) |
+| F6 RJ-4 showed the time-domain Hsig (~7 % below its HM0; every other network shows HM0) | P3 | Fixed: HM0 first, Hsig when HM0 is missing or out of range |
+| F7 a fill-value TIME in the day-before file blanked today's window | P3 | Fixed: such a row is skipped |
+| F7 WIS2 units not checked (25 cm would show as 25 m) | P3 | Fixed: heights m, periods s, directions deg, temperatures K / Celsius; anything else left out |
+| F7 KMA's unordered answer under `limit=5000` | P3 | Recorded: 775-816 features a variable today; the warning stays |
+| F7 zone names of a few new markers (Pyongyang, Jakarta, Madrid; same offsets) | P3 | Recorded (the live buoys' nearest-civil rule, unchanged) |
+| F7 the streaming golden patches out the additions; no test of a first-column national file | P3 | Fixed: new tests (first-column file, the code rule on a copied relay file, the drifter fix, the bad TIME) |
+| F7 QC flags not read | P3 | Recorded (as before for every Copernicus platform) |
+
+Fix @ 5df40bb (+ tests + README). Tests 52 in `tests/test_buoys_world.py`; full pytest 2,118; fix mutants 16 of 16
+killed (after three pins: a 4 in the code column, an SST in degF, the drifter cache pruned).
+
+## Test-site check of the G46 fixes (test @ c6c705f, live 01:51 UTC)
+
+- Meteo-France's relays 6100001 / 6100002 / 6200001 / 6101031: no peak period in any of their 18-19 rows; the Bothnian
+  Sea shows its 1.8-2.7 s peaks (48 rows); RON 6100217 unchanged.
+- All 20 drifters drawn exactly at their file's newest fix (0.00 km; own h5py read).
+- Values vs the agencies again: Copernicus 35 of 35 windows (the three Antilles copies now merged), SiMCosta 3 of 3 (HM0),
+  KMA 32 of 32.
+- Windows by trusted clicks and taps, desktop and phone: 9 of 9 each, no console problems. Feeds clean; Copernicus's
+  list refresh 61 s on the free instance (53 s before: the drifters' 20 file reads); RSS 196 MB.

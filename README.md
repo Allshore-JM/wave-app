@@ -1600,6 +1600,9 @@ section 71). This adds what is open:
   refresh (30 min) asks the last 26 h of the six wave variables, one query each; a station's readings are joined by the
   report time. WMO core data (free and unrestricted). The page links `kma:0-410-0-22101` to NOAA's forecast point 22101.
 - Dedup priority: KMA 57, SiMCosta 56 (above Copernicus's relays of the same buoys, 30).
+- The Antilles box also holds Copernicus's copies of NDBC's 41040, 41044 and 42060 (`GL_TS_MO_41040` ...), 3-13 km from
+  NDBC's positions: a Copernicus id that is a plain 5-digit buoy number counts as that number in the dedup, so the copy
+  joins NDBC's marker (as `..._TS_MO_6200NNN` counts as WMO 62NNN).
 - NOAA's WIS2 node was considered for Italy's RON and the French overseas buoys and not used: Copernicus carries them,
   while the node's answer is 50 records a page, mostly US buoys the site already has.
 

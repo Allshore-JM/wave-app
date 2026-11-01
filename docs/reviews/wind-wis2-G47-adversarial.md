@@ -67,3 +67,16 @@ live values WIS2 104 of 106 equal (the 2 = the designed no-direction cases), Hon
   `tests/test_wind_sources.py::test_app_wires_the_madis_backup` (the far fetch wiring and limits).
 - Suites: pytest 2,148 (the G42 trickle test, load-sensitive, alone); fix-round mutants 19 of 19 killed (one test case
   added for the WIGOS id shape after the first pass).
+
+## Test-site check of the fix round (2026-11-01, `test` @ 7cb10bc, live 05:06 UTC)
+
+- Station list 4,889: the five airport stations gone, Tsing Yi, Tuen Mun and Mormugao present; Digha and Minicoy at their
+  hand-checked positions.
+- Feeds (`/healthz`): WIS2, HKO and SMN published with no error; refreshes 2.3 s (WIS2, two nodes), 2.8 s (HKO), 3.7 s
+  (SMN) through the far fetch.
+- The site's latest readings against each agency's own answer (independent code): WIS2 100 equal + the 2 designed
+  no-direction cases (a 510-degree report; a calm report with 1 degree); Hong Kong 28 of 28 once the site's and HKO's
+  times matched (HKO publishes every 10 minutes; for five minutes the site was one step behind, as the feed's 10-minute
+  refresh allows); SMN 15 of 15 at matching times (2 newer at SMN).
+- Windows: Cape Point 23 rows and Minicoy 8 from their nodes (1.3 s, 0.4 s), Hong Kong and SMN from memory with the
+  restart note. No page change in the fix round (UI 1.28.0 as in step 2).

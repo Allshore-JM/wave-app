@@ -104,11 +104,12 @@ _COOPS_ANYWHERE = re.compile(r"(?<![\d.])(\d{7})(?![\d.])")
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
 
 
-def get_bytes(url, tries=3, headers=None, timeout=60):
+def get_bytes(url, tries=3, headers=None, timeout=60, context=None):
+    """url's body; context: an ssl context for the request (default urllib's)."""
     req = urllib.request.Request(url, headers=dict(headers or {}, **{"User-Agent": UA}))
     for k in range(tries):
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout, context=context) as r:
                 return r.read()
         except Exception:
             if k == tries - 1:

@@ -1841,6 +1841,11 @@ def test_app_wires_the_madis_backup(monkeypatch):
     # plan section 55: the 24 hours and the filling flag handed over too; the provider back-fills
     assert w["svc"].madis_hist == m.hist and w["svc"].madis_filling == m.filling and m.backfill is True
     assert m._wfetch is A._madis_window_fetch, "the windows: their own fetch (step 2 V2-1)"
+    far = {p.source: p._fetch for p in w["providers"] if p.source in ("WIS2", "HKO", "SMN")}
+    assert far and all(f is A._far_fetch for f in far.values()), "the far feeds: their own, wider limits (G47 F8)"
+    assert all(p._fetch is A._points_fetch for p in w["providers"] if p.source in ("IPMA", "JMA", "NDBC", "METAR"))
+    assert w["svc"].far_fetch is A._far_window_fetch
+    assert (A._FAR_FETCH_TIMEOUT, A._FAR_FETCH_MAX_S, A._FAR_WINDOW_TIMEOUT, A._FAR_WINDOW_MAX_S) == ((8, 15), 25, (8, 10), 15)
     monkeypatch.setattr(A, "WIND_MADIS_URL", "")
     monkeypatch.setattr(A, "_WINDS", {"svc": None, "list": None, "providers": None, "stations": None})
     w = A._winds()

@@ -1335,7 +1335,7 @@ class MadisProvider(WindProvider):
 def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER_REFRESH, nws_workers=2,
                    nws_per_refresh=NWS_PER_REFRESH, madis_url=None, madis_fetch=None, madis_backfill=True,
                    madis_window_fetch=None, more=True, more_enabled=None, more_per_refresh=None, keyed=None,
-                   keyed_mask=None):
+                   keyed_mask=None, more_far_fetch=None):
     """The providers over the snapshot's stations, in warm order (cheap, quick feeds first); with madis_url the NWS
     stations' MADIS backup too (its own fetch: the viewer is slow), which also back-fills their 24 hours (plan section
     55) unless madis_backfill is False (madis_window_fetch: the windows' fetch, default madis_fetch)."""
@@ -1350,7 +1350,7 @@ def make_providers(stations, fetch, coops_workers=2, coops_per_refresh=COOPS_PER
                                  window_fetch=madis_window_fetch))
     if more:                                    # plan section 67: Canada, Japan, IEM, Europe (more_enabled: env switches)
         import wind_more
-        out += wind_more.make_providers(groups, fetch, more_enabled, more_per_refresh)
+        out += wind_more.make_providers(groups, fetch, more_enabled, more_per_refresh, more_far_fetch)
     if keyed:                                   # plan section 69: the feeds whose key is set ({source: key})
         import wind_keyed
         out += wind_keyed.make_providers(groups, fetch, keyed, keyed_mask)
@@ -1471,6 +1471,7 @@ class WindHistory:
         self.coops_bucket = coops_bucket or TokenBucket(COOPS_ON_DEMAND_PER_MIN, burst=COOPS_ON_DEMAND_BURST)
         self.ndbc_bucket = ndbc_bucket or TokenBucket(NDBC_HISTORY_PER_MIN)
         self._cap = cap
+        self.far_fetch = None                 # the far feeds' window fetch (wind_more.FAR; G47 F8); None = fetch
         self.madis = None                     # local id -> the station's latest MADIS reading or None (plan section 52 D)
         self.madis_hist = None                # (local id, since) -> the station's MADIS readings since (plan section 55)
         self.madis_filling = None             # () -> True while MADIS is still back-filling the earlier hours
@@ -1732,7 +1733,8 @@ class WindHistory:
         if bucket is None:
             bucket = self.more_buckets.setdefault(src, TokenBucket(wind_more.BUCKET_PER_MIN))
         self._take(bucket, wind_more.SOURCES[src]["short"])
-        return wind_more.history(src, local, st, since, self._fetch, now) or [], None, False
+        fetch = self.far_fetch if (self.far_fetch is not None and src in wind_more.FAR) else self._fetch
+        return wind_more.history(src, local, st, since, fetch, now) or [], None, False
 
     def history(self, sid, fresh_s=None):
         """fresh_s: a refresh from the wind window (plan section 56): an answer at least that old is built again."""

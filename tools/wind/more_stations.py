@@ -39,6 +39,7 @@ ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
 import fetch_stations as FS                                   # noqa: E402  (the coast index, the writer, the helpers)
+import chain_tls                                              # noqa: E402  (SAWS and IMD: their chains completed)
 
 OUT = FS.OUT
 LAKES_URL = "https://models.allshoresurf.com/static/coast/lakeoutlines-v1/lakeoutlines-i.bin"
@@ -67,6 +68,10 @@ IEM_KINDS = {"RWIS": "road", "ASOS": "airport"}
 
 
 def get(url, **kw):
+    """FS.get_bytes; the two WIS2 nodes with incomplete chains through the site's own context (chain_tls: the CAs'
+    intermediates added, verification kept), so the tool never leans on a machine's certificate cache (G47 F4)."""
+    if url.startswith(chain_tls.HOSTS) and "context" not in kw:
+        kw["context"] = chain_tls.context()
     return FS.get_bytes(url, **kw)
 
 
@@ -279,6 +284,25 @@ def cwa(M, cache, coastal, TT):
 
 
 WIS2_PAUSE_S = 1.2                                             # between two requests to a node
+WIS2_POS_KM = 5.0              # a node's listed position and its reports' positions agreeing this well: the listed one
+WIS2_TWIN_KM = 30.0            # an airport named by its WMO number counts only this near (a national id can collide)
+WIS2_LOCAL = re.compile(r"0-\d+-0-(\d{5})")                     # a WIGOS id whose local part is a WMO number
+# WIS2 stations that stand for an airport AWC's table does not tie to them (G47 F1, checked by hand 2026-11-01; no
+# distance limit: Agathi's own position is 32 km out at sea): Bhaunagar and Agathi are their airports' own stations
+# (AWC lists both airports without a WMO number); CT-AWS is a second station on the Cape Town airfield, 1.6 km from it
+WIS2_ICAO = {"42838": "VABV", "43266": "VOAT", "68999": "FACT"}
+# stations whose listed and reported positions are more than WIS2_POS_KM apart (2026-11-01), the right one checked by hand
+# against each station's place and the satellite picture (G47 F1); a new disagreement leaves its station out with a warning
+WIS2_POSITION = {"0-20000-0-68588": "report",     # Durban (old airport): the list is 9 km out at sea
+                 "0-20000-0-42639": "report",     # New Kandla
+                 "0-20000-0-42731": "list",       # Dwarka
+                 "0-20000-0-42901": "list",       # Digha
+                 "0-20000-0-42976": "report",     # Paradip: the list's longitude is a degree off (85.65)
+                 "0-20000-0-43221": "report",     # Ongole
+                 "0-20000-0-43149": "report",     # Visakhapatnam airport (VOVZ): the list is the city, 7 km east
+                 "0-20000-0-43363": "list",       # Pamban
+                 "0-20000-0-43369": "list",       # Minicoy
+                 "0-516-0-68098": "list"}         # Walvis Bay airport: the reports' geometry is 79 km off
 PREVIOUS = {}                                                  # the snapshot's rows by source (a WIS2 node that fails keeps its own)
 
 
@@ -288,10 +312,59 @@ def wis2_name(name, TT):
     return place_name(n, TT)
 
 
+def wis2_position(wid, report, listed):
+    """A WIS2 station's position -> ((lat, lon), None), or (None, why) when the node's list and its reports disagree by
+    more than WIS2_POS_KM and WIS2_POSITION does not say which is right."""
+    if not listed or listed[0] is None or listed[1] is None:
+        return tuple(report), None
+    d = FS.km_between(report[0], report[1], listed[0], listed[1])
+    if d <= WIS2_POS_KM:
+        return tuple(listed), None
+    pick = WIS2_POSITION.get(wid)
+    if pick == "list":
+        return tuple(listed), None
+    if pick == "report":
+        return tuple(report), None
+    return None, f"its list and its reports are {d:.0f} km apart"
+
+
+def wmo_icao_sites(raw):
+    """AWC's station table -> {WMO number: (ICAO id, lat, lon)} for the METAR sites that have one."""
+    import gzip
+    if raw[:2] == bytes((0x1F, 0x8B)):           # gzip
+        raw = gzip.decompress(raw)
+    out = {}
+    for s in json.loads(raw):
+        if "METAR" in (s.get("siteType") or []) and s.get("wmoId") and s.get("icaoId") and FS.usable_position(
+                s.get("lat"), s.get("lon")):
+            out[str(s["wmoId"])] = (str(s["icaoId"]).upper(), float(s["lat"]), float(s["lon"]))
+    return out
+
+
+def wis2_icao(wid, lat, lon, sites, metar):
+    """The ICAO id of the airport a WIS2 station stands for (its METAR twin: placed after it gives way): WIS2_ICAO's
+    (checked by hand) when AWC lists that airport as a METAR site, else by WMO number in AWC's table when that airport is
+    within WIS2_TWIN_KM (a national id can collide with another country's number); else None. sites: wmo_icao_sites;
+    metar: {ICAO: (name, lat, lon)} of AWC's METAR sites."""
+    m = WIS2_LOCAL.fullmatch(wid)
+    if not m:
+        return None
+    if m.group(1) in WIS2_ICAO:
+        icao = WIS2_ICAO[m.group(1)]
+        return icao if icao in metar else None
+    hit = sites.get(m.group(1))
+    if hit is None or FS.km_between(lat, lon, hit[1], hit[2]) > WIS2_TWIN_KM:
+        return None
+    return hit[0]
+
+
 def wis2(M, cache, coastal, TT):
-    """Plan section 73: each wis2box node's stations that reported wind in the last 24 hours (positions from the reports,
-    names from the node's stations collection). A node that does not answer keeps its rows of the current snapshot."""
+    """Plan section 73: each wis2box node's stations that reported wind in the last 24 hours (positions: wis2_position;
+    names from the node's stations collection; an airport's own station carries its ICAO id, so its METAR flag stands
+    for it). A node that does not answer keeps its rows of the current snapshot."""
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    raw = get(FS.METAR_SITES, timeout=90)
+    sites, metar = wmo_icao_sites(raw), FS.parse_metar_sites(raw)
     out, kept_old = [], []
     for node, (base, coll, _name, short, _gust) in M.WIS2_NODES.items():
         try:
@@ -309,14 +382,29 @@ def wis2(M, cache, coastal, TT):
             print(f"  WIS2 {node}: {e}; its {len(old)} rows of the snapshot kept", flush=True)
             kept_old += old
             continue
-        heard = {wid: pos[wid] for wid in M.wis2_readings(by) if wid in pos}
+        heard, odd = {}, {}
+        for wid in M.wis2_readings(by):
+            if wid not in pos:
+                continue
+            listed = names.get(wid) or {}
+            at, why = wis2_position(wid, pos[wid], (listed.get("lat"), listed.get("lon")))
+            if at is None:
+                odd[wid] = (pos[wid], (listed["lat"], listed["lon"]), why)
+            else:
+                heard[wid] = at
+        # a disagreement matters only where either position is near the coast (else the station is out anyway)
+        either = coastal(dict([(w + "|r", v[0]) for w, v in odd.items()] + [(w + "|l", v[1]) for w, v in odd.items()]))
+        odd = {w: v for w, v in odd.items() if w + "|r" in either or w + "|l" in either}
+        for wid, (_r, _l, why) in sorted(odd.items()):
+            print(f"  WARNING WIS2 {node} {wid}: {why}; left out (add it to WIS2_POSITION)", flush=True)
         near = coastal(heard)
         for wid in sorted(near):
             la, lo = heard[wid]
             out.append({"src": "wis2", "local": wid, "name": wis2_name((names.get(wid) or {}).get("name") or wid, TT),
-                        "lat": round(la, 4), "lon": round(lo, 4), "kind": "met", "net": node, "icao": None})
-        print(f"WIS2 {short}: {len(names)} stations listed, {len(heard)} with wind in 24 h, {len(near)} coastal",
-              flush=True)
+                        "lat": round(la, 4), "lon": round(lo, 4), "kind": "met", "net": node,
+                        "icao": wis2_icao(wid, la, lo, sites, metar)})
+        print(f"WIS2 {short}: {len(names)} stations listed, {len(heard)} with wind in 24 h, {len(near)} coastal"
+              + (f", {len(odd)} left out (positions disagree)" if odd else ""), flush=True)
     for r in kept_old:
         src, _, local = r[0].partition(":")
         out.append({"src": src, "local": local, "name": r[1], "lat": r[2], "lon": r[3], "kind": r[4], "net": r[9],

@@ -588,6 +588,26 @@ def _points_fetch(url: str, max_bytes: int, headers=None, retry_dropped=False) -
     return _capped_get(url, max_bytes, headers, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S, retry_dropped=retry_dropped)
 
 
+# The far wind feeds (plan section 73: the WIS2 nodes in Africa and India, Hong Kong, Argentina) answer from the other side
+# of the world: a 3-s connect and handshake from Oregon is too tight (G47 F8: Hong Kong timed out for 20 minutes). The
+# feeds run in the background scheduler (a wider limit costs no request); a window's history runs in a request, so its
+# limit stays shorter.
+_FAR_FETCH_TIMEOUT = (8, 15)       # connect, read
+_FAR_FETCH_MAX_S = 25              # one object, in all
+_FAR_WINDOW_TIMEOUT = (8, 10)
+_FAR_WINDOW_MAX_S = 15
+
+
+def _far_fetch(url: str, max_bytes: int, headers=None) -> bytes:
+    """_points_fetch with the far feeds' limits (the scheduler's refreshes)."""
+    return _capped_get(url, max_bytes, headers, _FAR_FETCH_TIMEOUT, _FAR_FETCH_MAX_S)
+
+
+def _far_window_fetch(url: str, max_bytes: int, headers=None) -> bytes:
+    """_points_fetch with the far feeds' limits for a window's history (in a request: shorter)."""
+    return _capped_get(url, max_bytes, headers, _FAR_WINDOW_TIMEOUT, _FAR_WINDOW_MAX_S)
+
+
 class HTTPStatusError(IOError):
     """A capped fetch answered with another status than the one asked for; `status` keeps the number."""
 
@@ -992,8 +1012,10 @@ def _winds():
                                                               madis_window_fetch=_madis_window_fetch,
                                                               more_enabled=WIND_MORE_ENABLED,
                                                               more_per_refresh=WIND_MORE_PER_REFRESH,
+                                                              more_far_fetch=_far_fetch,
                                                               keyed=WIND_KEYS)
             _WINDS["svc"] = wind_sources.WindHistory(stations, _points_fetch, coops_bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
+            _WINDS["svc"].far_fetch = _far_window_fetch   # the far feeds' windows (G47 F8)
             madis = [p for p in _WINDS["providers"] if p.source == "MADIS"]
             _WINDS["svc"].madis = madis[0].row if madis else None
             # the NWS stations' 24 hours from MADIS (plan section 55) and whether it is still filling them in

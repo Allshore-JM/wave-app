@@ -133,7 +133,7 @@ def test_hko_positions_cover_the_snapshot():
     snap = json.load(open(os.path.join(ROOT, "wind_stations.json"), encoding="utf-8"))
     rows = [dict(zip(snap["fields"], r)) for r in snap["stations"]]
     hk = {r["id"].partition(":")[2] for r in rows if r["src"] == "hko"}
-    assert hk == {M.hko_id(n) for n in M.HKO_POSITIONS} and len(hk) == 26
+    assert hk == {M.hko_id(n) for n in M.HKO_POSITIONS} and len(hk) == 28                # G47 F5: + Tsing Yi, Tuen Mun
     assert "CHEKLAPKOK" not in hk                                               # the airport: its METAR stands
 
 
@@ -267,7 +267,7 @@ def test_hko_and_smn_feeds_keep_their_series(clock):
     f = Fetch({"latest_10min_wind.csv": csv_now})
     p = M.HkoProvider(hk, f)
     lst = {e["local_id"]: e for e in p._fetch_stations()}
-    assert len(lst) == 26 and "CHEKLAPKOK" not in lst and p.series
+    assert len(lst) == 28 and "CHEKLAPKOK" not in lst and p.series        # Tsing Yi and Tuen Mun placed (G47 F5)
     f.table["latest_10min_wind.csv"] = csv_now.replace(b"202611011120", b"202611011130")
     clock["now"] += 600
     p._fetch_stations()
@@ -334,3 +334,90 @@ def test_id_rule_and_attribution_for_section_73():
     assert {"wis2:" + n for n in M.WIS2_NODES} <= set(W.ATTRIBUTION)
     assert {"wis2", "hko", "smn"} <= set(W.MORE_SOURCES) and {"hko", "smn"} <= set(W.MORE_KEPT)
     assert "wis2" not in W.MORE_KEPT                                       # its windows ask the node
+
+
+# ---------------------------------------------------------------------------------------------- G47 fix round
+
+def test_hko_an_answer_without_any_reading_fails():
+    """G47 F7: HKO answers one CSV for every station; one holding no reading at all is a failed fetch (keep-last)."""
+    hk = {"CENTRALPIER": {"id": "hko:CENTRALPIER", "name": "Central Pier", "lat": 22.3, "lon": 114.2}}
+    for body in ("Date time,Automatic Weather Station,10-Minute Mean Wind Direction(Compass points),"
+                 "10-Minute Mean Speed(km/hour),10-Minute Maximum Gust(km/hour)\n", ""):
+        with pytest.raises(RuntimeError, match="no reading"):
+            M.HkoProvider(hk, Fetch({"latest_10min_wind.csv": body}))._fetch_stations()
+
+
+def zip_of(files):
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return b.getvalue()
+
+
+def test_smn_zip_rules():
+    """G47 F7: the zip must hold one text file no larger than MAX_ZIP (its declared size, before reading it)."""
+    with pytest.raises(ValueError):
+        M.parse_smn_now(zip_of({"a.txt": b"x" * (M.MAX_ZIP + 1)}))
+    with pytest.raises(ValueError):
+        M.parse_smn_now(zip_of({"a.txt": b"", "b.txt": b""}))
+    with pytest.raises(ValueError):
+        M.parse_smn_now(zip_of({"a.csv": b""}))
+    ok = zip_of({"estado.txt": "Uno;01-noviembre-2026;12:00;x;10 km;5.0;No se calcula; 50;Este  9;1000 / \n"
+                 .encode("latin-1")})
+    assert M.parse_smn_now(ok)["Uno"][0]["d"] == 90
+
+
+def test_smn_a_station_listed_twice_keeps_the_newer_report():
+    """G47 F7: a station on two lines of the file shows its newer report, whichever line comes first."""
+    a = "Uno;01-noviembre-2026;12:00;x;10 km;5.0;No se calcula; 50;Este  9;1000 / \n"
+    b = "Uno;01-noviembre-2026;13:00;x;10 km;5.0;No se calcula; 50;Oeste  18;1000 / \n"
+    for text in (a + b, b + a):
+        o = M.parse_smn_now(text.encode("latin-1"))
+        assert len(o["Uno"]) == 1 and o["Uno"][0]["d"] == 270 and o["Uno"][0]["s"] == round(18 / 3.6, 1)
+        assert o["Uno"][0]["t"] == T03Z + 13 * 3600                         # 13:00 at UTC-3 = 16:00Z
+
+
+def period_feature(value, start, end="2026-11-01T03:00:00Z"):
+    f = feature(MINICOY, "wind_speed", value, "m/s")
+    if start is not None:
+        f["properties"]["phenomenonTime"] = "%s/%s" % (start, end)
+    return f
+
+
+def test_wis2_one_variable_twice_keeps_the_shortest_period():
+    """G47 F6: IMD's node gives the 10-minute and the 1-hour mean wind for one report: the 10-minute one is shown, in
+    either order; a period not stated counts as the longest; two equal periods keep the first."""
+    ten, hour = period_feature(3.0, "2026-11-01T02:50:00Z"), period_feature(5.0, "2026-11-01T02:00:00Z")
+    for pair in ((ten, hour), (hour, ten)):
+        by, _ = M.parse_wis2_features([doc(*pair)])
+        assert by[MINICOY][T03Z]["s"] == 3.0
+    none = period_feature(7.0, None)
+    for pair in ((none, ten), (ten, none)):
+        assert M.parse_wis2_features([doc(*pair)])[0][MINICOY][T03Z]["s"] == 3.0
+    first, second = period_feature(4.0, "2026-11-01T02:50:00Z"), period_feature(6.0, "2026-11-01T02:50:00Z")
+    assert M.parse_wis2_features([doc(first, second)])[0][MINICOY][T03Z]["s"] == 4.0
+
+
+def test_the_far_feeds_get_their_own_fetch():
+    """G47 F8: the WIS2 nodes, Hong Kong and Argentina answer from far away: their feeds and windows use the far fetch
+    (wider limits); every other feed keeps the ordinary one."""
+    near, far = Fetch({}), Fetch({})
+    groups = {"wis2": wis2_stations(), "hko": {"CENTRALPIER": {"id": "hko:CENTRALPIER", "name": "Central Pier"}},
+              "smn": {"87641": {"id": "smn:87641", "name": "Azul"}},
+              "ipma": {"1210702": {"id": "ipma:1210702", "name": "Sagres"}}}
+    ps = {p.source: p for p in M.make_providers(groups, near, far_fetch=far)}
+    assert {s for s, p in ps.items() if p._fetch is far} == {"WIS2", "HKO", "SMN"}
+    assert ps["IPMA"]._fetch is near
+    assert all(p._fetch is near for p in M.make_providers(groups, near))
+    assert M.FAR == {"wis2", "hko", "smn"}
+
+
+def test_a_wis2_window_uses_the_far_fetch(clock):
+    st = {"wis2:" + CAPE_POINT: {"id": "wis2:" + CAPE_POINT, "name": "C", "kind": "met", "src": "wis2", "tz": "UTC",
+                                 "net": "saws"}}
+    near, far = Fetch({"items": IOError("HTTP 500")}), Fetch({"items": fx("wis2_saws_history_68916.json")})
+    svc = W.WindHistory(st, near, now=lambda: clock["now"])
+    svc.far_fetch = far
+    status, out = svc.history("wis2:" + CAPE_POINT)
+    assert status == "ok" and len(out["t"]) == 23 and far.asked and not near.asked

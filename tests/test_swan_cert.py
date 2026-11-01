@@ -152,7 +152,9 @@ def test_the_wis2_chain_exception_adds_three_pinned_intermediates_and_nothing_el
         assert t.count("BEGIN CERTIFICATE") == 1
     ctx, default = chain_tls.context(), requests.adapters._preloaded_ssl_context
     assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
-    assert ctx.verify_flags == default.verify_flags and ctx.options == default.options
+    # requests' flags but the partial-chain one: an added intermediate is never a trust anchor (G47 F3)
+    assert ctx.verify_flags == default.verify_flags & ~getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
+    assert ctx.options == default.options
     assert ctx.minimum_version == default.minimum_version and ctx.hostname_checks_common_name is False
     base = ssl.create_default_context(cafile=certifi.where()).cert_store_stats()["x509_ca"]
     assert ctx.cert_store_stats()["x509_ca"] == base + 3
@@ -163,6 +165,9 @@ def test_the_wis2_chain_exception_adds_three_pinned_intermediates_and_nothing_el
                       "http://wis.weathersa.co.za/x", "https://opendata.cwa.gov.tw/x", "https://www.pacioos.hawaii.edu/x"):
             assert not isinstance(session.get_adapter(other), chain_tls.ChainAdapter), other
     assert app.HTTP.get_adapter(chain_tls.HOSTS[0]).max_retries.total == app.HTTP.get_adapter("https://x.org/").max_retries.total
+    proxied = app.HTTP.get_adapter(chain_tls.HOSTS[0]).proxy_manager_for("http://proxy.example:3128")
+    pctx = proxied.connection_pool_kw["ssl_context"]          # the proxy path gets the same context (G47 F7)
+    assert pctx.verify_flags == ctx.verify_flags and pctx.cert_store_stats()["x509_ca"] == base + 3
 
 
 def test_a_changed_intermediate_is_left_out(monkeypatch):

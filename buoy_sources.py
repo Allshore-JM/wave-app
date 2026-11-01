@@ -1969,6 +1969,9 @@ _BUOY_NUMBER_RE = re.compile(r"^(?:\d{5}|[A-Z]{4}\d)$")
 # positions (G42 F10)
 _BUOY_ALIAS = {"cefas:8": "62304", "cefas:10": "62144", "cefas:305": "62146"}
 _CMEMS_WMO_RE = re.compile(r"^cmems:[A-Z]{2}_TS_MO_6200(\d{3})$", re.I)
+# CMEMS's copy of a buoy named by its plain NDBC / WMO number (GL_TS_MO_41040): the section-72 Antilles box holds
+# NDBC's 41040, 41044 and 42060 again, 3-13 km from NDBC's own positions (section 72 test site)
+_CMEMS_NUM_RE = re.compile(r"^cmems:[A-Z]{2}_TS_MO_(\d{5})$", re.I)
 
 
 def _buoy_number(st):
@@ -1981,6 +1984,9 @@ def _buoy_number(st):
     m = _CMEMS_WMO_RE.match(str(st.get("id") or ""))   # cmems:NO_TS_MO_6200144 is WMO 62144 (the page's linkId)
     if m:                                               # (G42 re-check N2)
         return "62" + m.group(1)
+    m = _CMEMS_NUM_RE.match(str(st.get("id") or ""))
+    if m:
+        return m.group(1)
     if st.get("source") not in _NUMBERED_SOURCES:
         return ""
     local = str(st.get("id") or "").split(":", 1)[-1].upper()

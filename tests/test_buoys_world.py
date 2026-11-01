@@ -317,3 +317,18 @@ def test_national_feeds_win_over_cmems_relays():
     assert B._station_priority(kma) > B._station_priority(cm)
     assert B._station_priority(sim) > B._station_priority(cm)
     assert B._station_priority(kma) < B._station_priority({"source": "CEFAS", "capabilities": {}})
+
+
+def test_cmems_copy_of_a_numbered_ndbc_buoy_merges_under_ndbc():
+    # section 72 test site: the Antilles box brought CMEMS's GL_TS_MO_41040 / 41044 / 42060, 3-13 km from NDBC's own
+    ndbc = {"id": "ndbc:42060", "source": "NDBC", "name": "Caribbean Valley", "lat": 16.41, "lon": -63.21,
+            "capabilities": {"spectra": True}}
+    copy = {"id": "cmems:GL_TS_MO_42060", "source": "CMEMS", "name": "42060", "lat": 16.43, "lon": -63.33,
+            "capabilities": {}}
+    other = {"id": "cmems:MO_TS_MO_61499", "source": "CMEMS", "name": "61499", "lat": 39.5, "lon": 2.7,
+             "capabilities": {}}
+    assert B._buoy_number(copy) == "42060" and B._buoy_number(other) == "61499"
+    assert B._buoy_number({"id": "cmems:GL_TS_MO_2300453", "source": "CMEMS"}) == ""
+    kept = B.merge_stations([[ndbc], [copy, other]])
+    assert [k["id"] for k in kept] == ["ndbc:42060", "cmems:MO_TS_MO_61499"]
+    assert kept[0]["also_sources"] == ["CMEMS"]

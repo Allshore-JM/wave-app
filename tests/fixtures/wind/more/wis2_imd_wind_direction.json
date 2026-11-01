@@ -1,0 +1,75 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"geometry": {
+"coordinates": [
+76.26667,
+31.46667
+],
+"type": "Point"
+},
+"id": "0-20000-0-42077-202611010300-13",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-11-01T02:50:00Z/2026-11-01T03:00:00Z",
+"reportId": "0-20000-0-42077-202611010300",
+"reportTime": "2026-11-01T03:00:00Z",
+"units": "deg",
+"value": 0.0,
+"wigos_station_identifier": "0-20000-0-42077",
+"id": "0-20000-0-42077-202611010300-13"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+72.81667,
+18.9
+],
+"type": "Point"
+},
+"id": "0-20000-0-43057-202611010300-14",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-11-01T02:50:00Z/2026-11-01T03:00:00Z",
+"reportId": "0-20000-0-43057-202611010300",
+"reportTime": "2026-11-01T03:00:00Z",
+"units": "deg",
+"value": 0.0,
+"wigos_station_identifier": "0-20000-0-43057",
+"id": "0-20000-0-43057-202611010300-14"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+73.15,
+8.3
+],
+"type": "Point"
+},
+"id": "0-20000-0-43369-202611010300-14",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-11-01T02:50:00Z/2026-11-01T03:00:00Z",
+"reportId": "0-20000-0-43369-202611010300",
+"reportTime": "2026-11-01T03:00:00Z",
+"units": "deg",
+"value": 0.0,
+"wigos_station_identifier": "0-20000-0-43369",
+"id": "0-20000-0-43369-202611010300-14"
+},
+"type": "Feature"
+}
+],
+"numberMatched": 3,
+"numberReturned": 3,
+"links": [],
+"timeStamp": "2026-11-01T03:32:33.368730Z"
+}

@@ -1,0 +1,136 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"id": "0-20000-0-42077",
+"type": "Feature",
+"geometry": {
+"type": "Point",
+"coordinates": [
+76.2666666667,
+31.4666666667,
+368.0
+]
+},
+"properties": {
+"name": "UNA (42077-0)",
+"wigos_station_identifier": "0-20000-0-42077",
+"traditional_station_identifier": "42077",
+"barometer_height": 370.0,
+"facility_type": "landFixed",
+"territory_name": "IND",
+"wmo_region": "asia",
+"url": "https://oscar.wmo.int/surface/#/search/station/stationReportDetails/0-20000-0-42077",
+"topic": "urn:x-wmo:md:in-imd:surface-based-observations.synop",
+"topics": [
+"in-imd/data/core/weather/surface-based-observations/synop"
+],
+"status": "operational",
+"id": "0-20000-0-42077"
+},
+"links": [
+{
+"rel": "canonical",
+"topic": "in-imd/data/core/weather/surface-based-observations/synop",
+"href": "https://wis2box.imd.gov.in/oapi/collections/discovery-metadata/items/urn:x-wmo:md:in-imd:surface-based-observations.synop",
+"type": "application/json",
+"title": "urn:x-wmo:md:in-imd:surface-based-observations.synop"
+}
+]
+},
+{
+"id": "0-20000-0-43057",
+"type": "Feature",
+"geometry": {
+"type": "Point",
+"coordinates": [
+72.8166666667,
+18.9,
+9.8
+]
+},
+"properties": {
+"name": "BOMBAY / COLABA",
+"wigos_station_identifier": "0-20000-0-43057",
+"traditional_station_identifier": "43057",
+"barometer_height": 10.7,
+"facility_type": "landFixed",
+"territory_name": "IND",
+"wmo_region": "asia",
+"url": "https://oscar.wmo.int/surface/#/search/station/stationReportDetails/0-20000-0-43057",
+"topic": "urn:x-wmo:md:in-imd:surface-based-observations.synop",
+"topics": [
+"in-imd/data/core/weather/surface-based-observations/synop"
+],
+"status": "operational",
+"id": "0-20000-0-43057"
+},
+"links": [
+{
+"rel": "canonical",
+"topic": "in-imd/data/core/weather/surface-based-observations/synop",
+"href": "https://wis2box.imd.gov.in/oapi/collections/discovery-metadata/items/urn:x-wmo:md:in-imd:surface-based-observations.synop",
+"type": "application/json",
+"title": "urn:x-wmo:md:in-imd:surface-based-observations.synop"
+}
+]
+},
+{
+"id": "0-20000-0-43369",
+"type": "Feature",
+"geometry": {
+"type": "Point",
+"coordinates": [
+73.0581,
+8.2813,
+1.8
+]
+},
+"properties": {
+"name": "MINICOY",
+"wigos_station_identifier": "0-20000-0-43369",
+"traditional_station_identifier": "43369",
+"facility_type": "landFixed",
+"territory_name": "IND",
+"barometer_height": 1.8,
+"wmo_region": "asia",
+"url": "https://oscar.wmo.int/surface/#/search/station/stationReportDetails/0-20000-0-43369",
+"topics": [
+"origin/a/wis2/in-imd/data/core/weather/surface-based-observations/synop",
+"origin/a/wis2/in-imd/data/core/weather/surface-based-observations/temp"
+],
+"status": "operational",
+"id": "0-20000-0-43369"
+}
+}
+],
+"numberMatched": 432,
+"numberReturned": 432,
+"links": [
+{
+"type": "application/geo+json",
+"rel": "self",
+"title": "This document as GeoJSON",
+"href": "https://wis2box.imd.gov.in/oapi/collections/stations/items?f=json&limit=5000"
+},
+{
+"rel": "alternate",
+"type": "application/ld+json",
+"title": "This document as RDF (JSON-LD)",
+"href": "https://wis2box.imd.gov.in/oapi/collections/stations/items?f=jsonld&limit=5000"
+},
+{
+"type": "text/html",
+"rel": "alternate",
+"title": "This document as HTML",
+"href": "https://wis2box.imd.gov.in/oapi/collections/stations/items?f=html&limit=5000"
+},
+{
+"type": "application/json",
+"title": "Stations",
+"rel": "collection",
+"href": "https://wis2box.imd.gov.in/oapi/collections/stations"
+}
+],
+"timeStamp": "2026-11-01T03:32:37.461115Z"
+}

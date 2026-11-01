@@ -19,13 +19,24 @@ Sources (all anonymous; licences in SOURCES):
 - dwd   DWD weather_reports/poi <id>-BEOB.csv: semicolon CSV, three header rows, newest first, km/h, "---" missing.
 - ipma  IPMA obs-surface.geojson: hourly, m/s, an 8-class direction (1 = N ... 8 = NW; 9 = N as well), -99 missing,
         time UTC.
-- mei   Met Eireann prodapi observations/<slug>/today: hourly rows of the day, km/h, local time (Europe/Dublin)."""
+- mei   Met Eireann prodapi observations/<slug>/today: hourly rows of the day, km/h, local time (Europe/Dublin).
+
+Plan section 73 (the data-poor regions):
+- wis2  WMO WIS2: the national weather services' wis2box nodes (OGC API features, one feature per variable and report:
+        wind_speed m/s, wind_direction degrees (0 = calm: BUFR's north is 360), maximum_wind_gust_speed where reported;
+        reportTime UTC). SAWS (South Africa), IMD (India), INAM (Mozambique), GMet (Ghana), NMS (Namibia), ANACIM
+        (Senegal), MMS (Maldives). WMO core data.
+- hko   Hong Kong Observatory latest_10min_wind.csv: 10-minute mean km/h, 8-point direction words, gust; Hong Kong time.
+- smn   SMN Argentina tiempo presente zip: every station's latest report, "Este  9" (km/h) or "Calma", local time
+        (UTC-3); names matched to SMN's station list (estaciones) by the snapshot tool."""
 import calendar
 import csv
 import io
 import json
 import math
 import re
+import unicodedata
+import zipfile
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -53,6 +64,15 @@ SOURCES = {
              "licence": "IPMA, Instituto Portugues do Mar e da Atmosfera"},
     "mei": {"name": "Met Eireann", "short": "Met Eireann", "url": "https://www.met.ie/",
             "licence": "Met Eireann (CC BY 4.0, units converted by allshoresurf.com)"},
+    # plan section 73
+    "wis2": {"name": "WMO WIS2", "short": "WIS2", "url": "https://wmo.int/activities/wmo-information-system-wis",
+             "licence": "WMO WIS2 core data from the national weather services' wis2box nodes (SAWS, IMD, INAM, GMet, "
+                        "NMS Namibia, ANACIM, MMS Maldives)"},
+    "hko": {"name": "Hong Kong Observatory", "short": "HKO", "url": "https://data.weather.gov.hk/",
+            "licence": "Hong Kong Observatory, HKSAR Government, through DATA.GOV.HK (units converted by "
+                       "allshoresurf.com)"},
+    "smn": {"name": "Servicio Meteorologico Nacional", "short": "SMN", "url": "https://www.smn.gob.ar/",
+            "licence": "Servicio Meteorologico Nacional (Argentina), open data (units converted by allshoresurf.com)"},
 }
 KEYS = tuple(SOURCES)
 ECCC_DD = "https://dd.weather.gc.ca/today/observations"
@@ -697,6 +717,307 @@ def parse_mei_today(doc):
     return sorted(rows, key=lambda r: r["t"])
 
 
+# ============================================================================================== plan section 73
+# WMO WIS2 (the national weather services' wis2box nodes), the Hong Kong Observatory and Argentina's SMN.
+
+# ---------------------------------------------------------------------------------------------- WIS2 (wis2box)
+
+# node -> (OGC API base, observations collection, name, short name, gust reported). ANACIM and NMS Namibia answer over
+# plain HTTP only (NMS's HTTPS port speaks plain HTTP; ANACIM's node is an address with a port): public weather data,
+# no secret in the request.
+WIS2_NODES = {
+    "saws": ("https://wis.weathersa.co.za/oapi", "urn:wmo:md:za-weathersa:xoeh2t", "South African Weather Service",
+             "SAWS", True),
+    "imd": ("https://wis2box.imd.gov.in/oapi", "urn:wmo:md:in-imd:surface-based-observations.synop",
+            "India Meteorological Department", "IMD", False),
+    "inam": ("https://wis2.inam.gov.mz/oapi", "urn:wmo:md:mz-inam:surfaced-based-observations.synop",
+             "INAM, Instituto Nacional de Meteorologia (Mozambique)", "INAM", False),
+    "gmet": ("https://wis2.meteo.gov.gh/oapi", "urn:wmo:md:gh-gmet:core.surface-based-observations.synop",
+             "Ghana Meteorological Agency", "GMet", False),
+    "nms": ("http://wis2box.meteona.com/oapi", "urn:wmo:md:na-meteona:synop-dataset",
+            "Namibia Meteorological Service", "NMS Namibia", False),
+    "anacim": ("http://213.154.77.59:8002/oapi", "urn:wmo:md:sn-anacim:9b6nz5", "ANACIM (Senegal)", "ANACIM", False),
+    "mms": ("https://wis2.meteorology.gov.mv/oapi", "urn:wmo:md:mv-mms:hourly-synop",
+            "Maldives Meteorological Service", "MMS Maldives", True),
+}
+WIS2_ITEMS = "{base}/collections/{coll}/items?f=json&name={name}&datetime={since}/..&limit=5000"
+# one station's reports: one property filter only (IMD's node honours one and ignores the others: 2026-11-01); every
+# answer is filtered here by station and name anyway
+WIS2_STATION = "{base}/collections/{coll}/items?f=json&wigos_station_identifier={wid}&datetime={since}/..&limit=5000"
+WIS2_STATIONS = "{base}/collections/stations/items?f=json&limit=5000"
+WIS2_LATEST_S = 3 * 3600                         # the latest table asks the last 3 hours (SYNOP: hourly or 3-hourly)
+WIS2_ID = re.compile(r"[0-9]-[0-9]{1,5}-[0-9]-[A-Z0-9]{1,16}")
+# a variable -> (the reading's key, the units accepted with their factor); anything else is left out
+WIS2_VARS = {"wind_speed": ("s", {"m/s": 1.0, "m s-1": 1.0, "knots": KT, "kt": KT}),
+             "wind_direction": ("d", {"deg": 1.0, "degree": 1.0, "degree true": 1.0}),
+             "maximum_wind_gust_speed": ("g", {"m/s": 1.0, "m s-1": 1.0, "knots": KT, "kt": KT}),
+             "air_temperature": ("at", {"Celsius": 1.0, "C": 1.0, "degC": 1.0, "K": None}),
+             "dewpoint_temperature": ("dp", {"Celsius": 1.0, "C": 1.0, "degC": 1.0, "K": None}),
+             "relative_humidity": ("rh", {"%": 1.0}),
+             "pressure_reduced_to_mean_sea_level": ("p", {"hPa": 1.0, "Pa": 0.01})}
+
+
+def wis2_wid(v):
+    """A WIGOS station id as the site keeps it (upper case), or None when it is not of the usual shape."""
+    w = str(v or "").strip().upper()
+    return w if WIS2_ID.fullmatch(w) else None
+
+
+def wis2_wmo(wid):
+    """The WMO number in a WIGOS id of the WMO series (0-20000-0-68816 -> 68816), else None."""
+    p = str(wid or "").split("-")
+    return p[3] if len(p) == 4 and p[1] == "20000" else None
+
+
+def _wis2_value(name, v, units):
+    key, ok = WIS2_VARS[name]
+    x = _f(v)
+    if x is None or units not in ok:
+        return key, None
+    k = ok[units]
+    return key, (x - 273.15 if k is None else x * k)
+
+
+def parse_wis2_features(docs):
+    """wis2box OGC API items answers (one feature per variable and report) -> ({wid: {t: {key: value}}}, {wid: (lat,
+    lon)}). Report time = reportTime; values whose units are not the expected ones are left out (no guess); a WIGOS
+    id of another shape is left out."""
+    by, pos = {}, {}
+    for doc in docs:
+        if isinstance(doc, (bytes, str)):
+            doc = json.loads(doc)
+        for f in (doc or {}).get("features") or []:
+            p = f.get("properties") or {}
+            name = p.get("name")
+            if name not in WIS2_VARS:
+                continue
+            wid = wis2_wid(p.get("wigos_station_identifier"))
+            t = _epoch_iso(p.get("reportTime"))
+            if wid is None or t is None:
+                continue
+            key, val = _wis2_value(name, p.get("value"), str(p.get("units") or "").strip())
+            if val is None:
+                continue
+            by.setdefault(wid, {}).setdefault(t, {})[key] = val
+            c = (f.get("geometry") or {}).get("coordinates") or []
+            if wid not in pos and len(c) >= 2 and _f(c[0]) is not None and _f(c[1]) is not None:
+                pos[wid] = (_f(c[1]), _f(c[0]))
+    return by, pos
+
+
+def wis2_readings(by):
+    """{wid: {t: {key: value}}} -> {wid: [readings ascending]}: a report needs its speed; direction 0 is calm or
+    unknown (BUFR: north is 360) and so no direction."""
+    out = {}
+    for wid, times in by.items():
+        rows = []
+        for t in sorted(times):
+            v = times[t]
+            d = v.get("d")
+            r = W.reading(t, v.get("s"), v.get("g"), None if d is None or d == 0 else d)
+            r = _wx(r, at=v.get("at"), dp=v.get("dp"), rh=v.get("rh"), p=v.get("p"))
+            if r:
+                rows.append(r)
+        if rows:
+            out[wid] = rows
+    return out
+
+
+def parse_wis2_stations(doc):
+    """The node's stations collection -> {wid: {name, lat, lon}} (lat / lon None where the node gives no geometry)."""
+    if isinstance(doc, (bytes, str)):
+        doc = json.loads(doc)
+    out = {}
+    for f in (doc or {}).get("features") or []:
+        p = f.get("properties") or {}
+        wid = wis2_wid(p.get("wigos_station_identifier") or f.get("id"))
+        if not wid:
+            continue
+        c = (f.get("geometry") or {}).get("coordinates") or []
+        ok = len(c) >= 2 and _f(c[0]) is not None and _f(c[1]) is not None
+        out[wid] = {"name": " ".join(str(p.get("name") or wid).split()), "lat": _f(c[1]) if ok else None,
+                    "lon": _f(c[0]) if ok else None}
+    return out
+
+
+# ---------------------------------------------------------------------------------------------- Hong Kong Observatory
+
+HKO_CSV = "https://data.weather.gov.hk/weatherAPI/hko_data/regional-weather/latest_10min_wind.csv"
+HKT = timezone(timedelta(hours=8))
+HKO_DIR = {"north": 0, "northeast": 45, "east": 90, "southeast": 135, "south": 180, "southwest": 225, "west": 270,
+           "northwest": 315}
+
+
+def _dms(d, m, s):
+    return round(d + m / 60 + s / 3600, 4)
+
+
+# the CSV's station names -> position (HKO's station list, www.hko.gov.hk/en/cis/stn.htm, 2026-10-31). Left out:
+# Chek Lap Kok (the airport: its METAR stands), Hong Kong Sea School, Tsing Yi, Tuen Mun (no position found there)
+HKO_POSITIONS = {
+    "Central Pier": (_dms(22, 17, 20), _dms(114, 9, 21)), "Cheung Chau": (_dms(22, 12, 4), _dms(114, 1, 36)),
+    "Cheung Chau Beach": (_dms(22, 12, 39), _dms(114, 1, 45)), "Green Island": (_dms(22, 17, 6), _dms(114, 6, 46)),
+    "Kai Tak": (_dms(22, 18, 35), _dms(114, 12, 48)), "King's Park": (_dms(22, 18, 43), _dms(114, 10, 22)),
+    "Lamma Island": (_dms(22, 13, 34), _dms(114, 6, 31)), "Lau Fau Shan": (_dms(22, 28, 8), _dms(113, 59, 1)),
+    "Ngong Ping": (_dms(22, 15, 31), _dms(113, 54, 46)), "North Point": (_dms(22, 17, 40), _dms(114, 11, 59)),
+    "Peng Chau": (_dms(22, 17, 28), _dms(114, 2, 36)), "Sai Kung": (_dms(22, 22, 32), _dms(114, 16, 28)),
+    "Sha Chau": (_dms(22, 20, 45), _dms(113, 53, 28)), "Sha Tin": (_dms(22, 24, 9), _dms(114, 12, 36)),
+    "Shek Kong": (_dms(22, 26, 10), _dms(114, 5, 5)), "Stanley": (_dms(22, 12, 51), _dms(114, 13, 7)),
+    "Star Ferry": (_dms(22, 17, 35), _dms(114, 10, 7)), "Ta Kwu Ling": (_dms(22, 31, 43), _dms(114, 9, 24)),
+    "Tai Mei Tuk": (_dms(22, 28, 31), _dms(114, 14, 15)), "Tai Po Kau": (_dms(22, 26, 33), _dms(114, 11, 2)),
+    "Tap Mun": (_dms(22, 28, 17), _dms(114, 21, 38)), "Tate's Cairn": (_dms(22, 21, 28), _dms(114, 13, 4)),
+    "Tseung Kwan O": (_dms(22, 18, 57), _dms(114, 15, 20)), "Waglan Island": (_dms(22, 10, 56), _dms(114, 18, 12)),
+    "Wetland Park": (_dms(22, 28, 0), _dms(114, 0, 32)), "Wong Chuk Hang": (_dms(22, 14, 52), _dms(114, 10, 25)),
+}
+
+
+def hko_id(name):
+    """A station name -> the site's id part ("Cheung Chau Beach" -> CHEUNGCHAUBEACH)."""
+    return re.sub(r"[^A-Z0-9]+", "", str(name or "").upper())[:16]
+
+
+def parse_hko_csv(data):
+    """latest_10min_wind.csv (time YYYYMMDDHHMM in Hong Kong time, station, 8-point direction word or Calm / Variable /
+    N/A, 10-minute mean km/h, 10-minute highest gust km/h) -> {id: [reading]}."""
+    text = data.decode("utf-8-sig", "replace") if isinstance(data, bytes) else str(data)
+    out = {}
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 5 or not row[0].strip().isdigit():
+            continue
+        try:
+            t = int(datetime.strptime(row[0].strip(), "%Y%m%d%H%M").replace(tzinfo=HKT).timestamp())
+        except ValueError:
+            continue
+        word = row[2].strip().lower()
+        s = 0.0 if word == "calm" else _scaled(row[3], KMH)
+        r = W.reading(t, s, _scaled(row[4], KMH), HKO_DIR.get(word))
+        sid = hko_id(row[1])
+        if r and sid:
+            out[sid] = [r]
+    return out
+
+
+# ---------------------------------------------------------------------------------------------- SMN Argentina
+
+SMN_ZIP = "https://ssl.smn.gob.ar/dpd/zipopendata.php?dato={dato}"
+SMN_NOW = SMN_ZIP.format(dato="tiepre")          # "tiempo presente": every station's latest report (hourly / 3-hourly)
+SMN_STATIONS = SMN_ZIP.format(dato="estaciones")
+ART = timezone(timedelta(hours=-3))              # Argentina's clocks: UTC-3 all year
+SMN_MONTHS = {m: i + 1 for i, m in enumerate(["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+                                              "septiembre", "octubre", "noviembre", "diciembre"])}
+SMN_MONTHS["setiembre"] = 9
+SMN_DIR = {"norte": 0, "nornoreste": 22.5, "noreste": 45, "estenoreste": 67.5, "este": 90, "estesudeste": 112.5,
+           "sudeste": 135, "sudsudeste": 157.5, "sur": 180, "sudsudoeste": 202.5, "sudoeste": 225,
+           "oestesudoeste": 247.5, "oeste": 270, "oestenoroeste": 292.5, "noroeste": 315, "nornoroeste": 337.5}
+MAX_ZIP = 1024 * 1024
+
+
+def _zip_text(data):
+    """The one text file inside an SMN zip (latin-1), or ValueError."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        names = [n for n in z.namelist() if n.lower().endswith(".txt")]
+        if len(names) != 1 or z.getinfo(names[0]).file_size > MAX_ZIP:
+            raise ValueError("the zip holds %d text files" % len(names))
+        return z.read(names[0]).decode("latin-1")
+
+
+def smn_name(name):
+    """A tiempo-presente station name as shown ("Punta Indio B.A.")."""
+    return " ".join(str(name or "").split())
+
+
+def parse_smn_now(data):
+    """estado_tiempo<date>.txt in the tiepre zip (name; 31-octubre-2026; 23:00 local; weather; visibility; temperature
+    degC; feels like; humidity %; wind "Este  9" km/h or "Calma"; pressure hPa "1010.2 / ") -> {name: [reading]}."""
+    text = _zip_text(data) if isinstance(data, bytes) and data[:2] == b"PK" else (
+        data.decode("latin-1") if isinstance(data, bytes) else str(data))
+    out = {}
+    for line in text.splitlines():
+        p = [x.strip() for x in line.split(";")]
+        if len(p) < 10 or not p[0]:
+            continue
+        try:
+            dd, mon, yy = p[1].lower().split("-")
+            hh, mm = p[2].split(":")
+            t = int(datetime(int(yy), SMN_MONTHS[mon], int(dd), int(hh), int(mm), tzinfo=ART).timestamp())
+        except (KeyError, ValueError):
+            continue
+        w = p[8].split()
+        if not w:
+            continue
+        if w[0].lower() == "calma":
+            s, d = 0.0, None
+        elif len(w) >= 2 and _f(w[-1]) is not None:
+            s, d = _scaled(w[-1], KMH), SMN_DIR.get("".join(w[:-1]).lower())
+        else:
+            continue
+        r = W.reading(t, s, None, d)
+        r = _wx(r, at=p[5], rh=p[7], p=p[9].split("/")[0])
+        if r:
+            out[smn_name(p[0])] = [r]
+    return out
+
+
+_SMN_REST = re.compile(r"\s*(.*?)\s+(-?\d+)\s+(\d+)\s+(-?\d+)\s+(\d+)\s+(-?\d+)\s+(\d{5})\s*([A-Z0-9]{3,4})?\s*$")
+SMN_NAME_W = 31                                  # the name column's width
+
+
+def _degmin_signed(d, m):
+    v = abs(int(d)) + int(m) / 60
+    return -v if str(d).strip().startswith("-") else v
+
+
+def parse_smn_stations(data):
+    """estaciones_smn.txt (fixed width: name, province, latitude and longitude in degrees and minutes, height, WMO
+    number, ICAO id; a long name wraps onto the next line) -> {wmo: {name, province, lat, lon, icao}}."""
+    text = _zip_text(data) if isinstance(data, bytes) and data[:2] == b"PK" else (
+        data.decode("latin-1") if isinstance(data, bytes) else str(data))
+    out, last = {}, None
+    for line in text.splitlines():
+        m = _SMN_REST.match(line[SMN_NAME_W:].rstrip())
+        if m and line[:SMN_NAME_W].strip():
+            name = line[:SMN_NAME_W]
+            prov, la, lam, lo, lom, _h, wmo, icao = m.groups()
+            last = wmo
+            out[wmo] = {"name": " ".join(name.split()), "province": " ".join(prov.split()),
+                        "lat": round(_degmin_signed(la, lam), 4), "lon": round(_degmin_signed(lo, lom), 4),
+                        "icao": icao or None}
+        elif last and line.strip() and not line.startswith(" ") and len(line.strip().split()) == 1:
+            out[last]["name"] += line.strip()            # "PRESIDENCIA ROQUE SAENZ PEÑA A" + "ERO"
+    return out
+
+
+SMN_ALIAS = {"pcia roque saenz pena": "presidencia roque saenz pena", "esc aviacion militar": "escuela de aviacion militar",
+             "santa fe": "sauce viejo", "jujuy universidad nacional": "jujuy u n",
+             "villa maria del rio seco": "villa de maria del rio seco", "santa rosa del conlara": "santa rosa de conlara",
+             "pilar obs": "pilar observatorio"}
+
+
+def _smn_key(name):
+    n = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode("ascii").lower()
+    n = re.sub(r"\(.*?\)", " ", n)
+    n = " ".join(re.sub(r"[^a-z0-9]+", " ", n).split())
+    n = re.sub(r"\baero$", "", n).strip()
+    return SMN_ALIAS.get(n, n)
+
+
+def smn_match(names, stations):
+    """Tiempo-presente names -> {name: wmo}: the station whose name (without "AERO" and a bracket) is the same, else the
+    only one whose name begins with it (or that it begins with). A name with no or two candidates is left out."""
+    keys = {}
+    for wmo, s in stations.items():
+        keys.setdefault(_smn_key(s["name"]), []).append(wmo)
+    out = {}
+    for n in names:
+        k = _smn_key(n)
+        hit = keys.get(k)
+        if not hit:
+            hit = [w for kk, ws in keys.items() for w in ws if kk.startswith(k + " ") or k.startswith(kk + " ")]
+        if len(hit) == 1:
+            out[n] = hit[0]
+    return out
+
+
 # ============================================================================================== the feeds (step 2)
 
 import threading                                 # noqa: E402
@@ -1014,9 +1335,65 @@ class EcccProvider(MoreProvider):
         return out
 
 
+class Wis2Provider(PacedMore):
+    """Plan section 73: the wis2box nodes (one unit per node in the snapshot's `net`), two nodes a refresh every 3 minutes
+    (each node every ~10 minutes): per node the last WIS2_LATEST_S of wind_speed and wind_direction (and the gust where
+    the node reports one), one request each. A node that fails keeps its readings; the others stand."""
+    source, key, list_ttl_sec, per_refresh = "WIS2", "wis2", 180, 2
+    refused = ()                                 # one node's refusal is that node's failure, not a pause of the others
+
+    def __init__(self, stations, fetch, per_refresh=None):
+        super().__init__(stations, fetch, per_refresh)
+        self._nodes = {}                                 # node -> {"ok": epoch, "error": text, "readings": n}
+
+    def units(self):
+        return sorted({st.get("net") for st in self.stations.values() if st.get("net") in WIS2_NODES})
+
+    def one(self, node):
+        base, coll, _name, _short, gust = WIS2_NODES[node]
+        since = W.iso_z(buoy_sources.time.time() - WIS2_LATEST_S)
+        names = ["wind_speed", "wind_direction"] + (["maximum_wind_gust_speed"] if gust else [])
+        try:
+            docs = [_json_body(self._fetch, WIS2_ITEMS.format(base=base, coll=coll, name=n, since=since)) for n in names]
+            by, _pos = parse_wis2_features(docs)
+        except Exception as e:                           # noqa: BLE001
+            self._nodes[node] = dict(self._nodes.get(node) or {}, error="%s: %s" % (type(e).__name__, e))
+            raise
+        rows = wis2_readings(by)
+        mine = {wid: r for wid, r in rows.items() if (self.stations.get(wid) or {}).get("net") == node}
+        self._nodes[node] = {"ok": round(buoy_sources.time.time()), "error": None, "readings": len(mine)}
+        return mine
+
+    def status(self, now=None):
+        s = super().status(now)
+        s["nodes"] = {n: dict(v) for n, v in sorted(self._nodes.items())}
+        return s
+
+
+class HkoProvider(MoreProvider):
+    """Plan section 73: the Hong Kong Observatory's 10-minute wind CSV (one request, every station); the windows' 24 hours
+    in memory (HKO publishes the latest 10 minutes only)."""
+    source, key, list_ttl_sec, series = "HKO", "hko", 600, True
+
+    def _readings(self):
+        return parse_hko_csv(self._fetch(HKO_CSV, MAX_STATION, HEADERS))
+
+
+class SmnProvider(MoreProvider):
+    """Plan section 73: SMN Argentina's tiempo presente zip (every station's latest report); names matched to the
+    snapshot's (the snapshot keeps SMN's own names); the windows' 24 hours in memory."""
+    source, key, list_ttl_sec, series = "SMN", "smn", 1800, True
+
+    def _readings(self):
+        now = parse_smn_now(self._fetch(SMN_NOW, MAX_ZIP, HEADERS))
+        by_name = {st.get("name"): local for local, st in self.stations.items()}
+        return {by_name[n]: rows for n, rows in now.items() if n in by_name}
+
+
 PROVIDERS = {"eccc": EcccProvider, "jma": JmaProvider, "iem": IemProvider, "smhi": SmhiProvider, "fmi": FmiProvider,
-             "dmi": DmiProvider, "dwd": DwdProvider, "ipma": IpmaProvider, "mei": MeiProvider}
-PACED = ("eccc", "iem", "dwd", "mei")
+             "dmi": DmiProvider, "dwd": DwdProvider, "ipma": IpmaProvider, "mei": MeiProvider,
+             "wis2": Wis2Provider, "hko": HkoProvider, "smn": SmnProvider}          # + plan section 73
+PACED = ("eccc", "iem", "dwd", "mei", "wis2")
 
 
 def make_providers(groups, fetch, enabled=None, per_refresh=None):
@@ -1116,6 +1493,13 @@ def _history(src, local, st, since, fetch, now):
         rows = dmi_readings(p["s"], p["d"], p["g"]).get(local, [])
     elif src == "dwd":
         rows = parse_dwd_poi(body(DWD_CSV.format(sid=local)))
+    elif src == "wis2":                                  # plan section 73: the station's reports on its node
+        node = WIS2_NODES.get(st.get("net") or "")
+        if node is None:
+            raise W.WindError("unknown WIS2 node")
+        doc = js(WIS2_STATION.format(base=node[0], coll=node[1], wid=local, since=W.iso_z(since)), MAX_LIST)
+        by, _pos = parse_wis2_features([doc])
+        rows = wis2_readings({local: by.get(local) or {}}).get(local, [])
     else:
         return None
     return rows

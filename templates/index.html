@@ -1969,7 +1969,10 @@
                              met: 'Weather station', road: 'Road weather station' };                           // plan section 67
     // plan section 67: the agencies, named in the window's subtitle and credited while one of their flags is drawn
     const WIND_AGENCY = { eccc: 'Environment Canada', jma: 'JMA', iem: 'IEM', smhi: 'SMHI', fmi: 'FMI', dmi: 'DMI', dwd: 'DWD', ipma: 'IPMA', mei: 'Met Éireann',
-                          knmi: 'KNMI', frost: 'MET Norway', cwa: 'CWA' };   // plan section 69: the agencies that need a key
+                          knmi: 'KNMI', frost: 'MET Norway', cwa: 'CWA',     // plan section 69: the agencies that need a key
+                          hko: 'Hong Kong Observatory', smn: 'SMN Argentina' };   // plan section 73 (WIS2: by node, below)
+    // plan section 73: the WIS2 nodes (a WIS2 station's `net`), named and credited by node
+    const WIND_WIS2_NODE = { saws: 'SAWS', imd: 'IMD', inam: 'INAM', gmet: 'GMet', nms: 'NMS Namibia', anacim: 'ANACIM', mms: 'MMS Maldives' };
     const WIND_AGENCY_CREDIT = {
       eccc: '<a href="https://eccc-msc.github.io/open-data/" target="_blank" rel="noopener">Environment and Climate Change Canada</a>',
       jma: '<a href="https://www.jma.go.jp/bosai/amedas/" target="_blank" rel="noopener">Japan Meteorological Agency</a> (edited)',
@@ -1982,13 +1985,21 @@
       mei: '<a href="https://www.met.ie/" target="_blank" rel="noopener">Met Éireann</a>',
       knmi: '<a href="https://dataplatform.knmi.nl/" target="_blank" rel="noopener">KNMI</a>',
       frost: '<a href="https://www.met.no/en/free-meteorological-data/Licensing-and-crediting" target="_blank" rel="noopener">MET Norway</a>',
-      cwa: '<a href="https://opendata.cwa.gov.tw/" target="_blank" rel="noopener">CWA</a> (<a href="https://data.gov.tw/license" target="_blank" rel="noopener">OGDL</a>)' };
-    const WIND_AGENCY_ORDER = ['eccc', 'jma', 'iem', 'smhi', 'fmi', 'dmi', 'dwd', 'ipma', 'mei', 'knmi', 'frost', 'cwa'];
+      cwa: '<a href="https://opendata.cwa.gov.tw/" target="_blank" rel="noopener">CWA</a> (<a href="https://data.gov.tw/license" target="_blank" rel="noopener">OGDL</a>)',
+      hko: '<a href="https://data.weather.gov.hk/" target="_blank" rel="noopener">Hong Kong Observatory</a> (<a href="https://data.gov.hk/en/terms-and-conditions" target="_blank" rel="noopener">DATA.GOV.HK</a>)',
+      smn: '<a href="https://www.smn.gob.ar/" target="_blank" rel="noopener">SMN Argentina</a>' };
+    const WIND_AGENCY_ORDER = ['eccc', 'jma', 'iem', 'smhi', 'fmi', 'dmi', 'dwd', 'ipma', 'mei', 'knmi', 'frost', 'cwa', 'hko', 'smn'];
     // the layer's credit: NOAA's feeds always, then the agencies whose flags are drawn in the view
     function windCreditFor(vis) {
       const seen = new Set();
-      (vis || []).forEach(function (c) { if (WIND_AGENCY_CREDIT[c.s.src]) seen.add(c.s.src); });
+      const nodes = new Set();
+      (vis || []).forEach(function (c) {
+        if (WIND_AGENCY_CREDIT[c.s.src]) seen.add(c.s.src);
+        if (c.s.src === 'wis2' && WIND_WIS2_NODE[c.s.net]) nodes.add(c.s.net);
+      });
       const more = WIND_AGENCY_ORDER.filter(function (k) { return seen.has(k); }).map(function (k) { return WIND_AGENCY_CREDIT[k]; });
+      const wis2 = Object.keys(WIND_WIS2_NODE).filter(function (k) { return nodes.has(k); }).map(function (k) { return WIND_WIS2_NODE[k]; });
+      if (wis2.length) more.push('<a href="https://wmo.int/activities/wmo-information-system-wis" target="_blank" rel="noopener">WMO WIS2</a>: ' + wis2.join(' · '));
       return WIND_CREDIT + (more.length ? ' · ' + more.join(' · ') : '');
     }
     let windListFailedAt = -Infinity;
@@ -4020,6 +4031,12 @@
         const state = String(s.net || '').split('_')[0];
         return 'Wind · ' + (s.kind === 'road' ? 'Road weather station ' + local + (state ? ' (' + state + ' DOT)' : '') : 'Airport ' + local + ' (IEM)');
       }
+      if (s.src === 'wis2') {                         // a WIGOS id: shown as its WMO number when it is one (plan section 73)
+        const p = local.split('-');
+        return 'Wind · ' + (WIND_WIS2_NODE[s.net] || 'WIS2') + ' weather station ' + (p.length === 4 && p[1] === '20000' ? 'WMO ' + p[3] : local);
+      }
+      if (s.src === 'hko') return 'Wind · Hong Kong Observatory weather station';
+      if (s.src === 'smn') return 'Wind · SMN Argentina weather station WMO ' + local;
       if (WIND_AGENCY[s.src]) return 'Wind · ' + WIND_AGENCY[s.src] + ' weather station ' + local;
       return 'Wind · ' + (WIND_KIND_TEXT[s.kind] || 'Station') + ' ' + local + (s.alias ? ' (NDBC ' + s.alias + ')' : '');
     }

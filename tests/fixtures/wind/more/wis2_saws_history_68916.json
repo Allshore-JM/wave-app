@@ -1,0 +1,3689 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "hPa",
+"value": 1018.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "Celsius",
+"value": 18.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "Celsius",
+"value": 17.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T05:50:00Z/2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "deg",
+"value": 60.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T05:50:00Z/2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310600-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T05:50:00Z/2026-10-31T06:00:00Z",
+"reportId": "0-20000-0-68916-202610310600",
+"reportTime": "2026-10-31T06:00:00Z",
+"units": "m/s",
+"value": 7.2,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310600-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "hPa",
+"value": 1018.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "Celsius",
+"value": 20.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "Celsius",
+"value": 17.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T07:50:00Z/2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "deg",
+"value": 50.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T07:50:00Z/2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310800-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T07:50:00Z/2026-10-31T08:00:00Z",
+"reportId": "0-20000-0-68916-202610310800",
+"reportTime": "2026-10-31T08:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310800-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "hPa",
+"value": 1018.3,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "Celsius",
+"value": 17.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "Celsius",
+"value": 16.7,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T06:50:00Z/2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "deg",
+"value": 50.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T06:50:00Z/2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310700-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T06:50:00Z/2026-10-31T07:00:00Z",
+"reportId": "0-20000-0-68916-202610310700",
+"reportTime": "2026-10-31T07:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310700-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "hPa",
+"value": 1017.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "Celsius",
+"value": 16.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "Celsius",
+"value": 16.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T03:50:00Z/2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "deg",
+"value": 360.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T03:50:00Z/2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310400-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T03:50:00Z/2026-10-31T04:00:00Z",
+"reportId": "0-20000-0-68916-202610310400",
+"reportTime": "2026-10-31T04:00:00Z",
+"units": "m/s",
+"value": 3.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310400-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "hPa",
+"value": 1017.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "Celsius",
+"value": 17.2,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "Celsius",
+"value": 16.7,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T04:50:00Z/2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "deg",
+"value": 60.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T04:50:00Z/2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310500-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T04:50:00Z/2026-10-31T05:00:00Z",
+"reportId": "0-20000-0-68916-202610310500",
+"reportTime": "2026-10-31T05:00:00Z",
+"units": "m/s",
+"value": 4.6000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310500-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "hPa",
+"value": 1017.3,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "Celsius",
+"value": 20.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "Celsius",
+"value": 17.7,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-10",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T11:50:00Z/2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "deg",
+"value": 50.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-11",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T11:50:00Z/2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311200-12",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T11:50:00Z/2026-10-31T12:00:00Z",
+"reportId": "0-20000-0-68916-202610311200",
+"reportTime": "2026-10-31T12:00:00Z",
+"units": "m/s",
+"value": 2.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311200-12"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "hPa",
+"value": 1018.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "Celsius",
+"value": 20.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "Celsius",
+"value": 17.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T08:50:00Z/2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "deg",
+"value": 40.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T08:50:00Z/2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610310900-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T08:50:00Z/2026-10-31T09:00:00Z",
+"reportId": "0-20000-0-68916-202610310900",
+"reportTime": "2026-10-31T09:00:00Z",
+"units": "m/s",
+"value": 2.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610310900-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "hPa",
+"value": 1017.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "Celsius",
+"value": 20.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "Celsius",
+"value": 18.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T12:50:00Z/2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "deg",
+"value": 40.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T12:50:00Z/2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311300-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T12:50:00Z/2026-10-31T13:00:00Z",
+"reportId": "0-20000-0-68916-202610311300",
+"reportTime": "2026-10-31T13:00:00Z",
+"units": "m/s",
+"value": 3.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311300-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "hPa",
+"value": 1017.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "Celsius",
+"value": 21.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "Celsius",
+"value": 17.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T09:50:00Z/2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "deg",
+"value": 40.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T09:50:00Z/2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311000-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T09:50:00Z/2026-10-31T10:00:00Z",
+"reportId": "0-20000-0-68916-202610311000",
+"reportTime": "2026-10-31T10:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311000-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "hPa",
+"value": 1017.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "Celsius",
+"value": 21.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "Celsius",
+"value": 17.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T10:50:00Z/2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "deg",
+"value": 30.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T10:50:00Z/2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311100-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T10:50:00Z/2026-10-31T11:00:00Z",
+"reportId": "0-20000-0-68916-202610311100",
+"reportTime": "2026-10-31T11:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311100-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "hPa",
+"value": 1017.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "Celsius",
+"value": 18.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "Celsius",
+"value": 17.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T13:50:00Z/2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "deg",
+"value": 150.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T13:50:00Z/2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311400-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T13:50:00Z/2026-10-31T14:00:00Z",
+"reportId": "0-20000-0-68916-202610311400",
+"reportTime": "2026-10-31T14:00:00Z",
+"units": "m/s",
+"value": 4.1000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311400-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "hPa",
+"value": 1020.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "Celsius",
+"value": 16.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "Celsius",
+"value": 12.3,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-10",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T23:50:00Z/2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "deg",
+"value": 10.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-11",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T23:50:00Z/2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010000-12",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T23:50:00Z/2026-11-01T00:00:00Z",
+"reportId": "0-20000-0-68916-202611010000",
+"reportTime": "2026-11-01T00:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010000-12"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "hPa",
+"value": 1021.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "Celsius",
+"value": 15.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "Celsius",
+"value": 11.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-11-01T01:50:00Z/2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "deg",
+"value": 70.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-11-01T01:50:00Z/2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T01:50:00Z/2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "hPa",
+"value": 1021.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "Celsius",
+"value": 16.3,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "Celsius",
+"value": 12.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-11-01T00:50:00Z/2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "deg",
+"value": 60.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-11-01T00:50:00Z/2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T00:50:00Z/2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "m/s",
+"value": 3.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "hPa",
+"value": 1020.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "Celsius",
+"value": 16.2,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "Celsius",
+"value": 12.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T22:50:00Z/2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "deg",
+"value": 80.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T22:50:00Z/2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312300-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T22:50:00Z/2026-10-31T23:00:00Z",
+"reportId": "0-20000-0-68916-202610312300",
+"reportTime": "2026-10-31T23:00:00Z",
+"units": "m/s",
+"value": 4.1000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312300-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "hPa",
+"value": 1019.7,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "Celsius",
+"value": 17.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "Celsius",
+"value": 16.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-10",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T17:50:00Z/2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "deg",
+"value": 30.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-11",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T17:50:00Z/2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311800-12",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T17:50:00Z/2026-10-31T18:00:00Z",
+"reportId": "0-20000-0-68916-202610311800",
+"reportTime": "2026-10-31T18:00:00Z",
+"units": "m/s",
+"value": 2.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311800-12"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "hPa",
+"value": 1017.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "Celsius",
+"value": 19.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "Celsius",
+"value": 17.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T14:50:00Z/2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "deg",
+"value": 10.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T14:50:00Z/2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311500-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T14:50:00Z/2026-10-31T15:00:00Z",
+"reportId": "0-20000-0-68916-202610311500",
+"reportTime": "2026-10-31T15:00:00Z",
+"units": "m/s",
+"value": 2.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311500-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "hPa",
+"value": 1018.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "Celsius",
+"value": 18.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "Celsius",
+"value": 17.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T15:50:00Z/2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "deg",
+"value": 0.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T15:50:00Z/2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "m/s",
+"value": 0.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311600-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T15:50:00Z/2026-10-31T16:00:00Z",
+"reportId": "0-20000-0-68916-202610311600",
+"reportTime": "2026-10-31T16:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311600-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "hPa",
+"value": 1019.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "Celsius",
+"value": 17.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "Celsius",
+"value": 16.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T16:50:00Z/2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "deg",
+"value": 10.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T16:50:00Z/2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311700-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T16:50:00Z/2026-10-31T17:00:00Z",
+"reportId": "0-20000-0-68916-202610311700",
+"reportTime": "2026-10-31T17:00:00Z",
+"units": "m/s",
+"value": 3.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311700-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "hPa",
+"value": 1020.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "Celsius",
+"value": 16.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "Celsius",
+"value": 13.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T20:50:00Z/2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "deg",
+"value": 10.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T20:50:00Z/2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "m/s",
+"value": 2.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312100-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T20:50:00Z/2026-10-31T21:00:00Z",
+"reportId": "0-20000-0-68916-202610312100",
+"reportTime": "2026-10-31T21:00:00Z",
+"units": "m/s",
+"value": 5.1000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312100-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "hPa",
+"value": 1019.9,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "Celsius",
+"value": 16.8,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "Celsius",
+"value": 15.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T18:50:00Z/2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "deg",
+"value": 30.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T18:50:00Z/2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "m/s",
+"value": 2.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610311900-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T18:50:00Z/2026-10-31T19:00:00Z",
+"reportId": "0-20000-0-68916-202610311900",
+"reportTime": "2026-10-31T19:00:00Z",
+"units": "m/s",
+"value": 5.1000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610311900-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "hPa",
+"value": 1021.3,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "Celsius",
+"value": 16.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "Celsius",
+"value": 13.3,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T21:50:00Z/2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "deg",
+"value": 80.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T21:50:00Z/2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312200-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T21:50:00Z/2026-10-31T22:00:00Z",
+"reportId": "0-20000-0-68916-202610312200",
+"reportTime": "2026-10-31T22:00:00Z",
+"units": "m/s",
+"value": 4.6000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312200-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+228.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-1",
+"properties": {
+"description": null,
+"name": "pressure_reduced_to_mean_sea_level",
+"phenomenonTime": "2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "hPa",
+"value": 1020.4,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-1"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-4",
+"properties": {
+"description": null,
+"name": "air_temperature",
+"phenomenonTime": "2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "Celsius",
+"value": 16.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-4"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+230.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-5",
+"properties": {
+"description": null,
+"name": "dewpoint_temperature",
+"phenomenonTime": "2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "Celsius",
+"value": 14.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-5"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-6",
+"properties": {
+"description": "NO OBSERVATION, DATA NOT AVAILABLE, PRESENT AND PAST WEATHER OMITTED",
+"name": "present_weather",
+"phenomenonTime": "2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "CODE TABLE",
+"value": null,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-6"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-9",
+"properties": {
+"description": null,
+"name": "wind_direction",
+"phenomenonTime": "2026-10-31T19:50:00Z/2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "deg",
+"value": 70.0,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-9"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-10",
+"properties": {
+"description": null,
+"name": "wind_speed",
+"phenomenonTime": "2026-10-31T19:50:00Z/2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-10"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202610312000-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-10-31T19:50:00Z/2026-10-31T20:00:00Z",
+"reportId": "0-20000-0-68916-202610312000",
+"reportTime": "2026-10-31T20:00:00Z",
+"units": "m/s",
+"value": 5.1000000000000005,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202610312000-11"
+},
+"type": "Feature"
+}
+],
+"numberMatched": 161,
+"numberReturned": 161,
+"links": [],
+"timeStamp": "2026-11-01T03:32:41.298049Z"
+}

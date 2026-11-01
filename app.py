@@ -23,6 +23,7 @@ import point_forecast
 import gfs_bulletins
 import sky
 import tide_sources
+import chain_tls
 import cwa_tls
 import wind_keyed
 import wind_sources
@@ -167,8 +168,10 @@ def _build_http_session() -> requests.Session:
         s.mount("https://", adapter)
         s.mount("http://", adapter)
         cwa_tls.mount(s, max_retries=retry)        # Taiwan CWA's chain: without the strict X.509 flag (cwa_tls.py)
+        chain_tls.mount(s, max_retries=retry)      # two WIS2 nodes' missing intermediates (chain_tls.py, section 73)
     else:
         cwa_tls.mount(s)
+        chain_tls.mount(s)
     return s
 
 
@@ -438,7 +441,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.27.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.28.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -575,6 +578,7 @@ def _points_root() -> str:
 
 _POINT_HTTP = requests.Session()      # no retry adapter: a point's objects are asked for once
 cwa_tls.mount(_POINT_HTTP)             # the CWA wind feed's fetch (plan section 69: cwa_tls.py)
+chain_tls.mount(_POINT_HTTP)           # the WIS2 wind feed's fetch (plan section 73: chain_tls.py)
 
 
 def _points_fetch(url: str, max_bytes: int, headers=None, retry_dropped=False) -> bytes:
@@ -938,13 +942,14 @@ WIND_MADIS_MAX_S = 90.0           # the whole answer (it takes 4-40 s)
 WIND_MADIS_WINDOW_TIMEOUT = (10, 100)
 WIND_MADIS_WINDOW_MAX_S = 120.0
 # plan section 67's feeds (wind_more.py): each on unless WIND_<SRC>=0 (WIND_ECCC, WIND_JMA, WIND_IEM, WIND_SMHI, WIND_FMI,
-# WIND_DMI, WIND_DWD, WIND_IPMA, WIND_MEI); the paced ones' units per refresh: WIND_<SRC>_PER_REFRESH (ECCC, IEM, DWD, MEI)
+# WIND_DMI, WIND_DWD, WIND_IPMA, WIND_MEI; plan section 73: WIND_WIS2, WIND_HKO, WIND_SMN); the paced ones' units per
+# refresh: WIND_<SRC>_PER_REFRESH (ECCC, IEM, DWD, MEI, WIS2)
 WIND_MORE_ENABLED = {k: os.environ.get("WIND_" + k.upper(), "1") != "0" for k in wind_sources.MORE_SOURCES}
 
 
 def _wind_more_per_refresh():
     out = {}
-    for k in ("eccc", "iem", "dwd", "mei"):
+    for k in ("eccc", "iem", "dwd", "mei", "wis2"):
         v = os.environ.get("WIND_" + k.upper() + "_PER_REFRESH")
         if v:
             try:
@@ -960,8 +965,8 @@ WIND_MORE_PER_REFRESH = _wind_more_per_refresh()
 WIND_KEYS = wind_keyed.keys_from_env()
 wind_keyed.install_log_redaction()               # urllib3 names the URLs it retries: never with a key (G45 F-3)
 # single-request feeds first; the paced feeds (one request per station or network) after them
-WIND_WARM_ORDER = ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "CWA", "KNMI", "FROST", "MADIS", "MEI", "IEM",
-                   "DWD", "ECCC", "COOPS", "NWS"]
+WIND_WARM_ORDER = ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "HKO", "SMN", "CWA", "KNMI", "FROST", "MADIS",
+                   "MEI", "IEM", "WIS2", "DWD", "ECCC", "COOPS", "NWS"]
 WIND_OFF = "Wind stations are not available on this server"
 _WINDS = {"svc": None, "list": None, "providers": None, "stations": None, "base_stations": None, "base_doc": None,
           "extra_key": None}

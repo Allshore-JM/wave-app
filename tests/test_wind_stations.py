@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+import wind_more as M
 import wind_sources as WS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -27,7 +28,8 @@ def _tool():
 
 
 W = _tool()
-MORE_MET = ("eccc", "jma", "smhi", "fmi", "dmi", "dwd", "ipma", "mei", "cwa")   # cwa: plan section 69
+MORE_MET = ("eccc", "jma", "smhi", "fmi", "dmi", "dwd", "ipma", "mei", "cwa",   # cwa: plan section 69
+            "wis2", "hko", "smn")                                              # plan section 73
 MORE = MORE_MET + ("iem",)
 
 
@@ -57,7 +59,9 @@ def test_ids_are_namespaced_unique_and_match_their_source(snap):
     kinds.update({src: {"met"} for src in MORE_MET})                  # plan section 67: national weather services
     native_re = {"coops": r"\d{7}", "jma": r"\d{5}", "dwd": r"10\d{3}", "dmi": r"\d{5}", "fmi": r"\d{6}",
                  "smhi": r"\d{4,6}", "ipma": r"\d{7,8}", "eccc": r"[A-Z][A-Z0-9]{3}", "mei": r"[A-Z][A-Z-]{2,23}",
-                 "iem": r"[A-Z0-9]{3,6}", "cwa": r"[A-Z0-9]{6}"}
+                 "iem": r"[A-Z0-9]{3,6}", "cwa": r"[A-Z0-9]{6}",
+                 # plan section 73: a WIGOS id, HKO's station name in capitals, SMN's WMO number
+                 "wis2": r"0-\d{1,5}-0-[A-Z0-9]{1,16}", "hko": r"[A-Z]{4,16}", "smn": r"8[789]\d{3}"}
     for r in rows:
         src, _, native = r["id"].partition(":")
         assert src == r["src"] and src in kinds, r
@@ -129,6 +133,8 @@ def test_net_only_for_iem_rows_and_their_kind(snap):
             m = re.fullmatch(r"([A-Z]{2})_(RWIS|ASOS)", r["net"] or "")
             assert m, r
             assert r["kind"] == {"RWIS": "road", "ASOS": "airport"}[m.group(2)], r
+        elif r["src"] == "wis2":                                       # plan section 73: the station's wis2box node
+            assert r["net"] in M.WIS2_NODES and r["kind"] == "met", r
         else:
             assert r["net"] is None, r
 

@@ -1,0 +1,167 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"geometry": {
+"coordinates": [
+28.38333,
+-23.6
+],
+"type": "Point"
+},
+"id": "0-20000-0-68163-202611010200-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T01:50:00Z/2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68163-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "m/s",
+"value": 2.1,
+"wigos_station_identifier": "0-20000-0-68163",
+"id": "0-20000-0-68163-202611010200-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010200-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T01:50:00Z/2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68916-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "m/s",
+"value": 3.6,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010200-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+20.01666,
+-34.83334,
+14.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68920-202611010200-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T01:50:00Z/2026-11-01T02:00:00Z",
+"reportId": "0-20000-0-68920-202611010200",
+"reportTime": "2026-11-01T02:00:00Z",
+"units": "m/s",
+"value": 6.2,
+"wigos_station_identifier": "0-20000-0-68920",
+"id": "0-20000-0-68920-202611010200-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+28.38333,
+-23.6
+],
+"type": "Point"
+},
+"id": "0-20000-0-68163-202611010100-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T00:50:00Z/2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68163-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "m/s",
+"value": 1.5,
+"wigos_station_identifier": "0-20000-0-68163",
+"id": "0-20000-0-68163-202611010100-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+18.48333,
+-34.35,
+238.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68916-202611010100-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T00:50:00Z/2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68916-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "m/s",
+"value": 3.1,
+"wigos_station_identifier": "0-20000-0-68916",
+"id": "0-20000-0-68916-202611010100-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+20.01666,
+-34.83334,
+14.0
+],
+"type": "Point"
+},
+"id": "0-20000-0-68920-202611010100-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T00:50:00Z/2026-11-01T01:00:00Z",
+"reportId": "0-20000-0-68920-202611010100",
+"reportTime": "2026-11-01T01:00:00Z",
+"units": "m/s",
+"value": 6.2,
+"wigos_station_identifier": "0-20000-0-68920",
+"id": "0-20000-0-68920-202611010100-11"
+},
+"type": "Feature"
+},
+{
+"geometry": {
+"coordinates": [
+28.38333,
+-23.6
+],
+"type": "Point"
+},
+"id": "0-20000-0-68163-202611010300-11",
+"properties": {
+"description": null,
+"name": "maximum_wind_gust_speed",
+"phenomenonTime": "2026-11-01T02:50:00Z/2026-11-01T03:00:00Z",
+"reportId": "0-20000-0-68163-202611010300",
+"reportTime": "2026-11-01T03:00:00Z",
+"units": "m/s",
+"value": 1.0,
+"wigos_station_identifier": "0-20000-0-68163",
+"id": "0-20000-0-68163-202611010300-11"
+},
+"type": "Feature"
+}
+],
+"numberMatched": 7,
+"numberReturned": 7,
+"links": [],
+"timeStamp": "2026-11-01T03:32:22.834798Z"
+}

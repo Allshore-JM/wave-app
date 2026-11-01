@@ -40,15 +40,17 @@ def test_no_extra_roots_are_kept():
         assert not hasattr(app, name)
 
 
-# The one exception (plan section 69, owner 2026-10-31): Taiwan CWA's chain without the strict X.509 flag, pinned below.
+# The exceptions, pinned below: Taiwan CWA's chain without the strict X.509 flag (plan section 69, owner 2026-10-31),
+# and two WIS2 nodes' missing intermediates added (plan section 73, owner 2026-11-01).
 TLS_EXCEPTION = "cwa_tls.py"
+CHAIN_EXCEPTION = "chain_tls.py"
 
 
 def test_no_site_module_changes_how_requests_verify():
     assert "app.py" in SITE_FILES and "buoy_sources.py" in SITE_FILES and len(SITE_FILES) >= 8
-    assert TLS_EXCEPTION in SITE_FILES
+    assert TLS_EXCEPTION in SITE_FILES and CHAIN_EXCEPTION in SITE_FILES
     for name in SITE_FILES:
-        if name == TLS_EXCEPTION:
+        if name in (TLS_EXCEPTION, CHAIN_EXCEPTION):
             continue
         text = open(os.path.join(REPO, name), encoding="utf-8").read()
         hits = [m.group(0) for m in WEAKENING.finditer(text)]
@@ -129,3 +131,44 @@ def test_the_one_exception_is_cwa_without_the_strict_flag_and_nothing_else():
     assert app.HTTP.get_adapter(cwa_tls.HOST).max_retries.total == app.HTTP.get_adapter("https://x.org/").max_retries.total
     proxied = app.HTTP.get_adapter(cwa_tls.HOST).proxy_manager_for("http://proxy.example:3128")
     assert proxied.connection_pool_kw["ssl_context"].verify_flags == ctx.verify_flags      # the proxy path too
+
+
+def test_the_wis2_chain_exception_adds_three_pinned_intermediates_and_nothing_else():
+    """chain_tls.py: requests' own context plus the CAs' published intermediates (each matching its SHA-256 pin), for
+    the two WIS2 hosts only; no flag, mode or option differs from requests' default."""
+    import hashlib
+    import ssl
+    import chain_tls
+    import requests.adapters
+    text = open(os.path.join(REPO, CHAIN_EXCEPTION), encoding="utf-8").read()
+    assert sorted({m.group(0) for m in WEAKENING.finditer(text)}) == ["ssl_context"]
+    assert chain_tls.HOSTS == ("https://wis.weathersa.co.za/", "https://wis2box.imd.gov.in/")
+    pins = {"7a43bc7747d0633fbd90ff900c9242417c027dbdca05af72da9a70e3518dbe2e",
+            "7bcb0f2f2d1031a6af8d61baa835d2835a3b8bcc26d94a3b048b1655fb81298c",
+            "8c54c334b66ba4e426772af4a3f9136c19a1aec729fdb28c535c07a5a4ef22e0"}
+    assert {sha for _t, sha in chain_tls.INTERMEDIATES.values()} == pins
+    assert {hashlib.sha256(ssl.PEM_cert_to_DER_cert(t)).hexdigest() for t in chain_tls.pinned()} == pins
+    for t, _sha in chain_tls.INTERMEDIATES.values():          # intermediates, not roots: none issued by itself
+        assert t.count("BEGIN CERTIFICATE") == 1
+    ctx, default = chain_tls.context(), requests.adapters._preloaded_ssl_context
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is True
+    assert ctx.verify_flags == default.verify_flags and ctx.options == default.options
+    assert ctx.minimum_version == default.minimum_version and ctx.hostname_checks_common_name is False
+    base = ssl.create_default_context(cafile=certifi.where()).cert_store_stats()["x509_ca"]
+    assert ctx.cert_store_stats()["x509_ca"] == base + 3
+    for session in (app.HTTP, app._POINT_HTTP):
+        for host in chain_tls.HOSTS:
+            assert isinstance(session.get_adapter(host + "oapi/collections"), chain_tls.ChainAdapter)
+        for other in ("https://wis2.inam.gov.mz/x", "https://wis.weathersa.co.za.example.com/x",
+                      "http://wis.weathersa.co.za/x", "https://opendata.cwa.gov.tw/x", "https://www.pacioos.hawaii.edu/x"):
+            assert not isinstance(session.get_adapter(other), chain_tls.ChainAdapter), other
+    assert app.HTTP.get_adapter(chain_tls.HOSTS[0]).max_retries.total == app.HTTP.get_adapter("https://x.org/").max_retries.total
+
+
+def test_a_changed_intermediate_is_left_out(monkeypatch):
+    """chain_tls.pinned(): an intermediate whose DER no longer matches its pin is not trusted (its host then fails as
+    before the exception)."""
+    import chain_tls
+    name, (text, sha) = next(iter(chain_tls.INTERMEDIATES.items()))
+    monkeypatch.setitem(chain_tls.INTERMEDIATES, name, (text, "0" * 64))
+    assert len(chain_tls.pinned()) == len(chain_tls.INTERMEDIATES) - 1 and text not in chain_tls.pinned()

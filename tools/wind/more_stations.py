@@ -52,9 +52,11 @@ AIRFIELD_WORDS = re.compile(r"\b(airport|aeroport|aeroporto|aerodromo|aerodrome|
                             r"lentoasema|lentokentta|flughafen|flugplatz|airfield|intl|arpt)\b")
 DWD_WMO_BLOCK = "10"                                           # DWD's own stations: WMO block 10 = Germany (its
                                                                # poi list also relays other countries' SYNOP reports)
-SPOT_RANK_MORE = {"eccc": 4, "jma": 4, "smhi": 4, "fmi": 4, "dmi": 4, "ipma": 4, "mei": 4, "cwa": 4, "dwd": 5, "iem": 6}
+SPOT_RANK_MORE = {"eccc": 4, "jma": 4, "smhi": 4, "fmi": 4, "dmi": 4, "ipma": 4, "mei": 4, "cwa": 4, "dwd": 5, "iem": 6,
+                  "hko": 4, "smn": 4, "wis2": 5}                # plan section 73
 FIXED_TZ = {"jma": "Asia/Tokyo", "fmi": "Europe/Helsinki", "smhi": "Europe/Stockholm", "dwd": "Europe/Berlin",
-            "mei": "Europe/Dublin", "cwa": "Asia/Taipei"}
+            "mei": "Europe/Dublin", "cwa": "Asia/Taipei", "hko": "Asia/Hong_Kong",
+            "smn": "America/Argentina/Buenos_Aires"}  # Argentina: UTC-3 everywhere (the nearest zone can be Brazil's)
 CACHE_S = 12 * 3600
 PAUSE_S = 0.25                                                 # between one-station reads (ECCC, DWD, Met Eireann)
 IEM_PAUSE_S = 1.0
@@ -276,8 +278,80 @@ def cwa(M, cache, coastal, TT):
     return out
 
 
+WIS2_PAUSE_S = 1.2                                             # between two requests to a node
+PREVIOUS = {}                                                  # the snapshot's rows by source (a WIS2 node that fails keeps its own)
+
+
+def wis2_name(name, TT):
+    """A node's station name as shown: without the "(68916-0)" a node adds to tell two stations apart, "_" as a space."""
+    n = re.sub(r"\s*\(\d{5}-\d\)\s*$", "", str(name or "")).replace("_", " ")
+    return place_name(n, TT)
+
+
+def wis2(M, cache, coastal, TT):
+    """Plan section 73: each wis2box node's stations that reported wind in the last 24 hours (positions from the reports,
+    names from the node's stations collection). A node that does not answer keeps its rows of the current snapshot."""
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out, kept_old = [], []
+    for node, (base, coll, _name, short, _gust) in M.WIS2_NODES.items():
+        try:
+            doc = get(M.WIS2_ITEMS.format(base=base, coll=coll, name="wind_speed", since=since), timeout=90)
+            by, pos = M.parse_wis2_features([doc])
+            time.sleep(WIS2_PAUSE_S)
+            try:
+                names = M.parse_wis2_stations(get(M.WIS2_STATIONS.format(base=base), timeout=90))
+            except Exception as e:                           # noqa: BLE001
+                print(f"  WIS2 {node}: stations collection {e}", flush=True)
+                names = {}
+            time.sleep(WIS2_PAUSE_S)
+        except Exception as e:                               # noqa: BLE001
+            old = [r for r in PREVIOUS.get("wis2", []) if r[9] == node]
+            print(f"  WIS2 {node}: {e}; its {len(old)} rows of the snapshot kept", flush=True)
+            kept_old += old
+            continue
+        heard = {wid: pos[wid] for wid in M.wis2_readings(by) if wid in pos}
+        near = coastal(heard)
+        for wid in sorted(near):
+            la, lo = heard[wid]
+            out.append({"src": "wis2", "local": wid, "name": wis2_name((names.get(wid) or {}).get("name") or wid, TT),
+                        "lat": round(la, 4), "lon": round(lo, 4), "kind": "met", "net": node, "icao": None})
+        print(f"WIS2 {short}: {len(names)} stations listed, {len(heard)} with wind in 24 h, {len(near)} coastal",
+              flush=True)
+    for r in kept_old:
+        src, _, local = r[0].partition(":")
+        out.append({"src": src, "local": local, "name": r[1], "lat": r[2], "lon": r[3], "kind": r[4], "net": r[9],
+                    "icao": None})
+    return out
+
+
+def hko(M, cache, coastal, TT):
+    """Plan section 73: the Hong Kong Observatory's stations in its 10-minute wind file with a known position."""
+    now = M.parse_hko_csv(get(M.HKO_CSV))
+    cand = {M.hko_id(n): (n, pos) for n, pos in M.HKO_POSITIONS.items() if M.hko_id(n) in now}
+    near = coastal({k: v[1] for k, v in cand.items()})
+    out = [{"src": "hko", "local": k, "name": cand[k][0], "lat": cand[k][1][0], "lon": cand[k][1][1], "kind": "met",
+            "net": None, "icao": None} for k in sorted(near)]
+    print(f"HKO: {len(now)} stations in the file, {len(cand)} with a position, {len(near)} coastal", flush=True)
+    return out
+
+
+def smn(M, cache, coastal, TT):
+    """Plan section 73: SMN Argentina's tiempo-presente stations matched to its station list (estaciones) by name;
+    the id is the WMO number; the name shown is the tiempo-presente one (the feed matches by it)."""
+    now = M.parse_smn_now(get(M.SMN_NOW, timeout=90))
+    time.sleep(1.0)
+    st = M.parse_smn_stations(get(M.SMN_STATIONS, timeout=90))
+    match = M.smn_match(list(now), st)
+    near = coastal({wmo: (st[wmo]["lat"], st[wmo]["lon"]) for wmo in match.values()})
+    out = [{"src": "smn", "local": wmo, "name": n, "lat": st[wmo]["lat"], "lon": st[wmo]["lon"], "kind": "met",
+            "net": None, "icao": st[wmo]["icao"]} for n, wmo in sorted(match.items()) if wmo in near]
+    print(f"SMN: {len(now)} stations reporting, {len(match)} matched to the station list "
+          f"(not matched: {sorted(set(now) - set(match))}), {len(out)} coastal", flush=True)
+    return out
+
+
 GATHER = {"eccc": eccc, "jma": jma, "iem": iem, "smhi": smhi, "fmi": fmi, "dmi": dmi, "dwd": dwd, "ipma": ipma,
-          "mei": mei, "cwa": cwa}
+          "mei": mei, "cwa": cwa, "wis2": wis2, "hko": hko, "smn": smn}
 
 
 # ---------------------------------------------------------------------------------------------- the spot rule
@@ -516,6 +590,8 @@ def main(argv=None):
     assert doc["fields"] == FS.FIELDS[:len(doc["fields"])], doc["fields"]
     only = [s.strip() for s in args.only.split(",") if s.strip()]
     rows = [list(r) + [None] * (len(FS.FIELDS) - len(r)) for r in doc["stations"] if r[5] not in only]
+    for r in doc["stations"]:
+        PREVIOUS.setdefault(r[5], []).append(list(r) + [None] * (len(FS.FIELDS) - len(r)))
     print(f"kept {len(rows)} rows of {len(doc['stations'])}; building {only}", flush=True)
     if args.respot:
         return respot(args.out, doc, rows, only)
@@ -556,6 +632,8 @@ def main(argv=None):
              "Met Eireann station lists; lake shores GSHHG 2.3.7 level 2")
     if "cwa" in only:
         extra += "; plan section 69: CWA O-A0003-001 stations"
+    if {"wis2", "hko", "smn"} & set(only):
+        extra += "; plan section 73: WMO WIS2 wis2box nodes, Hong Kong Observatory, SMN Argentina stations"
     if extra not in source:
         source += extra
     FS.write_doc(args.out, out, source)

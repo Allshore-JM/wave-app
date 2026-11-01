@@ -1783,12 +1783,13 @@ def test_history_nws_falls_back_on_madis():
     assert "disclaimer" not in madis_svc(history_fetch(), MADIS_T, {}).history("ndbc:51003")[1]
 
 
-MORE_FEEDS = ("JMA", "SMHI", "FMI", "DMI", "IPMA", "MEI", "IEM", "DWD", "ECCC")      # plan section 67
+MORE_FEEDS = ("JMA", "SMHI", "FMI", "DMI", "IPMA", "MEI", "IEM", "DWD", "ECCC",       # plan section 67
+              "WIS2", "HKO", "SMN")                                                  # plan section 73
 
 
 def test_app_wires_the_madis_backup(monkeypatch):
-    assert A.WIND_WARM_ORDER == ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "CWA", "KNMI", "FROST", "MADIS",
-                                 "MEI", "IEM", "DWD", "ECCC", "COOPS", "NWS"]   # plan sections 67 and 69 among them
+    assert A.WIND_WARM_ORDER == ["NDBC", "METAR", "JMA", "SMHI", "FMI", "DMI", "IPMA", "HKO", "SMN", "CWA", "KNMI",
+                                 "FROST", "MADIS", "MEI", "IEM", "WIS2", "DWD", "ECCC", "COOPS", "NWS"]   # 67, 69, 73
     assert A.WIND_MADIS_URL == W.MADIS_HI_URL, "on by default (env WIND_MADIS_URL; empty = off)"
     calls = []
 

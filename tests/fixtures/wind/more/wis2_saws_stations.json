@@ -1,0 +1,121 @@
+{
+"type": "FeatureCollection",
+"features": [
+{
+"id": "0-20000-0-68916",
+"type": "Feature",
+"geometry": {
+"type": "Point",
+"coordinates": [
+18.4894,
+-34.3532,
+228
+]
+},
+"properties": {
+"name": "CAPE POINT (68916-0)",
+"wigos_station_identifier": "0-20000-0-68916",
+"traditional_station_identifier": "68916",
+"facility_type": "landFixed",
+"territory_name": "ZAF",
+"barometer_height": 228,
+"wmo_region": "africa",
+"url": "https://oscar.wmo.int/surface/#/search/station/stationReportDetails/0-20000-0-68916",
+"topics": [
+"origin/a/wis2/za-weathersa/data/core/weather/surface-based-observations/synop"
+],
+"status": "operational",
+"id": "0-20000-0-68916"
+}
+},
+{
+"id": "0-20000-0-68920",
+"type": "Feature",
+"geometry": {
+"type": "Point",
+"coordinates": [
+20.0131,
+-34.8262,
+11
+]
+},
+"properties": {
+"name": "CAPE AGULHAS",
+"wigos_station_identifier": "0-20000-0-68920",
+"traditional_station_identifier": "68920",
+"facility_type": "landFixed",
+"territory_name": "ZAF",
+"barometer_height": 11,
+"wmo_region": "africa",
+"url": "https://oscar.wmo.int/surface/#/search/station/stationReportDetails/0-20000-0-68920",
+"topics": [
+"origin/a/wis2/za-weathersa/data/core/weather/surface-based-observations/synop"
+],
+"status": "operational",
+"id": "0-20000-0-68920"
+}
+},
+{
+"id": "0-20000-0-68163",
+"type": "Feature",
+"geometry": {
+"type": "Point",
+"coordinates": [
+28.3878,
+-23.5948,
+1001
+]
+},
+"properties": {
+"name": "MARKEN",
+"wigos_station_identifier": "0-20000-0-68163",
+"traditional_station_identifier": "68163",
+"facility_type": "landFixed",
+"territory_name": "ZAF",
+"barometer_height": 1001,
+"wmo_region": "africa",
+"url": "https://oscar.wmo.int/surface/#/search/station/stationReportDetails/0-20000-0-68163",
+"topics": [
+"origin/a/wis2/za-weathersa/data/core/weather/surface-based-observations/synop"
+],
+"status": "operational",
+"id": "0-20000-0-68163"
+}
+}
+],
+"numberMatched": 126,
+"numberReturned": 126,
+"links": [
+{
+"type": "application/geo+json",
+"rel": "self",
+"title": "This document as GeoJSON",
+"href": "https://wis.weathersa.co.za/oapi/collections/stations/items?f=json&limit=5000"
+},
+{
+"rel": "alternate",
+"type": "application/ld+json",
+"title": "This document as RDF (JSON-LD)",
+"href": "https://wis.weathersa.co.za/oapi/collections/stations/items?f=jsonld&limit=5000"
+},
+{
+"type": "text/html",
+"rel": "alternate",
+"title": "This document as HTML",
+"href": "https://wis.weathersa.co.za/oapi/collections/stations/items?f=html&limit=5000"
+},
+{
+"type": "text/csv; charset=utf-8",
+"rel": "alternate",
+"title": "This document as CSV",
+"href": "https://wis.weathersa.co.za/oapi/collections/stations/items?f=csv&limit=5000"
+},
+{
+"type": "application/json",
+"title": "Stations",
+"rel": "collection",
+"href": "https://wis.weathersa.co.za/oapi/collections/stations"
+}
+],
+"timeStamp": "2026-11-01T03:32:26.374285Z"
+}

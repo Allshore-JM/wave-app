@@ -90,15 +90,28 @@ ATTRIBUTION = {"ndbc": "NOAA National Data Buoy Center (ndbc.noaa.gov)",
                        "converted by allshoresurf.com",
                "frost": "Data from The Norwegian Meteorological Institute (MET Norway, frost.met.no), CC BY 4.0",
                "cwa": "Central Weather Administration (Taiwan), O-A0003-001. The Open Data is made available to the "
-                      "public under the Open Government Data License, https://data.gov.tw/license"}
+                      "public under the Open Government Data License, https://data.gov.tw/license",
+               # plan section 73 (wind_more.SOURCES, wind_more.WIS2_NODES); a WIS2 window names its node ("wis2:<node>")
+               "wis2": "WMO WIS2 core data (the national weather services' wis2box nodes)",
+               "wis2:saws": "South African Weather Service, through WMO WIS2 (WMO core data)",
+               "wis2:imd": "India Meteorological Department, through WMO WIS2 (WMO core data)",
+               "wis2:inam": "INAM, Instituto Nacional de Meteorologia (Mozambique), through WMO WIS2 (WMO core data)",
+               "wis2:gmet": "Ghana Meteorological Agency, through WMO WIS2 (WMO core data)",
+               "wis2:nms": "Namibia Meteorological Service, through WMO WIS2 (WMO core data)",
+               "wis2:anacim": "ANACIM (Senegal), through WMO WIS2 (WMO core data)",
+               "wis2:mms": "Maldives Meteorological Service, through WMO WIS2 (WMO core data)",
+               "hko": "Hong Kong Observatory, HKSAR Government, through DATA.GOV.HK (units converted by allshoresurf.com)",
+               "smn": "Servicio Meteorologico Nacional (Argentina), open data (units converted by allshoresurf.com)"}
 CC_BY = "https://creativecommons.org/licenses/by/4.0/"
 # the licence text a window's source line links to (G44 P3-9: CC BY 4.0 asks for a link to the licence)
 LICENCE_URL = {"smhi": CC_BY, "fmi": CC_BY, "dmi": CC_BY, "dwd": CC_BY, "mei": CC_BY,
                "jma": "https://www.jma.go.jp/jma/en/copyright.html",
                "eccc": "https://eccc-msc.github.io/open-data/licence/readme_en/",
-               "knmi": CC_BY, "frost": CC_BY, "cwa": "https://data.gov.tw/license"}
-MORE_SOURCES = ("eccc", "jma", "iem", "smhi", "fmi", "dmi", "dwd", "ipma", "mei")   # plan section 67 (wind_more.py)
-MORE_KEPT = ("eccc", "ipma", "mei")             # their windows' 24 hours are the feed's own, kept in memory
+               "knmi": CC_BY, "frost": CC_BY, "cwa": "https://data.gov.tw/license",
+               "hko": "https://data.gov.hk/en/terms-and-conditions"}
+MORE_SOURCES = ("eccc", "jma", "iem", "smhi", "fmi", "dmi", "dwd", "ipma", "mei",   # plan section 67 (wind_more.py)
+                "wis2", "hko", "smn")                                                  # + plan section 73
+MORE_KEPT = ("eccc", "ipma", "mei", "hko", "smn")   # their windows' 24 hours are the feed's own, kept in memory
 KEYED_SOURCES = ("knmi", "frost", "cwa")        # plan section 69 (wind_keyed.py): the agencies that need a key
 KEYED_KEPT = ("knmi", "cwa")                    # their windows' 24 hours are the feed's own, kept in memory
 MORE_RESTART_NOTE = "Earlier hours are not kept after a server restart."
@@ -191,8 +204,8 @@ METAR_WX = {"RA": "rain", "DZ": "drizzle", "SN": "snow", "SG": "snow grains", "G
             "PO": "dust whirls", "DS": "dust storm", "SS": "sandstorm", "PY": "spray"}
 METAR_WX_DESC = {"SH": "showers", "TS": "thunderstorm", "FZ": "freezing", "BL": "blowing", "DR": "drifting",
                  "MI": "shallow", "BC": "patches of", "PR": "partial"}
-ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}|(eccc|jma|iem|smhi|fmi|dmi|dwd|ipma|mei|knmi|frost|cwa)"
-                   r":[A-Z0-9][A-Z0-9_-]{1,15}")
+ID_RE = re.compile(r"(coops|ndbc|metar|nws):[A-Z0-9]{3,8}|(eccc|jma|iem|smhi|fmi|dmi|dwd|ipma|mei|knmi|frost|cwa|hko|smn)"
+                   r":[A-Z0-9][A-Z0-9_-]{1,15}|wis2:[0-9]-[0-9]{1,5}-[0-9]-[A-Z0-9]{1,16}")   # wis2: a WIGOS id
 COOPS_NO_DATA_RE = re.compile(r"no data was found", re.I)   # the only CO-OPS message that means "nothing for the station"
 NO_NEW = object()                              # a paced station answered without a new reading: keep the one in hand
 _NUM = re.compile(r"-?\d+(\.\d+)?$")
@@ -1798,7 +1811,8 @@ class WindHistory:
                "units": {"s": "m/s", "g": "m/s", "d": "deg", "at": "degC", "wt": "degC", "dp": "degC", "rh": "%",
                          "p": "hPa", "pt": "hPa/3h", "vis": "km"}, "stale_s": STALE_S, "now": int(now),
                "t": [r["t"] for r in rows], "s": [r["s"] for r in rows], "g": [r["g"] for r in rows],
-               "d": [r["d"] for r in rows], "source": ATTRIBUTION[via or src], "via": via, "note": note}
+               "d": [r["d"] for r in rows], "via": via, "note": note,
+               "source": ATTRIBUTION.get("%s:%s" % (via or src, st.get("net"))) or ATTRIBUTION[via or src]}
         if LICENCE_URL.get(via or src):                                # the licence text the source line links to
             out["licence_url"] = LICENCE_URL[via or src]
         if src == "nws":                                               # mesonet observations: NOAA's disclaimer

@@ -251,7 +251,7 @@ def test_kept_window_right_after_a_restart(clock):
 
 
 def test_every_kept_source_is_kept():
-    assert set(W.MORE_KEPT) == {"eccc", "ipma", "mei"}
+    assert set(W.MORE_KEPT) == {"eccc", "ipma", "mei", "hko", "smn"}   # + plan section 73
     assert all(M.PROVIDERS[k].series for k in W.MORE_KEPT)
     assert not any(M.PROVIDERS[k].series for k in M.KEYS if k not in W.MORE_KEPT)
 

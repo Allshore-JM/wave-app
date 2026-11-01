@@ -422,6 +422,9 @@
     if (src === 'jma') return 'https://www.jma.go.jp/bosai/amedas/#amdno=' + encodeURIComponent(local);
     if (src === 'iem' && net) return 'https://mesonet.agron.iastate.edu/sites/site.php?station=' + encodeURIComponent(local) + '&network=' + encodeURIComponent(net);
     if (src === 'mei') return 'https://www.met.ie/latest-reports/observations';
+    // plan section 73: a WIS2 station's WMO OSCAR page; Hong Kong's regional wind page
+    if (src === 'wis2') return 'https://oscar.wmo.int/surface/#/search/station/stationReportDetails/' + encodeURIComponent(local);
+    if (src === 'hko') return 'https://www.hko.gov.hk/en/wxinfo/ts/index_wind.htm';
     return null;
   }
 

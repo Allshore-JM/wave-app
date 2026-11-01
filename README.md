@@ -2064,6 +2064,36 @@ with the note "Earlier hours are not kept after a server restart."; a station th
 says so and is asked again in a minute). Links in the window: JMA's AMeDAS
 page, IEM's site page, Met Eireann's observations page.
 
+### The data-poor regions: WMO WIS2, Hong Kong, Argentina (plan section 73, UI asset 1.28.0)
+153 more stations (`wind_stations.json` 4,738 -> 4,891), anonymous, built into the same snapshot by
+`python tools/wind/more_stations.py --only wis2,hko,smn` (the 30-km coast rule, lakes of 100 km2 or more counting as
+coast; an airfield or a site sharing its METAR's id gives way to that METAR flag):
+- WMO WIS2: national weather services' wis2box nodes (their OGC API, `.../oapi/collections/<observations>/items`; one
+  GeoJSON feature per variable and report). Ids `wis2:<WIGOS id>`, the node in `net`: SAWS South Africa 27 stations, IMD
+  India 63, INAM Mozambique 8, GMet Ghana 11, NMS Namibia 1 (ANACIM Senegal and MMS Maldives answer, but every coastal
+  station of theirs is an airfield with a METAR flag: 0 today). Two nodes a refresh every 3 minutes, so each node about
+  every 10 minutes: the last 3 hours of `wind_speed` and `wind_direction` (and `maximum_wind_gust_speed` where the node
+  reports one: SAWS, MMS), m/s and degrees FROM; BUFR's direction 0 is calm or unknown (north is 360), so no direction;
+  a value in other units than expected is left out (no guess). One node failing or refusing is that node's failure
+  only (the others stand; `/healthz` lists every node with its last answer and error). Licence: WMO core data (free
+  and unrestricted, WMO Resolution 1 (Cg-Ext(2021))); the credit names the nodes whose flags are drawn ("WMO WIS2: SAWS ·
+  IMD ..."), the window its node's service. NMS Namibia and ANACIM answer over plain HTTP only (public observations,
+  nothing secret in the request). SAWS's and IMD's servers send incomplete certificate chains (SAWS leaves out the
+  intermediate that issued its certificate, IMD sends its certificate alone): for those two hosts only the site's
+  sessions add the CAs' published intermediates, pinned by SHA-256, to requests' own context (`chain_tls.py`, owner
+  decision 2026-11-01; `tests/test_swan_cert.py` pins it); every other host is unchanged.
+- Hong Kong Observatory: the 10-minute wind CSV (`latest_10min_wind.csv`, one request every 10 minutes; km/h, an
+  8-point direction or Calm / Variable / N/A; 10-minute highest gust), 26 stations (ids `hko:<name in capitals>`;
+  positions from HKO's station list; Chek Lap Kok left out for its METAR). Credit "Hong Kong Observatory, HKSAR
+  Government, through DATA.GOV.HK", terms https://data.gov.hk/en/terms-and-conditions.
+- SMN Argentina: the "tiempo presente" zip (every station's latest hourly or 3-hourly report, one request every 30
+  minutes; km/h and a 16-point Spanish direction, no gust), 17 coastal stations (ids `smn:<WMO number>`; positions
+  from SMN's station list, matched by name). The licence is not stated (datos.gob.ar lists the data as open).
+A window's 24 hours: a WIS2 station's own reports from its node (one request filtered by the station's WIGOS id only: IMD's
+node honours one property filter; the answer is filtered again here), behind the 30-a-minute budget; Hong Kong and SMN
+keep their readings in memory (24 hours from the server's start, with the restart note). Env switches `WIND_WIS2=0`,
+`WIND_HKO=0`, `WIND_SMN=0`; `WIND_WIS2_PER_REFRESH` (nodes a refresh, default 2).
+
 ## Feeds that need a key (plan section 69)
 
 Four agencies gave the site a key (registered in plan section 68); each feed is built only when its key is in the

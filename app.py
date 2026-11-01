@@ -5713,6 +5713,9 @@ def _build_buoy_providers():
                                           names=_ndbc_active_names),
             buoy_sources.GlosProvider(http=HTTP, covered_ids=_ndbc_spectral_ids),
             buoy_sources.IoosSensorsProvider(http=HTTP, covered_ids=_ndbc_spectral_ids),
+            # the data-poor regions (plan section 72): Brazil's SiMCosta, Korea's KMA through WMO WIS2
+            buoy_sources.SimcostaProvider(http=HTTP),
+            buoy_sources.KmaBuoyProvider(http=HTTP),
         ]
         # plan section 69: the feeds that need a key, only when it is set (CCO_API_KEY, CWA_API_KEY); not in
         # LIVE_WARM_ORDER, so they warm after the anonymous feeds
@@ -5988,8 +5991,8 @@ LIVE_BUILD_FAIL_MAX = 3                      # this many failed builds in a row:
 LIVE_FETCH_STUCK_SEC = 900.0                 # a list fetch in flight this long is hung (no overall socket deadline)
 # Cheap and quick feeds first, the big ones (AODN's WFS, CMEMS's 43 MB index) last, so the
 # first partial answers carry the most markers soonest. Unknown sources go last.
-LIVE_WARM_ORDER = ["NDBC", "NDBCW", "CDIP", "SMHI", "MI-IE", "CEFAS", "GLOS", "RWS", "QLD", "AusWaves", "AODN",
-                   "IOOS", "CMEMS"]
+LIVE_WARM_ORDER = ["NDBC", "NDBCW", "CDIP", "SMHI", "MI-IE", "CEFAS", "KMA", "SIMCOSTA", "GLOS", "RWS", "QLD",
+                   "AusWaves", "AODN", "IOOS", "CMEMS"]
 _LIVE_BG = {"started": False, "thread": None, "started_ts": None, "warm_ts": None, "ticks": 0,
             "last_tick_ts": None, "last_tick_s": None, "prebuilds": 0, "errors": 0, "last_error": None,
             "tz_loaded": False, "build_failures": 0}

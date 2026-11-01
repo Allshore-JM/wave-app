@@ -3669,7 +3669,10 @@
       const t = String(id || ''), a = LINK_ALIAS[t.toLowerCase()];
       if (a) return a;
       const w = /^cmems:[A-Z]{2}_TS_MO_6200(\d{3})$/i.exec(t);
-      return w ? '62' + w[1] : linkKey(t);
+      if (w) return '62' + w[1];
+      // a WIGOS id with a 5-digit WMO number (kma:0-410-0-22101 is NOAA's forecast point 22101; plan section 72)
+      const g = /^[a-z0-9-]+:0-\d+-0-(\d{5})$/i.exec(t);
+      return g ? g[1] : linkKey(t);
     }
     // the station of `list` linked to `from` ({id, lat, lon}): {s, km} or null
     function linkFor(from, list) {

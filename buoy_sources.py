@@ -1505,6 +1505,10 @@ def _station_priority(st):
         return 59                      # spread and 24 h (plan section 69): above CEFAS's latest-only copies
     if src == "CEFAS":                 # UK WaveNet aggregate (latest-only)
         return 58
+    if src == "KMA":                   # Korea's own buoys through its WIS2 node, hourly with 26 h (plan section 72):
+        return 57                      # above CMEMS's relays of the same buoys
+    if src == "SIMCOSTA":              # Brazil, 10-30 min with 24 h (plan section 72)
+        return 56
     if src == "CDIP":
         return 55
     if src == "AODN":                  # bulk only
@@ -1685,7 +1689,9 @@ class CopernicusProvider(BuoyProvider):
     The index CSV yields the station list + positions + latest-obs time (no NetCDF needed);
     per-platform values + history come from the platform's daily NetCDF on demand (h5netcdf).
     It re-bundles the national/EuroGOOS feeds -> LOWEST dedup priority. ~6-30h NRT latency.
-    Scoped to a European bounding box for now (widen BBOX for worldwide coverage)."""
+    Scoped to a European box plus three more (plan section 72, EXTRA_BOXES): the Indian Ocean (India's NIOT
+    moored buoys and the INCOIS / NIO wave drifters, which report under VGHS / VTPK / VDIR rather than VHM0),
+    the Lesser Antilles with French Guiana, and the Canaries."""
     source = "CMEMS"
     source_name = "Copernicus Marine in-situ"
     source_url = "https://marine.copernicus.eu"
@@ -1700,6 +1706,12 @@ class CopernicusProvider(BuoyProvider):
     DATASET = ("INSITU_GLO_PHYBGCWAV_DISCRETE_MYNRT_013_030/"
                "cmems_obs-ins_glo_phybgcwav_mynrt_na_irr_202311/")
     BBOX = (30.0, 73.0, -30.0, 42.0)     # (lat_min, lat_max, lon_min, lon_max): Europe
+    # Further boxes (section 72). The Americas, Australia and the Pacific stay out: NDBC, CDIP, AODN and
+    # the others carry those buoys first-hand, CMEMS only re-bundles them.
+    EXTRA_BOXES = ((-40.0, 30.0, 30.0, 100.0),       # the Indian Ocean (NIOT moored buoys, INCOIS / NIO drifters)
+                   (0.0, 25.0, -65.0, -50.0),        # the Lesser Antilles and French Guiana (Cerema, Meteo-France)
+                   (25.0, 30.0, -19.0, -12.0))       # the Canaries (Puertos del Estado)
+    WAVE_PARAMS = ("VHM0", "VAVH", "VGHS")           # VGHS: GTS-relayed buoys (NIOT, INCOIS, Italy's RON)
     LIVE_MAX_AGE = 4 * 86400             # only platforms whose latest file is this fresh
     OUTLIER_KM = 1.0                     # a newest position this far from two agreeing earlier ones
     HISTORY_MAX_AGE = 14 * 86400         # files old enough to judge a newest position against
@@ -1725,7 +1737,7 @@ class CopernicusProvider(BuoyProvider):
         if resp.status_code != 200:
             resp.close()
             raise RuntimeError("HTTP %s from the CMEMS index" % resp.status_code)
-        latmin, latmax, lonmin, lonmax = self.BBOX
+        boxes = (self.BBOX,) + tuple(self.EXTRA_BOXES)
         now = time.time()
         best = {}
         # The newest file's position can be wrong on its own (2026-10-03: VillajoyosaBuoy's newest
@@ -1739,14 +1751,15 @@ class CopernicusProvider(BuoyProvider):
             for r in csv.reader(self._decoded_lines(resp)):
                 if not r or r[0].startswith("#") or len(r) < 8:
                     continue
-                if "VHM0" not in r[-1] and "VAVH" not in r[-1]:    # parameters column
+                params = r[-1]                                     # parameters column
+                if not any(w in params for w in self.WAVE_PARAMS):
                     continue
                 try:
                     la = (float(r[2]) + float(r[3])) / 2.0
                     lo = (float(r[4]) + float(r[5])) / 2.0
                 except (ValueError, IndexError):
                     continue
-                if not (latmin <= la <= latmax and lonmin <= lo <= lonmax):
+                if not any(b[0] <= la <= b[1] and b[2] <= lo <= b[3] for b in boxes):
                     continue
                 tend = r[7].strip()
                 tz = tend if tend.endswith("Z") else tend + "Z"
@@ -1755,6 +1768,8 @@ class CopernicusProvider(BuoyProvider):
                     continue
                 fn = r[1]
                 pid = fn.split("/")[-1].rsplit("_", 1)[0]          # GL_TS_MO_6200064_DATE.nc -> GL_TS_MO_6200064
+                if "_SD_" in pid:                                  # Saildrones: research drones that roam
+                    continue
                 # compact per platform: up to 3 packed (t, lat, lon) records, newest first; only
                 # files that report ONE position (box <= OUTLIER_KM) are evidence: a full-day row's
                 # box can span 3-19 km and its midpoint is nowhere the buoy was (Cerema buoys)
@@ -1783,10 +1798,14 @@ class CopernicusProvider(BuoyProvider):
             b = recent.get(pid, b"")
             t_new = int(_z_epoch({"time_utc": tz}) or 0)
             older = [rec for rec in (_POS3.unpack(b[i:i + 24]) for i in range(0, len(b), 24)) if rec[0] < t_new]
-            if (len(older) >= 2 and haversine_km(older[0][1], older[0][2], older[1][1], older[1][2]) <= self.OUTLIER_KM
+            # a drifting buoy (GL_TS_DB_...) really moves: its newest position is taken as it is
+            if (not _cmems_drifter(pid) and len(older) >= 2
+                    and haversine_km(older[0][1], older[0][2], older[1][1], older[1][2]) <= self.OUTLIER_KM
                     and haversine_km(la, lo, older[0][1], older[0][2]) > self.OUTLIER_KM):
                 la, lo = older[0][1], older[0][2]
             name = pid.split("_")[-1].replace("-", " ") if "_" in pid else pid
+            if _cmems_drifter(pid):
+                name = "Drifting buoy " + name
             out.append({"local_id": pid, "name": name, "lat": la, "lon": lo, "latest_time": tz})
         self._file_by_id = files
         return out
@@ -1798,30 +1817,52 @@ class CopernicusProvider(BuoyProvider):
             fn = self._file_by_id.get(local_id)
         if not fn:
             return {"latest": None, "recent": []}
+        obs = self._read_file(fn)
+        if obs is None:
+            return {"latest": None, "recent": []}
+        # The day before as well: a daily file holds only the hours since 00Z (a 3-hourly NIOT buoy had
+        # 2 rows at 12Z), and the window shows 24 h (section 72). A missing or unreadable file adds nothing.
+        prev = _cmems_prev_day(fn)
+        if prev:
+            older = self._read_file(prev)
+            if older:
+                seen = {o["time_utc"] for o in obs}
+                obs = sorted([o for o in older if o["time_utc"] not in seen] + obs,
+                             key=lambda o: o["time_utc"])
+        if not obs:
+            return {"latest": None, "recent": []}
+        return {"latest": obs[-1], "recent": _recent_window(obs)}
+
+    def _read_file(self, fn):
+        """One platform-day file -> observations with a real Hs, oldest first; None when unreadable."""
         try:
             import h5netcdf
             import numpy as np
-            data = self.http.get(self.S3 + fn, timeout=self.timeout).content
-            ds = h5netcdf.File(io.BytesIO(data), "r")
+            resp = self.http.get(self.S3 + fn, timeout=self.timeout)
+            if getattr(resp, "status_code", 200) != 200:
+                return None
+            ds = h5netcdf.File(io.BytesIO(resp.content), "r")
         except Exception:
-            return {"latest": None, "recent": []}
+            return None
         try:
             tvar = np.asarray(ds["TIME"][:]).astype("float64").ravel()
 
             def col(*names):
                 for nm in names:
                     if nm in ds.variables:
-                        a = np.asarray(ds[nm][:]).astype("float64")
-                        if a.ndim > 1:
-                            a = a[:, 0]                 # surface (DEPTH=0)
-                        a = a.ravel()
+                        a = np.asarray(ds[nm][...]).astype("float64")
                         a[a > 1e30] = np.nan            # _FillValue ~9.97e36
-                        return a
+                        if a.ndim > 1:
+                            # the DEPTH column that holds the values: the first for the national files,
+                            # the second (DEPH 0, beside a -3 m air row) for the GTS relays (section 72)
+                            a = a.reshape(a.shape[0], -1)
+                            a = a[:, int(np.argmax(np.isfinite(a).sum(axis=0)))]
+                        return a.ravel()
                 return None
-            hs, tp = col("VHM0", "VAVH"), col("VTPK")
-            mp, dr = col("VTZA", "VTZM", "VTM02"), col("VMDR", "VPED")
+            hs, tp = col("VHM0", "VAVH", "VGHS"), col("VTPK")
+            mp, dr = col("VTZA", "VTZM", "VTM02", "VGTA"), col("VMDR", "VPED", "VDIR")
         except Exception:
-            return {"latest": None, "recent": []}
+            return None
 
         def val(a, i):
             if a is None or i >= len(a):
@@ -1834,14 +1875,53 @@ class CopernicusProvider(BuoyProvider):
             if h is None:
                 continue                                # keep only rows with a real Hs
             obs.append({"time_utc": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "hs_m": h,
-                        "tp_s": val(tp, i), "mean_period_s": val(mp, i),
+                        "tp_s": _peak_ok(val(tp, i), val(mp, i)), "mean_period_s": val(mp, i),
                         "dir_deg": val(dr, i), "dir_kind": "from"})
-        if not obs:
-            return {"latest": None, "recent": []}
-        return {"latest": obs[-1], "recent": _recent_window(obs)}
+        return obs
 
     def latest(self, local_id):
         return self.detail(local_id)["latest"]
+
+
+_CMEMS_DAY = re.compile(r"/(\d{8})/([^/]+)_(\d{8})\.nc$")
+
+
+def _cmems_prev_day(fn):
+    """The same platform's file for the day before (.../latest/20261031/X_20261031.nc -> .../20261030/
+    X_20261030.nc), or None when the name has another shape."""
+    m = _CMEMS_DAY.search(fn)
+    if not m or m.group(1) != m.group(3):
+        return None
+    try:
+        d = (datetime.strptime(m.group(1), "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+    except ValueError:
+        return None
+    return fn[:m.start()] + "/%s/%s_%s.nc" % (d, m.group(2), d)
+
+
+def _cmems_drifter(pid):
+    """A CMEMS drifting platform (GL_TS_DB_7810896): it moves, so no position check applies."""
+    return "_DB_" in pid
+
+
+MIN_PEAK_S = 2.0
+PEAK_OVER_MEAN_MIN = 0.5
+PEAK_OVER_MEAN_MAX = 5.0
+
+
+def _peak_ok(tp, tm):
+    """The peak period, or None when it cannot be one. Meteo-France's GTS relays (6100001, 6101031-36,
+    6200001) put 0-2 s in VTPK beside a 4-10 s mean period, and a KMA buoy reported a 25 s peak beside a 4.9 s
+    mean (2026-10-31): a peak below 2 s, below half the record's own mean period or more than five times it is
+    a coding error, not a wave. Real readings sit inside: a peak a little below the mean where two systems
+    overlap (KMA 3.7 s over 3.9 s), long swell under a small wind sea (KMA 18.2 s over 3.8 s)."""
+    if tp is None:
+        return None
+    if tp < MIN_PEAK_S:
+        return None
+    if tm is not None and tm > 0 and not (PEAK_OVER_MEAN_MIN * tm <= tp <= PEAK_OVER_MEAN_MAX * tm):
+        return None
+    return tp
 
 
 def _name_key(name):
@@ -3553,3 +3633,299 @@ class CwaBuoyProvider(BuoyProvider):
 
     def latest(self, local_id):
         return self.detail(local_id)["latest"]
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Section 72: Brazil's SiMCosta and Korea's KMA (through its WMO WIS2 node).
+
+def _jnum(v):
+    """A JSON number (or numeric text) -> a finite float, anything else -> None."""
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def _iso_z(ts):
+    """'2026-10-31T22:21:40.000Z' / '...+00:00' -> '2026-10-31T22:21:40Z', or None."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        d = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        return None
+    return d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+SIMCOSTA_FIELDS = ("Hsig", "HM0", "Tp", "Avg_Wv_Dir_N", "Hsig_sea", "Tp_sea", "Dp_sea", "Hsig_swell", "Tp_swell",
+                   "Dp_swell")
+
+
+def parse_simcosta_stations(doc, now, live_s):
+    """SiMCosta's /api/equipamentos/ answer -> the platforms worth asking: operating (status 1), updated within
+    `live_s`, not a retired copy (_OLD, _INT) and not a current profiler (ADCP). {id: {name, lat, lon}}."""
+    out = {}
+    if not isinstance(doc, list):
+        raise ValueError("the SiMCosta platform list is not a list")
+    for e in doc:
+        if not isinstance(e, dict):
+            continue
+        name = str(e.get("boia") or "").strip()
+        up = _iso_z(e.get("atualizacao"))
+        lat, lon = _jnum(e.get("latitude")), _jnum(e.get("longitude"))
+        bid = e.get("id")
+        if (e.get("boia_status") != 1 or not name or name.upper().endswith(("_OLD", "_INT"))
+                or name.upper().startswith("ADCP") or not isinstance(bid, int) or isinstance(bid, bool)
+                or lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180) or up is None
+                or now - _z_epoch({"time_utc": up}) > live_s):
+            continue
+        city = str(e.get("cidade") or "").strip()
+        out[bid] = {"name": "%s (%s)" % (name, city) if city else name, "lat": lat, "lon": lon}
+    return out
+
+
+def parse_simcosta_obs(doc, now):
+    """One SiMCosta /api/intrans_data answer -> readings with a wave height, oldest first. Hsig is the total
+    height on the Axys buoys; CDRJ-1 (Niteroi) reports HM0 with a sea / swell split instead and no total peak
+    period: there the peak period is the period of the higher part. Directions are FROM (Rio's south swell reads
+    170-190 deg)."""
+    if not isinstance(doc, list):
+        raise ValueError("the SiMCosta answer is not a list")
+    rows = {}
+    for r in doc:
+        if not isinstance(r, dict):
+            continue
+        t = _iso_z(r.get("timestamp"))
+        hs = _jnum(r.get("Hsig"))
+        if hs is None:
+            hs = _jnum(r.get("HM0"))
+        if t is None or hs is None:
+            continue
+        parts = []
+        for label, h, p, d in (("Swell", "Hsig_swell", "Tp_swell", "Dp_swell"),
+                               ("Wind sea", "Hsig_sea", "Tp_sea", "Dp_sea")):
+            hv = _jnum(r.get(h))
+            if hv is not None:
+                parts.append({"label": label, "hs_m": hv, "period_s": _jnum(r.get(p)), "dir_deg": _jnum(r.get(d))})
+        tp = _jnum(r.get("Tp"))
+        if tp is None and parts:
+            tp = max(parts, key=lambda q: q["hs_m"])["period_s"]
+        o = {"time_utc": t, "hs_m": hs, "tp_s": tp, "dir_deg": _jnum(r.get("Avg_Wv_Dir_N")), "dir_kind": "from"}
+        if parts:
+            o["partitions"] = parts
+        o = _sane_reading(o, now)
+        if o:
+            rows[t] = o
+    return [rows[t] for t in sorted(rows)]
+
+
+class SimcostaProvider(BuoyProvider):
+    """SiMCosta (Sistema de Monitoramento da Costa Brasileira, FURG and partners): Axys buoys off Rio de Janeiro,
+    Rio Grande do Sul, Espirito Santo and Bahia, every 30 minutes (CDRJ-1 at Niteroi every 10, with a sea / swell
+    split). Anonymous JSON; the platform list every 6 hours, each wave platform's last 24 h every refresh (only
+    platforms whose answer holds a wave height are listed, so no window opens empty)."""
+    source = "SIMCOSTA"
+    source_name = "SiMCosta (Brazil)"
+    source_url = "https://simcosta.furg.br/"
+    license_label = "SiMCosta open data (no warranty)"
+    attribution_text = ("Source: SiMCosta, Sistema de Monitoramento da Costa Brasileira (FURG). SiMCosta does not "
+                        "give any guarantee regarding these data.")
+    stale_after_sec = 3 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    timeout = 30
+    LIST = "https://simcosta.furg.br/api/equipamentos/"
+    DATA = ("https://simcosta.furg.br/api/intrans_data?boiaID=%d&type=json&time1=%d&time2=%d&params="
+            + ",".join(SIMCOSTA_FIELDS))
+    MAX = 4 * 1024 * 1024
+    LIVE_S = 2 * 86400
+    STATIONS_TTL = 6 * 3600
+    HEADERS = {"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"}
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._stations = {}
+        self._stations_at = 0.0
+        self._obs = {}
+
+    def _json(self, url):
+        r = _size_capped_get(self.http, url, self.timeout, self.MAX, headers=self.HEADERS)
+        try:
+            return json.loads(r.content.decode("utf-8"))
+        except ValueError:
+            raise RuntimeError("SiMCosta answered something other than JSON") from None
+
+    def _fetch_stations(self):
+        now = time.time()
+        if not self._stations or now - self._stations_at > self.STATIONS_TTL:
+            try:
+                found = parse_simcosta_stations(self._json(self.LIST), now, self.LIVE_S)
+            except (RuntimeError, ValueError):
+                if not self._stations:
+                    raise
+                found = None                       # the list in hand stands; asked again next refresh
+            if found:
+                self._stations, self._stations_at = found, now
+        obs, out, errors = {}, [], 0
+        for bid, st in sorted(self._stations.items()):
+            try:
+                rows = parse_simcosta_obs(self._json(self.DATA % (bid, int(now - 86400), int(now))), now)
+            except (RuntimeError, ValueError):
+                errors += 1
+                rows = self._obs.get(str(bid)) or []      # one platform failing keeps what it had
+            if rows:
+                obs[str(bid)] = rows
+                out.append({"local_id": str(bid), "name": st["name"], "lat": st["lat"], "lon": st["lon"],
+                            "latest_time": rows[-1]["time_utc"]})
+        if not out:
+            raise RuntimeError("no SiMCosta platform answered with a wave height (%d failed)" % errors)
+        self._obs = obs
+        return out
+
+    def detail(self, local_id):
+        if local_id not in self._obs:
+            self.list_stations()
+        rows = self._obs.get(local_id) or []
+        return {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+# The WIS2 variable names (wis2box's GeoJSON, one feature per variable) and the reading key each one feeds.
+WIS2_WAVE_VARS = {"significant_wave_height": "hs_m", "spectral_peak_wave_period": "tp_s",
+                  "average_wave_period": "mean_period_s", "direction_from_which_dominant_waves_are_coming": "dir_deg",
+                  "maximum_wave_height": "hmax_m", "sea_surface_temperature": "sst_c"}
+
+
+def parse_wis2_features(docs, now):
+    """wis2box OGC API item pages (one variable a feature) -> {station: {"lat", "lon", "rows": [reading ...]}},
+    the rows oldest first, only times with a wave height. Sea-surface temperature arrives in kelvin or Celsius
+    (by its units)."""
+    acc = {}
+    for doc in docs:
+        if not isinstance(doc, dict) or not isinstance(doc.get("features"), list):
+            raise ValueError("a WIS2 answer without features")
+        for f in doc["features"]:
+            p = f.get("properties") if isinstance(f, dict) else None
+            g = f.get("geometry") if isinstance(f, dict) else None
+            if not isinstance(p, dict):
+                continue
+            key = WIS2_WAVE_VARS.get(p.get("name"))
+            # every variable of one report shares its reportTime (a temperature's phenomenonTime is an interval)
+            t = _iso_z(p.get("reportTime")) or _iso_z(str(p.get("phenomenonTime") or "").split("/")[-1])
+            sid, v = p.get("wigos_station_identifier"), _jnum(p.get("value"))
+            if key is None or not isinstance(sid, str) or t is None or v is None:
+                continue
+            if key == "sst_c" and str(p.get("units") or "").upper() in ("K", "KELVIN"):
+                v -= 273.15
+            st = acc.setdefault(sid, {"lat": None, "lon": None, "t": {}})
+            try:
+                lon, lat = float(g["coordinates"][0]), float(g["coordinates"][1])
+                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                    st["lat"], st["lon"] = lat, lon
+            except (TypeError, KeyError, IndexError, ValueError):
+                pass
+            st["t"].setdefault(t, {})[key] = round(v, 2)
+    out = {}
+    for sid, st in acc.items():
+        rows = []
+        for t in sorted(st["t"]):
+            vals = st["t"][t]
+            if "hs_m" not in vals:
+                continue
+            o = {"time_utc": t, "hs_m": vals["hs_m"], "tp_s": _peak_ok(vals.get("tp_s"), vals.get("mean_period_s")),
+                 "mean_period_s": vals.get("mean_period_s"), "dir_deg": vals.get("dir_deg"), "dir_kind": "from",
+                 "hmax_m": vals.get("hmax_m"), "sst_c": vals.get("sst_c")}
+            o = _sane_reading(o, now)
+            if o:
+                rows.append(o)
+        if rows and st["lat"] is not None:
+            out[sid] = {"lat": st["lat"], "lon": st["lon"], "rows": rows}
+    return out
+
+
+class Wis2BoxBuoyProvider(BuoyProvider):
+    """Moored buoys from a national wis2box node (WMO WIS2 "core" data: free and unrestricted, WMO Resolution 1).
+    Every refresh asks the last 26 hours of each wave variable (one query a variable: the `name` filter), so the
+    list, the latest readings and the 24-hour windows come from the same answers. First node: KMA (Korea)."""
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    stale_after_sec = 9 * 3600                 # KMA's node runs ~5 h behind
+    timeout = 40
+    MAX = 8 * 1024 * 1024
+    LIMIT = 5000
+    HOURS = 26
+    HEADERS = {"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"}
+    BASE = ""                                  # the node's items URL
+    LABEL = "Buoy"
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._obs = {}
+
+    def _page(self, var, since):
+        url = "%s?f=json&name=%s&datetime=%s/..&limit=%d" % (self.BASE, var, since, self.LIMIT)
+        r = _size_capped_get(self.http, url, self.timeout, self.MAX, headers=self.HEADERS)
+        try:
+            doc = r.json()
+        except ValueError:
+            raise RuntimeError("%s answered something other than JSON" % self.source) from None
+        if isinstance(doc, dict) and isinstance(doc.get("numberMatched"), int) \
+                and doc["numberMatched"] > len(doc.get("features") or []):
+            _log.warning("%s: %s holds %d features, %d read", self.source, var, doc["numberMatched"],
+                        len(doc.get("features") or []))
+        return doc
+
+    def _fetch_stations(self):
+        now = time.time()
+        since = datetime.fromtimestamp(now - self.HOURS * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        docs = [self._page("significant_wave_height", since)]        # a failure here raises: keep-last
+        for var in WIS2_WAVE_VARS:
+            if var == "significant_wave_height":
+                continue
+            try:
+                docs.append(self._page(var, since))
+            except RuntimeError as exc:                               # the heights still stand
+                _log.warning("%s: %s not read: %s", self.source, var, exc)
+        try:
+            found = parse_wis2_features(docs, now)
+        except ValueError as exc:
+            raise RuntimeError("%s: %s" % (self.source, exc)) from None
+        if not found:
+            raise RuntimeError("the %s node answered no wave height" % self.source)
+        out = []
+        for sid, st in sorted(found.items()):
+            num = sid.rsplit("-", 1)[-1]
+            out.append({"local_id": sid, "name": "%s %s" % (self.LABEL, num), "lat": st["lat"], "lon": st["lon"],
+                        "latest_time": st["rows"][-1]["time_utc"]})
+        self._obs = {sid: st["rows"] for sid, st in found.items()}
+        return out
+
+    def detail(self, local_id):
+        if local_id not in self._obs:
+            self.list_stations()
+        rows = self._obs.get(local_id) or []
+        return {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+class KmaBuoyProvider(Wis2BoxBuoyProvider):
+    """Korea Meteorological Administration moored buoys (33 in the Yellow, East and South seas): height, peak and
+    mean period, the dominant waves' direction, the highest wave, sea temperature."""
+    source = "KMA"
+    source_name = "Korea Meteorological Administration (WMO WIS2)"
+    source_url = "https://wis2box.kma.go.kr/"
+    license_label = "WMO core data (free and unrestricted)"
+    attribution_text = ("Source: Korea Meteorological Administration, moored buoys, through the WMO Information "
+                        "System (WIS2) as core data.")
+    BASE = ("https://wis2box.kma.go.kr/oapi/collections/"
+            "urn:wmo:md:kr-kma:core.surface-based-observations.moored-buoys-and-moorings/items")
+    LABEL = "KMA buoy"

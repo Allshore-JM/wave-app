@@ -72,3 +72,14 @@ killed (after three pins: a 4 in the code column, an SST in degF, the drifter ca
   KMA 32 of 32.
 - Windows by trusted clicks and taps, desktop and phone: 9 of 9 each, no console problems. Feeds clean; Copernicus's
   list refresh 61 s on the free instance (53 s before: the drifters' 20 file reads); RSS 196 MB.
+
+## Production (2026-11-01)
+
+Owner "proceed with the production merge". Tag `prod-pre-buoysworld` @ 074ccd7 pushed; `Live-Buoy-Update` fast-forwarded
+074ccd7..7f86719; new instance 02:02:47 UTC, 0 failed polls across the switch. Verified on allshoresurf.com: 770 markers
+(CMEMS 244, KMA 32, SiMCosta 3; IOOS 48); the 51201 / 51003 pages differ from the pre-merge capture only by the KMA
+link-id lines, logo 0; windows = the agencies (Copernicus 35/35, SiMCosta 3/3, KMA 32/32); Meteo-France relays no peak
+period, Bothnian peaks shown, 20 drifters 0.00 km from their newest fix; `/healthz` ok, no feed error (Copernicus list
+19.6 s, SiMCosta 5.0 s, KMA 3.3 s), RSS 239 MB at 5 minutes; every workflow green on 7f86719; headless Chrome desktop +
+phone 9/9 windows each, no console problems; the production origin's storage emptied. Rollback: re-push
+`prod-pre-buoysworld`.

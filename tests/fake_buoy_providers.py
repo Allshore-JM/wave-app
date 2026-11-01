@@ -149,8 +149,30 @@ class FakeNDBCW(_Fake):
             {"local_id": "41110", "name": "41110", "lat": 34.144, "lon": -77.715, "latest_time": FRESH}]  # <1 km of IOOS 41110
 
 
+class FakeSIMCOSTA(_Fake):
+    source = "SIMCOSTA"; source_name = "SiMCosta (Brazil)"; source_url = "https://simcosta.furg.br/"
+    license_label = "SiMCosta open data (no warranty)"; attribution_text = "Source: SiMCosta"
+    stale_after_sec = 3 * 3600; list_ttl_sec = 1800
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "12", "name": "RJ-4 (Rio de Janeiro)", "lat": -22.97, "lon": -43.15, "latest_time": FRESH}]
+
+
+class FakeKMA(_Fake):
+    source = "KMA"; source_name = "Korea Meteorological Administration (WMO WIS2)"
+    source_url = "https://wis2box.kma.go.kr/"; license_label = "WMO core data (free and unrestricted)"
+    attribution_text = "Source: KMA"; stale_after_sec = 9 * 3600; list_ttl_sec = 1800
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "0-410-0-22101", "name": "KMA buoy 22101", "lat": 37.2361, "lon": 126.0188,
+             "latest_time": FRESH}]
+
+
+# a CMEMS relay of the KMA buoy above (plan section 72: the national feed wins)
+FakeCMEMS.rows = FakeCMEMS.rows + [{"local_id": "GL_TS_MO_2200101", "name": "2200101", "lat": 37.24, "lon": 126.02,
+                                    "latest_time": FRESH}]
+
+
 FAKE_CLASSES = [FakeNDBC, FakeCDIP, FakeQLD, FakeAODN, FakeAusWaves, FakeMIIE, FakeCEFAS, FakeSMHI, FakeRWS, FakeCMEMS,
-                FakeGLOS, FakeIOOS, FakeNDBCW]
+                FakeGLOS, FakeIOOS, FakeNDBCW, FakeSIMCOSTA, FakeKMA]
 
 
 def make_providers():

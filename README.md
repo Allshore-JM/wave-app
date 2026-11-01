@@ -1417,7 +1417,8 @@ hour-rule shade, no mode buttons).
 
 The "Live buoys" layer merges the agencies' station lists (ten at the time: NDBC, CDIP, QLD, AODN, AusWaves, Marine
 Institute, CEFAS, SMHI, RWS, Copernicus; thirteen since plan section 63, which added NDBC's bulk report, GLOS and IOOS:
-see "Live buoys: the US widen" below). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
+see "Live buoys: the US widen" below; fifteen since plan section 72, which added SiMCosta and KMA and widened Copernicus:
+see "Live buoys: the data-poor regions"). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
 request and answered only when all of them had: every 30 minutes one visitor waited for a refresh, after a restart every
 visitor waited for every feed, and one slow agency held everyone's markers (the Marine Institute's ERDDAP once timed out
 three times: 124 s). Now nothing a visitor asks for waits for an agency.
@@ -1433,7 +1434,8 @@ The server (`buoy_sources.py`, `app.py`):
   the first seconds after a start), never at import: a gunicorn master that preloads the app forks its workers after the
   import, and a worker would inherit the locks the master's threads held but none of the threads. (Any forked child also
   resets every lock and flag of the service: `os.register_at_fork`.) Its first pass queues every agency, cheapest first
-  (NDBC, NDBCW, CDIP, SMHI, MI-IE, CEFAS, GLOS, RWS, QLD, AusWaves, AODN, IOOS, CMEMS: `LIVE_WARM_ORDER`), then it
+  (NDBC, NDBCW, CDIP, SMHI, MI-IE, CEFAS, KMA, SIMCOSTA, GLOS, RWS, QLD, AusWaves, AODN, IOOS, CMEMS:
+  `LIVE_WARM_ORDER`), then it
   loads the time-zone finder; after that it
   runs whenever an agency publishes a new list (it is woken) and at least every 30 s (2 s until every agency has answered
   once): it queues the refreshes that are due and rebuilds the merged list. Refreshes run on `LIVE_REFRESH_WORKERS`
@@ -1573,6 +1575,33 @@ before its last wave height.
 Tests: `tests/test_buoys_widen.py` and `tests/test_buoys_widen_g42.py` (the review's fixes) on real answers
 cut by `tests/capture_buoy_widen_fixtures.py`; the three fakes in `tests/fake_buoy_providers.py` are in the live-stations
 golden (captured on the code before this section: the new code merges them identically).
+
+## Live buoys: the data-poor regions (plan section 72)
+
+Almost no moored wave buoy in Africa, South America or South / Southeast Asia reports to any public exchange (plan
+section 71). This adds what is open:
+- **Copernicus Marine in-situ, widened.** Besides Europe the feed now reads three more boxes: the Indian Ocean (40 S-30 N,
+  30-100 E), the Lesser Antilles and French Guiana (0-25 N, 65-50 W) and the Canaries (25-30 N, 19-12 W). The rest of the
+  world stays out (NDBC, CDIP, AODN and the others carry those buoys first-hand). It also accepts `VGHS` as a wave height:
+  the GTS-relayed buoys report under `VGHS` / `VTPK` / `VDIR` (India's NIOT moored buoys, the INCOIS / NIO wave
+  drifters, Italy's RON network, Meteo-France's relays) and were left out before. Their values sit in the second DEPTH
+  column of the file (beside a -3 m air row), so each variable now reads the column that holds values. A window reads
+  the platform's file for the day before too (a daily file holds only the hours since 00Z). Drifting buoys
+  (`GL_TS_DB_...`, named "Drifting buoy N") keep their newest position as reported (no position check: they move);
+  Saildrones (`GL_TS_SD_...`) are left out. On 2026-10-31 the widened feed listed 338 platforms (39 outside Europe).
+- **A peak period that cannot be one is dropped** (`_peak_ok`, CMEMS and KMA): below 2 s, below half the record's mean
+  period or above five times it. Meteo-France's GTS relays carry 0-2 s in `VTPK` beside a 4-10 s mean.
+- **SiMCosta (Brazil, FURG and partners):** anonymous JSON (`/api/equipamentos/` every 6 h; each platform's last 24 h every
+  30 min). Listed: operating platforms updated within 2 days whose answer holds a wave height (RJ-4 Rio, CDRJ-1 Niteroi,
+  RS-4 Rio Grande on 2026-10-31); the `_OLD` / `_INT` copies and the ADCP current profilers are left out. CDRJ-1 gives a
+  sea / swell split and no total peak period: the window shows the split, and the peak period is the higher part's.
+  Directions are FROM. Terms: a disclaimer only ("SiMCosta does not give any guarantee regarding this data").
+- **KMA (Korea) through its WMO WIS2 node:** 33 moored buoys, anonymous OGC API GeoJSON (one feature per variable). Each
+  refresh (30 min) asks the last 26 h of the six wave variables, one query each; a station's readings are joined by the
+  report time. WMO core data (free and unrestricted). The page links `kma:0-410-0-22101` to NOAA's forecast point 22101.
+- Dedup priority: KMA 57, SiMCosta 56 (above Copernicus's relays of the same buoys, 30).
+- NOAA's WIS2 node was considered for Italy's RON and the French overseas buoys and not used: Copernicus carries them,
+  while the node's answer is 50 records a page, mostly US buoys the site already has.
 
 ## Tide stations (plan section 38, UI asset 1.18.6)
 

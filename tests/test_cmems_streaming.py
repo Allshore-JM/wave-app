@@ -31,6 +31,10 @@ SAMPLE = open(G.SAMPLE, encoding="utf-8").read()
 @pytest.fixture(autouse=True)
 def _frozen(monkeypatch):
     monkeypatch.setattr(B, "time", F.FrozenTime(G.NOW_EPOCH))
+    # These tests pin the streaming parse against the Europe-only parser it replaced: the boxes and the VGHS
+    # platforms plan section 72 added are left out here (tests/test_buoys_world.py covers them).
+    monkeypatch.setattr(B.CopernicusProvider, "EXTRA_BOXES", ())
+    monkeypatch.setattr(B.CopernicusProvider, "WAVE_PARAMS", ("VHM0", "VAVH"))
     yield
 
 

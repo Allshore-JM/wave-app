@@ -374,6 +374,8 @@ test('section 63: NDBC bulk-report buoys show their number like NDBC; GLOS and I
   assert.equal(A.linkId('ndbcw:44137'), '44137');
   assert.equal(A.linkId('glos:45029'), '45029');
   assert.equal(A.linkId('ioos:41110'), '41110');
+  assert.equal(A.linkId('kma:0-410-0-22101'), '22101', 'a WIGOS id: its WMO number (plan section 72)');
+  assert.equal(A.linkId('kma:0-22000-0-2200193'), '0-22000-0-2200193', 'a 7-digit national number: its own id');
   const fp = { id: '45029', lat: 42.90, lon: -86.27 };
   assert.equal(A.linkFor({ id: 'glos:45029', lat: 42.9, lon: -86.272 }, [fp]).s, fp);
 });

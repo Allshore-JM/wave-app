@@ -778,11 +778,19 @@ def _wis2_value(name, v, units):
     return key, (x - 273.15 if k is None else x * k)
 
 
+def _wis2_period(p):
+    """A feature's averaging period in seconds (phenomenonTime "start/end"), or None when it gives none."""
+    a, _, b = str(p.get("phenomenonTime") or "").partition("/")
+    t0, t1 = _epoch_iso(a), _epoch_iso(b)
+    return t1 - t0 if t0 is not None and t1 is not None and t1 >= t0 else None
+
+
 def parse_wis2_features(docs):
     """wis2box OGC API items answers (one feature per variable and report) -> ({wid: {t: {key: value}}}, {wid: (lat,
     lon)}). Report time = reportTime; values whose units are not the expected ones are left out (no guess); a WIGOS
-    id of another shape is left out."""
-    by, pos = {}, {}
+    id of another shape is left out. A report giving one variable twice (IMD: the 10-minute and the 1-hour mean
+    wind) keeps the one of the shortest averaging period (G47 F6); a period not stated counts as the longest."""
+    by, pos, per = {}, {}, {}
     for doc in docs:
         if isinstance(doc, (bytes, str)):
             doc = json.loads(doc)
@@ -798,6 +806,11 @@ def parse_wis2_features(docs):
             key, val = _wis2_value(name, p.get("value"), str(p.get("units") or "").strip())
             if val is None:
                 continue
+            span = _wis2_period(p)
+            span = float("inf") if span is None else span
+            if span >= per.get((wid, t, key), float("inf")) and key in by.get(wid, {}).get(t, {}):
+                continue                                 # a longer (or equal) period than the one in hand
+            per[(wid, t, key)] = span
             by.setdefault(wid, {}).setdefault(t, {})[key] = val
             c = (f.get("geometry") or {}).get("coordinates") or []
             if wid not in pos and len(c) >= 2 and _f(c[0]) is not None and _f(c[1]) is not None:
@@ -852,8 +865,9 @@ def _dms(d, m, s):
     return round(d + m / 60 + s / 3600, 4)
 
 
-# the CSV's station names -> position (HKO's station list, www.hko.gov.hk/en/cis/stn.htm, 2026-10-31). Left out:
-# Chek Lap Kok (the airport: its METAR stands), Hong Kong Sea School, Tsing Yi, Tuen Mun (no position found there)
+# the CSV's station names -> position (HKO's station list, www.hko.gov.hk/en/cis/stn.htm, 2026-10-31; Tsing Yi = its
+# "Tsing Yi Shell Oil Depot", Tuen Mun = "Tuen Mun Children and Juvenile Home": G47 F5). Left out: Chek Lap Kok (the
+# airport: its METAR stands), Hong Kong Sea School (no position found there)
 HKO_POSITIONS = {
     "Central Pier": (_dms(22, 17, 20), _dms(114, 9, 21)), "Cheung Chau": (_dms(22, 12, 4), _dms(114, 1, 36)),
     "Cheung Chau Beach": (_dms(22, 12, 39), _dms(114, 1, 45)), "Green Island": (_dms(22, 17, 6), _dms(114, 6, 46)),
@@ -867,6 +881,7 @@ HKO_POSITIONS = {
     "Tai Mei Tuk": (_dms(22, 28, 31), _dms(114, 14, 15)), "Tai Po Kau": (_dms(22, 26, 33), _dms(114, 11, 2)),
     "Tap Mun": (_dms(22, 28, 17), _dms(114, 21, 38)), "Tate's Cairn": (_dms(22, 21, 28), _dms(114, 13, 4)),
     "Tseung Kwan O": (_dms(22, 18, 57), _dms(114, 15, 20)), "Waglan Island": (_dms(22, 10, 56), _dms(114, 18, 12)),
+    "Tsing Yi": (_dms(22, 20, 48), _dms(114, 5, 11)), "Tuen Mun": (_dms(22, 23, 9), _dms(113, 57, 51)),
     "Wetland Park": (_dms(22, 28, 0), _dms(114, 0, 32)), "Wong Chuk Hang": (_dms(22, 14, 52), _dms(114, 10, 25)),
 }
 
@@ -953,8 +968,9 @@ def parse_smn_now(data):
             continue
         r = W.reading(t, s, None, d)
         r = _wx(r, at=p[5], rh=p[7], p=p[9].split("/")[0])
-        if r:
-            out[smn_name(p[0])] = [r]
+        name = smn_name(p[0])
+        if r and (name not in out or r["t"] >= out[name][0]["t"]):   # two lines for one station: the newer report
+            out[name] = [r]
     return out
 
 
@@ -1394,17 +1410,20 @@ PROVIDERS = {"eccc": EcccProvider, "jma": JmaProvider, "iem": IemProvider, "smhi
              "dmi": DmiProvider, "dwd": DwdProvider, "ipma": IpmaProvider, "mei": MeiProvider,
              "wis2": Wis2Provider, "hko": HkoProvider, "smn": SmnProvider}          # + plan section 73
 PACED = ("eccc", "iem", "dwd", "mei", "wis2")
+FAR = frozenset(("wis2", "hko", "smn"))       # answer from far away: their own, wider fetch limits (G47 F8)
 
 
-def make_providers(groups, fetch, enabled=None, per_refresh=None):
+def make_providers(groups, fetch, enabled=None, per_refresh=None, far_fetch=None):
     """The section-67 feeds over the snapshot's stations ({src: {local: station}}), one per source with stations;
-    enabled: {key: bool} (the env switches; default on); per_refresh: {key: n} for the paced feeds."""
+    enabled: {key: bool} (the env switches; default on); per_refresh: {key: n} for the paced feeds; far_fetch: the
+    fetch of the FAR feeds (default fetch)."""
     out = []
     for key, cls in PROVIDERS.items():
         if (enabled or {}).get(key, True) is False or not groups.get(key):
             continue
         n = (per_refresh or {}).get(key)
-        out.append(cls(groups[key], fetch, n) if key in PACED else cls(groups[key], fetch))
+        f = far_fetch if (far_fetch is not None and key in FAR) else fetch
+        out.append(cls(groups[key], f, n) if key in PACED else cls(groups[key], f))
     return out
 
 

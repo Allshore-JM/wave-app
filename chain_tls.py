@@ -141,9 +141,12 @@ def pinned():
 
 
 def context():
-    """requests' own context (urllib3's default on certifi's list) with the pinned intermediates added."""
+    """requests' own context (urllib3's default on certifi's list) with the pinned intermediates added. The partial-
+    chain flag (requests sets it: an intermediate in the store counts as a trust anchor) is cleared here, so a chain
+    through the added intermediates must still reach a root in certifi's list (G47 F3)."""
     ctx = create_urllib3_context()
     ctx.load_verify_locations(certifi.where())
+    ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_PARTIAL_CHAIN", 0)
     for text in pinned():
         ctx.load_verify_locations(cadata=text)
     return ctx

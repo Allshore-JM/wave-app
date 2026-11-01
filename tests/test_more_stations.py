@@ -169,3 +169,43 @@ def test_fixed_zones_cover_the_one_country_agencies():
     assert T.FIXED_TZ == {"jma": "Asia/Tokyo", "fmi": "Europe/Helsinki", "smhi": "Europe/Stockholm",
                           "dwd": "Europe/Berlin", "mei": "Europe/Dublin", "cwa": "Asia/Taipei",   # cwa: plan section 69
                           "hko": "Asia/Hong_Kong", "smn": "America/Argentina/Buenos_Aires"}       # plan section 73
+
+
+# ------------------------------------------------------------------ plan section 73 (G47 F1, F4)
+
+def test_wis2_positions_agreeing_take_the_list_and_disagreeing_need_the_hand_table():
+    cape = "0-20000-0-68916"
+    assert T.wis2_position(cape, (-34.35, 18.483), (-34.351, 18.485)) == ((-34.351, 18.485), None)   # 0.2 km: the list
+    assert T.wis2_position(cape, (-34.35, 18.48), (None, None)) == ((-34.35, 18.48), None)          # no list position
+    at, why = T.wis2_position(cape, (-34.35, 18.48), (-34.0, 18.48))                                # 39 km apart
+    assert at is None and "39 km" in why
+    walvis, paradip = "0-516-0-68098", "0-20000-0-42976"
+    assert T.WIS2_POSITION[walvis] == "list" and T.WIS2_POSITION[paradip] == "report"
+    assert T.wis2_position(walvis, (-22.27, 14.65), (-22.98, 14.645)) == ((-22.98, 14.645), None)
+    assert T.wis2_position(paradip, (20.26, 86.67), (20.26, 85.65)) == ((20.26, 86.67), None)
+
+
+def test_wis2_airports_carry_their_icao_only_when_near():
+    sites = T.wmo_icao_sites(b'[{"id": "VOML", "icaoId": "VOML", "wmoId": "43284", "lat": 12.961, "lon": 74.89,'
+                             b' "siteType": ["METAR"]}, {"id": "XXXX", "icaoId": "XXXX", "wmoId": "11111",'
+                             b' "lat": 50.0, "lon": 10.0, "siteType": ["TAF"]}]')
+    assert sites == {"43284": ("VOML", 12.961, 74.89)}                        # METAR sites only
+    metar = {"VABV": ("Bhavnagar Arpt", 21.752, 72.185)}
+    assert T.wis2_icao("0-20000-0-43284", 12.91, 74.88, sites, metar) == "VOML"          # 5.8 km
+    assert T.wis2_icao("0-20000-0-43284", 14.0, 74.88, sites, metar) is None              # 120 km: a colliding number
+    assert T.wis2_icao("0-20000-0-42838", 21.75, 72.2, sites, metar) == "VABV"           # AWC lists it without a number
+    assert T.wis2_icao("0-20000-0-42838", 23.0, 72.2, sites, metar) == "VABV"            # the hand table: no distance limit
+    assert T.wis2_icao("0-20000-0-42838", 21.75, 72.2, sites, {}) is None                 # not a METAR site: no twin
+    assert T.WIS2_ICAO == {"42838": "VABV", "43266": "VOAT", "68999": "FACT"}
+    assert T.wis2_icao("0-454-2-AB12", 21.75, 72.2, sites, metar) is None                # no WMO number in the id
+    assert T.wis2_icao("0-454-2-43284", 12.91, 74.88, sites, metar) is None             # issue number 2: not a WMO number
+
+
+def test_the_tool_reads_the_two_incomplete_chain_nodes_through_chain_tls(monkeypatch):
+    seen = []
+    monkeypatch.setattr(T.FS, "get_bytes", lambda url, **kw: seen.append((url, kw.get("context"))) or b"{}")
+    T.get("https://wis.weathersa.co.za/oapi/collections")
+    T.get("https://wis2box.imd.gov.in/oapi/collections")
+    T.get("https://wis2.inam.gov.mz/oapi/collections")
+    assert [c is not None for _u, c in seen] == [True, True, False]
+    assert seen[0][1].check_hostname is True and seen[0][1].verify_mode == T.chain_tls.ssl.CERT_REQUIRED

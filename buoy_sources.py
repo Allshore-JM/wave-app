@@ -1719,6 +1719,7 @@ class CopernicusProvider(BuoyProvider):
     def __init__(self, http=None):
         super().__init__(http)
         self._file_by_id = {}            # local_id -> relative .nc path (latest per platform)
+        self._fixes = {}                 # (a drifter's newest file, its end time) -> its newest (lat, lon), or None
 
     @staticmethod
     def _decoded_lines(resp):
@@ -1806,9 +1807,42 @@ class CopernicusProvider(BuoyProvider):
             name = pid.split("_")[-1].replace("-", " ") if "_" in pid else pid
             if _cmems_drifter(pid):
                 name = "Drifting buoy " + name
+                # the index gives the day's box, up to ~60 km across for a drifter: the marker goes to the
+                # file's newest fix (G46 F3), read once per newest file; the box's middle when it cannot be read
+                fix = self._newest_fix(fn, tz)
+                if fix:
+                    la, lo = fix
             out.append({"local_id": pid, "name": name, "lat": la, "lon": lo, "latest_time": tz})
         self._file_by_id = files
+        live = set(files.values())
+        self._fixes = {k: v for k, v in self._fixes.items() if k[0] in live}
         return out
+
+    def _newest_fix(self, fn, end):
+        """A drifter's newest finite LATITUDE / LONGITUDE in its file; None when unreadable. Cached per file name and
+        the index's end time: a day's file keeps its name while it grows through the day."""
+        if (fn, end) in self._fixes:
+            return self._fixes[(fn, end)]
+        fix = None
+        try:
+            import h5netcdf
+            import numpy as np
+            resp = self.http.get(self.S3 + fn, timeout=self.timeout)
+            if getattr(resp, "status_code", 200) == 200:
+                ds = h5netcdf.File(io.BytesIO(resp.content), "r")
+                lat = np.asarray(ds["LATITUDE"][:], dtype="float64").ravel()
+                lon = np.asarray(ds["LONGITUDE"][:], dtype="float64").ravel()
+                t = np.asarray(ds["TIME"][:], dtype="float64").ravel()
+                if lat.shape == lon.shape == t.shape:
+                    ok = (np.isfinite(lat) & np.isfinite(lon) & np.isfinite(t) & (np.abs(lat) <= 90)
+                          & (np.abs(lon) <= 180) & (t >= 0) & (t <= 200000))
+                    if ok.any():
+                        i = int(np.flatnonzero(ok)[np.argmax(t[ok])])
+                        fix = (float(lat[i]), float(lon[i]))
+        except Exception:
+            fix = None
+        self._fixes[(fn, end)] = fix
+        return fix
 
     def detail(self, local_id):
         fn = self._file_by_id.get(local_id)
@@ -1861,6 +1895,8 @@ class CopernicusProvider(BuoyProvider):
                 return None
             hs, tp = col("VHM0", "VAVH", "VGHS"), col("VTPK")
             mp, dr = col("VTZA", "VTZM", "VTM02", "VGTA"), col("VMDR", "VPED", "VDIR")
+            if tp is not None and _vtpk_is_code(tp):
+                tp = None                               # Meteo-France's relays: a code, not a period (G46 F1)
         except Exception:
             return None
 
@@ -1870,6 +1906,10 @@ class CopernicusProvider(BuoyProvider):
             return float(a[i]) if np.isfinite(a[i]) else None
         obs = []
         for i in range(len(tvar)):
+            # a fill value or a wild TIME on one row (no Hs either, as a rule) must not take the file's other rows,
+            # nor, through the day-before read, today's window with it (G46 F7)
+            if not np.isfinite(tvar[i]) or not (0 <= tvar[i] <= 200000):
+                continue
             t = datetime(1950, 1, 1) + timedelta(days=float(tvar[i]))
             h = val(hs, i)
             if h is None:
@@ -1904,17 +1944,30 @@ def _cmems_drifter(pid):
     return "_DB_" in pid
 
 
-MIN_PEAK_S = 2.0
+MIN_PEAK_S = 1.0
 PEAK_OVER_MEAN_MIN = 0.5
 PEAK_OVER_MEAN_MAX = 5.0
 
 
+def _vtpk_is_code(values):
+    """True when a file's VTPK column holds a code, not periods: Meteo-France's GTS relays (6100001, 6100002,
+    6101031-36, 6200001) put whole numbers 0-3 there while the platform's own spectrum peaks at 10-14.6 s (G46 F1).
+    The column is a code when every finite value is a whole number from 0 to 3 and one of them is 0 or 1 (no peak
+    period is 0 or 1 s); a calm sheltered buoy's real 1.8-3.5 s peaks carry decimals (the Bothnian Sea)."""
+    import numpy as np
+    v = np.asarray(values, dtype="float64")
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return False
+    return bool(np.all(v == np.round(v)) and np.all((v >= 0) & (v <= 3)) and np.any(v <= 1))
+
+
 def _peak_ok(tp, tm):
-    """The peak period, or None when it cannot be one. Meteo-France's GTS relays (6100001, 6101031-36,
-    6200001) put 0-2 s in VTPK beside a 4-10 s mean period, and a KMA buoy reported a 25 s peak beside a 4.9 s
-    mean (2026-10-31): a peak below 2 s, below half the record's own mean period or more than five times it is
-    a coding error, not a wave. Real readings sit inside: a peak a little below the mean where two systems
-    overlap (KMA 3.7 s over 3.9 s), long swell under a small wind sea (KMA 18.2 s over 3.8 s)."""
+    """The peak period, or None when it cannot be one. A KMA buoy reported a 25 s peak beside a 4.9 s mean
+    (2026-10-31): a peak below 1 s, below half the record's own mean period or more than five times it is a coding
+    error, not a wave. Real readings sit inside: a peak a little below the mean where two systems overlap (KMA 3.7 s
+    over 3.9 s), long swell under a small wind sea (KMA 18.2 s over 3.8 s), a 1.8 s chop in the Bothnian Sea (G46
+    F2: the floor was 2 s). Meteo-France's relays' codes are dropped per file (`_vtpk_is_code`)."""
     if tp is None:
         return None
     if tp < MIN_PEAK_S:
@@ -3696,9 +3749,9 @@ def parse_simcosta_stations(doc, now, live_s):
 
 
 def parse_simcosta_obs(doc, now):
-    """One SiMCosta /api/intrans_data answer -> readings with a wave height, oldest first. Hsig is the total
-    height on the Axys buoys; CDRJ-1 (Niteroi) reports HM0 with a sea / swell split instead and no total peak
-    period: there the peak period is the period of the higher part. Directions are FROM (Rio's south swell reads
+    """One SiMCosta /api/intrans_data answer -> readings with a wave height, oldest first. The height is HM0
+    (spectral), else Hsig; CDRJ-1 (Niteroi) reports HM0 with a sea / swell split and no total peak period: there
+    the peak period is the period of the higher part. Directions are FROM (Rio's south swell reads
     170-190 deg)."""
     if not isinstance(doc, list):
         raise ValueError("the SiMCosta answer is not a list")
@@ -3707,9 +3760,9 @@ def parse_simcosta_obs(doc, now):
         if not isinstance(r, dict):
             continue
         t = _iso_z(r.get("timestamp"))
-        hs = _jnum(r.get("Hsig"))
-        if hs is None:
-            hs = _jnum(r.get("HM0"))
+        # the spectral height first, as every other network and CDRJ-1 show it (RJ-4's time-domain Hsig reads ~7 %
+        # lower, G46 F6); Hsig when HM0 is missing or out of range
+        hs = next((v for v in (_jnum(r.get("HM0")), _jnum(r.get("Hsig"))) if v is not None and 0 <= v <= 30), None)
         if t is None or hs is None:
             continue
         parts = []
@@ -3771,7 +3824,7 @@ class SimcostaProvider(BuoyProvider):
         if not self._stations or now - self._stations_at > self.STATIONS_TTL:
             try:
                 found = parse_simcosta_stations(self._json(self.LIST), now, self.LIVE_S)
-            except (RuntimeError, ValueError):
+            except (RuntimeError, ValueError, requests.RequestException, OSError):    # a timeout too (G46 F4)
                 if not self._stations:
                     raise
                 found = None                       # the list in hand stands; asked again next refresh
@@ -3781,7 +3834,7 @@ class SimcostaProvider(BuoyProvider):
         for bid, st in sorted(self._stations.items()):
             try:
                 rows = parse_simcosta_obs(self._json(self.DATA % (bid, int(now - 86400), int(now))), now)
-            except (RuntimeError, ValueError):
+            except (RuntimeError, ValueError, requests.RequestException, OSError):     # a timeout too (G46 F4)
                 errors += 1
                 rows = self._obs.get(str(bid)) or []      # one platform failing keeps what it had
             if rows:
@@ -3790,6 +3843,10 @@ class SimcostaProvider(BuoyProvider):
                             "latest_time": rows[-1]["time_utc"]})
         if not out:
             raise RuntimeError("no SiMCosta platform answered with a wave height (%d failed)" % errors)
+        if errors and errors >= len(self._stations):
+            # nothing answered this time: a failed refresh (keep-last and its expiry, /healthz), not the old rows
+            # republished as a good one (G46 F5)
+            raise RuntimeError("every SiMCosta platform failed (%d)" % errors)
         self._obs = obs
         return out
 
@@ -3807,6 +3864,9 @@ class SimcostaProvider(BuoyProvider):
 WIS2_WAVE_VARS = {"significant_wave_height": "hs_m", "spectral_peak_wave_period": "tp_s",
                   "average_wave_period": "mean_period_s", "direction_from_which_dominant_waves_are_coming": "dir_deg",
                   "maximum_wave_height": "hmax_m", "sea_surface_temperature": "sst_c"}
+
+
+WIS2_UNITS = {"hs_m": "m", "hmax_m": "m", "tp_s": "s", "mean_period_s": "s", "dir_deg": "deg"}
 
 
 def parse_wis2_features(docs, now):
@@ -3828,8 +3888,14 @@ def parse_wis2_features(docs, now):
             sid, v = p.get("wigos_station_identifier"), _jnum(p.get("value"))
             if key is None or not isinstance(sid, str) or t is None or v is None:
                 continue
-            if key == "sst_c" and str(p.get("units") or "").upper() in ("K", "KELVIN"):
-                v -= 273.15
+            units = str(p.get("units") or "").strip()
+            if key == "sst_c":
+                if units.upper() in ("K", "KELVIN"):
+                    v -= 273.15
+                elif units.upper() not in ("C", "CELSIUS", "DEGC", "DEG C"):
+                    continue
+            elif WIS2_UNITS[key] != units:
+                continue                       # a node that changes units fails loudly (no wave height), never 25 cm = 25 m
             st = acc.setdefault(sid, {"lat": None, "lon": None, "t": {}})
             try:
                 lon, lat = float(g["coordinates"][0]), float(g["coordinates"][1])
@@ -3897,7 +3963,7 @@ class Wis2BoxBuoyProvider(BuoyProvider):
                 continue
             try:
                 docs.append(self._page(var, since))
-            except RuntimeError as exc:                               # the heights still stand
+            except (RuntimeError, ValueError, requests.RequestException, OSError) as exc:   # the heights still stand
                 _log.warning("%s: %s not read: %s", self.source, var, exc)
         try:
             found = parse_wis2_features(docs, now)

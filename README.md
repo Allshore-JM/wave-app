@@ -1586,19 +1586,31 @@ section 71). This adds what is open:
   the GTS-relayed buoys report under `VGHS` / `VTPK` / `VDIR` (India's NIOT moored buoys, the INCOIS / NIO wave
   drifters, Italy's RON network, Meteo-France's relays) and were left out before. Their values sit in the second DEPTH
   column of the file (beside a -3 m air row), so each variable now reads the column that holds values. A window reads
-  the platform's file for the day before too (a daily file holds only the hours since 00Z). Drifting buoys
-  (`GL_TS_DB_...`, named "Drifting buoy N") keep their newest position as reported (no position check: they move);
+  the platform's file for the day before too (a daily file holds only the hours since 00Z); a row with a fill-value
+  or impossible TIME is skipped, never the file. Drifting buoys (`GL_TS_DB_...`, named "Drifting buoy N") are drawn at
+  the newest fix in their newest file (the index gives only the day's box, up to ~60 km across), read once each time
+  the index shows that file grown, with no position check (they move); the box's middle when the file cannot be read.
   Saildrones (`GL_TS_SD_...`) are left out. On 2026-10-31 the widened feed listed 338 platforms (39 outside Europe).
-- **A peak period that cannot be one is dropped** (`_peak_ok`, CMEMS and KMA): below 2 s, below half the record's mean
-  period or above five times it. Meteo-France's GTS relays carry 0-2 s in `VTPK` beside a 4-10 s mean.
+- **A peak period that cannot be one is dropped** (`_peak_ok`, CMEMS and KMA): below 1 s, below half the record's mean
+  period or above five times it (a calm Bothnian Sea chop has real 1.8-1.9 s peaks). Meteo-France's GTS relays carry a
+  code in `VTPK`, whole numbers 0-3, beside a 3-11 s mean while their own spectrum peaks at 10-15 s: a file whose
+  `VTPK` values are all whole numbers from 0 to 3, one of them 0 or 1, has its peak column dropped (`_vtpk_is_code`).
+- **Europe changed too:** the `VGHS` rule adds 22 European platforms (Italy's RON, Meteo-France's relays, two drifters,
+  Madeira), and the column rule fills the windows of European platforms that answered nothing before (e.g. Ireland's
+  6200025, Troll-A, Soller: values outside the first DEPTH column).
 - **SiMCosta (Brazil, FURG and partners):** anonymous JSON (`/api/equipamentos/` every 6 h; each platform's last 24 h every
   30 min). Listed: operating platforms updated within 2 days whose answer holds a wave height (RJ-4 Rio, CDRJ-1 Niteroi,
-  RS-4 Rio Grande on 2026-10-31); the `_OLD` / `_INT` copies and the ADCP current profilers are left out. CDRJ-1 gives a
-  sea / swell split and no total peak period: the window shows the split, and the peak period is the higher part's.
+  RS-4 Rio Grande on 2026-10-31); the `_OLD` / `_INT` copies and the ADCP current profilers are left out. The height is
+  `HM0` (spectral, as every other network shows; RJ-4's time-domain `Hsig` reads ~7 % lower), `Hsig` when `HM0` is
+  missing. CDRJ-1 gives a sea / swell split and no total peak period: the window shows the split, and the peak period
+  is the higher part's. One platform failing (an HTTP error or a timeout) keeps its rows; every platform failing is a
+  failed refresh (the feed's keep-last and `/healthz` error), never the old rows republished.
   Directions are FROM. Terms: a disclaimer only ("SiMCosta does not give any guarantee regarding this data").
 - **KMA (Korea) through its WMO WIS2 node:** 33 moored buoys, anonymous OGC API GeoJSON (one feature per variable). Each
   refresh (30 min) asks the last 26 h of the six wave variables, one query each; a station's readings are joined by the
-  report time. WMO core data (free and unrestricted). The page links `kma:0-410-0-22101` to NOAA's forecast point 22101.
+  report time. A feature in another unit than expected (heights m, periods s, directions deg, temperatures K or
+  Celsius) is left out, so a node that changes units shows no height rather than 25 cm as 25 m. A secondary variable
+  failing (an HTTP error or a timeout) is logged; the heights still publish. WMO core data (free and unrestricted). The page links `kma:0-410-0-22101` to NOAA's forecast point 22101.
 - Dedup priority: KMA 57, SiMCosta 56 (above Copernicus's relays of the same buoys, 30).
 - The Antilles box also holds Copernicus's copies of NDBC's 41040, 41044 and 42060 (`GL_TS_MO_41040` ...), 3-13 km from
   NDBC's positions: a Copernicus id that is a plain 5-digit buoy number counts as that number in the dedup, so the copy

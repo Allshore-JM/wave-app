@@ -131,7 +131,7 @@ def test_cmems_detail_reads_the_relays_depth_column_and_the_day_before():
     assert newest["mean_period_s"] == pytest.approx(11.1, abs=0.05)
     days = {o["time_utc"][:10] for o in d["recent"]}
     assert days == {"2026-10-30", "2026-10-31"} or "2026-10-31" in days
-    files = [u.rsplit("/", 1)[-1] for u in p.http.calls if u.endswith(".nc")]
+    files = [u.rsplit("/", 1)[-1] for u in p.http.calls if u.endswith(".nc") and "2300453" in u]
     assert files == ["GL_TS_MO_2300453_20261031.nc", "GL_TS_MO_2300453_20261030.nc"]
 
 
@@ -161,9 +161,10 @@ def test_cmems_prev_day_name():
 
 
 @pytest.mark.parametrize("tp,tm,want", [
-    (2.0, 10.0, None),      # Meteo-France relay
+    (2.0, 10.0, None),      # Meteo-France relay beside a 10 s mean (the ratio)
     (1.0, 4.0, None),
-    (1.9, None, None),      # below 2 s
+    (0.9, None, None),      # below 1 s
+    (1.9, None, 1.9),       # a calm Bothnian Sea chop (G46 F2: the floor was 2 s)
     (2.1, 2.1, 2.1),        # Italy RON in a calm
     (3.7, 3.9, 3.7),        # a little below the mean: two systems
     (18.2, 3.8, 18.2),      # long swell under a small wind sea
@@ -332,3 +333,217 @@ def test_cmems_copy_of_a_numbered_ndbc_buoy_merges_under_ndbc():
     kept = B.merge_stations([[ndbc], [copy, other]])
     assert [k["id"] for k in kept] == ["ndbc:42060", "cmems:MO_TS_MO_61499"]
     assert kept[0]["also_sources"] == ["CMEMS"]
+
+
+# ----------------------------------------------------------------------------------------------- G46 fix round
+
+def _nc_copy(name, tmp_path, edit):
+    """A copy of a fixture .nc with `edit(h5py file)` applied; returns its bytes."""
+    import shutil
+    import h5py
+    dst = tmp_path / name
+    shutil.copy(os.path.join(FIX, name), dst)
+    with h5py.File(dst, "r+") as f:
+        edit(f)
+    return dst.read_bytes()
+
+
+@pytest.mark.parametrize("values,code", [
+    ([0, 1, 2, 2, 1], True),             # Meteo-France 6200001
+    ([0, 0, 0], True),                   # 6100002
+    ([2, 3, 3, 2, 1], True),             # 6100001 on 2026-10-30 (beside a 3-4 s mean)
+    ([2, 3, 3, 2], False),               # whole seconds but none 0 or 1: could be a calm buoy's periods
+    ([0, 1, 4], False),                  # a 4: not the relays' 0-3 code
+    ([1.8, 1.9, 2.1, 3.6], False),       # the Bothnian Sea
+    ([13.3, 13.7], False),
+    ([float("nan")], False),
+    ([], False),
+])
+def test_vtpk_code_rule(values, code):
+    assert B._vtpk_is_code(values) is code
+
+
+def test_cmems_relay_code_dropped_even_beside_a_short_mean(tmp_path):
+    """G46 F1: 6100001's VTPK 2-3 beside a 3-4 s mean passed the ratio; the file's column is a code: none shown."""
+    def edit(f):
+        tp = f["VTPK"][...]
+        tp[...] = 3.0
+        tp.flat[0] = 1.0
+        f["VTPK"][...] = tp
+        tm = f["VGTA"][...]
+        tm[...] = 3.0
+        f["VGTA"][...] = tm
+    body = _nc_copy("GL_TS_MO_6200001_20261031.nc", tmp_path, edit)
+
+    def route(url):
+        return body if url.endswith("GL_TS_MO_6200001_20261031.nc") else _cmems_route(url)
+    p = B.CopernicusProvider(http=FileHTTP(route))
+    p._fetch_stations()
+    rows = p.detail("GL_TS_MO_6200001")["recent"]
+    assert rows and all(o["tp_s"] is None for o in rows)
+
+
+def test_cmems_national_file_values_in_the_first_depth_column(tmp_path):
+    """The column rule reads the column that holds values, the first as well as the second (mutant: always 1)."""
+    def edit(f):
+        for name in ("VGHS", "VTPK", "VGTA", "VDIR"):
+            a = f[name][...]
+            a[:, 0] = a[:, 1]
+            a[:, 1] = f[name].attrs["_FillValue"]
+            f[name][...] = a
+    body = _nc_copy("GL_TS_MO_2300453_20261031.nc", tmp_path, edit)
+
+    def route(url):
+        return body if url.endswith("GL_TS_MO_2300453_20261031.nc") else _cmems_route(url)
+    p = B.CopernicusProvider(http=FileHTTP(route))
+    p._fetch_stations()
+    o = p.detail("GL_TS_MO_2300453")["latest"]
+    assert o["hs_m"] == pytest.approx(0.99, abs=0.005) and o["tp_s"] == pytest.approx(13.3, abs=0.05)
+
+
+def test_cmems_bad_time_in_the_day_before_keeps_today(tmp_path):
+    """G46 F7: a fill-value TIME in the day-before file blanked today's window too."""
+    def edit(f):
+        t = f["TIME"][...]
+        t[-1] = 9.96921e36
+        f["TIME"][...] = t
+    body = _nc_copy("GL_TS_MO_2300453_20261030.nc", tmp_path, edit)
+
+    def route(url):
+        return body if url.endswith("GL_TS_MO_2300453_20261030.nc") else _cmems_route(url)
+    p = B.CopernicusProvider(http=FileHTTP(route))
+    p._fetch_stations()
+    d = p.detail("GL_TS_MO_2300453")
+    assert d["latest"] is not None and d["latest"]["hs_m"] == pytest.approx(0.99, abs=0.005)
+
+
+def test_cmems_drifter_drawn_at_its_newest_fix():
+    """G46 F3: the index gives the day's box (the drifter's middle 11.9 km off); the marker is the file's newest fix."""
+    p = B.CopernicusProvider(http=FileHTTP(_cmems_route))
+    st = {s["local_id"]: s for s in p._fetch_stations()}
+    d = st["GL_TS_DB_7810896"]
+    assert d["lat"] == pytest.approx(6.1340, abs=1e-3) and d["lon"] == pytest.approx(76.2731, abs=1e-3)
+    calls = [u for u in p.http.calls if "7810896" in u]
+    p._fetch_stations()                                      # read once per newest file
+    assert [u for u in p.http.calls if "7810896" in u] == calls
+    assert st["GL_TS_MO_2300453"]["lat"] == pytest.approx(8.07, abs=0.02)        # a moored buoy: the index
+
+
+def test_cmems_drifter_unreadable_file_keeps_the_box_middle():
+    def route(url):
+        return None if "GL_TS_DB_" in url and url.endswith(".nc") else _cmems_route(url)
+    p = B.CopernicusProvider(http=FileHTTP(route))
+    st = {s["local_id"]: s for s in p._fetch_stations()}
+    assert st["GL_TS_DB_7810896"]["lat"] == pytest.approx(6.2406, abs=1e-3)
+
+
+def test_simcosta_height_is_hm0_first():
+    """G46 F6: RJ-4 carries both; HM0 (spectral, as every other network) first; Hsig when HM0 is absent or bad."""
+    doc = [{"timestamp": "2026-10-31T20:00:00.000Z", "Hsig": 1.25, "HM0": 1.34},
+           {"timestamp": "2026-10-31T20:30:00.000Z", "Hsig": 1.25},
+           {"timestamp": "2026-10-31T21:00:00.000Z", "Hsig": 1.20, "HM0": -9999}]
+    assert [r["hs_m"] for r in B.parse_simcosta_obs(doc, NOW)] == [1.34, 1.25, 1.20]
+
+
+def test_simcosta_a_timeout_on_one_platform_keeps_the_others():
+    """G46 F4: a requests timeout is not a RuntimeError; one platform's timeout must not fail the feed."""
+    import requests
+    p = B.SimcostaProvider(http=FileHTTP(_sim_route))
+    p._fetch_stations()
+    held = p._obs["518"]
+
+    def route(url):
+        return requests.exceptions.ReadTimeout("slow") if "boiaID=518&" in url else _sim_route(url)
+    p.http = FileHTTP(route)
+    assert {s["local_id"] for s in p._fetch_stations()} == {"12", "518"} and p._obs["518"] == held
+
+
+def test_simcosta_list_timeout_keeps_the_list_in_hand(monkeypatch):
+    import requests
+    p = B.SimcostaProvider(http=FileHTTP(_sim_route))
+    p._fetch_stations()
+    p._stations_at -= 7 * 3600                               # the list is due again
+
+    def route(url):
+        return requests.exceptions.ConnectionError("down") if url.endswith("/api/equipamentos/") else _sim_route(url)
+    p.http = FileHTTP(route)
+    assert {s["local_id"] for s in p._fetch_stations()} == {"12", "518"}
+
+
+def test_simcosta_every_platform_failing_is_a_failed_refresh():
+    """G46 F5: with rows in hand, every platform failing republished them as a good refresh, forever."""
+    import requests
+    p = B.SimcostaProvider(http=FileHTTP(_sim_route))
+    p._fetch_stations()
+    p.http = FileHTTP(lambda u: "simcosta_list.json" if u.endswith("/") else requests.exceptions.ReadTimeout("x"))
+    with pytest.raises(RuntimeError):
+        p._fetch_stations()
+    p.http = FileHTTP(lambda u: "simcosta_list.json" if u.endswith("/") else None)        # HTTP 404s
+    with pytest.raises(RuntimeError):
+        p._fetch_stations()
+
+
+def test_simcosta_two_day_freshness_and_naive_times():
+    fresh = {"boia_status": 1, "latitude": -22.9, "longitude": -43.1, "id": 9004, "boia": "RJ-9"}
+    keep = B.parse_simcosta_stations([dict(fresh, atualizacao="2026-10-30T01:00:00.000Z")], NOW, 2 * 86400)
+    drop = B.parse_simcosta_stations([dict(fresh, atualizacao="2026-10-29T23:00:00.000Z")], NOW, 2 * 86400)
+    assert 9004 in keep and drop == {}
+    assert B._iso_z("2026-10-31T22:21:40") is None and B._iso_z("2026-10-31T22:21:40Z") == "2026-10-31T22:21:40Z"
+
+
+def test_kma_a_timeout_on_a_secondary_variable_keeps_the_heights():
+    import requests
+    p = B.KmaBuoyProvider(http=FileHTTP(
+        lambda u: requests.exceptions.ReadTimeout("x") if "sea_surface_temperature" in u else _kma_route(u)))
+    st = p._fetch_stations()
+    assert len(st) == 3 and p.detail("0-410-0-21229")["latest"]["sst_c"] is None
+
+
+def test_kma_asks_the_last_26_hours():
+    p = B.KmaBuoyProvider(http=FileHTTP(_kma_route))
+    p._fetch_stations()
+    since = datetime.fromtimestamp(NOW - 26 * 3600, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert all("datetime=%s/.." % since in u for u in p.http.calls)
+
+
+def test_wis2_units_other_than_the_expected_are_left_out():
+    """G46 F7: 25 cm read as 25 m; a height in another unit is no height (the node's change fails loudly)."""
+    def feat(name, t, v, units):
+        return {"geometry": {"coordinates": [126.0, 37.0]},
+                "properties": {"name": name, "wigos_station_identifier": "A", "reportTime": t,
+                               "phenomenonTime": t, "value": v, "units": units}}
+    t = "2026-10-31T20:00:00Z"
+    got = B.parse_wis2_features([{"features": [feat("significant_wave_height", t, 25, "cm")]}], NOW)
+    assert got == {}
+    got = B.parse_wis2_features([{"features": [
+        feat("significant_wave_height", t, 1.0, "m"), feat("spectral_peak_wave_period", t, 8.0, "min"),
+        feat("sea_surface_temperature", t, 20.0, "degF")]}], NOW)
+    row = got["A"]["rows"][0]
+    assert row["hs_m"] == 1.0 and row["tp_s"] is None and row["sst_c"] is None
+
+
+def test_cmems_drifter_fix_read_again_when_the_day_file_grows():
+    """A day's file keeps its name while it grows: the newest fix is read again when the index's end time moves."""
+    p = B.CopernicusProvider(http=FileHTTP(_cmems_route))
+    p._fetch_stations()
+    n0 = sum(1 for u in p.http.calls if "7810896" in u)
+    body = open(os.path.join(FIX, "cmems_index.txt"), encoding="utf-8").read()
+    rows = [ln for ln in body.splitlines() if "GL_TS_DB_7810896" in ln]
+    newest = max(rows, key=lambda ln: ln.split(",")[7])
+    r = newest.split(",")
+    r[7] = r[7].replace("T20:", "T21:")                     # the same file, an hour longer
+    grown = body.replace(newest, ",".join(r))
+    p.http = FileHTTP(lambda u: grown.encode("utf-8") if u.endswith("index_latest.txt") else _cmems_route(u))
+    p._fetch_stations()
+    assert sum(1 for u in p.http.calls if "7810896" in u) == 1 and n0 == 1
+
+
+def test_cmems_drifter_fix_forgotten_when_the_drifter_leaves_the_list():
+    p = B.CopernicusProvider(http=FileHTTP(_cmems_route))
+    p._fetch_stations()
+    assert any("7810896" in k[0] for k in p._fixes)
+    body = "\n".join(ln for ln in open(os.path.join(FIX, "cmems_index.txt"), encoding="utf-8").read().splitlines()
+                     if "GL_TS_DB_7810896" not in ln) + "\n"
+    p.http = FileHTTP(lambda u: body.encode("utf-8") if u.endswith("index_latest.txt") else _cmems_route(u))
+    p._fetch_stations()
+    assert not any("7810896" in k[0] for k in p._fixes)

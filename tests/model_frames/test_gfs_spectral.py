@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tarfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -155,7 +156,7 @@ def test_a_real_member_is_split_as_the_pinned_rows():
     for name, exp in EXPECT.items():
         data = open(os.path.join(FIX, name), "rb").read()
         run_dt = datetime.strptime(exp["run"], "%Y%m%d%H").replace(tzinfo=timezone.utc)
-        sid, rec, present, err = G.station_record(exp["station"], data, run_dt)
+        sid, rec, present, err, _ = G.station_record(exp["station"], data, run_dt)
         assert err is None and present == len(exp["steps"]) and len(rec) == G.RECORD_BYTES
         decoded = G.decode_record(rec)
         for e in exp["steps"]:
@@ -196,8 +197,18 @@ def test_a_step_outside_the_run_or_off_the_hour_is_left_out():
 
 
 def test_an_unreadable_member_is_reported_not_raised():
-    sid, rec, present, err = G.station_record("X", b"junk", RUN_DT)
-    assert rec is None and present == 0 and "ValueError" in err
+    sid, rec, present, err, first = G.station_record("X", b"junk", RUN_DT)
+    assert rec is None and present == 0 and "ValueError" in err and first is None
+    sid, rec, present, err, first = G.station_record("51201", spec_text("51201", steps=range(3)).encode(), RUN_DT)
+    assert err is None and present == 3 and first == RUN_DT.replace(tzinfo=None)
+
+
+def test_a_part_at_the_minimum_height_is_kept():
+    base = RUN_DT.replace(tzinfo=None)
+    parts = [{"hs": G.MIN_PART_HS, "tp": 10.0, "dir": 90.0, "ws": False, "label": 1},
+             {"hs": G.MIN_PART_HS - 0.001, "tp": 10.0, "dir": 90.0, "ws": False, "label": 2}]
+    rec, _ = G.encode_steps({base: (1.0, parts)}, RUN_DT)
+    assert G.decode_record(rec)[0][1] == [(G.MIN_PART_HS, 10.0, 90, False)]
 
 
 # ---------------- the build ----------------
@@ -212,10 +223,23 @@ def test_the_build_splits_the_listed_members_in_archive_order_and_skips_the_rest
     hs_total, parts = d[6]
     assert len(parts) == 2 and any(p[3] for p in parts) and any(not p[3] for p in parts)   # hour 6: swell + sea
     assert hs_total == pytest.approx(ww3spec.hs_of(FREQS, (DIRS_TO + 180) % 360, spectrum(6)), abs=0.006)
-    # a later run's archive under this run's name: every member's steps lie outside the run -> no station, a failure
-    with pytest.raises(ValueError, match="unreadable"):
-        G.build(io.BytesIO(three()), RUN_DT + timedelta(days=30), LISTED, pool_factory=threads, workers=2,
-                log=lambda s: None)
+    # another run's archive under this run's name (G48a P2-1): the members do not start at the run's hour. A LATER
+    # run's archive (every step past the window) and an EARLIER one (379 of 385 steps inside it) are both refused.
+    for off in (timedelta(days=30), timedelta(hours=6), timedelta(hours=-6)):
+        with pytest.raises(ValueError, match="do not start at the run"):
+            G.build(io.BytesIO(three()), RUN_DT + off, LISTED, pool_factory=threads, workers=2, log=lambda s: None)
+
+
+def test_a_few_shifted_members_pass_but_a_tenth_fails_the_build():
+    listed = {f"S{k:02d}" for k in range(20)}
+    members = {s: spec_text(s, steps=range(2)) for s in sorted(listed)}
+    members["S00"] = spec_text("S00", run_dt=RUN_DT - timedelta(hours=6), steps=range(8))   # one member of the older run
+    body, doc = G.build(io.BytesIO(archive(members)), RUN_DT, listed, pool_factory=threads, workers=2, log=lambda s: None)
+    assert doc["count"] == 20 and doc["left_out"] == {}
+    for s in ("S01", "S02"):
+        members[s] = spec_text(s, run_dt=RUN_DT - timedelta(hours=6), steps=range(8))
+    with pytest.raises(ValueError, match="3 of 20 listed members do not start at the run"):
+        G.build(io.BytesIO(archive(members)), RUN_DT, listed, pool_factory=threads, workers=2, log=lambda s: None)
 
 
 def test_the_pool_gives_the_sequential_result():
@@ -261,6 +285,75 @@ def test_a_bad_member_is_left_out_and_too_many_fail_the_build():
     members["S04"] = members["S03"]
     with pytest.raises(ValueError, match="unreadable"):
         G.build(io.BytesIO(archive(members)), RUN_DT, listed, pool_factory=threads, workers=2, log=lambda s: None)
+
+
+def test_a_lost_worker_is_left_out_after_its_wait_not_the_whole_budget(monkeypatch):
+    """A worker that answers neither callback (a process killed: G48a P3-1) costs TASK_MAX_S, not the budget."""
+    orig = G.station_record
+
+    def dies(sid, data, run_dt):
+        if sid == "S03":
+            raise SystemExit(5)                        # a ThreadPool worker that exits: no callback either way
+        return orig(sid, data, run_dt)
+    monkeypatch.setattr(G, "station_record", dies)
+    monkeypatch.setattr(G, "TASK_MAX_S", 0.5)
+    listed = {f"S{k:02d}" for k in range(24)}                     # one lost of 24 is under the 5 % failure share
+    arc = archive({s: spec_text(s, steps=range(2)) for s in sorted(listed)})
+    t0 = time.monotonic()
+    body, doc = G.build(io.BytesIO(arc), RUN_DT, listed, deadline=time.monotonic() + 30, pool_factory=threads,
+                        workers=2, log=lambda s: None)
+    assert time.monotonic() - t0 < 10 and doc["count"] == 23
+    assert list(doc["left_out"]) == ["S03"] and "worker failed: no answer" in doc["left_out"]["S03"]
+
+
+def test_the_feeder_stops_at_the_deadline_while_every_slot_is_held(monkeypatch):
+    """Hung tasks fill the cap; the feeder's wait for a slot honours the deadline (G48a P3-2)."""
+    orig = G.station_record
+    gate = threading.Event()
+    hung = {"S00", "S01", "S02", "S03"}
+
+    def hangs(sid, data, run_dt):
+        if sid in hung:
+            gate.wait()
+        return orig(sid, data, run_dt)
+    monkeypatch.setattr(G, "station_record", hangs)
+    listed = {f"S{k:02d}" for k in range(16)}
+    arc = archive({s: spec_text(s, steps=range(2)) for s in sorted(listed)})
+    threading.Timer(4.0, gate.set).start()           # lets terminate() join afterwards
+    t0 = time.monotonic()
+    with pytest.raises(W.BudgetExceeded):
+        G.build(io.BytesIO(arc), RUN_DT, listed, deadline=time.monotonic() + 1.5, pool_factory=threads, workers=2,
+                log=lambda s: None)
+    assert time.monotonic() - t0 < 3.5
+    gate.set()
+
+
+def test_drain_honours_the_deadline_for_a_task_that_never_answers(monkeypatch):
+    """Every member submitted, one task hangs: drain's wait ends at the deadline, not at TASK_MAX_S (G48a B6)."""
+    orig = G.station_record
+    gate = threading.Event()
+
+    def hangs(sid, data, run_dt):
+        if sid == "S01":
+            gate.wait()
+        return orig(sid, data, run_dt)
+    monkeypatch.setattr(G, "station_record", hangs)
+    monkeypatch.setattr(G, "TASK_MAX_S", 6.0)
+    listed = {"S00", "S01"}
+    arc = archive({s: spec_text(s, steps=range(2)) for s in sorted(listed)})
+    threading.Timer(4.0, gate.set).start()
+    t0 = time.monotonic()
+    with pytest.raises(W.BudgetExceeded):
+        G.build(io.BytesIO(arc), RUN_DT, listed, deadline=time.monotonic() + 1.0, pool_factory=threads, workers=2,
+                log=lambda s: None)
+    assert time.monotonic() - t0 < 3.5
+    gate.set()
+
+
+def test_a_kept_part_whose_direction_rounds_to_360_is_stored_as_0():
+    base = RUN_DT.replace(tzinfo=None)
+    rec, _ = G.encode_steps({base: (1.0, [{"hs": 0.5, "tp": 10.0, "dir": 359.6, "ws": False, "label": 1}])}, RUN_DT)
+    assert G.decode_record(rec)[0][1] == [(0.5, 10.0, 0, False)]
 
 
 def test_the_budget_stops_the_build_and_terminates_the_pool():
@@ -313,6 +406,50 @@ def test_main_already_live_and_never_regresses():
         datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}).encode()
     assert _main(fake, st) == 0 and len(st.client.log) == n
     assert _main(fake, st, "--run", RUN) == 2, "the pointer never moves back"
+
+
+def test_a_run_asked_for_by_name_is_never_rewritten_and_a_newer_one_moves_the_pointer(capsys):
+    """G48a U5 / U6: `--run <the live run>` rewrites nothing (its objects are immutable); `--run <a newer run>`
+    builds it and moves the pointer forward; a run older than the live one is refused."""
+    st = store()
+    later = "2026110118"
+    fake = FakeNoaa({RUN: three(), later: archive({s: spec_text(s, run_dt=RUN_DT + timedelta(hours=6), steps=range(3))
+                                                   for s in sorted(LISTED)})})
+    assert _main(fake, st) == 0                                   # RUN published
+    n = len(st.client.log)
+    assert _main(fake, st, "--run", RUN) == 0 and len(st.client.log) == n
+    assert "already published" in capsys.readouterr().out
+    assert _main(fake, st, "--run", later, hours=7) == 0
+    assert [k for op, k in st.client.log[n:] if op == "put"] == [G.bin_key(later), G.index_key(later),
+                                                               P.latest_key(G.PREFIX)]
+    assert json.loads(st.client.objects[P.latest_key(G.PREFIX)]["body"])["run"] == later
+    assert _main(fake, st, "--run", RUN) == 2                     # older than the live run: refused, nothing written
+    assert len([k for op, k in st.client.log if op == "put"]) == 6
+
+
+def test_the_stale_alarm_also_fires_on_the_not_now_paths():
+    """G48a U7: a run that cannot be served or built does not hide a stale pointer (the winds job's G36a P2-2)."""
+    old = (datetime.now(timezone.utc) - timedelta(hours=19)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def stale_store():
+        st = store()
+        st.put(P.latest_key(G.PREFIX), json.dumps({"run": "2026103112", "published_utc": old}).encode(),
+               "application/json", P.POINTER)
+        return st
+
+    class Vanishing(FakeNoaa):
+        def __call__(self, req, timeout=None):
+            if req.get_method() == "GET":
+                raise W.urllib.error.HTTPError(req.full_url, 404, "x", {}, None)
+            return super().__call__(req, timeout)
+    st = stale_store()
+    assert _main(Vanishing({RUN: three()}), st) == 1              # not served + stale: the alarm, once
+    assert f"{G.PREFIX}/stale-alarm.json" in st.client.objects
+    assert _main(Vanishing({RUN: three()}), st) == 3
+    st = stale_store()
+    P.record_failure(st, RUN, "boom", G.PREFIX)
+    assert _main(FakeNoaa({RUN: three()}), st) == 1               # failed recently + stale: the alarm
+    assert f"{G.PREFIX}/stale-alarm.json" in st.client.objects
 
 
 def _fresh_pointer(st, run="2026110106"):
@@ -400,6 +537,7 @@ def test_workflow_trigger_keepalive_and_tests_paths():
     assert "group: model-gfsspec" in text and "python tools/model_frames/gfs_spectral.py" in text
     assert 'cron: "*/10 * * * *"' in text and 'if [ "$rc" -eq 3 ]' in text and "timeout-minutes: 40" in text
     assert "nproc" in text
+    assert not os.path.exists(os.path.join(wf, "gfsspec-dryrun.yml"))             # the step-2 dry run was temporary
     assert text.split("create-args: >-", 1)[1].split("cache-environment", 1)[0] == \
         open(os.path.join(wf, "model-gfswinds.yml"), encoding="utf-8").read().split("create-args: >-", 1)[1].split(
             "cache-environment", 1)[0]

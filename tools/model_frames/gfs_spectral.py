@@ -55,6 +55,8 @@ MIN_PART_HS = 0.05
 KEEP = 4
 BUILD_BUDGET_S = 25 * 60
 MAX_LEFT_OUT_SHARE = 0.05                    # more listed members unreadable than this = a failure, not a product
+MAX_SHIFTED_SHARE = 0.10                     # members not starting at the run's hour = another run's archive (G36a P3-3)
+TASK_MAX_S = 300                             # a member's split takes seconds; no answer in this long = the worker is gone
 STATIONS_PATH = os.path.join(os.path.dirname(os.path.dirname(HERE)), "station_list.json")
 S3 = W.S3
 NotReady, TransportError, BudgetExceeded = W.NotReady, W.TransportError, W.BudgetExceeded
@@ -138,7 +140,8 @@ def decode_record(rec):
 
 
 def station_record(sid, data, run_dt):
-    """The pool's work: (sid, record bytes or None, steps present, error text or None)."""
+    """The pool's work: (sid, record bytes or None, steps present, error text or None, the member's first step time
+    or None). The first time lets the build refuse another run's archive under this run's name (G48a P2-1)."""
     try:
         import partition2d as P2
         import ww3spec
@@ -148,9 +151,9 @@ def station_record(sid, data, run_dt):
             parts, _ = P2.partition_v2(sp.freqs, sp.dirs, E, wind=(u, ud))
             rows[when] = (ww3spec.hs_of(sp.freqs, sp.dirs, E), parts)
         rec, present = encode_steps(rows, run_dt)
-        return sid, rec, present, None
+        return sid, rec, present, None, (min(rows) if rows else None)
     except Exception as exc:                 # noqa: BLE001 - reported per station, never fatal to the build
-        return sid, None, 0, f"{exc.__class__.__name__}: {exc}"[:300]
+        return sid, None, 0, f"{exc.__class__.__name__}: {exc}"[:300], None
 
 
 # ---------------------------------------------------------------- the build
@@ -162,10 +165,12 @@ class _Bounded:
 
     def __init__(self, pool, cap):
         self.pool, self.sem, self.lock = pool, threading.BoundedSemaphore(cap), threading.Lock()
-        self.results, self.outstanding, self.peak, self.pending = [], 0, 0, []
+        self.results, self.outstanding, self.peak, self.pending, self.lost = [], 0, 0, [], 0
 
-    def submit(self, func, args):
-        self.sem.acquire()
+    def submit(self, func, args, deadline=None):
+        while not self.sem.acquire(timeout=1.0):     # a slot; the deadline is honoured while waiting (G48a P3-2)
+            if deadline is not None and time.monotonic() > deadline:
+                raise BudgetExceeded("the build budget ran out")
         with self.lock:
             self.outstanding += 1
             self.peak = max(self.peak, self.outstanding)
@@ -177,16 +182,24 @@ class _Bounded:
             self.sem.release()
 
         def failed(exc):                     # only a worker that died: the function itself never raises
-            done((args[0], None, 0, f"worker failed: {exc!r}"[:300]))
+            done((args[0], None, 0, f"worker failed: {exc!r}"[:300], None))
 
-        self.pending.append(self.pool.apply_async(func, args, callback=done, error_callback=failed))
+        self.pending.append((args[0], self.pool.apply_async(func, args, callback=done, error_callback=failed)))
 
     def drain(self, deadline=None):
-        for r in self.pending:
+        """Every answer, in submission order. A task with no answer within TASK_MAX_S of its turn (a worker killed by
+        the OOM killer or a segfault: multiprocessing then calls neither callback, G48a P3-1) is reported as that
+        station's failure and left out; past the deadline the budget is spent."""
+        for sid, r in self.pending:
             left = None if deadline is None else max(0.0, deadline - time.monotonic())
-            r.wait(left)
-            if not r.ready():
+            r.wait(TASK_MAX_S if left is None else min(left, TASK_MAX_S))
+            if r.ready():
+                continue
+            if deadline is not None and time.monotonic() > deadline:
                 raise BudgetExceeded("the build budget ran out")
+            with self.lock:
+                self.results.append((sid, None, 0, f"worker failed: no answer within {TASK_MAX_S} s", None))
+                self.lost += 1
         return list(self.results)
 
 
@@ -209,19 +222,26 @@ def build(stream, run_dt, listed, deadline=None, workers=None, pool_factory=defa
             if sid not in listed:
                 continue
             seen.append(sid)
-            box.submit(station_record, (sid, data, run_dt))
+            box.submit(station_record, (sid, data, run_dt), deadline)
         results = box.drain(deadline)
     except BaseException:
         pool.terminate()
         raise
-    pool.close()
-    pool.join()
+    if box.lost:                                       # a lost task stays in the pool's cache: join() would never return
+        pool.terminate()
+    else:
+        pool.close()
+        pool.join()
     if count < W.MIN_MEMBERS:
         raise ValueError(f"{count} members: not a whole spectra archive")
     by_sid = {r[0]: r for r in results}
+    base = run_dt.replace(tzinfo=None)
+    shifted = sum(1 for r in results if r[4] is not None and r[4] != base)
+    if shifted > MAX_SHIFTED_SHARE * max(1, len(seen)):   # another run's archive under this run's name (G48a P2-1)
+        raise ValueError(f"{shifted} of {len(seen)} listed members do not start at the run {W.run_name(run_dt)}")
     body, stations, left_out, steps_present = bytearray(), {}, {}, 0
     for sid in seen:                                   # the archive's order
-        _, rec, present, err = by_sid[sid]
+        _, rec, present, err, _ = by_sid[sid]
         if rec is None or present == 0:
             left_out[sid] = err or "no steps of the run"
             continue

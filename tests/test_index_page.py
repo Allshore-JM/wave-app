@@ -1317,6 +1317,19 @@ def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
     assert re.search(r'id="modelBar" hidden', b7) and re.search(r'data-model="GFSB" aria-pressed="false" hidden', b7)
 
 
+def test_section_77c_on_phones_the_split_note_gives_way_an_age_note_stays_whole():
+    # the 77c review (P2): the phone rule that lets the note give way to the station name holds the split note only
+    # (the span carries fw-split then); an NWPS / SWAN / point age note keeps the G41 rule and stays whole
+    src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    rule = ".fw-titles .fw-old.fw-split { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }"
+    assert src.count(rule) == 1
+    query = src[:src.index(rule)].rsplit("@media", 1)[1]
+    assert query.startswith(" (max-width: 500px), (max-height: 500px) {") and "}\n    }" not in query, "inside the phone query"
+    assert not re.search(r"\.fw-titles \.fw-old \{[^}]*flex: 0 1000", src), "no rule cuts every note"
+    js = open(os.path.join(A.app.root_path, "static_ui", "forecast.js"), encoding="utf-8").read()
+    assert "els.old.classList.toggle('fw-split', !!splitNote)" in js and "els.old.classList.remove('fw-split')" in js
+
+
 def test_section_77_render_full_carries_the_split_note_and_the_state_keys(client, monkeypatch):
     """render=full with NOAA's split served meanwhile: the meta line carries the note and the state the split keys, so
     the no-script page is labelled and the page's seed knows (G48 A note_not_on_page / state_without_split, B P2-2)."""

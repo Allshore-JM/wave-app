@@ -1423,6 +1423,7 @@ test('GFSB: the bar shows the button where the answer offers it, a click asks fo
   assert.equal(bar.hidden, false); assert.equal(btn('GFSB').hidden, false); assert.equal(btn('SWAN').hidden, false); assert.equal(btn('NWPS').hidden, true);
   assert.equal(btn('GFS').getAttribute('aria-pressed'), 'true');
   assert.equal(old.hidden, false); assert.equal(old.textContent, "· Swell split: NOAA's (ours arrives shortly)");
+  assert.ok(old.classList.contains('fw-split'), 'a split note: on phones it gives way to the station name (§77c review)');
   assert.ok(b.doc.getElementById('fwCycle').title.includes("Swell split: NOAA's"), 'the tooltip carries the note too');
   const meta = () => b.doc.getElementById('forecastMeta').textContent;
   assert.equal(meta().split('|')[0].trim(), "Cycle : 20260926 12 UTC · Swell split: NOAA's (ours arrives shortly)", 'the note whole on the meta line (§77c)');
@@ -1432,14 +1433,18 @@ test('GFSB: the bar shows the button where the answer offers it, a click asks fo
   b.fs_.last().release(payload({ station: '51201', model: 'GFSB', swan_available: true, nwps_available: false, gfsb_available: true, split: 'noaa', graph_header: { cycle: '20261101 12 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' } })); await settle();
   assert.equal(btn('GFSB').getAttribute('aria-pressed'), 'true'); assert.equal(btn('GFS').getAttribute('aria-pressed'), 'false');
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS (Bulletin) · run 20261101 12 UTC');
-  assert.equal(old.hidden, true, "NOAA's split asked for: no note");
+  assert.equal(old.hidden, true, "NOAA's split asked for: no note"); assert.ok(!old.classList.contains('fw-split'));
   b.app.loader.load({ station: '41113' }); await settle();                      // (51201's GFS answer is in the page cache)
   b.fs_.last().release(payload({ station: '41113', model: 'GFS', swan_available: false, nwps_available: false, gfsb_available: true, split: 'spectral' })); await settle();
   assert.equal(old.hidden, true, 'our split: no note'); assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC');
   assert.equal(meta().split('|')[0].trim(), 'Cycle : 20260926 12 UTC', 'no note on the meta line either');
   assert.equal(btn('GFSB').hidden, false); assert.equal(btn('SWAN').hidden, true);
+  b.app.loader.load({ station: '41001' }); await settle();
+  b.fs_.last().release(payload({ station: '41001', model: 'GFS', swan_available: false, nwps_available: false, gfsb_available: true, split: 'spectral', split_note: '18 UTC run spectral analysis in progress' })); await settle();
+  assert.equal(old.textContent, '· 18 UTC run spectral analysis in progress'); assert.ok(old.classList.contains('fw-split'), "the prior run's table: its note gives way on phones");
   b.app.loader.load({ station: '46001' }); await settle();
   b.fs_.last().fail(); await settle();
+  assert.ok(old.hidden && !old.classList.contains('fw-split'), 'a failed load clears the note and its class');
   assert.equal(bar.hidden, false, 'a failed load: the page\'s flag says the station has the button'); assert.equal(btn('GFSB').hidden, false);
   b.app.loader.load({ station: 'pt_21667N_158054W' }); await settle();
   b.fs_.last().fail(); await settle();
@@ -1487,6 +1492,7 @@ test('an NWPS run past 36 h says how old it is, in the header and the line above
   b.fs_.last().release(payload({ station: '51003', model: 'NWPS', nwps_available: true, nwps_age_hours: 40.4, graph_header: h })); await settle();
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'NWPS · run 20261028 06 UTC (NWS HFO)');
   assert.equal(b.doc.getElementById('fwOld').textContent, '· 40 h old', 'the note in its own span: phones cut the run text first (G41 re-check)');
+  assert.equal(b.doc.getElementById('fwOld').classList.contains('fw-split'), false, 'an age note stays whole on phones (G41; the 77c review)');
   assert.equal(b.doc.getElementById('fwOld').hidden, false);
   assert.equal(b.doc.getElementById('fwCycle').title, 'NWPS · run 20261028 06 UTC (NWS HFO) · 40 h old', 'the tooltip says it all');
   const meta = b.doc.getElementById('forecastMeta').textContent;

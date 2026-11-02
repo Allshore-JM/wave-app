@@ -91,6 +91,10 @@ and ten sampled records identical; the index / binary immutable with CORS for th
 - Pending at the time of writing: the 00Z run switch (the lag window: NOAA's split with "ours arrives shortly", then ours
   within 60 s of the publish) and the second published run against a local build; recorded below when seen.
 
+- The second published run, 2026110200 (published 05:42:27 UTC, 364 s on the runner): a local dry-run build with the
+  production job code (06cee72) gives a byte-identical spectral.bin (sha256 8f9f42b0...) and an identical index (but the
+  build time); 723 stations, 0 left out.
+
 ## G48: the site and page (two fresh reviewers on 94ec35b / test 5ce07a3, 2026-11-02 03:45-04:30 UTC)
 
 Reviewer A (code, no browser; model Fable, effort max; report in the session's scratch `g48/a/g48-a-report.md`, its

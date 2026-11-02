@@ -60,7 +60,7 @@
   // explicit empty tz in the URL counts.
   // The forecast models a station's table can be on: GFS-Wave everywhere, PacIOOS SWAN at its 12 Hawaii stations, NOAA
   // NWPS at the 112 stations its offices publish (plan section 59); anything else reads as GFS (the server says GLWU
-  // for a Great Lakes station whatever is asked). GFSB = "GFS (NOAA split)": NOAA's own swell split of the GFS run,
+  // for a Great Lakes station whatever is asked). GFSB = "GFS (Bulletin)": NOAA's own swell split of the GFS run,
   // offered where the site's own split of the station's spectra is the GFS table (plan section 77; the server says
   // when: gfsb_on, gfsb_available).
   var MODELS = ['GFS', 'SWAN', 'NWPS', 'GFSB'];
@@ -252,7 +252,7 @@
     if (model === 'SWAN') { var m = /updated\s+(.*)$/i.exec(c); return 'SWAN · updated ' + (m ? m[1] : c); }
     if (model === 'GLWU') return 'GLWU · run ' + c.replace(/^NOAA GLWU\s+/, '');
     if (model === 'NWPS') return 'NWPS · run ' + c.replace(/^NOAA NWPS\s+/, '');
-    if (model === 'GFSB') return 'GFS (NOAA split) · run ' + c;              // NOAA's own swell split (plan section 77)
+    if (model === 'GFSB') return 'GFS (Bulletin) · run ' + c;              // NOAA's own swell split (plan section 77)
     return (model || 'GFS') + ' · run ' + c;
   }
   // The graph's label strings -> Date (the old page's rule: "8/30/25 6:00 AM", else the browser's parser).

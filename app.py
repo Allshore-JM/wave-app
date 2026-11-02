@@ -441,7 +441,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.28.2"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.28.3"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -3179,7 +3179,7 @@ def _nwps_health():
 # Our own swell split of NOAA's station spectra (tools/model_frames/partition2d.partition_v2), published per run by
 # tools/model_frames/gfs_spectral.py as ONE binary: gfswave/spectral/v1/<RUN>/spectral.bin (+ index.json) and the
 # pointer latest.json. With GFS_SPECTRAL=1 it IS the GFS table ("GFS"); NOAA's own split stays as "GFSB" (the
-# "GFS (NOAA split)" button). The table is fetched in the BACKGROUND (the live scheduler's pass, _gspec_tick: never on
+# "GFS (Bulletin)" button). The table is fetched in the BACKGROUND (the live scheduler's pass, _gspec_tick: never on
 # a request thread) and the two newest runs are held in memory; a station's rows are sliced from memory. The spectral
 # run S serves when S >= the site's run R (the bulletin probe can lag the job, and the job the probe; both lags are
 # minutes); otherwise NOAA's split of run R is served, labelled (split_note), re-judged every minute.
@@ -3229,7 +3229,7 @@ def _gspec_listed() -> frozenset:
 
 
 def gfsb_offered(station_id) -> bool:
-    """The model button offers "GFS (NOAA split)" here: the spectral table is on and this is a listed GFS station (a
+    """The model button offers "GFS (Bulletin)" here: the spectral table is on and this is a listed GFS station (a
     Great Lakes station is GLWU's, a forecast point has no spectra)."""
     return bool(GFS_SPECTRAL and _gspec_root()) and isinstance(station_id, str) and not point_forecast.is_point_id(station_id) \
         and station_id not in GLWU_STATIONS and station_id in _gspec_listed()
@@ -4410,7 +4410,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         "model": resolve_model(station, model, nwps_ok, swan_ok),   # the model actually used (SWAN falls back to GFS)
         "swan_available": swan_ok,                             # the model button's SWAN choice (a stale table withdraws it)
         "nwps_available": nwps_ok,                             # the model button's NWPS choice (plan section 59; G41 K-7)
-        "gfsb_available": gfsb_ok,                             # the "GFS (NOAA split)" choice (plan section 77)
+        "gfsb_available": gfsb_ok,                             # the "GFS (Bulletin)" choice (plan section 77)
         "summary_html": None,                                  # the window's Summary view (plan section 35)
     }
     if not station:
@@ -4650,7 +4650,7 @@ def index():
     swan_now = swan_offered_set()                               # the SWAN choices, judged once for the page (section 64)
     swan_available = selected_station in swan_now               # the model button's SWAN choice
     nwps_available = nwps_offered(selected_station)             # the model button's NWPS choice (plan section 59)
-    gfsb_available = gfsb_offered(selected_station)             # the "GFS (NOAA split)" choice (plan section 77)
+    gfsb_available = gfsb_offered(selected_station)             # the "GFS (Bulletin)" choice (plan section 77)
     selected_model = resolve_model(selected_station, selected_model, nwps_available, swan_available)   # judged once
 
     # If an active override (?tz=) isn't one of the curated majors, keep it in the
@@ -4705,7 +4705,7 @@ def index():
         "model": selected_model, "view": "Graph" if selected_view == "Graph" else "Table",
         "swan_available": swan_available, "swan_stations": sorted(swan_list),
         "nwps_available": nwps_available, "nwps_stations": sorted(nwps_list),
-        "gfsb_on": GFS_SPECTRAL, "gfsb_available": gfsb_available,   # the "GFS (NOAA split)" choice (plan section 77)
+        "gfsb_on": GFS_SPECTRAL, "gfsb_available": gfsb_available,   # the "GFS (Bulletin)" choice (plan section 77)
         "inline": bool(payload),
     }
     if payload:                                                # render=full: the window shows this without a fetch

@@ -1375,12 +1375,12 @@ test('NWPS: the model bar shows GFS with the station\'s other model only; a clic
 });
 
 
-// ---- the GFS spectral table (plan section 77): NOAA's split as the "GFS (NOAA split)" button ----
+// ---- the GFS spectral table (plan section 77): NOAA's split as the "GFS (Bulletin)" button ----
 test('GFSB: modelOf, the loader asks it only where the page says the spectral split is the GFS table (never for a point), the header names it', async () => {
   const F = load(fakeWindow()), I = F._internals;
   assert.deepEqual(['GFSB', 'gfsb', ' Gfsb ', 'GFS', 'x'].map(I.modelOf), ['GFSB', 'GFSB', 'GFSB', 'GFS', 'GFS']);
   assert.equal(I.resolveInitialState('?station=51201&model=gfsb', {}, {}).model, 'GFSB');
-  assert.equal(I.shortCycle('GFSB', { cycle: '20261101 12 UTC' }), 'GFS (NOAA split) · run 20261101 12 UTC');
+  assert.equal(I.shortCycle('GFSB', { cycle: '20261101 12 UTC' }), 'GFS (Bulletin) · run 20261101 12 UTC');
   assert.equal(I.shortCycle('GFS', { cycle: '20261101 12 UTC' }), 'GFS · run 20261101 12 UTC', 'the default table keeps its name');
   const fs_ = fetchStub(), u = ui(), urls = [];
   const st = { station: '51201', tz: '', unit: 'US', model: 'GFSB', view: 'Table' };
@@ -1428,7 +1428,7 @@ test('GFSB: the bar shows the button where the answer offers it, a click asks fo
   assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'GFSB');
   b.fs_.last().release(payload({ station: '51201', model: 'GFSB', swan_available: true, nwps_available: false, gfsb_available: true, split: 'noaa', graph_header: { cycle: '20261101 12 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' } })); await settle();
   assert.equal(btn('GFSB').getAttribute('aria-pressed'), 'true'); assert.equal(btn('GFS').getAttribute('aria-pressed'), 'false');
-  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS (NOAA split) · run 20261101 12 UTC');
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS (Bulletin) · run 20261101 12 UTC');
   assert.equal(old.hidden, true, "NOAA's split asked for: no note");
   b.app.loader.load({ station: '41113' }); await settle();                      // (51201's GFS answer is in the page cache)
   b.fs_.last().release(payload({ station: '41113', model: 'GFS', swan_available: false, nwps_available: false, gfsb_available: true, split: 'spectral' })); await settle();

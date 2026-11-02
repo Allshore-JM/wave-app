@@ -383,6 +383,12 @@ def test_a_station_the_run_lacks_and_a_site_with_no_run(world):
     assert split == "noaa" and note == "Swell split: NOAA's" and data[-1] is None   # nothing is on its way (G48 A P3-5)
     out = A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)
     assert out["split"] == "noaa" and out["gfsb_available"] is True
+    b.put_run(RUN_B, {"51201": station_rows(RUN_B)}); b.point(RUN_B)   # run B lands without 41113 (left out of it)
+    A._gspec_refresh(A._gspec_root())
+    site["run"] = (RUN_B[:8], RUN_B[8:])
+    data, split, note = A.parse_gfs_spectral("41113", None)             # held in A only: the lag rule would say "shortly"
+    assert split == "noaa" and note == "Swell split: NOAA's", "the newest held run is the site's and lacks it: nothing is on its way"
+    assert A.parse_gfs_spectral("51201", None)[1] == "spectral"
     site["run"] = (None, None)                                          # no bulletin run found: ours still serves
     data, split, note = A.parse_gfs_spectral("51201", None)
     assert split == "spectral" and data[-1] is None
@@ -554,3 +560,20 @@ def test_rank_rows_reorders_parts_stored_out_of_power_order(world):
     assert dec[0][1][0][0] == 0.6 and dec[0][1][1][0] == 1.5, "stored out of power order"
     rows = A.parse_gfs_spectral("51201", None)[0][3]
     assert rows[0][2] == round(1.5 * 3.28084, 2) and rows[0][5] == round(0.6 * 3.28084, 2), "ranked on the way out"
+
+
+def test_the_button_needs_a_frames_root_and_the_exception_answer_carries_it(world, monkeypatch):
+    """GFS_SPECTRAL=1 with no bucket configured offers nothing (G48 A P3-5 b); /api/forecast's exception answer carries
+    gfsb_available like the other two flags, so a network failure never hides the button (A P3-4)."""
+    b, *_ = world
+    assert A.gfsb_offered("51201") is True
+    monkeypatch.delenv("MODEL_FRAMES_BASE")
+    assert A.gfsb_offered("51201") is False and A.resolve_model("51201", "GFSB") == "GFS"
+    assert A.compute_forecast_payload("51201", None, "US", "GFSB", compact=True)["gfsb_available"] is False
+    monkeypatch.setenv("MODEL_FRAMES_BASE", BASE)
+    monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: 1 / 0)
+    with A.app.test_client() as c:
+        out = c.get("/api/forecast?station=51201&compact=1").get_json()
+        assert out["error"] and out["gfsb_available"] is True and out["swan_available"] is True and out["model"] == "GFS"
+        out = c.get("/api/forecast?station=45007&compact=1").get_json()
+        assert out["error"] and out["gfsb_available"] is False and out["model"] == "GLWU"

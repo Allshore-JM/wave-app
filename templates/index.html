@@ -683,11 +683,6 @@
       .fw-titles:has(.fw-old:not([hidden])) .station-field { flex-shrink: 1000000; }
       .fw-titles:has(.fw-old:not([hidden])) .fw-cycle { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     }
-    /* phones: the station name first, the note gives way (whole in the tooltip and on the meta line under the toolbar;
-       section 77c's "18 UTC run spectral analysis in progress" is longer than the bar) */
-    @media (max-width: 500px), (max-height: 500px) {
-      .fw-titles .fw-old { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    }
     /* a label "name — coordinates": the name is cut when room runs out, never the coordinates (G22 B-4) */
     .lbl-split { display: flex; min-width: 0; }
     .lbl-split .lbl-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -939,6 +934,9 @@
          full-screen header show the name alone */
       .station-trigger .sr-star { display: none; }
       .fw-pair.on { display: inline-flex; }
+      /* the station name first, the split note gives way (whole in the tooltip and on the meta line: section 77c's
+         "18 UTC run spectral analysis in progress" is longer than the bar) */
+      .fw-titles .fw-old { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     }
 
     /* Favorites station picker (progressive enhancement; native <select> is the no-JS fallback) */

@@ -1605,6 +1605,8 @@ test('G48: the bar follows the answer\'s gfsb_available (not the page\'s flag) a
   assert.equal(I.ttlOf({ split: 'noaa' }), I.ttlOf({ split: 'spectral' }), 'the GFSB table (NOAA\'s split asked for, no note): the usual 10 minutes');
   assert.equal(I.ttlOf({ split: 'noaa', split_note: "Swell split: NOAA's" }), 60 * 1000, 'a substituted split: a minute');
   assert.ok(I.ttlOf({ split: 'noaa' }) > 60 * 1000);
+  assert.equal(I.ttlOf({ split: 'spectral', split_note: '12 UTC run spectral analysis in progress' }), 60 * 1000, "the prior run's table while the new run's analysis runs: a minute (§77c)");
+  assert.ok(I.ttlOf({ split: 'spectral', split_note: '' }) > 60 * 1000, 'ours with no note: the usual time');
   // an answer at a listed station whose gfsb_available is false hides the button; a failed load at the same station keeps it hidden
   const b = boot({ initial: { station: '46001', swan_available: false, nwps_available: true, swan_stations: [], nwps_stations: ['46001'], gfsb_on: true, gfsb_available: true } });
   const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);

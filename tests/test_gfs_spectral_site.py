@@ -6,6 +6,7 @@ the GFS table when its run is the site's run or newer; NOAA's own split of the s
 The table is built here with the job's own encoder (tools/model_frames/gfs_spectral.py), so the reader is tested
 against the real format. The bucket is a fake; the bulletin is the repo's real fixture; nothing reaches the network.
 """
+import calendar
 import hashlib
 import json
 import os
@@ -190,10 +191,12 @@ def test_the_refresh_holds_the_pointers_run_and_two_runs_at_most(world):
     b.put_run(RUN_C, {"51201": station_rows(RUN_C)}); b.point(RUN_C)
     A._gspec_refresh(A._gspec_root())
     assert A._gspec_health()["held"] == [RUN_B, RUN_C], "the oldest let go"
-    b.point(RUN_A)                                           # a pointer that went back: fetched, never kept over the newer two
+    b.point(RUN_A)                                           # a pointer that went back: not fetched (it could never be kept)
+    n = len(b.asked)
     A._gspec_refresh(A._gspec_root())
     assert A._gspec_health()["held"] == [RUN_B, RUN_C] and A._gspec_health()["pointer_run"] == RUN_A
-    assert A._gspec_health()["fetched"] == 4 and A._gspec_health()["last_error"] is None
+    assert A._gspec_health()["fetched"] == 3 and A._gspec_health()["last_error"] is None
+    assert b.asked[n:] == ["gfswave/spectral/v1/latest.json"], "the body of a run behind the held ones is never asked (G48 A P3-2)"
 
 
 def test_a_damaged_or_missing_table_is_refused_and_remembered(world):
@@ -377,7 +380,7 @@ def test_a_station_the_run_lacks_and_a_site_with_no_run(world):
     b, site, fetched, _, _ = world
     A._gspec_refresh(A._gspec_root())
     data, split, note = A.parse_gfs_spectral("46001", None)              # listed, not in the table
-    assert split == "noaa" and note == "Swell split: NOAA's (ours arrives shortly)" and data[-1] is None
+    assert split == "noaa" and note == "Swell split: NOAA's" and data[-1] is None   # nothing is on its way (G48 A P3-5)
     out = A.compute_forecast_payload("46001", None, "US", "GFS", compact=True)
     assert out["split"] == "noaa" and out["gfsb_available"] is True
     site["run"] = (None, None)                                          # no bulletin run found: ours still serves
@@ -434,3 +437,120 @@ def test_a_slow_bucket_never_holds_a_request(world, monkeypatch):
     monkeypatch.setattr(A, "_capped_get", hang)
     out = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
     assert out["split"] == "noaa" and out["error"] is None
+
+
+# ------------------------------------------------------------------------------------- G48 (reviewer A's test gaps)
+
+def test_a_new_site_run_is_served_at_once_and_the_note_follows_the_failing_clock(world, monkeypatch):
+    """NOAA's split served meanwhile is the NEW run's: parse_bull's run-less entry is dropped when the site's run moves
+    (G48 A P3-1); the fallback's own key carries (S, R) and lives a minute, so the note is judged again within a minute
+    of the failing clock passing half an hour (P3-6: the 60-s life and the key's (S, R) pinned by behaviour)."""
+    b, site, fetched, _, clock = world
+
+    def bull(d, r, s):                                     # the bulletin of the run asked for (its own Cycle line)
+        fetched.append((d, r, s))
+        return BULL.replace("51201", s).replace("Cycle    : 20261001 12 UTC", f"Cycle    : {d} {r} UTC"), None
+    monkeypatch.setattr(A, "_fetch_bulletin", bull)
+    data, split, note = A.parse_gfs_spectral("51201", None)          # nothing held yet: NOAA's split of run A
+    assert split == "noaa" and note == "Swell split: NOAA's (ours arrives shortly)"
+    assert data[0] == "Cycle    : 20261001 12 UTC" and fetched == [(RUN_A[:8], RUN_A[8:], "51201")]
+    clock.t += 5
+    site["run"] = (RUN_B[:8], RUN_B[8:])                               # the site moved on within the minute
+    out = A.compute_forecast_payload("51201", None, "US", "GFSB", compact=True)   # the button first: NOAA's split of the NEW run
+    assert out["graph_header"]["cycle"] == "20261001 18 UTC" and fetched[-1] == (RUN_B[:8], RUN_B[8:], "51201") and len(fetched) == 2,         "the run-less entry was dropped for the button's table too"
+    data, split, note = A.parse_gfs_spectral("51201", None)
+    assert data[0] == "Cycle    : 20261001 18 UTC" and len(fetched) == 2, "NOAA's split of the NEW run meanwhile, from the same entry"
+    clock.t += 30
+    assert A.parse_gfs_spectral("51201", None)[0][0] == "Cycle    : 20261001 18 UTC" and len(fetched) == 2, "within the minute the fallback entry serves"
+    # the note follows the failing clock within a minute: nothing held, the reads failing
+    del b.objects["gfswave/spectral/v1/latest.json"]
+    A._gspec_refresh(A._gspec_root())                                 # failing since now
+    t0 = clock.t
+    clock.t = t0 + A._GSPEC_FAILING_SHORTLY_S - 1
+    assert A.parse_gfs_spectral("51201", None)[2] == "Swell split: NOAA's (ours arrives shortly)"
+    clock.t = t0 + A._GSPEC_FAILING_SHORTLY_S + A._GSPEC_FALLBACK_TTL + 1
+    assert A.parse_gfs_spectral("51201", None)[2] == "Swell split: NOAA's", "judged again within a minute of the half hour"
+    assert len(fetched) == 3 and fetched[-1][:2] == (RUN_B[:8], RUN_B[8:]), "parse_bull's own 30-min entry expired meanwhile: the same run asked for once more"
+
+
+def test_one_station_in_two_zones_differs_under_the_spectral_key(world):
+    """The spectral key carries the zone: one station asked in two zones gives two tables (G48 A spectral_key_no_tz)."""
+    b, site, *_ = world
+    A._gspec_refresh(A._gspec_root())
+    hst, utc = A.parse_gfs_spectral("51201", "Pacific/Honolulu")[0], A.parse_gfs_spectral("51201", "UTC")[0]
+    assert hst[4] == "Pacific/Honolulu" and utc[4] == "UTC"
+    assert hst[3][0][1] != utc[3][0][1] and hst[3][0][2:] == utc[3][0][2:], "the same hour, its own clock in each zone"
+    assert A.compute_forecast_payload("51201", "UTC", "US", "GFS", compact=True)["tz_label"] == "UTC"
+    assert A.compute_forecast_payload("51201", "Pacific/Honolulu", "US", "GFS", compact=True)["tz_label"] == "Pacific/Honolulu"
+
+
+def test_the_flag_off_holds_the_scheduler_read_even_when_due(world, monkeypatch):
+    """With the flag off the scheduler reads nothing whatever the pointer's age (G48 A flag_ignored_root: the flag, not
+    the pointer TTL, is what holds the read)."""
+    b, *_ = world
+    monkeypatch.setattr(A, "GFS_SPECTRAL", False)
+    with A._GSPEC_LOCK:
+        A._GSPEC.update(ptr_ts=0.0, failed=0.0)                        # due by every clock
+    assert A._gspec_due(A.time.time()) is True and A._gspec_root() == ""
+    n = len(b.asked)
+    assert A._gspec_tick() is False and b.asked[n:] == []
+    monkeypatch.setattr(A, "GFS_SPECTRAL", True)
+    assert A._gspec_tick() is True
+    A._GSPEC["thread"].join(5)
+    assert b.asked[n:n + 1] == ["gfswave/spectral/v1/latest.json"] and A._gspec_health()["held"] == [RUN_A]
+
+
+def test_a_stale_nwps_or_swan_table_falls_to_our_split(world, monkeypatch):
+    """An NWPS or SWAN table past its 72-h hide line falls to the GFS table of the day, our split with its keys, not
+    the bare bulletin (G48 A nwps_stale_to_bull / swan_stale_to_bull)."""
+    b, site, fetched, _, _ = world
+    A._gspec_refresh(A._gspec_root())
+    rows = [["d", "t"] + [None] * 21]
+    monkeypatch.setitem(A.NWPS_STATIONS, "51201", dict(A.NWPS_STATIONS["41004"], office="hfo"))
+    monkeypatch.setattr(A, "nwps_offered", lambda s: s == "51201")
+    monkeypatch.setattr(A, "parse_nwps", lambda s, tz: ("Cycle : NOAA NWPS 20260901 00 UTC (NWS HFO)", "Location : 51201", None, rows, "Pacific/Honolulu", None))
+    out = A.compute_forecast_payload("51201", None, "US", "NWPS", compact=True)     # the office's run is 30 days old
+    assert out["model"] == "GFS" and out["nwps_available"] is False and out["split"] == "spectral"
+    assert out["graph_header"]["cycle"] == f"{RUN_A[:8]} {RUN_A[8:]} UTC" and fetched == []
+    monkeypatch.setattr(A, "_swan_now", lambda: calendar.timegm((2026, 10, 1, 18, 0, 0)))
+    monkeypatch.setattr(A, "swan_offered", lambda s: s == "51201")
+    monkeypatch.setattr(A, "parse_swan", lambda s, tz: ("Cycle : PacIOOS SWAN updated 20260901 00 UTC", "Location : 51201", None, rows, "Pacific/Honolulu", None))
+    out = A.compute_forecast_payload("51201", None, "US", "SWAN", compact=True)
+    assert out["model"] == "GFS" and out["swan_available"] is False and out["split"] == "spectral" and fetched == []
+
+
+def test_an_old_runs_blank_early_wind_is_final_at_the_payload_level(world, monkeypatch):
+    """C4 at the payload level: a run 48 h or older with blank early wind cells answers wind_complete True for our
+    split and for NOAA's (G48 A wind_complete_no_gfs, P3-3); a young run answers False."""
+    b, site, fetched, winds, clock = world
+    A._gspec_refresh(A._gspec_root())
+    base = datetime.strptime(RUN_A, "%Y%m%d%H")
+    monkeypatch.setattr(A, "get_station_wind", lambda sid, d=None, r=None, keep_s=None: {base + timedelta(hours=h): (5.0, 45.0) for h in range(6, 385)})
+    monkeypatch.setattr(A, "_nwps_utcnow", lambda: base + timedelta(hours=49))
+    out = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
+    assert out["split"] == "spectral" and out["wind_complete"] is True
+    outb = A.compute_forecast_payload("51201", None, "US", "GFSB", compact=True)
+    assert outb["model"] == "GFSB" and outb["wind_complete"] is True
+    monkeypatch.setattr(A, "_nwps_utcnow", lambda: base + timedelta(hours=10))
+    with A._CACHE_LOCK:
+        A._FORECAST_CACHE.clear()
+    assert A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)["wind_complete"] is False
+    assert A.compute_forecast_payload("51201", None, "US", "GFSB", compact=True)["wind_complete"] is False
+
+
+def test_rank_rows_reorders_parts_stored_out_of_power_order(world):
+    """The site ranks every hour's parts itself (Hs^2 x Tp): a record whose parts are stored out of order still shows
+    the most powerful first (G48 A rows_unranked: the job's encoder stores them in order, so this is the safety net)."""
+    b, site, *_ = world
+    idx, body = b.put_run(RUN_A, {"51201": station_rows(RUN_A)})
+    body = bytearray(body)
+    body[4:10], body[10:16] = body[10:16], body[4:10]                  # step 0: part 0 (1.5 m) <-> part 1 (0.6 m)
+    doc = json.loads(idx)
+    doc["sha256"] = hashlib.sha256(body).hexdigest()
+    b.objects[f"gfswave/spectral/v1/{RUN_A}/index.json"] = json.dumps(doc).encode()
+    b.objects[f"gfswave/spectral/v1/{RUN_A}/spectral.bin"] = bytes(body)
+    A._gspec_refresh(A._gspec_root())
+    dec = A._gspec_decode(A._gspec_held_for("51201")[1])
+    assert dec[0][1][0][0] == 0.6 and dec[0][1][1][0] == 1.5, "stored out of power order"
+    rows = A.parse_gfs_spectral("51201", None)[0][3]
+    assert rows[0][2] == round(1.5 * 3.28084, 2) and rows[0][5] == round(0.6 * 3.28084, 2), "ranked on the way out"

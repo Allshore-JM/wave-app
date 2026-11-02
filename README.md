@@ -935,7 +935,10 @@ the model button **GFS | GFS (NOAA split)** (model `GFSB`; shown at every listed
 or a lake station), the header then "GFS (NOAA split) · run …". A spectral run 48 h or older has early hours older than
 every winds run kept, so its blank wind cells are final. The combined height is the spectrum's own (NOAA's to 0.03 ft);
 the table shows the six most powerful parts of 5 cm or more (a seventh goes). `/healthz` reports `gfs.spectral` (the
-pointer's run, the runs held, the last error, answers served from each split; never part of `ok`).
+pointer's run, the runs held, the last error, answers served from each split; never part of `ok`). With the flag unset
+every station answer still gains one key, `gfsb_available: false` (the tables are byte-identical otherwise), and the
+48-hour wind rule now reaches the bulletin path too: an old GFS run's blank early wind cells are final there as well
+(G48 A P4-1).
 
 ### PacIOOS SWAN tables: the Pacific islands and the freshness rule (plan section 64)
 

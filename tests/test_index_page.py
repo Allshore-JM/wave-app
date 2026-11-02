@@ -1288,6 +1288,7 @@ def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
     assert st0["model"] == "GFS" and st0["gfsb_on"] is False and st0["gfsb_available"] is False
     assert re.search(r'data-model="GFSB" aria-pressed="false" hidden', b0) and '<option value="GFSB"' not in b0
     monkeypatch.setattr(A, "GFS_SPECTRAL", True)
+    monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.test/gfswave/0p25/v1")   # the button needs a frames root (G48 A P3-5)
     monkeypatch.setitem(A._GSPEC, "listed", None)
     b = client.get("/?station=51201&model=GFSB").get_data(as_text=True)
     st = initial(b)
@@ -1305,6 +1306,35 @@ def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
     assert initial(b4)["model"] == "GLWU" and initial(b4)["gfsb_available"] is False
     b5 = client.get("/?station=NW-HFO51&model=GFSB").get_data(as_text=True)                    # not listed: not covered
     assert initial(b5)["model"] == "GFS" and initial(b5)["gfsb_available"] is False
+    # a plain GFS station (no SWAN, no NWPS): the bar exists for the new button alone (G48 A tpl_bar_hidden_rule)
+    assert "51001" not in A.SWAN_STATIONS and "51001" not in A.NWPS_STATIONS          # (the fixture's stations: 51201 SWAN, 46001 NWPS)
+    b6 = client.get("/?station=51001").get_data(as_text=True)
+    assert not re.search(r'id="modelBar" hidden', b6) and initial(b6)["gfsb_available"] is True
+    assert re.search(r'data-model="GFSB" aria-pressed="false" title="[^"]*">GFS \(NOAA split\)</button>', b6)
+    assert re.search(r'data-model="SWAN" aria-pressed="false" hidden', b6) and re.search(r'data-model="NWPS" aria-pressed="false" hidden', b6)
+    monkeypatch.setattr(A, "GFS_SPECTRAL", False)
+    b7 = client.get("/?station=51001").get_data(as_text=True)
+    assert re.search(r'id="modelBar" hidden', b7) and re.search(r'data-model="GFSB" aria-pressed="false" hidden', b7)
+
+
+def test_section_77_render_full_carries_the_split_note_and_the_state_keys(client, monkeypatch):
+    """render=full with NOAA's split served meanwhile: the meta line carries the note and the state the split keys, so
+    the no-script page is labelled and the page's seed knows (G48 A note_not_on_page / state_without_split, B P2-2)."""
+    monkeypatch.setattr(A, "GFS_SPECTRAL", True)
+    monkeypatch.setenv("MODEL_FRAMES_BASE", "https://models.example.test/gfswave/0p25/v1")
+    monkeypatch.setitem(A._GSPEC, "listed", None)
+    note = "Swell split: NOAA's (ours arrives shortly)"
+    monkeypatch.setattr(A, "compute_forecast_payload",
+                        lambda *a, **k: dict(G.PAYLOAD, model="GFS", gfsb_available=True, split="noaa", split_note=note))
+    body = client.get("/?station=51001&render=full").get_data(as_text=True)
+    st = initial(body)
+    assert st["inline"] is True and st["split"] == "noaa" and st["split_note"] == note and st["gfsb_available"] is True
+    assert re.search(r'<strong>Cycle : </strong>20260922 12 UTC · Swell split: NOAA&#39;s \(ours arrives shortly\) &nbsp;', body), "the meta line"
+    assert body.count("ours arrives shortly") == 2, "the meta line and the state, nowhere else"
+    monkeypatch.setattr(A, "compute_forecast_payload", lambda *a, **k: dict(G.PAYLOAD, model="GFS", gfsb_available=True, split="spectral"))
+    body = client.get("/?station=51001&render=full").get_data(as_text=True)
+    st = initial(body)
+    assert st["split"] == "spectral" and "split_note" not in st and "Swell split" not in body
 
 
 def test_section_59_g41_fixes_on_the_page(client, monkeypatch):

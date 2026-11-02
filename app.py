@@ -441,7 +441,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.28.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.28.2"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -3231,7 +3231,7 @@ def _gspec_listed() -> frozenset:
 def gfsb_offered(station_id) -> bool:
     """The model button offers "GFS (NOAA split)" here: the spectral table is on and this is a listed GFS station (a
     Great Lakes station is GLWU's, a forecast point has no spectra)."""
-    return GFS_SPECTRAL and isinstance(station_id, str) and not point_forecast.is_point_id(station_id) \
+    return bool(GFS_SPECTRAL and _gspec_root()) and isinstance(station_id, str) and not point_forecast.is_point_id(station_id) \
         and station_id not in GLWU_STATIONS and station_id in _gspec_listed()
 
 
@@ -3299,13 +3299,17 @@ def _gspec_refresh(root):
         run = _gspec_read_pointer(root)
         with _GSPEC_LOCK:
             held = run in _GSPEC["runs"]
+            behind = len(_GSPEC["runs"]) >= _GSPEC_HELD and run < min(_GSPEC["runs"])
             _GSPEC["ptr_run"] = run
-        if not held:
+        if not held and behind:                  # a pointer that went back: _gspec_hold would drop it at once (G48 A P3-2)
+            logger.info("GFS spectral: pointer run %s is behind the held runs: not fetched", run)
+        elif not held:
             table = _gspec_fetch(root, run)
-            _gspec_hold(run, table)
+            kept = _gspec_hold(run, table)
             with _GSPEC_LOCK:
                 _GSPEC["fetched"] += 1
-            logger.info("GFS spectral: run %s held (%d stations, %d B)", run, len(table["stations"]), len(table["body"]))
+            logger.info("GFS spectral: run %s %s (%d stations, %d B)", run, "held" if kept else "not kept",
+                        len(table["stations"]), len(table["body"]))
         with _GSPEC_LOCK:
             _GSPEC["ptr_ts"], _GSPEC["error"], _GSPEC["failing_since"] = time.time(), None, 0.0
         return True
@@ -3412,10 +3416,13 @@ def _gfs_wind_final(cycle_str) -> bool:
 def _gspec_split_note(spectral_run, site_run) -> str:
     """The note on a table served with NOAA's split: "(ours arrives shortly)" while the job is at most one cycle behind
     the site (or nothing is held yet and the reads have not been failing long), else plain."""
+    with _GSPEC_LOCK:
+        since = _GSPEC["failing_since"]
+        newest = max(_GSPEC["runs"]) if _GSPEC["runs"] else None
+    if newest is not None and site_run is not None and newest >= site_run and (spectral_run is None or spectral_run < newest):
+        return "Swell split: NOAA's"             # the newest held run lacks this station: nothing is on its way (G48 A P3-5)
     if spectral_run is None:
-        with _GSPEC_LOCK:
-            since = _GSPEC["failing_since"]
-        shortly = not since or time.time() - since < _GSPEC_FAILING_SHORTLY_S
+        shortly = newest is None and (not since or time.time() - since < _GSPEC_FAILING_SHORTLY_S)
     else:
         try:
             lag_h = (datetime.strptime(site_run, "%Y%m%d%H") - datetime.strptime(spectral_run, "%Y%m%d%H")).total_seconds() / 3600
@@ -3465,6 +3472,21 @@ def _parse_gfs_spectral_uncached(station_id: str, target_tz_name: str | None, ru
     return cycle_str, location_str, None, rank_rows(rows), effective_tz_name, None
 
 
+def _drop_old_bull(station_id, tz, site_run):
+    """parse_bull's own entry (sid, tz, "GFS") carries no run and lives 30 min: when its cycle run is behind the site's,
+    drop it, so NOAA's split served meanwhile (and by the button) is the NEW run's (owner decision 2; G48 A P3-1)."""
+    key = (station_id, tz or "", "GFS")
+    with _CACHE_LOCK:
+        entry = _FORECAST_CACHE.get(key)
+        if not entry or not site_run:
+            return False
+        m = _GFS_CYCLE_RE.match((entry["data"][0] or "").strip()) if isinstance(entry["data"][0], str) else None
+        if m and m.group(1) + m.group(2) < site_run:
+            del _FORECAST_CACHE[key]
+            return True
+    return False
+
+
 def parse_gfs_spectral(station_id: str, target_tz_name: str | None = None):
     """The GFS table with the flag on: (the parse_bull() 6-tuple, split, note). Our split of the newest held spectral
     run S when S >= the site's run R (or the site has no run); else NOAA's split of R through parse_bull's own cache,
@@ -3485,6 +3507,9 @@ def parse_gfs_spectral(station_id: str, target_tz_name: str | None = None):
         logger.warning("GFS spectral: %s of %s not served (%s); NOAA's split instead", station_id, spectral_run, data[-1])
     if site_run is None:
         return parse_bull(station_id, target_tz_name), "noaa", None    # "No recent run found." from the bulletin path
+    _drop_old_bull(station_id, tz, site_run)
+    # The fallback's OWN key: never parse_bull's (sid, tz, "GFS"), whose build this build calls under the key's lock
+    # (the same key would deadlock every GFS request thread; G48 A P4-3).
     key = (station_id, tz, "GFSN", spectral_run or "", site_run)
     data = _forecast_singleflight(key, lambda: parse_bull(station_id, target_tz_name), ttl=_GSPEC_FALLBACK_TTL)
     with _GSPEC_LOCK:
@@ -4436,6 +4461,9 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         if model == "GFS":
             cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = gfs_table()
         else:
+            if model == "GFSB":                        # NOAA's split of the run the site is on (G48 A P3-1)
+                d_, r_ = get_latest_run()
+                _drop_old_bull(station, tz, (d_ + r_) if d_ and r_ else None)
             parser = {"SWAN": parse_swan, "GLWU": parse_glwu, "NWPS": parse_nwps, "GFSB": parse_bull}[model]
             cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error = parser(
                 station, tz or None
@@ -4471,7 +4499,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     week = _swell_groups(rows, days=7) or present
     # every row has wind (a transient NOAA miss leaves gaps: the page keeps such a forecast for a minute only); a Great
     # Lakes run's winds are fixed with the run (a gap never heals by asking again: 45195 on Lake Champlain has none)
-    out["wind_complete"] = (model == "GLWU" or (model in ("NWPS", "SWAN", "GFS") and _old_run_wind_final(cycle_str))
+    out["wind_complete"] = (model == "GLWU" or (model in ("NWPS", "SWAN", "GFS", "GFSB") and _old_run_wind_final(cycle_str))
                             or all(len(r) > 21 and r[20] is not None for r in rows))
 
     # single map marker if coords JSON has it
@@ -4592,7 +4620,7 @@ def api_forecast():
             "table_html": None, "tz_label": "", "lat": None, "lon": None,
             "graph_data": None, "graph_header": None,
             "model": resolve_model(station, model, nwps_ok, swan_ok), "swan_available": swan_ok,
-            "nwps_available": nwps_ok, "summary_html": None,
+            "nwps_available": nwps_ok, "gfsb_available": gfsb_offered(station), "summary_html": None,
         })
 
 

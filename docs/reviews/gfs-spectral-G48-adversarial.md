@@ -57,3 +57,36 @@ Built as planned, with these deviations from the plan text (measured, better):
   suite's old pin ("a GFS table: unchanged") now asserts the final state at 49 h and the retry at 10 h.
 - The page caches an answer carrying NOAA's split with a note for 60 s only (the server re-judges the run comparison
   every minute), so ours shows within a minute of landing.
+
+## Step 3: the job-only merge (2026-11-02 02:43 UTC)
+
+Tag `prod-pre-spectral-job` @ 93cd22f; production fast-forwarded to 06cee72 (`job/gfsspec`: 23 job / test / workflow / doc
+files, no site file). Render restarted; the three page probes byte-identical to the pre-merge capture; model-frames-tests
+green; the trigger Worker's 02:56 tick dispatched all seven workflows, including the first model-gfsspec run (success, ~6 min).
+First publish 03:02:15 UTC, run 2026110118: 723 stations, 0 left out, nproc 4, build 349.8 s, 11,134,200 B; the bucket's
+spectral.bin byte-identical to a local build of the same run with the production code (sha 17f7be7e...), the station map
+and ten sampled records identical; the index / binary immutable with CORS for the site; the winds product untouched.
+
+## Step 5: the test site with GFS_SPECTRAL=1 (2026-11-02 03:06-03:35 UTC)
+
+`test` @ 5ce07a3 (the site commits + the five job modules the site tests import); GFS_SPECTRAL=1 on the test service from
+03:23 UTC, run 2026110118 held 30 s after the start. Scratch spec77/v5.
+
+- 65 answers production vs test on the same run: the 19 SWAN / GLWU / point / removed answers differ only by the new key
+  `gfsb_available` (true at 51201's SWAN answer, a GFS station; false at points and GLWU); the 46 GFS answers differ in the
+  swell columns (table_html, graph_data, summary_html), `split` "spectral", `gfsb_available` true; three also in
+  graph_header.location (the spectral Location line "31052 (8.15S 34.57W)" against the bulletin's padded "31052      ( 8.15S
+  34.57W)"; the page collapses the spaces). Test's 48 GFSB answers equal production's GFS answers exactly (the new keys
+  aside); GFSB at a Great Lakes station answers GLWU, at a point GFS.
+- Independent rows check (rows_check2.py: the bucket's spectral.bin decoded with the job's own decoder, feet, FROM, ranked by
+  Hs^2 x Tp, six at most, against graph_data per hour): 35 answers (30 compact + 5 UTC) x 385 hours, 0 mismatches in any
+  swell height / period / direction or the combined height; the Wind columns equal the GFSB answer's cell for cell; the
+  combined height within 0.04 ft of NOAA's Hst everywhere; the 5 Metric answers equal the feet answers converted (0.002 m).
+- Browser (headless Chrome 155, own profile, trusted clicks / taps; desktop 1280x800 + phone 375x812): 51201 default = the
+  spectral rows, the bar "GFS* | GFS (NOAA split) | SWAN", one request; the button -> "GFS (NOAA split) · run ...",
+  ?model=GFSB in the address, one request, NOAA's rows; SWAN and back; 46026 "GFS* | GFS (NOAA split) | NWPS"; a point and
+  45007 (GLWU) show no bar; the links ?station=51201&model=GFSB and ?station=46001&model=GFSB open NOAA's split with one
+  request (the head's query = the loader's); render=full GFSB 385 rows; no sideways scroll on the phone; console clean.
+- /healthz gfs.spectral: enabled, pointer 2026110118, held [2026110118], 723 stations, no error.
+- Pending at the time of writing: the 00Z run switch (the lag window: NOAA's split with "ours arrives shortly", then ours
+  within 60 s of the publish) and the second published run against a local build; recorded below when seen.

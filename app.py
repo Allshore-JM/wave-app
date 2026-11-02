@@ -3203,7 +3203,14 @@ _GSPEC_FAILING_SHORTLY_S = 30 * 60             # ... or nothing is held and the 
 _GSPEC_FALLBACK_TTL = 60                       # NOAA's split served meanwhile: the run comparison is made again after this
 _GSPEC_WIND_HEAL_H = 48                        # a spectral run older than this: its early hours precede every winds run kept
 _GSPEC_RUN_RE = re.compile(r"^\d{10}$")
-_GFS_CYCLE_RE = re.compile(r"^Cycle\s*:\s*(\d{8}) (\d{2}) UTC$")   # the bulletin's own cycle line, and the spectral table's
+_GFS_CYCLE_RE = re.compile(r"^Cycle\s*:\s*(\d{8})\s+(\d{1,2}) UTC$")  # the bulletin's own cycle line (the hour as %2d:
+                                                                      # "20261102  0 UTC" at 00Z / 06Z), and the spectral table's
+
+
+def _gfs_cycle_run(cycle_str):
+    """The run of a GFS cycle line (either spelling) as YYYYMMDDHH, else None."""
+    m = _GFS_CYCLE_RE.match(cycle_str.strip()) if isinstance(cycle_str, str) else None
+    return m.group(1) + m.group(2).zfill(2) if m else None
 _GSPEC_LOCK = threading.Lock()
 _GSPEC = {"runs": OrderedDict(),               # run -> {"stations": {sid: slot}, "body": bytes, "index": dict, "held": ts}
           "ptr_run": None, "ptr_ts": 0.0,      # the pointer's run and when it was last read successfully
@@ -3408,8 +3415,8 @@ def gspec_rows(dec, run_dt, local_tz, wind):
 def _gfs_wind_final(cycle_str) -> bool:
     """A GFS table (the spectral one, or the bulletin's) whose run is _GSPEC_WIND_HEAL_H or more old: its early hours
     precede every GFS winds run kept (8 x 6 h), so a wind gap there never heals by asking again."""
-    m = _GFS_CYCLE_RE.match(cycle_str.strip()) if isinstance(cycle_str, str) else None
-    age = _nwps_run_age_h(m.group(1) + m.group(2)) if m else None
+    run = _gfs_cycle_run(cycle_str)
+    age = _nwps_run_age_h(run) if run else None
     return age is not None and age >= _GSPEC_WIND_HEAL_H
 
 
@@ -3480,8 +3487,8 @@ def _drop_old_bull(station_id, tz, site_run):
         entry = _FORECAST_CACHE.get(key)
         if not entry or not site_run:
             return False
-        m = _GFS_CYCLE_RE.match((entry["data"][0] or "").strip()) if isinstance(entry["data"][0], str) else None
-        if m and m.group(1) + m.group(2) < site_run:
+        run = _gfs_cycle_run(entry["data"][0] or "")
+        if run and run < site_run:
             del _FORECAST_CACHE[key]
             return True
     return False

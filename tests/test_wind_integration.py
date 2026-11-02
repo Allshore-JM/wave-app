@@ -177,6 +177,7 @@ def test_forecast_cache_short_ttl_when_wind_blank(monkeypatch):
     monkeypatch.setattr(app, "get_latest_run", lambda: ("20260704", "12"))
     monkeypatch.setattr(app.HTTP, "get", lambda *a, **k: _Resp(text))
     monkeypatch.setattr(app, "get_station_wind", lambda *a, **k: {})  # blank wind
+    monkeypatch.setattr(app, "_nwps_utcnow", lambda: datetime(2026, 7, 4, 13))   # a fresh run (section 77: an old run's gaps are final)
     app.parse_bull("51201", None)
     assert app._FORECAST_CACHE[("51201", "", "GFS")]["ttl"] == app._WIND_NEG_TTL
     # wind for some rows only -> still the short TTL (G19-A P2-1: a gap heals within minutes)

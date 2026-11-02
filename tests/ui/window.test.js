@@ -1599,3 +1599,44 @@ test('init hands the page NWPS list to the loader: NWPS is never asked at a stat
   await settle();
   assert.equal(c.fs_.param(c.fs_.last(), 'model'), 'NWPS');
 });
+
+test('G48: the bar follows the answer\'s gfsb_available (not the page\'s flag) and remembers it through a failed load; the first judgement is the server\'s; ttlOf keeps NOAA\'s split asked for the usual time', async () => {
+  const F = load(fakeWindow()), I = F._internals;
+  assert.equal(I.ttlOf({ split: 'noaa' }), I.ttlOf({ split: 'spectral' }), 'the GFSB table (NOAA\'s split asked for, no note): the usual 10 minutes');
+  assert.equal(I.ttlOf({ split: 'noaa', split_note: "Swell split: NOAA's" }), 60 * 1000, 'a substituted split: a minute');
+  assert.ok(I.ttlOf({ split: 'noaa' }) > 60 * 1000);
+  // an answer at a listed station whose gfsb_available is false hides the button; a failed load at the same station keeps it hidden
+  const b = boot({ initial: { station: '46001', swan_available: false, nwps_available: true, swan_stations: [], nwps_stations: ['46001'], gfsb_on: true, gfsb_available: true } });
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(payload({ station: '46001', model: 'GFS', swan_available: false, nwps_available: true, gfsb_available: false })); await settle();
+  assert.equal(bar.hidden, false); assert.equal(btn('NWPS').hidden, false); assert.equal(btn('GFSB').hidden, true, 'the answer says no');
+  b.app.loader.load({ unit: 'Metric' }); await settle(); b.fs_.last().fail(); await settle();
+  assert.equal(btn('GFSB').hidden, true, 'the failed load: the last answer for the station decides, not the flag');
+  assert.equal(btn('NWPS').hidden, false);
+  // the page\'s first judgement is the server\'s: a lake station whose FIRST load fails keeps the bar hidden (G48 A P4-2, B P2-1)
+  const c = boot({ initial: { station: '45007', model: 'GLWU', swan_available: false, nwps_available: false, swan_stations: [], nwps_stations: [], gfsb_on: true, gfsb_available: false } });
+  const cbar = c.doc.getElementById('modelBar');
+  await settle(); c.fs_.last().fail(); await settle();
+  assert.equal(cbar.hidden, true, 'no answer yet: the server\'s own state says the station has no button');
+});
+
+test('G48 B P2-1 / P2-2: a render=full page seeds the bar and the split note from the server\'s inline answer', async () => {
+  const gd = payload().graph_data, gh = payload().graph_header;
+  const b = boot({ initial: { inline: true, station: '45007', model: 'GLWU', graph_data: gd, graph_header: gh, swan_available: false, nwps_available: false, swan_stations: [], nwps_stations: [], gfsb_on: true, gfsb_available: false } });
+  await settle();
+  assert.equal(b.fs_.calls.length, 0, 'inline: no fetch');
+  assert.equal(b.doc.getElementById('modelBar').hidden, true, 'a lake station: no model bar, as the server rendered it');
+  const c = boot({ initial: { inline: true, station: '51201', model: 'GFS', graph_data: gd, graph_header: gh, swan_available: true, nwps_available: false, swan_stations: ['51201'], nwps_stations: [], gfsb_on: true, gfsb_available: true, split: 'noaa', split_note: "Swell split: NOAA's (ours arrives shortly)" } });
+  await settle();
+  const old = c.doc.getElementById('fwOld'), cbar = c.doc.getElementById('modelBar'), cbtn = (m) => cbar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  assert.equal(old.hidden, false); assert.equal(old.textContent, "· Swell split: NOAA's (ours arrives shortly)", 'the substituted split is labelled on the inline path too');
+  assert.equal(cbar.hidden, false); assert.equal(cbtn('GFSB').hidden, false); assert.equal(cbtn('SWAN').hidden, false);
+  // and the seed of a substituted split lives a minute, like a fetched one
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), u = ui(); let now = 1000;
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => now, replaceState: () => {}, swanStations: ['51201'], nwpsStations: [], gfsbOn: true, ui: u.ui }, st);
+  L.seed(payload({ split: 'noaa', split_note: "Swell split: NOAA's (ours arrives shortly)", gfsb_available: true }));
+  now += 59 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 0, 'within the minute: the seed');
+  now += 2 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 1, 'after a minute: asked again (ours may have landed)');
+});

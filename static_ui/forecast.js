@@ -986,7 +986,8 @@
     // The model bar: GFS plus the station's other model(s), the one on screen pressed; hidden where there is none. With no
     // answer (a failed load) the server's last answer for the station decides, else the station lists, so the way back
     // to GFS stays (G41 B-4) and a choice the server withdrew does not come back (G41 re-check F-4).
-    var lastAvail = null;
+    var lastAvail = typeof initial.swan_available === 'boolean' && typeof initial.nwps_available === 'boolean' && initial.station
+      ? { station: initial.station, swan: initial.swan_available, nwps: initial.nwps_available, gfsb: initial.gfsb_available === true } : null;   // G48 A P4-2
     function syncBar(d, st) {
       if (!els.modelBar) return;
       if (d && typeof d.swan_available === 'boolean' && typeof d.nwps_available === 'boolean') {
@@ -1237,6 +1238,7 @@
     if (initial.inline) {
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
         error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, nwps_age_hours: initial.nwps_age_hours, swan_age_hours: initial.swan_age_hours, wind_complete: initial.wind_complete,
+        gfsb_available: initial.gfsb_available, split: initial.split, split_note: initial.split_note,   // the bar and the note follow the server's inline answer (G48 B P2-1 / P2-2)
         point: initial.point || null, final: !!initial.final, reason: initial.reason || null, summary_html: initial.summary_html || null });
     } else if (deferred) {
       Promise.resolve(earlyStation).then(function (sid) { return typeof sid === 'string' && sid.trim() ? sid.trim() : '51201'; }, function () { return '51201'; })   // (G32 A-P3-4)

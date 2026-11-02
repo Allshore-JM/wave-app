@@ -932,9 +932,12 @@ its own wind) with the note "12 UTC run spectral analysis in progress" (one cycl
 18 hours (`_GSPEC_PRIOR_MAX_H`; section 77c, owner 2026-11-02); the page keeps such an answer only one minute, so the
 next load of the station after the job's file lands shows the new run. A table already on screen follows by itself
 (section 77d): while it carries the note the page asks again quietly, every minute while the run is due ("in progress",
-"ours arrives shortly") and every 5 minutes while it is late, with no spinner and no error box; when the answer
-changes it swaps in place, keeping the hour in view, and the note goes. Another load cancels it; a hidden tab waits and
-asks the moment it is shown. On phones the station name keeps its room and this note is cut (whole in
+"ours arrives shortly") and every 5 minutes otherwise (a late run, or NOAA's split meanwhile), with no spinner and no
+error box. A re-ask that fails (busy, an HTTP error, no answer, an error answer) waits twice as long each time, up to
+10 minutes, until an answer comes; an error answer on screen is never asked again by itself. When the answer changes
+it swaps in place and the note goes: the detailed table keeps the hour in view (in Graph view, Summary mode or a
+parked window the hour comes back when the table shows again), and the overlay's run line follows without rebuilding
+its panel. Another load cancels it; a hidden tab waits and asks the moment it is shown. On phones the station name keeps its room and this note is cut (whole in
 the tooltip and on the meta line); an age note ("· 40 h old") stays whole. Past 18 hours, with nothing held (the first
 minute after a restart) or when a newer held run lacks the station (the job left it out), NOAA's own split of the
 site's run is served, through the bulletin

@@ -1226,3 +1226,18 @@ test('G31-11 / G31-13: the SST panel clears the loading status; its first tick i
   const hs = w.I.buildLegend('hs', { lo: 0, hi: 22.86, legend: [0, 18.288] }, 'US');
   assert.equal(hs.querySelector('.ov-ticks').children[0].className, 'ov-first', 'wave height: 0 at the edge stays left-aligned');
 }));
+
+test('77d review P3-4: refreshRunTail follows the forecast table\'s run in place (the same panel, the same text node)', () => withClock(() => {
+  const cfg = { pageCycle: { run: '2026100700' } };                              // the page's cycle, read when asked
+  const w = world(cfg); w.ov.render({ state: 'ready' });
+  const line = () => text(w.panel.querySelector('.ov-run'));
+  assert.equal(line(), 'Run: 2026-10-07 06Z (UTC) — the forecast table is on run 2026100700');
+  const node = w.ov.ui.runText, body = w.panel.querySelector('.ov-details');
+  cfg.pageCycle = { run: '2026100706' }; w.ov.refreshRunTail();
+  assert.equal(line(), 'Run: 2026-10-07 06Z (UTC)', 'the same run: no tail');
+  assert.equal(w.ov.ui.runText, node); assert.equal(w.panel.querySelector('.ov-details'), body, 'no rebuild');
+  cfg.pageCycle = { model: 'NWPS' }; w.ov.refreshRunTail();
+  assert.equal(line(), 'Run: 2026-10-07 06Z (UTC) — the forecast table is a NOAA NWPS (nearshore) run');
+  const e = world(); e.ov.ui = {}; e.ov.refreshRunTail();                       // no run line (loading, error, sea temperature): nothing to do
+  const n = world(); n.ov.render({ state: 'ready' }); n.ov.manifest = null; n.ov.refreshRunTail();
+}));

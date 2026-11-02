@@ -5065,7 +5065,9 @@
         if (typeof tz === 'string' && tz) lastTz = tz;                          // remembered for the first mount too (the forecast lands before it)
         if (!overlay) return;
         overlay.opts.tz = lastTz;
-        overlay.refresh();
+        // the table followed its new run by itself (section 77d): only the overlay's run line follows, the panel stays
+        if (e.detail && e.detail.quiet && typeof overlay.refreshRunTail === 'function') overlay.refreshRunTail();
+        else overlay.refresh();
       });
     })();
   </script>

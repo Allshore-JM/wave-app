@@ -425,3 +425,20 @@ test('G34 re-check R-39: the overlay script failing to load settles the wait at 
   p.assetsFail(); await settle();
   assert.equal(done, true, 'settled by the failure');
 });
+
+test('77d review P3-4: a table that moved to its new run by itself (quiet) updates only the overlay\'s run line; any other landing refreshes the panel', async () => {
+  const p = page({ complete: true });
+  p.sel.userPick('hs'); await settle();
+  const ov = p.overlays[0];
+  ov.opts = ov.opts || {}; ov.refresh = function () { p.log.push('refresh'); }; ov.refreshRunTail = function () { p.log.push('tail'); };
+  p.log.length = 0;
+  p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', quiet: true } }));
+  assert.deepEqual(p.log, ['tail'], 'quiet: the run line only (menus, the readout and focus stay)');
+  assert.equal(ov.opts.tz, 'Pacific/Honolulu');
+  p.log.length = 0;
+  p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'UTC', model: 'GFS', view: 'Table', quiet: false } }));
+  assert.deepEqual(p.log, ['refresh']);
+  p.log.length = 0; delete ov.refreshRunTail;                                   // an overlay without the method (an older asset): the full refresh
+  p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'UTC', model: 'GFS', view: 'Table', quiet: true } }));
+  assert.deepEqual(p.log, ['refresh']);
+});

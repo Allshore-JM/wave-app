@@ -56,7 +56,7 @@ def test_the_total_height_equals_the_bulletins_within_two_percent_per_degree_den
             if e["hst_bulletin"]:
                 assert ww3spec.hs_of(sp.freqs, sp.dirs, E) == pytest.approx(e["hst_bulletin"], rel=0.02)
                 checked += 1
-        assert checked >= 6
+        assert checked == len(exp["steps"]) >= 4             # every fixture step carries NOAA's own height
     # the transpose would differ by more than that on a real spectrum
     sp = ww3spec.read(member("gfswave_13130_member.spec"))
     when, E, u, ud = sp.steps[0]

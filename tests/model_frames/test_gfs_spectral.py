@@ -168,7 +168,9 @@ def test_a_real_member_is_split_as_the_pinned_rows():
             for g, x in zip(sorted(parts), sorted((round(p[0], 2), round(p[1], 1), round(p[2]) % 360, p[3]) for p in want)):
                 assert g[0] == pytest.approx(x[0], abs=0.011) and g[1] == pytest.approx(x[1], abs=0.11)
                 assert min(abs(g[2] - x[2]), 360 - abs(g[2] - x[2])) <= 1 and g[3] == x[3]
-        assert all(decoded[h] is None for h in range(len(exp["steps"]), G.STEPS))
+        hours = {int((datetime.strptime(e["time"], "%Y%m%d%H") - run_dt.replace(tzinfo=None)).total_seconds() // 3600)
+                 for e in exp["steps"]}                       # a member may hold chosen hours (51201's K1 hours)
+        assert all(decoded[h] is None for h in range(G.STEPS) if h not in hours)
 
 
 def test_the_record_keeps_the_six_most_powerful_parts_and_the_flags():

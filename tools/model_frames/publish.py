@@ -21,6 +21,8 @@ POINTER = "public, max-age=300"
 ECMWF_PREFIX = "ecmwf/0p25/v1"
 GLWU_PREFIX = "glwu/v1"                 # the Great Lakes frames (plan section 50)
 GFSWINDS_PREFIX = "gfswave/winds/v1"    # the GFS stations' winds from the spectra archive (plan section 53)
+NWPS_PREFIX = "nwps/v1"                 # the NWPS forecast tables (plan section 59)
+GFSSPEC_PREFIX = "gfswave/spectral/v1"  # the GFS stations' own swell split from the spectra (plan section 77)
 LATEST_KEY = f"{PREFIX}/latest.json"
 
 

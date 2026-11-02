@@ -1424,6 +1424,9 @@ test('GFSB: the bar shows the button where the answer offers it, a click asks fo
   assert.equal(btn('GFS').getAttribute('aria-pressed'), 'true');
   assert.equal(old.hidden, false); assert.equal(old.textContent, "· Swell split: NOAA's (ours arrives shortly)");
   assert.ok(b.doc.getElementById('fwCycle').title.includes("Swell split: NOAA's"), 'the tooltip carries the note too');
+  const meta = () => b.doc.getElementById('forecastMeta').textContent;
+  assert.equal(meta().split('|')[0].trim(), "Cycle : 20260926 12 UTC · Swell split: NOAA's (ours arrives shortly)", 'the note whole on the meta line (§77c)');
+  assert.equal(/(\d{8})\s+(\d{1,2})\s+UTC/.exec(/Cycle\s*:\s*([^|\n]*)/.exec(meta())[1])[0], '20260926 12 UTC', "the overlay's pageCycle still reads the run shown");
   btn('GFSB').dispatch('click'); await settle();
   assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'GFSB');
   b.fs_.last().release(payload({ station: '51201', model: 'GFSB', swan_available: true, nwps_available: false, gfsb_available: true, split: 'noaa', graph_header: { cycle: '20261101 12 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' } })); await settle();
@@ -1433,6 +1436,7 @@ test('GFSB: the bar shows the button where the answer offers it, a click asks fo
   b.app.loader.load({ station: '41113' }); await settle();                      // (51201's GFS answer is in the page cache)
   b.fs_.last().release(payload({ station: '41113', model: 'GFS', swan_available: false, nwps_available: false, gfsb_available: true, split: 'spectral' })); await settle();
   assert.equal(old.hidden, true, 'our split: no note'); assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC');
+  assert.equal(meta().split('|')[0].trim(), 'Cycle : 20260926 12 UTC', 'no note on the meta line either');
   assert.equal(btn('GFSB').hidden, false); assert.equal(btn('SWAN').hidden, true);
   b.app.loader.load({ station: '46001' }); await settle();
   b.fs_.last().fail(); await settle();

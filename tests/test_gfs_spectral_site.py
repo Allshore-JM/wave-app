@@ -417,6 +417,10 @@ def test_an_old_gfs_runs_blank_early_wind_cells_are_final(monkeypatch):
     assert A._gfs_wind_final("Cycle : 20261001 12 UTC") is True                        # 48 h
     assert A._gfs_wind_final("Cycle : 20261001 13 UTC") is False
     assert A._gfs_wind_final("Cycle    : 20261001 12 UTC") is True, "the bulletin's own spacing"
+    assert A._gfs_wind_final("Cycle    : 20261001  0 UTC") is True, "the bulletin's one-digit hour at 00Z / 06Z (G48 B P3-3)"
+    assert A._gfs_wind_final("Cycle : 20261003  0 UTC") is False                        # 12 h, the same spelling
+    assert A._gfs_cycle_run("Cycle    : 20261102  0 UTC") == "2026110200" and A._gfs_cycle_run("Cycle : 20261102 06 UTC") == "2026110206"
+    assert A._gfs_cycle_run("Cycle : 20261102 123 UTC") is None and A._gfs_cycle_run(None) is None
     assert A._gfs_wind_final("Cycle : NOAA GLWU 20261001 12 UTC") is False and A._gfs_wind_final(None) is False
     assert A._old_run_wind_final("Cycle : 20261001 12 UTC") is True
     rows = [["d", "t"] + [None] * 18 + [None, None, 1.0]]

@@ -320,6 +320,7 @@ test('section 50: the Great Lakes setting (GLWU) reaches the module; the page re
   assert.deepEqual(run('Cycle : NOAA GLWU 20261021 19 UTC | Location : 45007'), { model: 'GLWU' });
   assert.deepEqual(run('Cycle : PacIOOS SWAN updated 20261021 23 UTC | x'), { model: 'SWAN' });
   assert.deepEqual(run('Cycle : 20261021 18 UTC | Location : 51201'), { run: '2026102118' });
+  assert.deepEqual(run('Cycle : 20261102  0 UTC | Location : 51201'), { run: '2026110200' }, 'the bulletin writes 00Z / 06Z with a one-digit hour (G48 B P3-3)');
   void meta;
 });
 

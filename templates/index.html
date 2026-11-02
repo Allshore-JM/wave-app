@@ -4946,8 +4946,8 @@
         if (/NWPS/.test(m[1])) return { model: 'NWPS' };              // before SWAN: "NOAA NWPS" is a SWAN model too
         if (/SWAN/.test(m[1])) return { model: 'SWAN' };
         if (/GLWU/.test(m[1])) return { model: 'GLWU' };
-        var r = /(\d{8})\s+(\d{2})\s+UTC/.exec(m[1]);
-        return r ? { run: r[1] + r[2] } : null;
+        var r = /(\d{8})\s+(\d{1,2})\s+UTC/.exec(m[1]);       // the bulletin writes 00Z / 06Z as "20261102  0 UTC"
+        return r ? { run: r[1] + (r[2].length < 2 ? '0' + r[2] : r[2]) } : null;
       }
       var sel = document.getElementById('ovField'), panel = document.getElementById('ovPanel');
       // The page's satellite imagery (made outside this block): the wind overlay swaps it for a relief map while shown.

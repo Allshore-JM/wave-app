@@ -54,10 +54,11 @@ function fetchStub() {
 function boot(opts) {
   opts = opts || {};
   const win = fakeWindow(opts), page = buildPage(win), F = load(win), fs_ = fetchStub(), Chart = fakeChart();
+  const all = [], timers = { all, set: (fn, ms) => { const t = { fn, ms, on: true }; all.push(t); return t; }, clear: (t) => { if (t) t.on = false; } };
   win.Chart = Chart;
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: false, swan_stations: ['51201'] }, opts.initial || {}),
-    stationLabel: (sid) => sid, loadChartJs: () => Promise.resolve(), fetch: fs_.fetch });
-  return { win, page, F, fs_, Chart, app, doc: win.document };
+    stationLabel: (sid) => sid, loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, setTimer: timers.set, clearTimer: timers.clear });
+  return { win, page, F, fs_, Chart, app, doc: win.document, timers };
 }
 
 // ---- the sky, pure ----
@@ -398,4 +399,20 @@ test('switching the model at one station keeps the first row in view by its time
   b.app.loader.load({ station: '46001' }); await settle();
   b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
   assert.equal(b.page.body.scrollTop, 340, 'another station: revealed');
+});
+
+test('77d: the quiet switch to a new run keeps the first row in view by its time (the new run starts later)', async () => {
+  const b = boot({}); await settle(); wireTable(b);
+  b.app.window.setMode('normal');
+  let rows = stampedRows(['2026-11-02T02:00', '2026-11-02T03:00', '2026-11-02T14:00', '2026-11-02T15:00'], [95, 115, 135, 155]), next = null;
+  b.page.table.querySelectorAll = (sel) => (sel === 'tr[data-t]' ? rows : []);
+  Object.defineProperty(b.page.table, 'innerHTML', { set(v) { if (next) { rows = next; next = null; } }, get() { return ''; } });
+  b.fs_.last().release(skyPayload({ model: 'GFS', split: 'spectral', split_note: '18 UTC run spectral analysis in progress' })); await settle();
+  b.page.body.scrollTop = 200; b.page.body.scrollLeft = 60;
+  const live = b.timers.all.filter((t) => t.on); assert.equal(live.length, 1);
+  live[0].on = false; live[0].fn(); await settle();
+  next = stampedRows(['2026-11-02T08:00', '2026-11-02T14:00', '2026-11-02T15:00'], [180, 300, 320]);
+  b.fs_.last().release(skyPayload({ model: 'GFS', split: 'spectral', graph_header: Object.assign({}, skyPayload().graph_header, { cycle: '20261102 18 UTC' }) })); await settle();
+  assert.equal(b.page.body.scrollTop, 365, 'the same hour stays in view: 200 + (300 - 100) - 40 - (-5)');
+  assert.equal(b.page.body.scrollLeft, 60, 'the sideways scroll kept');
 });

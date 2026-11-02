@@ -1276,6 +1276,37 @@ def test_section_59_the_nwps_model_on_the_page(client):
     assert "pc.model === 'NWPS' ? ' — the forecast table is a NOAA NWPS (nearshore) run'" in ov
 
 
+def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
+    """With GFS_SPECTRAL on, the model bar shows "GFS (NOAA split)" at a listed GFS station (pressed when asked for, GFS
+    not pressed then), the no-script select offers it, the state carries gfsb_on / gfsb_available and the head's rule;
+    a point and a lake station never get it; with the flag off the button is hidden and the state says so."""
+    src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    assert "var GFSB = {{ initial_state.gfsb_on|tojson }};" in src
+    assert "m === 'GFSB' && GFSB && station.indexOf('pt_') !== 0 ? 'GFSB' : 'GFS'" in src
+    b0 = client.get("/?station=51201&model=GFSB").get_data(as_text=True)
+    st0 = initial(b0)
+    assert st0["model"] == "GFS" and st0["gfsb_on"] is False and st0["gfsb_available"] is False
+    assert re.search(r'data-model="GFSB" aria-pressed="false" hidden', b0) and '<option value="GFSB"' not in b0
+    monkeypatch.setattr(A, "GFS_SPECTRAL", True)
+    monkeypatch.setitem(A._GSPEC, "listed", None)
+    b = client.get("/?station=51201&model=GFSB").get_data(as_text=True)
+    st = initial(b)
+    assert st["model"] == "GFSB" and st["gfsb_on"] is True and st["gfsb_available"] is True
+    assert not re.search(r'id="modelBar" hidden', b)
+    assert re.search(r'data-model="GFSB" aria-pressed="true"', b) and re.search(r'data-model="GFS" aria-pressed="false"', b)
+    assert 'class="btn btn-outline-secondary active" data-model="GFSB"' in b
+    assert re.search(r'<option value="GFSB" selected>GFS \(NOAA split\)</option>', b)
+    b2 = client.get("/?station=51201").get_data(as_text=True)
+    assert re.search(r'data-model="GFSB" aria-pressed="false" title="[^"]*">GFS \(NOAA split\)</button>', b2)   # shown, not pressed
+    assert re.search(r'data-model="GFS" aria-pressed="true"', b2) and initial(b2)["model"] == "GFS"
+    b3 = client.get("/?station=pt_21667N_158054W&model=GFSB").get_data(as_text=True)
+    assert initial(b3)["model"] == "GFS" and initial(b3)["gfsb_available"] is False and re.search(r'data-model="GFSB" aria-pressed="false" hidden', b3)
+    b4 = client.get("/?station=45007&model=GFSB").get_data(as_text=True)
+    assert initial(b4)["model"] == "GLWU" and initial(b4)["gfsb_available"] is False
+    b5 = client.get("/?station=NW-HFO51&model=GFSB").get_data(as_text=True)                    # not listed: not covered
+    assert initial(b5)["model"] == "GFS" and initial(b5)["gfsb_available"] is False
+
+
 def test_section_59_g41_fixes_on_the_page(client, monkeypatch):
     """G41 (plan section 59, step 8): the last shown model button keeps its rounded end, a Great Lakes page presses
     GFS in its hidden bar again, and a station whose NWPS office stopped (past 72 h) is served as one without NWPS."""

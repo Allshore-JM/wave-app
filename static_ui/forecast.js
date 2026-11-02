@@ -60,8 +60,10 @@
   // explicit empty tz in the URL counts.
   // The forecast models a station's table can be on: GFS-Wave everywhere, PacIOOS SWAN at its 12 Hawaii stations, NOAA
   // NWPS at the 112 stations its offices publish (plan section 59); anything else reads as GFS (the server says GLWU
-  // for a Great Lakes station whatever is asked).
-  var MODELS = ['GFS', 'SWAN', 'NWPS'];
+  // for a Great Lakes station whatever is asked). GFSB = "GFS (NOAA split)": NOAA's own swell split of the GFS run,
+  // offered where the site's own split of the station's spectra is the GFS table (plan section 77; the server says
+  // when: gfsb_on, gfsb_available).
+  var MODELS = ['GFS', 'SWAN', 'NWPS', 'GFSB'];
   function modelOf(v) { var m = typeof v === 'string' ? v.trim().toUpperCase() : ''; return MODELS.indexOf(m) >= 0 ? m : 'GFS'; }
   function resolveInitialState(search, stored, server, dflt) {
     var p = new URLSearchParams(search || ''), st = stored || {}, sv = server || {};
@@ -250,6 +252,7 @@
     if (model === 'SWAN') { var m = /updated\s+(.*)$/i.exec(c); return 'SWAN · updated ' + (m ? m[1] : c); }
     if (model === 'GLWU') return 'GLWU · run ' + c.replace(/^NOAA GLWU\s+/, '');
     if (model === 'NWPS') return 'NWPS · run ' + c.replace(/^NOAA NWPS\s+/, '');
+    if (model === 'GFSB') return 'GFS (NOAA split) · run ' + c;              // NOAA's own swell split (plan section 77)
     return (model || 'GFS') + ' · run ' + c;
   }
   // The graph's label strings -> Date (the old page's rule: "8/30/25 6:00 AM", else the browser's parser).
@@ -287,7 +290,7 @@
   // A "busy" answer (the server's build slots are taken: forecast points share them with the tide and wind windows) is
   // asked again quietly BUSY_TRIES times, BUSY_WAIT_MS apart, before it is shown with Retry (G28 re-check R1-N1).
   var BUSY_TRIES = 5, BUSY_WAIT_MS = 4000;
-  function ttlOf(d) { return d && d.wind_complete === false ? GAP_TTL_MS : CACHE_TTL_MS; }
+  function ttlOf(d) { return d && (d.wind_complete === false || (d.split === 'noaa' && d.split_note)) ? GAP_TTL_MS : CACHE_TTL_MS; }   // a gap, or NOAA's split meanwhile (§77)
   function createLoader(deps, state) {
     var cache = new Map(), seq = 0, ctrl = null;
     var wait = deps.wait || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
@@ -296,6 +299,7 @@
       s.model = modelOf(s.model);
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
       if (s.model === 'NWPS' && deps.nwpsStations && deps.nwpsStations.indexOf(s.station) < 0) s.model = 'GFS';
+      if (s.model === 'GFSB' && !(deps.gfsbOn && !isPointId(s.station))) s.model = 'GFS';   // NOAA's split only where ours is the default (§77; the server answers GFS for a lake station)
       return s;
     }
     function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
@@ -933,6 +937,7 @@
     }
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [], nwpsStations = initial.nwps_stations || [];
+    var gfsbOn = initial.gfsb_on === true;                                      // the spectral split is the GFS table here (§77)
     var search = (win.location && win.location.search) || '', dflt = readJson(local, DEFAULT_KEY);
     if (typeof dflt.id !== 'string' || !DEFAULT_ID.test(dflt.id.trim())) dflt = null;
     var state = resolveInitialState(search, readJson(local, SETTINGS_KEY), initial, dflt);
@@ -985,14 +990,16 @@
     function syncBar(d, st) {
       if (!els.modelBar) return;
       if (d && typeof d.swan_available === 'boolean' && typeof d.nwps_available === 'boolean') {
-        lastAvail = { station: st.station, swan: d.swan_available, nwps: d.nwps_available };
+        lastAvail = { station: st.station, swan: d.swan_available, nwps: d.nwps_available, gfsb: d.gfsb_available === true };
       }
       var known = !d && lastAvail && lastAvail.station === st.station ? lastAvail : null;
       var swan = d && typeof d.swan_available === 'boolean' ? d.swan_available : known ? known.swan : swanStations.indexOf(st.station) >= 0;
       var nwps = d && typeof d.nwps_available === 'boolean' ? d.nwps_available : known ? known.nwps : nwpsStations.indexOf(st.station) >= 0;
-      els.modelBar.hidden = !(swan || nwps); pressed(els.modelBar, 'data-model', st.model);
+      // NOAA's own split beside ours (plan section 77): the answer says; with none, the page's flag and the station kind
+      var gfsb = d && typeof d.gfsb_available === 'boolean' ? d.gfsb_available : known ? known.gfsb : (gfsbOn && !isPointId(st.station));
+      els.modelBar.hidden = !(swan || nwps || gfsb); pressed(els.modelBar, 'data-model', st.model);
       Array.prototype.forEach.call(els.modelBar.querySelectorAll('[data-model]'), function (b) {
-        var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps);
+        var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps) || (m === 'GFSB' && !gfsb);
       });
     }
     function setMeta(h, tail) {
@@ -1034,7 +1041,7 @@
     var holdUrl = false;
     var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
       wait: opts.wait || function (ms) { return new Promise(function (res) { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }); },
-      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations, nwpsStations: nwpsStations,
+      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations, nwpsStations: nwpsStations, gfsbOn: gfsbOn,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
             clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
@@ -1054,8 +1061,10 @@
               var oldAge = d.model === 'NWPS' ? d.nwps_age_hours : d.model === 'SWAN' ? d.swan_age_hours : null;
               var oldNote = typeof oldAge === 'number' && oldAge >= OLD_RUN_H
                 ? ' · ' + Math.round(oldAge) + ' h old' : '';                      // an NWS office / PacIOOS that stopped (G41 K-7; §64)
+              // the GFS table carrying NOAA's split while ours is not there yet for this run (plan section 77)
+              var splitNote = d.model === 'GFS' && typeof d.split_note === 'string' && d.split_note ? ' · ' + d.split_note : '';
               // the note has its own span where the page has one: on phones the run text gives way first, the note not
-              var ageNote = pointNote + oldNote;
+              var ageNote = pointNote + oldNote + splitNote;
               if (els.old) { text(els.old, ageNote.replace(/^ /, '')); els.old.hidden = !ageNote; } else cyc += ageNote;
               writeLabel(els.title, label); text(els.cycle, cyc);
               if (noteFor !== null && noteFor !== st.station) note(null);

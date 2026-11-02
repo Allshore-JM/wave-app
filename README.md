@@ -926,16 +926,20 @@ The site (`GFS_SPECTRAL=1`; unset = the bulletin as before): the live scheduler'
 5 minutes and fetches a new run's index and binary in one background thread (never on a request thread), checks them
 (format, run, steps, record size, count, sha256) and holds the two newest runs in memory (~22 MB); a station's rows are
 sliced from memory, the wind of the SAME run joined from the GFS winds table (section 53). The spectral table IS the GFS
-table whenever its run is the site's bulletin run or newer; otherwise (the 5-20 minutes after a new run before the
-job's file lands, or a job behind) NOAA's own split of the site's run is served, through the bulletin path's cache,
-under its own key kept one minute, with the note "Swell split: NOAA's (ours arrives shortly)" while the job is at most
-one cycle behind (or nothing is held yet and the reads have not failed for half an hour), else "Swell split: NOAA's".
+table whenever its run is the site's bulletin run or newer. While the site's run is newer (the ~15 minutes after each
+new run before the job's file lands, or a job behind) the PRIOR run's spectral table keeps serving (its own run line,
+its own wind) with the note "12 UTC run spectral analysis in progress" (one cycle behind) or "... delayed", for up to
+18 hours (`_GSPEC_PRIOR_MAX_H`; section 77c, owner 2026-11-02); the page keeps such an answer one minute, so an open
+page shows the new run within a minute of the job. Past 18 hours, with nothing held (the first minute after a restart)
+or when the newest held run lacks the station, NOAA's own split of the site's run is served, through the bulletin
+path's cache, under its own key kept one minute, with the note "Swell split: NOAA's (ours arrives shortly)" (nothing held
+yet and the reads not failing for half an hour) or "Swell split: NOAA's".
 The answer says which split it carries (`split`: spectral / noaa; `split_note`). NOAA's own split stays one press away:
 the model button **GFS | GFS (Bulletin)** (model `GFSB`; shown at every listed GFS station; never at a forecast point
 or a lake station), the header then "GFS (Bulletin) · run …". A spectral run 48 h or older has early hours older than
 every winds run kept, so its blank wind cells are final. The combined height is the spectrum's own (NOAA's to 0.03 ft);
 the table shows the six most powerful parts of 5 cm or more (a seventh goes). `/healthz` reports `gfs.spectral` (the
-pointer's run, the runs held, the last error, answers served from each split; never part of `ok`). With the flag unset
+pointer's run, the runs held, the last error, answers served from each split and from the prior run; never part of `ok`). With the flag unset
 every station answer still gains one key, `gfsb_available: false` (the tables are byte-identical otherwise), and the
 48-hour wind rule now reaches the bulletin path too: an old GFS run's blank early wind cells are final there as well
 (G48 A P4-1).

@@ -441,7 +441,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.28.4"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.28.5"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -3182,7 +3182,10 @@ def _nwps_health():
 # "GFS (Bulletin)" button). The table is fetched in the BACKGROUND (the live scheduler's pass, _gspec_tick: never on
 # a request thread) and the two newest runs are held in memory; a station's rows are sliced from memory. The spectral
 # run S serves when S >= the site's run R (the bulletin probe can lag the job, and the job the probe; both lags are
-# minutes); otherwise NOAA's split of run R is served, labelled (split_note), re-judged every minute.
+# minutes). While S is behind R (the ~15 minutes after each run, or a job that is late) the prior run's spectral table
+# keeps serving, with the note "<R hour> UTC run spectral analysis in progress" (one cycle behind) or "... delayed",
+# for up to _GSPEC_PRIOR_MAX_H (owner, 2026-11-02, section 77c); past that, or with nothing held, NOAA's split of R
+# is served, labelled (split_note), re-judged every minute.
 GFS_SPECTRAL = os.environ.get("GFS_SPECTRAL", "0") == "1"
 GFSSPEC_PREFIX = "gfswave/spectral/v1"
 GFSSPEC_FORMAT = "gfsspec-v1"
@@ -3201,6 +3204,8 @@ _GSPEC_HELD = 2                                # runs held in memory (~11 MB eac
 _GSPEC_LAG_SHORTLY_H = 6                       # "ours arrives shortly" while the job is at most one cycle behind the site
 _GSPEC_FAILING_SHORTLY_S = 30 * 60             # ... or nothing is held and the reads have failed for less than this
 _GSPEC_FALLBACK_TTL = 60                       # NOAA's split served meanwhile: the run comparison is made again after this
+_GSPEC_PRIOR_MAX_H = 18                        # the prior run's spectral table serves while the site's run is at most this
+                                               # far ahead (three cycles: the job's own stale alarm); past it, NOAA's split
 _GSPEC_WIND_HEAL_H = 48                        # a spectral run older than this: its early hours precede every winds run kept
 _GSPEC_RUN_RE = re.compile(r"^\d{10}$")
 _GFS_CYCLE_RE = re.compile(r"^Cycle\s*:\s*(\d{8})\s+(\d{1,2}) UTC$")  # the bulletin's own cycle line (the hour as %2d:
@@ -3217,6 +3222,7 @@ _GSPEC = {"runs": OrderedDict(),               # run -> {"stations": {sid: slot}
           "failed": 0.0, "failing_since": 0.0, "error": None,
           "thread": None, "started": 0, "fetched": 0,
           "spectral": 0, "fallback": 0,        # answers served from our split / from NOAA's split (the lag's measure)
+          "prior": 0,                          # ... of which the prior run's table while the site's run is newer (77c)
           "listed": None}
 
 
@@ -3431,10 +3437,7 @@ def _gspec_split_note(spectral_run, site_run) -> str:
     if spectral_run is None:
         shortly = newest is None and (not since or time.time() - since < _GSPEC_FAILING_SHORTLY_S)
     else:
-        try:
-            lag_h = (datetime.strptime(site_run, "%Y%m%d%H") - datetime.strptime(spectral_run, "%Y%m%d%H")).total_seconds() / 3600
-        except (TypeError, ValueError):
-            lag_h = None
+        lag_h = _gspec_lag_h(spectral_run, site_run)
         shortly = lag_h is not None and lag_h <= _GSPEC_LAG_SHORTLY_H
     return "Swell split: NOAA's (ours arrives shortly)" if shortly else "Swell split: NOAA's"
 
@@ -3494,21 +3497,50 @@ def _drop_old_bull(station_id, tz, site_run):
     return False
 
 
+def _gspec_lag_h(spectral_run, site_run):
+    """Hours the site's run is ahead of the spectral run (None when either is unknown or unreadable)."""
+    try:
+        return (datetime.strptime(site_run, "%Y%m%d%H") - datetime.strptime(spectral_run, "%Y%m%d%H")).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return None
+
+
+def _gspec_prior_note(spectral_run, site_run):
+    """The note on the prior run's spectral table served while the site's run R is newer: None when S >= R or the
+    prior table should not serve (R more than _GSPEC_PRIOR_MAX_H ahead, or the newest held run is R's or newer and
+    lacks the station: nothing of ours is on its way, G48 A P3-5); else "<HH> UTC run spectral analysis in progress"
+    (one cycle behind) or "... delayed"."""
+    lag = _gspec_lag_h(spectral_run, site_run)
+    if lag is None or lag <= 0 or lag > _GSPEC_PRIOR_MAX_H:
+        return None
+    with _GSPEC_LOCK:
+        newest = max(_GSPEC["runs"]) if _GSPEC["runs"] else None
+    if newest is not None and newest >= site_run and spectral_run < newest:
+        return None
+    word = "in progress" if lag <= _GSPEC_LAG_SHORTLY_H else "delayed"
+    return f"{site_run[8:]} UTC run spectral analysis {word}"
+
+
 def parse_gfs_spectral(station_id: str, target_tz_name: str | None = None):
     """The GFS table with the flag on: (the parse_bull() 6-tuple, split, note). Our split of the newest held spectral
-    run S when S >= the site's run R (or the site has no run); else NOAA's split of R through parse_bull's own cache,
-    kept under its own key for _GSPEC_FALLBACK_TTL so the comparison is made again soon, with the note."""
+    run S when S >= the site's run R (or the site has no run); while R is newer (the job finishing R, or late) S's table
+    with the note "<R> UTC run spectral analysis in progress / delayed" for up to _GSPEC_PRIOR_MAX_H (section 77c);
+    else NOAA's split of R through parse_bull's own cache, kept under its own key for _GSPEC_FALLBACK_TTL so the
+    comparison is made again soon, with the note."""
     date_str, run_str = get_latest_run()
     site_run = (date_str + run_str) if date_str and run_str else None
     spectral_run, _ = _gspec_held_for(station_id)
     tz = target_tz_name or ""
-    if spectral_run is not None and (site_run is None or spectral_run >= site_run):
+    prior = _gspec_prior_note(spectral_run, site_run) if spectral_run is not None and site_run is not None else None
+    if spectral_run is not None and (site_run is None or spectral_run >= site_run or prior):
         key = (station_id, tz, "GFSS", spectral_run, site_run or "")
         data = _forecast_singleflight(key, lambda: _parse_gfs_spectral_uncached(station_id, target_tz_name, spectral_run))
         if data and not data[-1]:
             with _GSPEC_LOCK:
                 _GSPEC["spectral"] += 1
-            return data, "spectral", None
+                if prior:
+                    _GSPEC["prior"] += 1
+            return data, "spectral", prior
         if site_run is None:                           # nothing else to serve: the build's own error
             return data, "spectral", None
         logger.warning("GFS spectral: %s of %s not served (%s); NOAA's split instead", station_id, spectral_run, data[-1])
@@ -3532,7 +3564,7 @@ def _gspec_health():
                 "held": runs, "stations": [len(_GSPEC["runs"][r]["stations"]) for r in runs],
                 "pointer_age_s": round(time.time() - _GSPEC["ptr_ts"]) if _GSPEC["ptr_ts"] else None,
                 "last_error": _GSPEC["error"], "reads_started": _GSPEC["started"], "fetched": _GSPEC["fetched"],
-                "served": {"spectral": _GSPEC["spectral"], "fallback": _GSPEC["fallback"]}}
+                "served": {"spectral": _GSPEC["spectral"], "fallback": _GSPEC["fallback"], "prior": _GSPEC["prior"]}}
 
 
 # --------------------------- PacIOOS SWAN parser --------------------------------

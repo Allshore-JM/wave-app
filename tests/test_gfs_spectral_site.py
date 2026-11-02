@@ -101,7 +101,7 @@ def reset():
     with A._GSPEC_LOCK:
         A._GSPEC["runs"].clear()
         A._GSPEC.update(ptr_run=None, ptr_ts=0.0, failed=0.0, failing_since=0.0, error=None, thread=None, started=0,
-                        fetched=0, spectral=0, fallback=0, listed=None)
+                        fetched=0, spectral=0, fallback=0, prior=0, listed=None)
     with A._CACHE_LOCK:
         A._FORECAST_CACHE.clear()
         A._FORECAST_INFLIGHT.clear()
@@ -300,7 +300,7 @@ def test_the_spectral_rows_serve_when_the_held_run_is_the_sites_or_newer(world):
     site["run"] = ("20261001", "06")
     data, split, note = A.parse_gfs_spectral("51201", None)
     assert split == "spectral" and data[0] == f"Cycle : {RUN_A[:8]} {RUN_A[8:]} UTC"
-    assert A._gspec_health()["served"] == {"spectral": 3, "fallback": 0}
+    assert A._gspec_health()["served"] == {"spectral": 3, "fallback": 0, "prior": 0}
 
 
 def test_the_payload_carries_the_split_and_noaas_split_is_the_gfsb_button(world):
@@ -325,34 +325,41 @@ def test_the_payload_carries_the_split_and_noaas_split_is_the_gfsb_button(world)
     assert unlisted["gfsb_available"] is False and "split" not in unlisted, "not covered: the bulletin as before"
 
 
-def test_noaas_split_serves_meanwhile_with_the_note_and_a_minute_of_cache(world):
+def test_the_prior_runs_spectral_table_serves_meanwhile_with_the_note(world):
+    """Section 77c (owner, 2026-11-02): while the site's run R is newer than the held spectral run S, S's own table
+    serves (its own wind, its own Cycle line) with "<R hour> UTC run spectral analysis in progress" (one cycle behind)
+    or "... delayed"; past _GSPEC_PRIOR_MAX_H NOAA's split of R serves instead; the new run serves the moment it is
+    held (the key carries S and R)."""
     b, site, fetched, winds, clock = world
     A._gspec_refresh(A._gspec_root())
     site["run"] = (RUN_B[:8], RUN_B[8:])                   # the site moved on; the job one cycle behind
     data, split, note = A.parse_gfs_spectral("51201", None)
-    assert split == "noaa" and note == "Swell split: NOAA's (ours arrives shortly)"
-    assert data[0] == "Cycle    : 20261001 12 UTC" and data[3][0][2:5] == [round(0.55 * 3.28084, 2), 7.5, 69], \
-        "the bulletin's own rows (its directions turned FROM)"
-    assert fetched == [(RUN_B[:8], RUN_B[8:], "51201")]
+    assert split == "spectral" and note == f"{RUN_B[8:]} UTC run spectral analysis in progress"
+    assert data[0] == f"Cycle : {RUN_A[:8]} {RUN_A[8:]} UTC" and data[-1] is None, "the prior run's own table"
+    assert winds[-1] == ("51201", RUN_A[:8], RUN_A[8:]), "the wind of the run shown"
+    assert fetched == [], "no bulletin asked for"
     out = A.compute_forecast_payload("51201", None, "US", "GFS", compact=True)
-    assert out["model"] == "GFS" and out["split"] == "noaa" and out["split_note"] == "Swell split: NOAA's (ours arrives shortly)"
-    assert len(fetched) == 1, "the fallback wraps parse_bull's cached answer"
-    clock.t += 30
-    A.parse_gfs_spectral("51201", None)
-    assert len(fetched) == 1, "within the minute the fallback entry serves"
-    site["run"] = (RUN_C[:8], RUN_C[8:])                   # two cycles behind: no longer "shortly"
-    with A._CACHE_LOCK:
-        A._FORECAST_CACHE.clear()
+    assert out["model"] == "GFS" and out["split"] == "spectral" and out["split_note"] == f"{RUN_B[8:]} UTC run spectral analysis in progress"
+    assert out["graph_header"]["cycle"] == f"{RUN_A[:8]} {RUN_A[8:]} UTC"
+    site["run"] = (RUN_C[:8], RUN_C[8:])                   # two cycles behind: still ours, "delayed"
     data, split, note = A.parse_gfs_spectral("51201", None)
-    assert split == "noaa" and note == "Swell split: NOAA's"
-    # the job catches up: the spectral table at once (the fallback's own key, not parse_bull's 30 min, decides)
+    assert split == "spectral" and note == f"{RUN_C[8:]} UTC run spectral analysis delayed"
+    late = (datetime.strptime(RUN_A, "%Y%m%d%H") + timedelta(hours=A._GSPEC_PRIOR_MAX_H + 6)).strftime("%Y%m%d%H")
+    site["run"] = (late[:8], late[8:])                      # past the limit: NOAA's split of the site's run
+    data, split, note = A.parse_gfs_spectral("51201", None)
+    assert split == "noaa" and note == "Swell split: NOAA's" and fetched[-1] == (late[:8], late[8:], "51201")
+    edge = (datetime.strptime(RUN_A, "%Y%m%d%H") + timedelta(hours=A._GSPEC_PRIOR_MAX_H)).strftime("%Y%m%d%H")
+    site["run"] = (edge[:8], edge[8:])                      # exactly at the limit: still ours
+    assert A.parse_gfs_spectral("51201", None)[1:] == ("spectral", f"{edge[8:]} UTC run spectral analysis delayed")
+    # the job catches up: the new run's table at once, no note
+    site["run"] = (RUN_C[:8], RUN_C[8:])
     b.put_run(RUN_C, {"51201": station_rows(RUN_C)}); b.point(RUN_C)
     A._gspec_refresh(A._gspec_root())
-    clock.t += A._GSPEC_FALLBACK_TTL + 1
     data, split, note = A.parse_gfs_spectral("51201", None)
     assert split == "spectral" and note is None and data[0] == f"Cycle : {RUN_C[:8]} {RUN_C[8:]} UTC"
     assert winds[-1] == ("51201", RUN_C[:8], RUN_C[8:])
-    assert A._gspec_health()["served"]["fallback"] == 4
+    h = A._gspec_health()["served"]
+    assert h["prior"] == 4 and h["fallback"] == 1, h
 
 
 def test_nothing_held_says_shortly_until_the_reads_have_failed_half_an_hour(world):
@@ -434,7 +441,7 @@ def test_healthz_reports_the_spectral_table(world):
     sp = body["gfs"]["spectral"]
     assert set(sp) == {"enabled", "pointer_run", "held", "stations", "pointer_age_s", "last_error", "reads_started",
                        "fetched", "served"}
-    assert sp["enabled"] is True and sp["held"] == [] and sp["served"] == {"spectral": 0, "fallback": 0}
+    assert sp["enabled"] is True and sp["held"] == [] and sp["served"] == {"spectral": 0, "fallback": 0, "prior": 0}
 
 
 def test_a_slow_bucket_never_holds_a_request(world, monkeypatch):

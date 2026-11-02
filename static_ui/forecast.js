@@ -290,7 +290,7 @@
   // A "busy" answer (the server's build slots are taken: forecast points share them with the tide and wind windows) is
   // asked again quietly BUSY_TRIES times, BUSY_WAIT_MS apart, before it is shown with Retry (G28 re-check R1-N1).
   var BUSY_TRIES = 5, BUSY_WAIT_MS = 4000;
-  function ttlOf(d) { return d && (d.wind_complete === false || (d.split === 'noaa' && d.split_note)) ? GAP_TTL_MS : CACHE_TTL_MS; }   // a gap, or NOAA's split meanwhile (§77)
+  function ttlOf(d) { return d && (d.wind_complete === false || d.split_note) ? GAP_TTL_MS : CACHE_TTL_MS; }   // a gap, or a split note: the prior run's table while the new run's analysis runs, or NOAA's split meanwhile (§77, §77c)
   function createLoader(deps, state) {
     var cache = new Map(), seq = 0, ctrl = null;
     var wait = deps.wait || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
@@ -1062,7 +1062,7 @@
               var oldAge = d.model === 'NWPS' ? d.nwps_age_hours : d.model === 'SWAN' ? d.swan_age_hours : null;
               var oldNote = typeof oldAge === 'number' && oldAge >= OLD_RUN_H
                 ? ' · ' + Math.round(oldAge) + ' h old' : '';                      // an NWS office / PacIOOS that stopped (G41 K-7; §64)
-              // the GFS table carrying NOAA's split while ours is not there yet for this run (plan section 77)
+              // the GFS table while the new run's analysis runs: the prior run's table or NOAA's split, said in a note (§77, §77c)
               var splitNote = d.model === 'GFS' && typeof d.split_note === 'string' && d.split_note ? ' · ' + d.split_note : '';
               // the note has its own span where the page has one: on phones the run text gives way first, the note not
               var ageNote = pointNote + oldNote + splitNote;

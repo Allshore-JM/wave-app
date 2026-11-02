@@ -275,3 +275,37 @@ change). Job suite: see the round-2 checks.
   heights, 2 px after five); a SWAN hour past its table scrolled near the end lands on the same hour of the GFS table
   with the sideways scroll kept; a fresh station reveals its now row as before; console clean. Tests: forecast-view
   +1 (stamped rows swapped on the innerHTML assignment, as a browser does), UI suites 573, the asset pin re-made.
+
+## Section 77c: the prior run's table while the new run's analysis runs (2026-11-02)
+
+Owner (2026-11-02): during the ~15-minute lag after each run, show the prior run's spectral table with a note
+("18 UTC run spectral analysis in progress") instead of NOAA's split. Built @ 8ca14eb / 3833aaa / 3552943 (UI 1.28.6):
+the held spectral run S serves while the site's run R is newer, up to 18 h, with "in progress" (one cycle behind) or
+"delayed"; past that, NOAA's split as before. The page keeps a noted answer one minute.
+
+### Review (one fresh reviewer on 7c8159f..44c4970): 0 P0, 0 P1, 1 P2, 4 P3
+- P2: the phone rule that let the note give way to the station name also cut the NWPS / SWAN / point age notes
+  (" · 40 h old" 18 of 57 px at 360 px), against the G41 rule.
+- P3-1: no test pinned the phone rule.
+- P3-2: held runs 06 (with the station) and 12 (without), site at 18: the 06 table served as "delayed" although the
+  job had left the station out of 12.
+- P3-3: the README said an open page shows the new run within a minute; the forecast window has no timer, so the new
+  run shows on the next load.
+- P3-4: a stale comment (app.py index); the claim that R in the cache key serves a new run at once (it is S; the R
+  mutant is equivalent).
+- Held: the run arithmetic (midnight, 18 h edge, R missing, S ahead), wind and Cycle line of S, render=full, the
+  overlay's run reading, the page cache times; 7 of 8 mutants killed (the 8th is the equivalent key mutant).
+
+### Fix round @ 9b098d5 + golden 21174ed (UI 1.28.7)
+- The phone rule targets `.fw-old.fw-split`; forecast.js marks the span when it holds the split note and clears it on a
+  failed load.
+- A newer held run that lacks the station means NOAA's split with the plain note (`_gspec_prior_note`,
+  `_gspec_split_note`; the split-note change gives the same answers as before).
+- README reworded; the comment fixed. Tests: the class (split note, age note, failed load), a page pin for the rule,
+  the reviewer's left-out case. Full pytest 2,246 passed; UI 573.
+- Test site (test @ 09babc5, UI 1.28.7 served 18:39 UTC), headless Chrome, the site's own answers with one field added
+  through DevTools: phone 375 / 360 px, the split note cut (24 / 15 px of 244) with the station name whole
+  (217 px) and the class set; the NWPS age note "· 40 h old" whole (56 of 56 px) and a point's "· 20 h old" whole
+  (56 of 56 px), no class; desktop 1280: every note whole; meta lines carry the notes; no console problems.
+- Open (owner's call): an open table could switch by itself when the new run lands (a re-ask while a noted answer is
+  on screen); today it switches on the next load.

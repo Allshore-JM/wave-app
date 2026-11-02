@@ -1072,6 +1072,10 @@
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = els.old ? cyc + ageNote : cyc;
               setMeta(d.graph_header, oldNote);
+              var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
+              // a model switch at the same station keeps the table's time position (the first row showing under the frozen
+              // header stays the first row, by its time): read before the new table replaces the old one
+              var keep = d.table_html && landing !== revealedFor && revealedFor !== null && revealedFor.split('|')[0] === st.station ? tablePlace() : null;
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); if (!d.error) { var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = 'No forecast available.'; els.table.appendChild(p); } }   // an error is said once, in its box (G22 K-5)
               if (els.summary) { if (d.summary_html) els.summary.innerHTML = d.summary_html; else clearNode(els.summary); }   // the day-by-day Summary (plan section 35)
@@ -1082,8 +1086,8 @@
               graphs.setData(d.graph_data);
               applyPanels();
               if (!d.table_html) revealedFor = null;                           // an error answer: the next table is revealed again (G24 B-8)
-              var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
-              if (d.table_html && landing !== revealedFor) {                    // another model's table starts at another hour (G41 B-1)
+              if (keep) { revealedFor = landing; revealPending = false; restorePlace(keep); }   // another model, the same station: the same hour stays in view
+              else if (d.table_html && landing !== revealedFor) {               // another model's table starts at another hour (G41 B-1)
                 revealedFor = landing; revealPending = true; panelScroll = {};
                 if (panelKey() === 'summary') { els.body.scrollTop = 0; els.body.scrollLeft = 0; }   // another station's summary from its first day
               }
@@ -1153,6 +1157,33 @@
       if (!rr || !br) return;
       var prev = row.previousElementSibling, ctx = prev && prev.offsetHeight ? prev.offsetHeight : (row.offsetHeight || 0);   // one row of context above the now row: its own height (G24 re-check RC-10)
       els.body.scrollTop = Math.max(0, (rr.top - br.top) + els.body.scrollTop - hh - ctx);
+    }
+    // The table's place as a time: the first row showing under the frozen header (its time stamp, how far its top
+    // sits below the header's bottom, the sideways scroll); null when the detailed table is not on screen or has no
+    // stamped rows. restorePlace puts the row of that time (else the next one, else the last) back at that offset, so a
+    // switch between the models of one station (GFS, GFS (Bulletin), SWAN, NWPS: their tables start at different
+    // hours and hold different numbers of rows) leaves the same hours in view for comparing.
+    function tablePlace() {
+      if (state.view !== 'Table' || fw.mode === 'min' || tableMode !== 'detailed' || !els.table.querySelectorAll) return null;
+      var rows = els.table.querySelectorAll('tr[data-t]'); if (!rows || !rows.length) return null;
+      var head = els.table.querySelector('thead'), hh = head && head.offsetHeight ? head.offsetHeight : 0;
+      var br = els.body.getBoundingClientRect ? els.body.getBoundingClientRect() : null; if (!br) return null;
+      var top = br.top + hh;
+      for (var i = 0; i < rows.length; i++) {
+        var rr = rows[i].getBoundingClientRect ? rows[i].getBoundingClientRect() : null;
+        if (rr && rr.bottom > top) return { t: rows[i].getAttribute('data-t') || '', offset: rr.top - top, left: els.body.scrollLeft || 0 };
+      }
+      return null;
+    }
+    function restorePlace(place) {
+      var rows = els.table.querySelectorAll ? els.table.querySelectorAll('tr[data-t]') : null; if (!rows || !rows.length) return;
+      var row = rows[rows.length - 1];
+      for (var i = 0; i < rows.length; i++) { if ((rows[i].getAttribute('data-t') || '') >= place.t) { row = rows[i]; break; } }   // ISO stamps compare as text
+      var head = els.table.querySelector('thead'), hh = head && head.offsetHeight ? head.offsetHeight : 0;
+      var rr = row.getBoundingClientRect ? row.getBoundingClientRect() : null, br = els.body.getBoundingClientRect ? els.body.getBoundingClientRect() : null;
+      if (!rr || !br) return;
+      els.body.scrollTop = Math.max(0, (rr.top - br.top) + (els.body.scrollTop || 0) - hh - place.offset);
+      els.body.scrollLeft = place.left;
     }
     function setView(v) {
       var next = v === 'Graph' ? 'Graph' : 'Table', swap = next !== state.view;

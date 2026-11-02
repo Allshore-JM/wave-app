@@ -336,6 +336,7 @@ test('the context row above the now row is the row above it, at its own height (
 
 
 // ---- G41 B-1 (plan section 59, step 8): another model's table starts at another hour ----
+// (without stamped rows to keep the place by: the fallback; the keep rule has its own test below)
 test('a model change reveals the now row of the new table (G41 B-1); a unit change still leaves the place', async () => {
   const b = boot({ initial: { nwps_stations: ['51201'] } }); await settle(); wireTable(b);
   b.app.window.setMode('normal');
@@ -355,4 +356,46 @@ test('a model change reveals the now row of the new table (G41 B-1); a unit chan
   b.app.loader.load({ model: 'NWPS', tz: 'UTC' }); await settle();     // the server answers GFS (an office that stopped)
   b.fs_.last().release(skyPayload({ model: 'GFS', nwps_available: false })); await settle();
   assert.equal(b.page.body.scrollTop, 0, 'the same GFS table again: the echo decides, nothing moves');
+});
+
+
+// ---- a model switch at the same station keeps the table's time position (plan section 77, the owner's comment) ----
+function stampedRows(times, tops) {
+  return times.map((t, i) => ({ getAttribute: (k) => (k === 'data-t' ? t : null), getBoundingClientRect: () => ({ top: tops[i], bottom: tops[i] + 20 }), offsetHeight: 20 }));
+}
+test('switching the model at one station keeps the first row in view by its time; another station is revealed', async () => {
+  const b = boot({ initial: { nwps_stations: ['51201'] } }); await settle(); wireTable(b);
+  b.app.window.setMode('normal');
+  // the GFS table: hourly rows from 12:00; the body scrolled so that the 14:00 row shows first, 5 px under the header
+  let rows = stampedRows(['2026-09-26T12:00', '2026-09-26T13:00', '2026-09-26T14:00', '2026-09-26T15:00'], [95, 115, 135, 155]), next = null;
+  b.page.table.querySelectorAll = (sel) => (sel === 'tr[data-t]' ? rows : []);
+  // the new table's rows replace the old ones when the server's HTML is assigned, as in a browser
+  Object.defineProperty(b.page.table, 'innerHTML', { set(v) { if (next) { rows = next; next = null; } }, get() { return ''; } });
+  b.fs_.last().release(skyPayload({ nwps_available: true })); await settle();
+  assert.equal(b.page.body.scrollTop, 340, 'the first GFS table: revealed');
+  b.page.body.scrollTop = 200; b.page.body.scrollLeft = 60;
+  // the NWPS table: rows from 13:00, laid out differently (its 14:00 row sits at 300 before any scroll)
+  const nwps = stampedRows(['2026-09-26T13:00', '2026-09-26T14:00', '2026-09-26T15:00'], [280, 300, 320]);
+  next = nwps; b.app.loader.load({ model: 'NWPS' }); await settle();
+  b.fs_.last().release(skyPayload({ model: 'NWPS', nwps_available: true })); await settle();
+  // the 14:00 row back 5 px under the header: 200 + (300 - 100) - 40 - (-5)
+  assert.equal(b.page.body.scrollTop, 365, 'the same hour stays in view');
+  assert.equal(b.page.body.scrollLeft, 60, 'the sideways scroll kept');
+  // a time the other table lacks: the next row stands in; none later: the last row
+  b.page.body.scrollTop = 0; b.page.body.scrollLeft = 0;
+  rows = stampedRows(['2026-09-26T13:00', '2026-09-26T14:30', '2026-09-26T16:00'], [120, 140, 160]);   // 14:30 shows first, 0 px under the header
+  const gfs2 = stampedRows(['2026-09-26T12:00', '2026-09-26T15:00'], [500, 700]);
+  next = gfs2; b.app.loader.load({ model: 'GFS' }); await settle();                 // from the page cache
+  assert.equal(b.page.body.scrollTop, 700 - 100 - 40, 'the next row (15:00) under the header');
+  b.page.body.scrollTop = 0;
+  rows = stampedRows(['2026-09-26T18:00'], [125]);                                       // 15 px under the header
+  const nwps2 = stampedRows(['2026-09-26T13:00', '2026-09-26T14:00'], [500, 520]);
+  next = nwps2; b.app.loader.load({ model: 'NWPS', tz: 'UTC' }); await settle();
+  b.fs_.last().release(skyPayload({ model: 'NWPS', nwps_available: true })); await settle();
+  assert.equal(b.page.body.scrollTop, 520 - 100 - 40 + 15, 'no later row: the last row, partly under the header as before');
+  // another station: the now row, as before
+  b.page.body.scrollTop = 0;
+  b.app.loader.load({ station: '46001' }); await settle();
+  b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
+  assert.equal(b.page.body.scrollTop, 340, 'another station: revealed');
 });

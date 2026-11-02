@@ -396,6 +396,11 @@ def test_a_station_the_run_lacks_and_a_site_with_no_run(world):
     data, split, note = A.parse_gfs_spectral("41113", None)             # held in A only: the lag rule would say "shortly"
     assert split == "noaa" and note == "Swell split: NOAA's", "the newest held run is the site's and lacks it: nothing is on its way"
     assert A.parse_gfs_spectral("51201", None)[1] == "spectral"
+    site["run"] = (RUN_C[:8], RUN_C[8:])     # the site moves on before the job: B is no longer the site's run, still lacks it
+    data, split, note = A.parse_gfs_spectral("41113", None)
+    assert split == "noaa" and note == "Swell split: NOAA's", "never A's table as 'delayed': the job left 41113 out of B (77c review)"
+    assert A._gspec_prior_note(RUN_A, RUN_C) is None and A._gspec_split_note(RUN_A, RUN_C) == "Swell split: NOAA's"
+    assert A.parse_gfs_spectral("51201", None)[1:] == ("spectral", f"{RUN_C[8:]} UTC run spectral analysis in progress")
     site["run"] = (None, None)                                          # no bulletin run found: ours still serves
     data, split, note = A.parse_gfs_spectral("51201", None)
     assert split == "spectral" and data[-1] is None

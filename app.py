@@ -441,7 +441,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.28.6"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.28.7"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -3432,8 +3432,9 @@ def _gspec_split_note(spectral_run, site_run) -> str:
     with _GSPEC_LOCK:
         since = _GSPEC["failing_since"]
         newest = max(_GSPEC["runs"]) if _GSPEC["runs"] else None
-    if newest is not None and site_run is not None and newest >= site_run and (spectral_run is None or spectral_run < newest):
-        return "Swell split: NOAA's"             # the newest held run lacks this station: nothing is on its way (G48 A P3-5)
+    if newest is not None and (spectral_run is None or spectral_run < newest):
+        return "Swell split: NOAA's"             # the newest held run lacks this station: nothing is on its way (G48 A P3-5;
+        #                                          any newer held run, the site's or not: the 77c review)
     if spectral_run is None:
         shortly = newest is None and (not since or time.time() - since < _GSPEC_FAILING_SHORTLY_S)
     else:
@@ -3507,15 +3508,15 @@ def _gspec_lag_h(spectral_run, site_run):
 
 def _gspec_prior_note(spectral_run, site_run):
     """The note on the prior run's spectral table served while the site's run R is newer: None when S >= R or the
-    prior table should not serve (R more than _GSPEC_PRIOR_MAX_H ahead, or the newest held run is R's or newer and
-    lacks the station: nothing of ours is on its way, G48 A P3-5); else "<HH> UTC run spectral analysis in progress"
-    (one cycle behind) or "... delayed"."""
+    prior table should not serve (R more than _GSPEC_PRIOR_MAX_H ahead, or a newer held run than S lacks the station:
+    the job left it out, so nothing of ours is on its way, G48 A P3-5 and the 77c review); else "<HH> UTC run spectral
+    analysis in progress" (one cycle behind) or "... delayed"."""
     lag = _gspec_lag_h(spectral_run, site_run)
     if lag is None or lag <= 0 or lag > _GSPEC_PRIOR_MAX_H:
         return None
     with _GSPEC_LOCK:
         newest = max(_GSPEC["runs"]) if _GSPEC["runs"] else None
-    if newest is not None and newest >= site_run and spectral_run < newest:
+    if newest is not None and spectral_run < newest:
         return None
     word = "in progress" if lag <= _GSPEC_LAG_SHORTLY_H else "delayed"
     return f"{site_run[8:]} UTC run spectral analysis {word}"
@@ -4728,7 +4729,8 @@ def index():
     old_run_note = (f" · {int(old_age + 0.5)} h old"
                     if isinstance(old_age, (int, float))
                     and old_age >= (_SWAN_NOTE_H if payload.get("model") == "SWAN" else _NWPS_NOTE_H) else "")
-    if payload and payload.get("split_note"):                  # NOAA's split served meanwhile (plan section 77)
+    if payload and payload.get("split_note"):                  # NOAA's split, or the prior run's spectral table, served
+        #                                                       meanwhile (plan sections 77 and 77c)
         old_run_note += f" · {payload['split_note']}"
 
     # The forecast window's starting state (plan section 25): what this request asked for, resolved. The page's NWPS

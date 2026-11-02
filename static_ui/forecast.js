@@ -1050,7 +1050,7 @@
               clearNode(els.table); setMeta(null); graphs.setData(null);
               if (els.summary) clearNode(els.summary); summaryAvail = false; applyPanels();
               text(els.cycle, ''); if (els.cycle) els.cycle.title = '';
-              if (els.old) { text(els.old, ''); els.old.hidden = true; }
+              if (els.old) { text(els.old, ''); els.old.hidden = true; els.old.classList.remove('fw-split'); }
               syncBar(null, state);                                           // GFS stays one press away (G41 B-4)
               note(null);
             },
@@ -1064,9 +1064,11 @@
                 ? ' · ' + Math.round(oldAge) + ' h old' : '';                      // an NWS office / PacIOOS that stopped (G41 K-7; §64)
               // the GFS table while the new run's analysis runs: the prior run's table or NOAA's split, said in a note (§77, §77c)
               var splitNote = d.model === 'GFS' && typeof d.split_note === 'string' && d.split_note ? ' · ' + d.split_note : '';
-              // the note has its own span where the page has one: on phones the run text gives way first, the note not
+              // the note has its own span where the page has one: on phones the run text gives way first, an age note
+              // stays whole (G41); a split note gives way to the station name (it is whole on the meta line and in the
+              // tooltip: §77c), so the span says which one it holds (fw-split)
               var ageNote = pointNote + oldNote + splitNote;
-              if (els.old) { text(els.old, ageNote.replace(/^ /, '')); els.old.hidden = !ageNote; } else cyc += ageNote;
+              if (els.old) { text(els.old, ageNote.replace(/^ /, '')); els.old.hidden = !ageNote; els.old.classList.toggle('fw-split', !!splitNote); } else cyc += ageNote;
               writeLabel(els.title, label); text(els.cycle, cyc);
               if (noteFor !== null && noteFor !== st.station) note(null);
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast

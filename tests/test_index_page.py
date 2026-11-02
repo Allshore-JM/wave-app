@@ -1277,7 +1277,7 @@ def test_section_59_the_nwps_model_on_the_page(client):
 
 
 def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
-    """With GFS_SPECTRAL on, the model bar shows "GFS (NOAA split)" at a listed GFS station (pressed when asked for, GFS
+    """With GFS_SPECTRAL on, the model bar shows "GFS (Bulletin)" at a listed GFS station (pressed when asked for, GFS
     not pressed then), the no-script select offers it, the state carries gfsb_on / gfsb_available and the head's rule;
     a point and a lake station never get it; with the flag off the button is hidden and the state says so."""
     src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
@@ -1296,9 +1296,9 @@ def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
     assert not re.search(r'id="modelBar" hidden', b)
     assert re.search(r'data-model="GFSB" aria-pressed="true"', b) and re.search(r'data-model="GFS" aria-pressed="false"', b)
     assert 'class="btn btn-outline-secondary active" data-model="GFSB"' in b
-    assert re.search(r'<option value="GFSB" selected>GFS \(NOAA split\)</option>', b)
+    assert re.search(r'<option value="GFSB" selected>GFS \(Bulletin\)</option>', b)
     b2 = client.get("/?station=51201").get_data(as_text=True)
-    assert re.search(r'data-model="GFSB" aria-pressed="false" title="[^"]*">GFS \(NOAA split\)</button>', b2)   # shown, not pressed
+    assert re.search(r'data-model="GFSB" aria-pressed="false" title="[^"]*">GFS \(Bulletin\)</button>', b2)   # shown, not pressed
     assert re.search(r'data-model="GFS" aria-pressed="true"', b2) and initial(b2)["model"] == "GFS"
     b3 = client.get("/?station=pt_21667N_158054W&model=GFSB").get_data(as_text=True)
     assert initial(b3)["model"] == "GFS" and initial(b3)["gfsb_available"] is False and re.search(r'data-model="GFSB" aria-pressed="false" hidden', b3)
@@ -1310,7 +1310,7 @@ def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
     assert "51001" not in A.SWAN_STATIONS and "51001" not in A.NWPS_STATIONS          # (the fixture's stations: 51201 SWAN, 46001 NWPS)
     b6 = client.get("/?station=51001").get_data(as_text=True)
     assert not re.search(r'id="modelBar" hidden', b6) and initial(b6)["gfsb_available"] is True
-    assert re.search(r'data-model="GFSB" aria-pressed="false" title="[^"]*">GFS \(NOAA split\)</button>', b6)
+    assert re.search(r'data-model="GFSB" aria-pressed="false" title="[^"]*">GFS \(Bulletin\)</button>', b6)
     assert re.search(r'data-model="SWAN" aria-pressed="false" hidden', b6) and re.search(r'data-model="NWPS" aria-pressed="false" hidden', b6)
     monkeypatch.setattr(A, "GFS_SPECTRAL", False)
     b7 = client.get("/?station=51001").get_data(as_text=True)

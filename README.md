@@ -931,8 +931,8 @@ job's file lands, or a job behind) NOAA's own split of the site's run is served,
 under its own key kept one minute, with the note "Swell split: NOAA's (ours arrives shortly)" while the job is at most
 one cycle behind (or nothing is held yet and the reads have not failed for half an hour), else "Swell split: NOAA's".
 The answer says which split it carries (`split`: spectral / noaa; `split_note`). NOAA's own split stays one press away:
-the model button **GFS | GFS (NOAA split)** (model `GFSB`; shown at every listed GFS station; never at a forecast point
-or a lake station), the header then "GFS (NOAA split) · run …". A spectral run 48 h or older has early hours older than
+the model button **GFS | GFS (Bulletin)** (model `GFSB`; shown at every listed GFS station; never at a forecast point
+or a lake station), the header then "GFS (Bulletin) · run …". A spectral run 48 h or older has early hours older than
 every winds run kept, so its blank wind cells are final. The combined height is the spectrum's own (NOAA's to 0.03 ft);
 the table shows the six most powerful parts of 5 cm or more (a seventh goes). `/healthz` reports `gfs.spectral` (the
 pointer's run, the runs held, the last error, answers served from each split; never part of `ok`). With the flag unset

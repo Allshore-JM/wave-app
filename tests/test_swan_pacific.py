@@ -300,7 +300,15 @@ def test_the_cycle_age_and_the_wind_rule():
         assert not A._swan_wind_final(cyc) and not A._old_run_wind_final(cyc)
         assert A._forecast_entry_ttl(blank) == A._WIND_NEG_TTL, "a fresh table's blank wind cells may still heal"
         gfs = ("Cycle : 20261029 18 UTC", "Location : 52202", None, blank[3], "Pacific/Guam", None)
-        assert A._forecast_entry_ttl(gfs) == A._WIND_NEG_TTL, "a GFS table: unchanged"
+        from datetime import datetime as _dt, timedelta as _td
+        old_now = A._nwps_utcnow
+        try:                                                           # section 77: the GFS clause of the same rule
+            A._nwps_utcnow = lambda: _dt(2026, 10, 29, 18) + _td(hours=10)
+            assert A._forecast_entry_ttl(gfs) == A._WIND_NEG_TTL, "a young GFS run: may still heal"
+            A._nwps_utcnow = lambda: _dt(2026, 10, 29, 18) + _td(hours=49)
+            assert A._forecast_entry_ttl(gfs) == A._FORECAST_CACHE_TTL, "a GFS run 49 h old: final"
+        finally:
+            A._nwps_utcnow = old_now
     finally:
         A._swan_now = time.time
 

@@ -255,3 +255,23 @@ mode was not usable; the existing members' rows are unchanged under v2.1). test_
 test_gfs_spectral's pinned-rows test asks for the member's own hour set. Mutants of the split (scratch spec77/k1mut.py,
 on a scratch copy): 18, 17 killed; M19 (the new labels overwrite the kept part's too) is equivalent (only label numbers
 change). Job suite: see the round-2 checks.
+
+## Round 2 on the test site and the model-switch position (2026-11-02)
+
+- The first product built with rules v2.1: run 2026110206, published 11:45 UTC (539 s on 4 workers, 723 stations, 0
+  left out). The test site's 35 spectral tables (30 compact + 5 UTC answers) equal the bucket's binary decoded
+  independently at every hour (0 mismatches); all 65 answers 200.
+- Waimea (51201), Monday 2 Nov HST on that run: every hour from 8 AM to 7 PM lists the NW groundswell (5.6-6.3 ft,
+  13.6-14.6 s, 328-330 deg) beside the NE sea (5.6-7.2 ft, 8.7-9.1 s, 17-26 deg): the K1 merges are gone on the live
+  product.
+- The owner's comment of 2026-11-02 ("when switching between forecast model tables the date should stay in the current
+  position"): UI 1.28.4 (feat/gfs-spectral 51aaac3; test 0fa79ae). A switch between the models of one station reads the
+  first row showing under the frozen header before the new table lands (its time stamp, its offset, the sideways
+  scroll) and puts the row of that time in the new table (the next row where the hour is missing, the last row beyond
+  the end) back at the same offset. Another station, a unit or zone change and a table without stamped rows keep the
+  reveal rule. Trusted clicks and taps on the test site (desktop 1280x800, phone 375x812; scratch spec77/v5/s6.js):
+  51201 GFS -> GFS (Bulletin) -> SWAN -> GFS -> SWAN -> GFS (Bulletin) and 46026 GFS -> NWPS -> GFS (Bulletin) -> GFS
+  keep the same row first at the same offset (within 1 px; on the phone 0.5 px of drift a switch from fractional row
+  heights, 2 px after five); a SWAN hour past its table scrolled near the end lands on the same hour of the GFS table
+  with the sideways scroll kept; a fresh station reveals its now row as before; console clean. Tests: forecast-view
+  +1 (stamped rows swapped on the innerHTML assignment, as a browser does), UI suites 573, the asset pin re-made.

@@ -1071,7 +1071,7 @@
               if (noteFor !== null && noteFor !== st.station) note(null);
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = els.old ? cyc + ageNote : cyc;
-              setMeta(d.graph_header, oldNote);
+              setMeta(d.graph_header, oldNote + splitNote);                       // the split note whole on the meta line too (§77c: the bar can cut it on phones)
               var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
               // a model switch at the same station keeps the table's time position (the first row showing under the frozen
               // header stays the first row, by its time): read before the new table replaces the old one

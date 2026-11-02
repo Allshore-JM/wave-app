@@ -228,11 +228,25 @@ def _parabolic_peak(f, e1, k):
 # station's wind, pieces whose energy lies mostly inside the wind-sea region of the spectrum (phase speed below
 # 1.7 x U10 cos(direction - wind)) and within WS_WIND_DMAX of the wind join one another within WS_DMAX. The constants
 # are the measured settings of section 76e (the scratch e76_settings.json), pinned by a test.
+#
+# The shoulder split (section 77, the owner's K1 finding on run 2026110118 at Waimea): a broad sea lying on the flank
+# of a tall swell peak has no local maximum of its own on the raw grid when the ridge between them rises monotonically
+# (the saddle is below one per cent), so the watershed above folds the two into one. After the merges, inside every
+# piece the watershed is run again on the f^SUB_FPOW-weighted field (the equilibrium range flattened, so a hump at a
+# shorter period stands out); a sub-split is kept only between parts whose PEAK bins lie at least SUB_DMAX apart in
+# direction AND SUB_LNR apart in ln(frequency), each at least SUB_MIN_HS and
+# SUB_MIN_SHARE of the piece's energy, and not both lying at least SUB_WS_SHARE inside the wind-sea region (one wind
+# sea in two humps). Parts that fail fold into the part nearest in (direction, period). Measured on 16 station-runs
+# (scratch swell76/k1study.py): the hours with a distinct pair +75, systems per hour +0.04, flicker +0.01.
 V2 = dict(dmax=30.0, lnr=0.12, pass_min=0.6, frag_hs=0.25, frag_share=0.05, frag_dmax=45.0, frag_lnr=0.30,
-          tiny_hs=0.15, ws_dmax=45.0, ws_wind_dmax=60.0, smooth_f=0.20)
-RULES = {"version": "v2", "smoothing": "3x3 above smooth_f Hz only", "rejoin": "within dmax deg and lnr in ln(Tp) "
+          tiny_hs=0.15, ws_dmax=45.0, ws_wind_dmax=60.0, smooth_f=0.20,
+          sub_fpow=3.0, sub_dmax=50.0, sub_lnr=0.2, sub_min_hs=0.3, sub_min_share=0.2, sub_ws_share=0.3)
+RULES = {"version": "v2.1", "smoothing": "3x3 above smooth_f Hz only", "rejoin": "within dmax deg and lnr in ln(Tp) "
          "across a pass >= pass_min x the lower peak", "fragments": "under frag_hs m and frag_share of the energy "
          "join the nearest touching piece within frag_dmax / frag_lnr; under tiny_hs the biggest touching piece",
+         "shoulder": "inside each piece the watershed of E x f^sub_fpow; parts kept apart when their peaks lie "
+         ">= sub_dmax deg and >= sub_lnr in ln(f) apart, each >= sub_min_hs m and "
+         "sub_min_share of the piece, unless both lie >= sub_ws_share inside the wind-sea region",
          "wind_sea": "pieces mostly inside 1.7 U10 cos(dir - wind) > c and within ws_wind_dmax of the wind join "
          "within ws_dmax of each other", "settings": V2}
 
@@ -305,6 +319,71 @@ def _fold(lab, info, touch, passes, keep, go, f, df):
 def _merge_pair(lab, info, touch, passes, a, b, f, df):
     keep, go = (a, b) if (info[a]["m0"], -a) >= (info[b]["m0"], -b) else (b, a)
     _fold(lab, info, touch, passes, keep, go, f, df)
+
+
+def _shoulder_split(lab, info, Es, W, Wm, th, f, d, df, o):
+    """The shoulder split (see the V2 note): sub-splits the pieces of `lab` in place where the f^sub_fpow-weighted
+    watershed finds distinct parts. Returns True when any label changed (the caller rebuilds the piece tables).
+    Deterministic: pieces in label order, ties by label; the biggest part keeps the piece's label."""
+    Ew = _quantize(Es * (f[:, None] ** o["sub_fpow"]))
+    nd = lab.shape[1]
+    nxt = int(lab.max()) + 1
+    changed = False
+    for p in sorted(info):
+        r = info[p]
+        if r["m0"] <= 0 or r["hs"] < 2 * o["sub_min_hs"]:
+            continue
+        Sp = np.where(lab == p, Ew, 0.0)
+        sub = _labels(Sp)
+        if len(np.unique(sub[sub >= 0])) < 2:
+            continue
+        sinfo, stouch, spass = _pieces(sub, Sp, W, Wm, th, f, df)
+        m0p = r["m0"]
+        while len(sinfo) > 1:
+            small = sorted((q for q in sinfo if sinfo[q]["hs"] < o["sub_min_hs"] or sinfo[q]["m0"] < o["sub_min_share"] * m0p),
+                           key=lambda q: (sinfo[q]["m0"], q))
+            if small:
+                q = small[0]
+                nb = {}
+                for (a, b), n in stouch.items():
+                    if a == q:
+                        nb[b] = nb.get(b, 0) + n
+                    elif b == q:
+                        nb[a] = nb.get(a, 0) + n
+                Q = sinfo[q]
+                if nb:
+                    tgt = min(nb, key=lambda x: (_ang(Q["dir"], sinfo[x]["dir"]) / o["sub_dmax"]
+                                                 + abs(math.log(Q["tp"] / sinfo[x]["tp"])) / o["sub_lnr"], x))
+                else:
+                    tgt = max((x for x in sinfo if x != q), key=lambda x: (sinfo[x]["m0"], -x))
+                _fold(sub, sinfo, stouch, spass, tgt, q, f, df)
+                continue
+            # every part big enough: the least distinct touching pair folds; none left = the split stands
+            best = None
+            for (a, b) in stouch:
+                A, B = sinfo[a], sinfo[b]
+                da = _ang(d[A["pj"]], d[B["pj"]])
+                dl = abs(math.log(f[A["pi"]] / f[B["pi"]]))
+                distinct = da >= o["sub_dmax"] and dl >= o["sub_lnr"]
+                if distinct and Wm is not None and A["m0w"] >= o["sub_ws_share"] * A["m0"] \
+                        and B["m0w"] >= o["sub_ws_share"] * B["m0"]:
+                    distinct = False
+                if not distinct:
+                    key = (da / o["sub_dmax"] + dl / o["sub_lnr"], a, b)
+                    if best is None or key < best:
+                        best = key
+            if best is None:
+                break
+            _merge_pair(sub, sinfo, stouch, spass, best[1], best[2], f, df)
+        if len(sinfo) < 2:
+            continue
+        keep = max(sinfo, key=lambda x: (sinfo[x]["m0"], -x))
+        for q in sorted(sinfo):
+            if q != keep:
+                lab[sub == q] = nxt
+                nxt += 1
+        changed = True
+    return changed
 
 
 def partition_v2(freqs, dirs, E, wind=None, **opts):
@@ -387,6 +466,8 @@ def partition_v2(freqs, dirs, E, wind=None, **opts):
                 break
         if not merged:
             break
+    if o["sub_fpow"] > 0 and _shoulder_split(lab, info, Es, W, Wm, th, f, d, df, o):
+        info, touch, passes = _pieces(lab, S, W, Wm, th, f, df)
     if Wm is not None:
         while len(info) > 1:
             wsp = {p for p, r in info.items() if r["m0"] > 0 and r["m0w"] >= 0.5 * r["m0"]

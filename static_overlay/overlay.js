@@ -5454,6 +5454,24 @@
     if (this.last && this.layer) this.render(this.last);
     if (this.layer && this.contours) this.layer.setContours(this._contourCfg());   // the interval follows the site unit
   };
+  // The forecast table's run beside the overlay's: the forecast table is always GFS-Wave (or SWAN): under another
+  // model its run is named with its model.
+  Overlay.prototype._runTailText = function (m) {
+    var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
+    return pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run'
+      : pc && pc.model === 'GLWU' ? ' — the forecast table is a NOAA GLWU (Great Lakes) run'
+      : pc && pc.model === 'NWPS' ? ' — the forecast table is a NOAA NWPS (nearshore) run'
+      : pc && pc.run && this._def().table === 'model' ? ' — the forecast table is on GFS-Wave run ' + pc.run
+      : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
+  };
+  // The forecast table moved to a new run by itself (section 77d): only the run line follows, in place (no panel
+  // rebuild: menus, the readout and focus stay; 77d review P3-4).
+  Overlay.prototype.refreshRunTail = function () {
+    var ui = this.ui;
+    if (!ui || !ui.runText || !this.manifest) return;
+    ui.runTail = this._runTailText(this.manifest);
+    this._refreshRunLine();
+  };
   // The run, Updated and Next Update lines, in place (no panel rebuild: focus and the sheet's scroll stay).
   Overlay.prototype._refreshRunLine = function () {
     var ui = this.ui;
@@ -5899,13 +5917,7 @@
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
     ui.updLine = line('ov-upd', 'Updated: '); ui.updText = ui.updLine.appendChild(document.createTextNode(''));
     ui.nextLine = line('ov-next', 'Next Update: '); ui.nextText = ui.nextLine.appendChild(document.createTextNode(''));
-    var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
-    // the forecast table is always GFS-Wave (or SWAN): under another model its run is named with its model
-    ui.runTail = pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run'
-      : pc && pc.model === 'GLWU' ? ' — the forecast table is a NOAA GLWU (Great Lakes) run'
-      : pc && pc.model === 'NWPS' ? ' — the forecast table is a NOAA NWPS (nearshore) run'
-      : pc && pc.run && this._def().table === 'model' ? ' — the forecast table is on GFS-Wave run ' + pc.run
-      : pc && pc.run && pc.run !== m.run ? ' — the forecast table is on run ' + pc.run : '';
+    ui.runTail = this._runTailText(m);
     ui.runLabel = m.run_utc.replace('T', ' ').replace(':00:00Z', 'Z');
     this._refreshRunLine();
     var age = (Date.now() - Date.parse(this.pointer.published_utc)) / 1000;

@@ -416,3 +416,72 @@ test('77d: the quiet switch to a new run keeps the first row in view by its time
   assert.equal(b.page.body.scrollTop, 365, 'the same hour stays in view: 200 + (300 - 100) - 40 - (-5)');
   assert.equal(b.page.body.scrollLeft, 60, 'the sideways scroll kept');
 });
+
+// rows laid out in the scrolling body: row k sits at y[k] in the body's content, so its rect follows the body's scroll
+function laidRows(b, times, ys) {
+  return times.map((t, i) => ({ getAttribute: (k) => (k === 'data-t' ? t : null), offsetHeight: 20,
+    getBoundingClientRect: () => { const top = 100 + ys[i] - (b.page.body.scrollTop || 0); return { top, bottom: top + 20 }; } }));
+}
+test('77d review P3-1: a quiet switch while the detailed table is out of view (Graph view, Summary, a parked window) brings its hour back when the table shows, never the old pixel offset', async () => {
+  const NOTE = '18 UTC run spectral analysis in progress';
+  const newRun = () => skyPayload({ model: 'GFS', split: 'spectral', graph_header: Object.assign({}, skyPayload().graph_header, { cycle: '20261102 18 UTC' }) });
+  async function setup() {
+    const b = boot({}); await settle(); const w = wireTable(b);
+    w.row.getBoundingClientRect = () => ({ top: 100 + 400 - (b.page.body.scrollTop || 0) });   // the now row laid out at 400 too
+    b.app.window.setMode('normal');
+    const box = { rows: null, next: null };
+    box.rows = laidRows(b, ['2026-11-02T02:00', '2026-11-02T03:00', '2026-11-02T14:00', '2026-11-02T15:00'], [260, 280, 300, 320]);
+    b.page.table.querySelectorAll = (sel) => (sel === 'tr[data-t]' ? box.rows : []);
+    Object.defineProperty(b.page.table, 'innerHTML', { set(v) { if (box.next) { box.rows = box.next; box.next = null; } }, get() { return ''; } });
+    b.fs_.last().release(skyPayload({ model: 'GFS', split: 'spectral', split_note: NOTE })); await settle();
+    b.page.body.scrollTop = 265; b.page.body.scrollLeft = 60;            // 14:00 shows first, 5 px under the frozen header
+    return { b, box };
+  }
+  async function quietSwap(b, box) {
+    const live = b.timers.all.filter((t) => t.on); assert.equal(live.length, 1, 'the re-ask is waiting');
+    live[0].on = false; live[0].fn(); await settle();
+    box.next = laidRows(b, ['2026-11-02T08:00', '2026-11-02T14:00', '2026-11-02T15:00'], [200, 520, 540]);
+    b.fs_.last().release(newRun()); await settle();
+  }
+  // the same hour back: 14:00 at 520 in the new table, 5 px under the 40-px header -> scrollTop 485
+  const g = await setup();
+  g.b.app.setView('Graph'); await settle();
+  await quietSwap(g.b, g.box);
+  g.b.app.setView('Table');
+  assert.equal(g.b.page.body.scrollTop, 485, 'Graph view: the same hour when the table shows again (the old offset 265 would show 14:00 215 px down)');
+  assert.equal(g.b.page.body.scrollLeft, 60);
+  g.b.page.body.scrollTop = 7; g.b.app.setView('Graph'); g.b.app.setView('Table');
+  assert.equal(g.b.page.body.scrollTop, 7, 'once: afterwards the table is where the visitor left it');
+  const s = await setup();
+  s.b.app.setTableMode('summary');
+  await quietSwap(s.b, s.box);
+  s.b.app.setTableMode('detailed');
+  assert.equal(s.b.page.body.scrollTop, 485, 'Summary: the same hour when Detailed shows again');
+  const m = await setup();
+  m.b.app.window.setMode('min');
+  await quietSwap(m.b, m.box);
+  assert.equal(m.b.page.body.scrollTop, 265, 'parked: nothing moves while it is parked');
+  m.b.app.window.setMode('normal');
+  assert.equal(m.b.page.body.scrollTop, 485, 'parked: the same hour when the window opens again');
+  assert.equal(m.b.page.body.scrollLeft, 60);
+  // another station meanwhile: its own now row, not the old hour
+  const o = await setup();
+  o.b.app.setView('Graph'); await settle();
+  await quietSwap(o.b, o.box);
+  o.b.app.loader.load({ station: '46001' }); await settle(); o.b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
+  o.b.app.setView('Table');
+  assert.equal(o.b.page.body.scrollTop, 340, 'another station: revealed at its now row');
+  const q = await setup();                                                     // the same, parked: the window opens on the new station's now row
+  q.b.app.window.setMode('min');
+  await quietSwap(q.b, q.box);
+  q.b.app.loader.load({ station: '46001' }); await settle(); q.b.fs_.last().release(skyPayload({ station: '46001' })); await settle();
+  q.b.app.window.setMode('normal');
+  assert.equal(q.b.page.body.scrollTop, 340, 'parked, then another station: its now row');
+  const u = await setup();                                                     // no place to keep (the table had no stamped rows when it was left)
+  const stamped = u.box.rows; u.box.rows = [];
+  u.b.app.setView('Graph'); await settle();
+  u.box.rows = stamped;
+  await quietSwap(u.b, u.box);
+  u.b.app.setView('Table');
+  assert.equal(u.b.page.body.scrollTop, 340, 'no place known: the new run opens at its now row, not at the top');
+});

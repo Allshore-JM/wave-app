@@ -493,9 +493,9 @@ test('G16-B P2-1: every forecast that lands is announced with the table\'s zone,
   const b = boot({}); const seen = [];
   b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
   await settle(); b.fs_.last().release(payload({ tz_label: 'Pacific/Honolulu' })); await settle();
-  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', ok: true, point: null, final: false, reason: null, lat: null, lon: null }]);
+  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', quiet: false, ok: true, point: null, final: false, reason: null, lat: null, lon: null }]);
   b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
-  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', ok: true, point: null, final: false, reason: null, lat: null, lon: null });
+  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', quiet: false, ok: true, point: null, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
   // the answer's position goes with the event (a removed station's sheltered note offers its live buoy: G35 B-8; re-check F12)
   b.page.tz.value = ''; b.page.tz.dispatch('change'); await settle();
@@ -912,7 +912,7 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   await settle();
   const pt = { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, cell_lat: 21.6667, cell_lon: -158.1667, cell_km: 11.6, grid: 'g16', run: '2026100206', age_hours: 9.4 };
   b.fs_.last().release(payload({ station: 'pt_21667N_158054W', swan_available: false, point: pt })); await settle();
-  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', ok: true, point: pt, final: false, reason: null, lat: null, lon: null });
+  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', quiet: false, ok: true, point: pt, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'a run of normal age: no note');
   assert.equal(b.doc.getElementById('modelBar').hidden, true, 'no SWAN for a point');
   b.app.loader.cache.clear(); b.app.loader.load({ unit: 'Metric' }); await settle();
@@ -1754,4 +1754,80 @@ test('77d page: the open table switches to the new run in place, the note goes, 
   assert.equal(old.hidden, true, 'the note goes');
   assert.ok(b.doc.getElementById('forecastMeta').textContent.startsWith('Cycle : 20261102 18 UTC'));
   assert.equal(events[events.length - 1].ok, true); assert.equal(b.timers.live().length, 0);
+  assert.equal(events[events.length - 1].quiet, true, 'the overlay hears that the switch was quiet (its run line only)');
+  assert.equal(events[0].quiet, false, 'a load is not quiet');
+});
+
+// ---- section 77d review fixes ----
+test('77d review P2-1: failed re-asks wait twice as long each time (up to 10 min) and an answer gets the interval back; an error answer never waits, even with a note', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), t = fakeTimers(), applied = [];
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1000, swanStations: [], setTimer: t.set, clearTimer: t.clear,
+    ui: { apply: (d, s, r, quiet) => applied.push([d, quiet]), busy: () => {}, error: () => {} } }, st);
+  L.load({}); await settle(); fs_.last().release(noted()); await settle();
+  const seen = [t.live()[0].ms];
+  for (const kind of ['fail', 'busy', 'null', 'error', 'http', 'fail']) {
+    t.fire(); await settle(); const c = fs_.last();
+    if (kind === 'fail') c.fail(); else if (kind === 'busy') c.release({ busy: true }); else if (kind === 'null') c.release(null);
+    else if (kind === 'error') c.release({ station: '51201', model: 'GFS', error: 'No .bull', split_note: NOTE_SOON }); else c.release(noted(), 503);
+    await settle(); assert.equal(t.live().length, 1, kind + ': asked again later'); seen.push(t.live()[0].ms);
+  }
+  assert.deepEqual(seen, [60000, 120000, 240000, 480000, 600000, 600000, 600000]);
+  assert.equal(I.RECHECK_MAX_MS, 600000);
+  t.fire(); await settle(); fs_.last().release(noted()); await settle();
+  assert.deepEqual(t.live().map((x) => x.ms), [60000], 'an answer: the interval back'); assert.equal(applied.length, 1);
+  const late = noted({ split_note: '18 UTC run spectral analysis delayed' });
+  assert.deepEqual([0, 1, 2, 5].map((n) => I.recheckAfter(late, n)), [300000, 600000, 600000, 600000]);
+  assert.equal(I.recheckAfter(fresh(), 3), 0);
+  // an error answer that carries a split note is shown with Retry and never asked again by itself (each re-ask was a NOAA fetch)
+  L.load({ station: '41001' }); await settle();
+  fs_.last().release({ station: '41001', model: 'GFS', error: 'No .bull file found for 41001', split: 'noaa', split_note: "Swell split: NOAA's" }); await settle();
+  assert.equal(t.live().length, 0, 'no timer for an error answer');
+  assert.equal(I.recheckMs({ model: 'GFS', error: 'x', split_note: NOTE_SOON }), 0);
+  assert.equal(I.recheckMs({ model: 'GFS', error: 'x', table_html: '<table></table>', split_note: NOTE_SOON }), 60000, 'an error beside a table still waits');
+});
+
+test('77d review P3-2: another note at the same cycle, another cycle with the same note, or another split is applied quietly', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), t = fakeTimers(), applied = [];
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1000, swanStations: [], setTimer: t.set, clearTimer: t.clear,
+    ui: { apply: (d, s, r, quiet) => applied.push([d, quiet]), busy: () => {}, error: () => {} } }, st);
+  L.load({}); await settle(); fs_.last().release(noted()); await settle();
+  const DELAYED = '18 UTC run spectral analysis delayed';
+  t.fire(); await settle(); fs_.last().release(noted({ split_note: DELAYED })); await settle();
+  assert.equal(applied.length, 2, 'the note changed at the same cycle'); assert.equal(applied[1][1], true); assert.equal(applied[1][0].split_note, DELAYED);
+  assert.deepEqual(t.live().map((x) => x.ms), [300000], 'late: every 5 minutes');
+  const gh18 = { cycle: '20261102 18 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' };
+  t.fire(); await settle(); fs_.last().release(noted({ split_note: DELAYED, graph_header: gh18 })); await settle();
+  assert.equal(applied.length, 3, 'the cycle changed with the same note'); assert.equal(applied[2][0].graph_header.cycle, '20261102 18 UTC');
+  t.fire(); await settle(); fs_.last().release(noted({ split_note: DELAYED, graph_header: gh18, split: 'noaa' })); await settle();
+  assert.equal(applied.length, 4, 'the split changed'); assert.ok(applied.slice(1).every((a) => a[1] === true));
+  t.fire(); await settle(); fs_.last().release(noted({ split_note: DELAYED, graph_header: gh18, split: 'noaa' })); await settle();
+  assert.equal(applied.length, 4, 'all three the same: nothing on screen changes');
+});
+
+test('77d review P3-3: a table the server rendered into the page (render=full) with a split note waits for its run too', async () => {
+  const gd = payload().graph_data, gh = { cycle: '20261102 12 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' };
+  const b = boot({ initial: { inline: true, station: '51201', model: 'GFS', graph_data: gd, graph_header: gh, gfsb_on: true, gfsb_available: true, split: 'spectral', split_note: NOTE_SOON } });
+  await settle();
+  assert.equal(b.fs_.calls.length, 0, 'inline: no fetch');
+  assert.deepEqual(b.timers.live().map((x) => x.ms), [60000], 'the inline answer is waited on');
+  b.timers.fire(); await settle();
+  assert.equal(b.fs_.calls.length, 1); assert.equal(b.fs_.param(b.fs_.last(), 'station'), '51201');
+  b.fs_.last().release(fresh({ gfsb_available: true })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20261102 18 UTC'); assert.equal(b.timers.live().length, 0);
+});
+
+test('77d review P3-6: a load from the page cache ends a busy retry that is waiting (it asks nothing more, writes nothing)', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), waits = [], applied = [];
+  const st = { station: '46001', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1000, swanStations: [], wait: () => new Promise((res) => waits.push(res)),
+    ui: { apply: (d) => applied.push(d.station), busy: () => {}, error: () => {} } }, st);
+  L.load({}); await settle(); fs_.last().release(payload({ station: '46001', swan_available: false })); await settle();
+  L.load({ station: '51201' }); await settle(); fs_.last().release({ busy: true }); await settle();
+  assert.equal(waits.length, 1, 'the busy retry waits');
+  L.load({ station: '46001' }); await settle();
+  assert.deepEqual(applied, ['46001', '46001'], 'the page cache');
+  const n = fs_.calls.length; waits[0](); await settle();
+  assert.equal(fs_.calls.length, n, 'the waiting retry asks nothing after the other load'); assert.deepEqual(applied, ['46001', '46001']);
 });

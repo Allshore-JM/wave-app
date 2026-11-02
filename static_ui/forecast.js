@@ -294,10 +294,17 @@
   // The open GFS table follows the new run by itself (section 77d, owner 2026-11-02): a GFS answer with a split note
   // (the prior run's table while the new run's analysis runs, or NOAA's split meanwhile) is asked for again quietly,
   // every RECHECK_SOON_MS while the note says the run is due, every RECHECK_LATE_MS while it is late.
-  var RECHECK_SOON_MS = 60 * 1000, RECHECK_LATE_MS = 5 * 60 * 1000;
+  // A re-ask that fails (busy, an HTTP error, no answer, an error answer) waits twice as long each time, up to
+  // RECHECK_MAX_MS; an answer gets the interval back. An answer that is itself an error (no table) never waits: it
+  // has no run to wait for (77d review P2-1: each such re-ask cost the server a NOAA fetch).
+  var RECHECK_SOON_MS = 60 * 1000, RECHECK_LATE_MS = 5 * 60 * 1000, RECHECK_MAX_MS = 10 * 60 * 1000;
   function recheckMs(d) {
-    if (!d || d.model !== 'GFS' || typeof d.split_note !== 'string' || !d.split_note) return 0;
+    if (!d || d.model !== 'GFS' || typeof d.split_note !== 'string' || !d.split_note || (d.error && !d.table_html)) return 0;
     return /in progress|arrives shortly/.test(d.split_note) ? RECHECK_SOON_MS : RECHECK_LATE_MS;
+  }
+  function recheckAfter(d, fails) {
+    var ms = recheckMs(d);
+    return ms ? Math.min(RECHECK_MAX_MS, ms * Math.pow(2, Math.min(fails || 0, 10))) : 0;
   }
   function sameAnswer(a, b) {                       // the same run and the same split: nothing on screen would change
     var ca = a && a.graph_header ? a.graph_header.cycle : null, cb = b && b.graph_header ? b.graph_header.cycle : null;
@@ -340,11 +347,11 @@
       if (watch.ctrl) watch.ctrl.abort();
       watch = null;
     }
-    function arm(d, key) {
+    function arm(d, key, fails) {
       unwatch();
-      var ms = recheckMs(d);
+      var ms = recheckAfter(d, fails);
       if (!ms || !deps.setTimer) return;
-      var w = watch = { key: key, q: queryFor(state), my: seq, shown: d, timer: null, ctrl: null, waiting: false };
+      var w = watch = { key: key, q: queryFor(state), my: seq, shown: d, fails: fails || 0, timer: null, ctrl: null, waiting: false };
       w.timer = deps.setTimer(function () { w.timer = null; fire(w); }, ms);
     }
     function fire(w) {
@@ -358,14 +365,14 @@
       }).then(function (d) {
         if (watch !== w || w.my !== seq) return;
         w.ctrl = null;
-        if (!d || typeof d !== 'object' || d.busy || (d.error && !d.table_html)) { arm(w.shown, w.key); return; }
+        if (!d || typeof d !== 'object' || d.busy || (d.error && !d.table_html)) { arm(w.shown, w.key, w.fails + 1); return; }
         cache.set(w.key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim();
         if (sameAnswer(d, w.shown)) { arm(d, w.key); return; }                 // not yet: the screen stays as it is
         apply(d, true);                                                        // the new run (or our split) in place
       }, function (err) {
         if (watch !== w || w.my !== seq || (err && err.name === 'AbortError')) return;
         w.ctrl = null;
-        arm(w.shown, w.key);
+        arm(w.shown, w.key, w.fails + 1);
       });
     }
     function wake() { var w = watch; if (w && w.waiting) fire(w); }
@@ -730,7 +737,7 @@
   // deps: el (the window), header, handle, storage (sessionStorage-like), win (window-like: innerWidth,
   //       innerHeight, matchMedia, addEventListener), key (the storage key; the forecast window's by default),
   //       defaultMode ('min' by default: a new tab starts minimised), topBarHeight() -> px (optional, 0 now
-  //       that the map is the page), onMode(mode), onResize().
+  //       that the map is the page), onMode(mode), beforeMode(next mode, called while the old one shows), onResize().
   function FloatingWindow(deps) {
     this.d = deps; this.el = deps.el; this.key = deps.key || WINDOW_KEY;
     var saved = readJson(deps.storage, this.key);
@@ -766,6 +773,7 @@
     if (mode === 'max' && this.d.canMax === false) mode = 'normal';           // a window without a maximised state
     if (mode === 'min' && this.mode !== 'min') this.prev = this.mode;
     if (mode !== 'min' && this.mode === 'min') this._expandedAt = Date.now();
+    if (mode !== this.mode && this.d.beforeMode) this.d.beforeMode(mode);       // the old mode still on screen (the forecast window reads its table's place)
     this.mode = mode; this._applyMode(); this._save();
     if (mode !== 'min' && this.d.onResize) this.d.onResize();
   };
@@ -998,13 +1006,18 @@
     // mode keeps its own scroll position (the summary opens at its top, the detailed table where it was left)
     var tableMode = readTableMode(session), summaryAvail = false, revealPending = false, revealedFor = null;
     var panelScroll = {};                                                        // each panel's own place (panelKey)
+    // The detailed table's place as a time (tablePlace), taken when it goes out of view (another view or mode, the
+    // window parked); a quiet switch to a new run while it is out of view (section 77d) brings that hour back when the
+    // table shows again (placeDue), never the old table's pixel offset (77d review P3-1).
+    var heldPlace = null, placeDue = null;
     var fw = new FloatingWindow({ el: els.win, header: els.header, handle: els.handle, storage: session, win: win,
       onMode: function (m) {
         if (els.min) { els.min.setAttribute('aria-expanded', m === 'min' ? 'false' : 'true'); els.min.setAttribute('aria-label', m === 'min' ? 'Expand forecast' : 'Minimise forecast'); els.min.textContent = m === 'min' ? '▴' : '–'; }
         if (els.max) els.max.setAttribute('aria-pressed', m === 'max' ? 'true' : 'false');
         if (opts.onMode) opts.onMode(m);
-        if (m !== 'min') { placeSticky(); revealNow(); }
+        if (m !== 'min') { placeSticky(); if (!restoreDue()) revealNow(); }
       },
+      beforeMode: function (m) { if (m === 'min' && fw && fw.mode !== 'min') holdPlace(); },
       onResize: function () { if (state.view === 'Graph') graphs.resize(); else placeSticky(); } });
     var canvases = ['heightChart', 'periodChart', 'directionChart'].map($);
     var graphs = createForecastGraphs({ host: els.graphs, boxes: canvases.map(function (c) { return c.parentNode; }), canvases: canvases, rangeBar: els.rangeBar,
@@ -1147,16 +1160,19 @@
               if (!d.table_html) revealedFor = null;                           // an error answer: the next table is revealed again (G24 B-8)
               if (keep) { revealedFor = landing; revealPending = false; restorePlace(keep); }   // another model, the same station: the same hour stays in view
               else if (d.table_html && landing !== revealedFor) {               // another model's table starts at another hour (G41 B-1)
-                revealedFor = landing; revealPending = true; panelScroll = {};
+                revealedFor = landing; revealPending = true; panelScroll = {}; heldPlace = null; placeDue = null;
                 if (panelKey() === 'summary') { els.body.scrollTop = 0; els.body.scrollLeft = 0; }   // another station's summary from its first day
+              } else if (quiet && d.table_html && !detailedShown()) {            // the new run while the detailed table is out of view (77d review P3-1)
+                delete panelScroll.detailed;
+                if (heldPlace) placeDue = heldPlace; else revealPending = true;
               }
-              revealNow();
+              if (!restoreDue()) revealNow();
               syncSelects();
               // the page's other parts (the model overlay's valid-time zone and run line) follow the forecast on screen
               // ok: a forecast is on screen (a refused point - land, busy - is not; the page saves a new point only then)
               // final: the answer will not change (a point on land, sheltered water, no model data: the star cannot keep it)
               try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view,
-                ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null,
+                quiet: !!quiet, ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null,
                 lat: typeof d.lat === 'number' && isFinite(d.lat) ? d.lat : null, lon: typeof d.lon === 'number' && isFinite(d.lon) ? d.lon : null } })); } catch (e) {}
             } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
     // a table waiting for its new run (section 77d) is asked for again the moment the tab is shown
@@ -1184,8 +1200,17 @@
     // down and sideways: a panel shown for the first time starts at its top left (the detailed table then goes to the
     // now row), and a panel shown again is where the visitor left it.
     function panelKey() { return state.view === 'Graph' ? 'graph' : (tableMode === 'summary' && summaryAvail ? 'summary' : 'detailed'); }
-    function leavePanel() { panelScroll[panelKey()] = { top: els.body.scrollTop || 0, left: els.body.scrollLeft || 0 }; }
-    function enterPanel() { var p = panelScroll[panelKey()]; els.body.scrollTop = p ? p.top : 0; els.body.scrollLeft = p ? p.left : 0; }
+    function leavePanel() { var k = panelKey(); panelScroll[k] = { top: els.body.scrollTop || 0, left: els.body.scrollLeft || 0 }; if (k === 'detailed') holdPlace(); }
+    function enterPanel() {
+      if (panelKey() === 'detailed' && restoreDue()) return;
+      var p = panelScroll[panelKey()]; els.body.scrollTop = p ? p.top : 0; els.body.scrollLeft = p ? p.left : 0;
+    }
+    function holdPlace() { var p = tablePlace(); if (p) heldPlace = p; }
+    function detailedShown() { return state.view === 'Table' && fw.mode !== 'min' && tableMode === 'detailed'; }
+    function restoreDue() {                                                      // true when the due hour was put back in view
+      if (!placeDue || !detailedShown()) return false;
+      var p = placeDue; placeDue = null; heldPlace = p; restorePlace(p); return true;
+    }
     function setTableMode(m) {
       var next = m === 'summary' ? 'summary' : 'detailed', swap = next !== tableMode && state.view === 'Table' && summaryAvail;
       if (swap) leavePanel();
@@ -1365,7 +1390,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, ttlOf: ttlOf, recheckMs: recheckMs, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
+      createLoader: createLoader, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,

@@ -117,7 +117,7 @@ def test_the_station_list_and_the_map_carry_the_lake_stations(monkeypatch):
 
 
 def test_resolve_model():
-    assert A.VALID_MODELS == ("GFS", "SWAN", "GLWU", "NWPS")
+    assert A.VALID_MODELS == ("GFS", "SWAN", "GLWU", "NWPS", "GFSB")            # GFSB: NOAA's own split (section 77)
     for req in (None, "", "GFS", "swan", "GLWU", "nonsense"):
         assert A.resolve_model("45007", req) == "GLWU", req                  # a lake station: always its own model
     assert A.resolve_model("51201", "GLWU") == "GFS" and A.resolve_model("46026", "glwu") == "GFS"   # never off the lakes

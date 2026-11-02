@@ -407,7 +407,9 @@ def test_a_stale_runs_wind_gap_is_kept_the_full_time(bucket):
     A._FORECAST_CACHE.clear()
     assert A.compute_forecast_payload("51003", None, "US", "NWPS", compact=True)["wind_complete"] is True
     gfs = ("Cycle : 20261028 06 UTC",) + data[1:]
-    assert A._forecast_entry_ttl(gfs) == A._WIND_NEG_TTL                           # a GFS table: unchanged
+    assert A._forecast_entry_ttl(gfs) == A._FORECAST_CACHE_TTL                     # a GFS run 49 h old: final too (section 77)
+    bucket.clock["now"] = ago(10)
+    assert A._forecast_entry_ttl(gfs) == A._WIND_NEG_TTL                           # a young GFS run: may still heal
 
 
 def test_a_14z_run_back_fills_from_the_12z_gfs_table(bucket):

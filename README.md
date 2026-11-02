@@ -903,6 +903,40 @@ first.
 - Rollback: `prod-pre-nwps-job` (the job), `prod-pre-nwps` (the site). Disabling `model-nwps.yml` stops new runs; the
   site keeps the last ones for the runs kept.
 
+### The GFS table's swell split: "GFS Spectral" (plan section 77)
+
+NOAA's station bulletin (the GFS table) merges two swells into one in about 6.5 % of hours at the Hawaii, California
+and Guam points (sections 76a-76e measured it: a 6-7 ft NW groundswell and a 5-7 ft N wind swell shown as one 8-9 ft
+"swell" from 355 deg). The site now splits the swells itself from NOAA's own station spectra: the job
+`tools/model_frames/gfs_spectral.py` (workflow `model-gfsspec.yml`, cron `*/10`, the trigger Worker's list) streams
+the run's `spec_tar.gz` a second time (the GFS winds job's stream helpers; NOAA's AWS copy, no charge), sends every
+listed station's member to a process pool (`GFSSPEC_WORKERS`, default the runner's cores; a bounded queue, at most two
+members per worker in flight) that reads the WAVEWATCH III spectra (`ww3spec.py`: 50 frequencies, 36 directions
+"going to" in the file's order, +180 = FROM, per-degree densities) and splits each hour with `partition2d.partition_v2`
+(the measured section-76e rules: no smoothing below 0.20 Hz, a rejoin of touching pieces within 30 deg / 12 % in
+period across a shallow pass, fragments under 0.25 m folded into their nearest neighbour, wind-sea pieces joined within
+45 deg of each other and 60 deg of the wind; `RULES` names every setting and is published in the index). One binary per
+run: `gfswave/spectral/v1/<RUN>/spectral.bin` (per station slot x 385 steps: the combined height, the part count, six
+parts of height 0.01 m / peak period 0.1 s / direction FROM 1 deg with the wind-sea flag in bit 12; 65535 = none;
+~11 MB), `index.json` (stations -> slots, sha256, rules, what was left out) and the pointer `latest.json` LAST; four
+runs kept under the prefix; `failed/` and `notready/` records; the stale alarm at 18 h; a 25-minute budget. Measured:
+723 stations in ~6 min on a 4-core runner; the runner's build equals the laptop's byte for byte.
+
+The site (`GFS_SPECTRAL=1`; unset = the bulletin as before): the live scheduler's pass re-reads the pointer every
+5 minutes and fetches a new run's index and binary in one background thread (never on a request thread), checks them
+(format, run, steps, record size, count, sha256) and holds the two newest runs in memory (~22 MB); a station's rows are
+sliced from memory, the wind of the SAME run joined from the GFS winds table (section 53). The spectral table IS the GFS
+table whenever its run is the site's bulletin run or newer; otherwise (the 5-20 minutes after a new run before the
+job's file lands, or a job behind) NOAA's own split of the site's run is served, through the bulletin path's cache,
+under its own key kept one minute, with the note "Swell split: NOAA's (ours arrives shortly)" while the job is at most
+one cycle behind (or nothing is held yet and the reads have not failed for half an hour), else "Swell split: NOAA's".
+The answer says which split it carries (`split`: spectral / noaa; `split_note`). NOAA's own split stays one press away:
+the model button **GFS | GFS (NOAA split)** (model `GFSB`; shown at every listed GFS station; never at a forecast point
+or a lake station), the header then "GFS (NOAA split) · run …". A spectral run 48 h or older has early hours older than
+every winds run kept, so its blank wind cells are final. The combined height is the spectrum's own (NOAA's to 0.03 ft);
+the table shows the six most powerful parts of 5 cm or more (a seventh goes). `/healthz` reports `gfs.spectral` (the
+pointer's run, the runs held, the last error, answers served from each split; never part of `ok`).
+
 ### PacIOOS SWAN tables: the Pacific islands and the freshness rule (plan section 64)
 
 PacIOOS publishes a bulletin table for each of its SWAN nests' buoys in one format
@@ -1091,6 +1125,8 @@ the bulletins come from the run's bulletin archive:
   errors (`errors`, `last_error`) and the newest run served from the table (`last_run`). Reported only.
 - **Diagnostics** (env): `BULL_ARCHIVE=0` reads NOMADS alone for the bulletins; `GFS_WINDS=0` reads NOMADS alone for
   the Wind column; `NOMADS_DISABLED=1` never asks NOMADS (the archive and the winds table only).
+  `GFS_SPECTRAL=1` makes the site's own swell split of the station spectra the GFS table (plan section 77; unset = the
+  bulletin's split as before).
 
 ## Forecast points
 

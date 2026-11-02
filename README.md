@@ -930,8 +930,11 @@ table whenever its run is the site's bulletin run or newer. While the site's run
 new run before the job's file lands, or a job behind) the PRIOR run's spectral table keeps serving (its own run line,
 its own wind) with the note "12 UTC run spectral analysis in progress" (one cycle behind) or "... delayed", for up to
 18 hours (`_GSPEC_PRIOR_MAX_H`; section 77c, owner 2026-11-02); the page keeps such an answer only one minute, so the
-next load of the station after the job's file lands (a reload, or the station picked again) shows the new run; a table
-already on screen does not change by itself. On phones the station name keeps its room and this note is cut (whole in
+next load of the station after the job's file lands shows the new run. A table already on screen follows by itself
+(section 77d): while it carries the note the page asks again quietly, every minute while the run is due ("in progress",
+"ours arrives shortly") and every 5 minutes while it is late, with no spinner and no error box; when the answer
+changes it swaps in place, keeping the hour in view, and the note goes. Another load cancels it; a hidden tab waits and
+asks the moment it is shown. On phones the station name keeps its room and this note is cut (whole in
 the tooltip and on the meta line); an age note ("· 40 h old") stays whole. Past 18 hours, with nothing held (the first
 minute after a restart) or when a newer held run lacks the station (the job left it out), NOAA's own split of the
 site's run is served, through the bulletin

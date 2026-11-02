@@ -34,6 +34,12 @@ function fetchStub() {
   });
   return { fetch, calls, last: () => calls[calls.length - 1], param: (c, k) => new URLSearchParams(c.url.split('?')[1]).get(k) };
 }
+// timers the test fires by hand (the quiet re-ask of section 77d): live() = the ones still set
+function fakeTimers() {
+  const all = [];
+  return { all, set: (fn, ms) => { const t = { fn, ms, on: true }; all.push(t); return t; }, clear: (t) => { if (t) t.on = false; },
+    live: () => all.filter((t) => t.on), fire: () => { const l = all.filter((t) => t.on); l.forEach((t) => { t.on = false; t.fn(); }); return l.length; } };
+}
 function ui() { const r = { applied: [], busy: [], errors: [] }; r.ui = { apply: (d, s) => r.applied.push([d, { ...s }]), busy: (b) => r.busy.push(b), error: (m, retry) => r.errors.push([m, retry]) }; return r; }
 
 // ---- the loader ----
@@ -263,12 +269,12 @@ function boot(opts) {
   const win = fakeWindow(opts), page = buildPage(win), F = load(win), fs_ = fetchStub(), Chart = fakeChart();
   win.Chart = Chart;
   if (opts && opts.beforeInit) opts.beforeInit(F);
-  const closes = [];
-  const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201', '51202'] }, (opts && opts.initial) || {}),
+  const closes = [], timers = fakeTimers();
+  const app = F.init({ window: win, setTimer: timers.set, clearTimer: timers.clear, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: true, swan_stations: ['51201', '51202'] }, (opts && opts.initial) || {}),
     stationLabel: (sid) => { const o = page.sel.options.find((x) => x.value === sid); return o ? o.textContent : sid; },
     loadChartJs: () => Promise.resolve(), fetch: fs_.fetch, closeLivePanel: () => { closes.push(1); page.live.style.display = 'none'; }, liveOpen: () => page.live.style.display === 'block',
     early: opts && opts.early, wait: (opts && opts.wait) || (() => Promise.resolve()) });
-  return { win, page, F, fs_, Chart, app, closes, doc: win.document };
+  return { win, page, F, fs_, Chart, app, closes, doc: win.document, timers };
 }
 
 test('init: fetches the URL\'s station into the minimised window; the first forecast replaces the loading placeholder and fills title, cycle, meta and table', async () => {
@@ -1651,4 +1657,92 @@ test('G48 B P2-1 / P2-2: a render=full page seeds the bar and the split note fro
   L.seed(payload({ split: 'noaa', split_note: "Swell split: NOAA's (ours arrives shortly)", gfsb_available: true }));
   now += 59 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 0, 'within the minute: the seed');
   now += 2 * 1000; L.load({}); await settle(); assert.equal(fs_.calls.length, 1, 'after a minute: asked again (ours may have landed)');
+});
+
+// ---- section 77d: the open GFS table follows the new run by itself ----
+const NOTE_SOON = '18 UTC run spectral analysis in progress';
+function noted(over) { return payload(Object.assign({ station: '51201', model: 'GFS', split: 'spectral', split_note: NOTE_SOON, graph_header: { cycle: '20261102 12 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' } }, over || {})); }
+function fresh(over) { return payload(Object.assign({ station: '51201', model: 'GFS', split: 'spectral', graph_header: { cycle: '20261102 18 UTC', location: '51201 (21.67N 158.12W)', tz: 'Pacific/Honolulu' } }, over || {})); }
+
+test('77d loader: a noted GFS answer is asked again quietly (60 s due, 5 min late); the same answer changes nothing; failures, busy and error answers retry; the new run applies quietly and ends it', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), t = fakeTimers(), applied = [], busy = [], errors = [];
+  let hidden = false;
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1000, swanStations: [], setTimer: t.set, clearTimer: t.clear, hidden: () => hidden,
+    ui: { apply: (d, s, r, quiet) => applied.push([d, quiet]), busy: (b) => busy.push(b), error: (m) => errors.push(m) } }, st);
+  L.load({}); await settle(); fs_.last().release(noted()); await settle();
+  assert.equal(applied.length, 1); assert.equal(applied[0][1], false, 'a load is not quiet');
+  assert.deepEqual(t.live().map((x) => x.ms), [I.RECHECK_SOON_MS]); assert.equal(I.RECHECK_SOON_MS, 60000); assert.equal(I.RECHECK_LATE_MS, 300000);
+  const busyBefore = busy.length;
+  t.fire(); await settle();
+  assert.equal(fs_.calls.length, 2, 'asked again'); assert.equal(fs_.last().url, fs_.calls[0].url, 'the same question');
+  fs_.last().release(noted()); await settle();
+  assert.equal(applied.length, 1, 'the same answer: nothing on screen changes'); assert.equal(t.live().length, 1, 'asked again later');
+  t.fire(); await settle(); fs_.last().fail(); await settle();
+  assert.equal(applied.length, 1); assert.deepEqual(errors.filter(Boolean), [], 'a failure is quiet'); assert.equal(t.live().length, 1, 'and retried');
+  t.fire(); await settle(); fs_.last().release({ busy: true, error: 'busy' }); await settle();
+  assert.equal(applied.length, 1); assert.equal(t.live().length, 1, 'busy: retried');
+  t.fire(); await settle(); fs_.last().release({ error: 'No .bull' }); await settle();
+  assert.equal(applied.length, 1); assert.equal(t.live().length, 1, 'an error answer: retried, the table stays');
+  t.fire(); await settle(); fs_.last().release(noted({}), 503); await settle();
+  assert.equal(applied.length, 1); assert.equal(t.live().length, 1, 'an HTTP error: retried');
+  assert.equal(busy.length, busyBefore, 'no spinner at any point');
+  t.fire(); await settle(); fs_.last().release(fresh()); await settle();
+  assert.equal(applied.length, 2); assert.equal(applied[1][0].graph_header.cycle, '20261102 18 UTC'); assert.equal(applied[1][1], true, 'applied quietly');
+  assert.equal(t.live().length, 0, 'no note: nothing more to wait for');
+  const n = fs_.calls.length; L.load({}); await settle();
+  assert.equal(fs_.calls.length, n, 'the new run is in the page cache'); assert.equal(applied[2][0].graph_header.cycle, '20261102 18 UTC');
+  assert.equal(I.recheckMs(noted({ split_note: '18 UTC run spectral analysis delayed' })), 300000);
+  assert.equal(I.recheckMs(noted({ split: 'noaa', split_note: "Swell split: NOAA's" })), 300000);
+  assert.equal(I.recheckMs(noted({ split: 'noaa', split_note: "Swell split: NOAA's (ours arrives shortly)" })), 60000);
+  assert.equal(I.recheckMs(noted({ model: 'GFSB' })), 0); assert.equal(I.recheckMs(noted({ model: 'SWAN' })), 0);
+  assert.equal(I.recheckMs(fresh()), 0); assert.equal(I.recheckMs(noted({ split_note: '' })), 0); assert.equal(I.recheckMs(null), 0);
+  L.load({ station: '41001' }); await settle(); fs_.last().release(noted({ station: '41001' })); await settle();
+  hidden = true; const c0 = fs_.calls.length; t.fire(); await settle();
+  assert.equal(fs_.calls.length, c0, 'nothing asked while hidden'); assert.equal(t.live().length, 0);
+  hidden = false; L.wake(); await settle();
+  assert.equal(fs_.calls.length, c0 + 1, 'asked when the tab is shown'); L.wake(); await settle(); assert.equal(fs_.calls.length, c0 + 1, 'once');
+});
+
+test('77d loader: any other load cancels the re-ask, also one in flight; it never writes another station table', async () => {
+  const F = load(fakeWindow()), I = F._internals, fs_ = fetchStub(), t = fakeTimers(), applied = [];
+  const st = { station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table' };
+  const L = I.createLoader({ fetch: fs_.fetch, now: () => 1000, swanStations: [], setTimer: t.set, clearTimer: t.clear,
+    ui: { apply: (d, s, r, quiet) => applied.push([d.station, quiet]), busy: () => {}, error: () => {} } }, st);
+  L.load({}); await settle(); fs_.last().release(noted()); await settle();
+  const timer = t.live()[0];
+  L.load({ station: '46001' }); await settle();
+  assert.equal(timer.on, false, 'the timer is cleared by another load');
+  timer.fn(); await settle();
+  assert.equal(fs_.calls.length, 2, 'a stale timer that fires anyway asks nothing');
+  fs_.last().release(noted({ station: '46001' })); await settle();
+  t.fire(); await settle(); const quiet = fs_.last();
+  assert.equal(fs_.param(quiet, 'station'), '46001');
+  L.load({ unit: 'Metric' }); await settle();
+  assert.equal(quiet.aborted, true, 'the re-ask in flight is aborted');
+  fs_.calls[fs_.calls.length - 1].release(noted({ station: '46001' })); await settle();
+  assert.deepEqual(applied.map((a) => a[0]), ['51201', '46001', '46001']);
+  assert.ok(applied.every((a) => a[1] === false), 'no quiet write after another load');
+  const live = t.live(); assert.equal(live.length, 1);
+  L.load({ unit: 'US' }); await settle();
+  assert.equal(live[0].on, false, 'a load from the page cache cancels it too');
+});
+
+test('77d page: the open table switches to the new run in place, the note goes, the overlay hears of it; a hidden tab asks on return', async () => {
+  const b = boot({ initial: { station: '51201', gfsb_on: true, gfsb_available: true } });
+  const events = []; b.doc.addEventListener('allshore:forecast', (e) => events.push(e.detail));
+  await settle(); b.fs_.last().release(noted({ gfsb_available: true })); await settle();
+  const old = b.doc.getElementById('fwOld');
+  assert.equal(old.textContent, '· ' + NOTE_SOON); assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20261102 12 UTC');
+  assert.equal(b.timers.live().length, 1);
+  b.doc.hidden = true; b.timers.fire(); await settle();
+  const n = b.fs_.calls.length;
+  b.doc.hidden = false; b.doc.fire('visibilitychange'); await settle();
+  assert.equal(b.fs_.calls.length, n + 1, 'asked the moment the tab is shown');
+  assert.equal(b.doc.getElementById('fwBusy').hidden, true, 'no spinner');
+  b.fs_.last().release(fresh({ gfsb_available: true })); await settle();
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20261102 18 UTC');
+  assert.equal(old.hidden, true, 'the note goes');
+  assert.ok(b.doc.getElementById('forecastMeta').textContent.startsWith('Cycle : 20261102 18 UTC'));
+  assert.equal(events[events.length - 1].ok, true); assert.equal(b.timers.live().length, 0);
 });

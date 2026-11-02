@@ -290,7 +290,19 @@
   // A "busy" answer (the server's build slots are taken: forecast points share them with the tide and wind windows) is
   // asked again quietly BUSY_TRIES times, BUSY_WAIT_MS apart, before it is shown with Retry (G28 re-check R1-N1).
   var BUSY_TRIES = 5, BUSY_WAIT_MS = 4000;
-  function ttlOf(d) { return d && (d.wind_complete === false || d.split_note) ? GAP_TTL_MS : CACHE_TTL_MS; }   // a gap, or a split note: the prior run's table while the new run's analysis runs, or NOAA's split meanwhile (§77, §77c)
+  function ttlOf(d) { return d && (d.wind_complete === false || d.split_note) ? GAP_TTL_MS : CACHE_TTL_MS; }
+  // The open GFS table follows the new run by itself (section 77d, owner 2026-11-02): a GFS answer with a split note
+  // (the prior run's table while the new run's analysis runs, or NOAA's split meanwhile) is asked for again quietly,
+  // every RECHECK_SOON_MS while the note says the run is due, every RECHECK_LATE_MS while it is late.
+  var RECHECK_SOON_MS = 60 * 1000, RECHECK_LATE_MS = 5 * 60 * 1000;
+  function recheckMs(d) {
+    if (!d || d.model !== 'GFS' || typeof d.split_note !== 'string' || !d.split_note) return 0;
+    return /in progress|arrives shortly/.test(d.split_note) ? RECHECK_SOON_MS : RECHECK_LATE_MS;
+  }
+  function sameAnswer(a, b) {                       // the same run and the same split: nothing on screen would change
+    var ca = a && a.graph_header ? a.graph_header.cycle : null, cb = b && b.graph_header ? b.graph_header.cycle : null;
+    return ca === cb && (a.split || '') === (b.split || '') && (a.split_note || '') === (b.split_note || '');
+  }   // a gap, or a split note: the prior run's table while the new run's analysis runs, or NOAA's split meanwhile (§77, §77c)
   function createLoader(deps, state) {
     var cache = new Map(), seq = 0, ctrl = null;
     var wait = deps.wait || function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
@@ -318,13 +330,54 @@
       followList(deps.nwpsStations, sid, d.nwps_available);
       followList(deps.swanStations, sid, d.swan_available);
     }
-    function apply(d) {
+    // The quiet re-ask (section 77d). It belongs to the answer on screen: any load (from the cache too) moves seq on and
+    // cancels it; a newer answer replaces it. No spinner, no error box: a failure, a busy server or an error answer just
+    // asks again later. While the tab is hidden it waits, and is asked the moment the tab is shown (wake).
+    var watch = null;
+    function unwatch() {
+      if (!watch) return;
+      if (watch.timer !== null && deps.clearTimer) deps.clearTimer(watch.timer);
+      if (watch.ctrl) watch.ctrl.abort();
+      watch = null;
+    }
+    function arm(d, key) {
+      unwatch();
+      var ms = recheckMs(d);
+      if (!ms || !deps.setTimer) return;
+      var w = watch = { key: key, q: queryFor(state), my: seq, shown: d, timer: null, ctrl: null, waiting: false };
+      w.timer = deps.setTimer(function () { w.timer = null; fire(w); }, ms);
+    }
+    function fire(w) {
+      if (watch !== w || w.my !== seq) return;
+      if (deps.hidden && deps.hidden()) { w.waiting = true; return; }
+      w.waiting = false;
+      var c = w.ctrl = new AbortController();
+      deps.fetch(API + '?' + w.q, { signal: c.signal }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      }).then(function (d) {
+        if (watch !== w || w.my !== seq) return;
+        w.ctrl = null;
+        if (!d || typeof d !== 'object' || d.busy || (d.error && !d.table_html)) { arm(w.shown, w.key); return; }
+        cache.set(w.key, { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim();
+        if (sameAnswer(d, w.shown)) { arm(d, w.key); return; }                 // not yet: the screen stays as it is
+        apply(d, true);                                                        // the new run (or our split) in place
+      }, function (err) {
+        if (watch !== w || w.my !== seq || (err && err.name === 'AbortError')) return;
+        w.ctrl = null;
+        arm(w.shown, w.key);
+      });
+    }
+    function wake() { var w = watch; if (w && w.waiting) fire(w); }
+    function apply(d, quiet) {
       follow(d);
       if (d && typeof d.model === 'string') state.model = modelOf(d.model);   // the server's echo is authoritative
       sync();
-      deps.ui.apply(d, state, function () { return load({}); });
+      deps.ui.apply(d, state, function () { return load({}); }, !!quiet);
+      arm(d, keyOf(state));
     }
     function load(next) {
+      unwatch();
       Object.assign(state, next || {});
       normalise(state);
       sync();
@@ -388,7 +441,7 @@
     // A forecast the page already rendered (render=full): cached and shown, no fetch.
     function seed(d) { if (!(d.error && !d.table_html)) { cache.set(keyOf(state), { d: d, ts: deps.now(), ttl: ttlOf(d) }); trim(); } apply(d); }
     function started() { return seq > 0; }                                     // has any load been asked for (also from the cache)?
-    return { load: load, seed: seed, prefetch: prefetch, state: state, cache: cache, sync: sync, started: started };
+    return { load: load, seed: seed, prefetch: prefetch, state: state, cache: cache, sync: sync, started: started, wake: wake };
   }
 
   // ---- the graphs ----
@@ -1042,6 +1095,9 @@
     var holdUrl = false;
     var loader = createLoader({ fetch: opts.fetch || function (u, o) { return win.fetch(u, o); }, takeEarly: takeEarly, now: function () { return Date.now(); },
       wait: opts.wait || function (ms) { return new Promise(function (res) { if (win.setTimeout) win.setTimeout(res, ms); else setTimeout(res, ms); }); },
+      setTimer: opts.setTimer || function (fn, ms) { return win.setTimeout ? win.setTimeout(fn, ms) : setTimeout(fn, ms); },
+      clearTimer: opts.clearTimer || function (id) { if (win.clearTimeout) win.clearTimeout(id); else clearTimeout(id); },
+      hidden: function () { return !!doc.hidden; },
       replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations, nwpsStations: nwpsStations, gfsbOn: gfsbOn,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
@@ -1054,7 +1110,7 @@
               syncBar(null, state);                                           // GFS stays one press away (G41 B-4)
               note(null);
             },
-            apply: function (d, st, retry) {
+            apply: function (d, st, retry, quiet) {
               syncBar(d, st);
               var label = opts.stationLabel ? opts.stationLabel(st.station) : st.station, cyc = shortCycle(d.model === 'GLWU' ? 'GLWU' : st.model, d.graph_header);
               var age = d.point && Number.isFinite(d.point.age_hours) ? d.point.age_hours : null;
@@ -1077,7 +1133,8 @@
               var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
               // a model switch at the same station keeps the table's time position (the first row showing under the frozen
               // header stays the first row, by its time): read before the new table replaces the old one
-              var keep = d.table_html && landing !== revealedFor && revealedFor !== null && revealedFor.split('|')[0] === st.station ? tablePlace() : null;
+              // the quiet switch to a new run (section 77d) keeps the hour in view the same way
+              var keep = d.table_html && (quiet || landing !== revealedFor) && revealedFor !== null && revealedFor.split('|')[0] === st.station ? tablePlace() : null;
               if (d.table_html) els.table.innerHTML = d.table_html;           // the server's own table (build_html_table)
               else { clearNode(els.table); if (!d.error) { var p = doc.createElement('div'); p.className = 'text-muted'; p.textContent = 'No forecast available.'; els.table.appendChild(p); } }   // an error is said once, in its box (G22 K-5)
               if (els.summary) { if (d.summary_html) els.summary.innerHTML = d.summary_html; else clearNode(els.summary); }   // the day-by-day Summary (plan section 35)
@@ -1102,6 +1159,8 @@
                 ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null,
                 lat: typeof d.lat === 'number' && isFinite(d.lat) ? d.lat : null, lon: typeof d.lon === 'number' && isFinite(d.lon) ? d.lon : null } })); } catch (e) {}
             } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
+    // a table waiting for its new run (section 77d) is asked for again the moment the tab is shown
+    if (doc.addEventListener) doc.addEventListener('visibilitychange', function () { if (!doc.hidden) loader.wake(); });
     function syncSelects() {
       if (els.station && els.station.value !== state.station) els.station.value = state.station;
       if (els.tz) {
@@ -1306,7 +1365,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, ttlOf: ttlOf, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
+      createLoader: createLoader, ttlOf: ttlOf, recheckMs: recheckMs, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,

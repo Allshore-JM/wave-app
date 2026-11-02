@@ -309,3 +309,57 @@ the held spectral run S serves while the site's run R is newer, up to 18 h, with
   (56 of 56 px), no class; desktop 1280: every note whole; meta lines carry the notes; no console problems.
 - Open (owner's call): an open table could switch by itself when the new run lands (a re-ask while a noted answer is
   on screen); today it switches on the next load.
+
+## Section 77d: the open GFS table follows the new run by itself (2026-11-02)
+
+Owner (2026-11-02): "Make the open table switch by itself when the run lands". Built @ 23e8ac2 + golden d295634 +
+pins 6f45ff4 (UI 1.28.8): a GFS answer with a split note (the prior run's table "... in progress / delayed", or NOAA's
+split meanwhile) is asked for again quietly, every 60 s while the run is due ("in progress", "ours arrives shortly"),
+every 5 min otherwise; no spinner, no error box; the same answer (cycle, split, note) changes nothing; a different one
+is cached and applied in place (the table keeps the first row under the frozen header by its time); any other load
+cancels the re-ask; a hidden tab waits and asks the moment it is shown.
+
+Test site (test @ 9dc6ea0): a forced switch (the first answer for 51201 given the note through DevTools) on desktop and
+phone: no spinner, one re-ask with the same query, the hour kept (data-t identical, offset within 1 px); picking 51202
+before the minute was up left 0 requests for 51201.
+
+### Review (one fresh reviewer on 12b5a04..6f45ff4 + the test site): 0 P0, 0 P1, 1 P2, 6 P3
+- P2-1: an error answer on screen that carries a split note (`gfs_table` sets the note even with no rows) armed the
+  re-ask forever, with no backoff for failures either; each re-ask repeats the server's NOAA fetches (no negative
+  cache), so a few such tabs could keep the 4-thread server busy.
+- P3-1: the hour was kept only when the detailed table was on screen: in Graph view, Summary mode or a parked window
+  the old table's pixel offset was later applied to the new table (about 6 h later).
+- P3-2: no test pinned the note and cycle halves of the same-answer test.
+- P3-3: no test pinned the re-ask after a render=full page's inline answer.
+- P3-4: a quiet switch re-rendered the whole overlay panel (menus closed, the readout hidden) although only its run
+  line can change.
+- P3-5: the plain "Swell split: NOAA's" note re-asks every 5 minutes for as long as it lasts (wording).
+- P3-6: test gaps: a JSON null answer (mutant M20) and the cache-hit load's request number (M26).
+- Note: the 60-s cadence is finer than the server's 300-s pointer re-read (accepted).
+
+### Fix round @ 16348ac + golden 648175b (UI 1.28.9, overlay 2.22.7)
+- P2-1: `recheckMs` is 0 for an error answer with no table; a failed re-ask (busy, an HTTP error, no answer, an error
+  answer) waits twice as long each time up to `RECHECK_MAX_MS` 10 min (`recheckAfter`); an answer gets the interval
+  back. The server side is unchanged (the client no longer waits on an error).
+- P3-1: the detailed table's place as a time (`tablePlace`) is held when it goes out of view (`leavePanel`, and
+  `FloatingWindow.beforeMode` for a parked window); a quiet switch while it is out of view brings that hour back when
+  the table shows again (`restoreDue`: from `enterPanel` and the window's expand), else the now row; another station
+  clears it.
+- P3-4: the `allshore:forecast` event carries `quiet`; the page's overlay listener then calls the new
+  `overlay.refreshRunTail()` (the run line in place, the panel kept) instead of `refresh()`; an older overlay asset
+  without the method gets the full refresh.
+- P3-2 / P3-3 / P3-6: tests for another note at the same cycle, another cycle with the same note and another split;
+  the inline seed's re-ask; a null answer; a cache-hit load ending a busy retry that waits.
+- P3-5: README wording (every 5 minutes otherwise; the backoff; error answers).
+- Mutants of the fix: 18, 16 killed; F11 (the stale pixel offset not deleted: always overridden by the time or the
+  now row) and F18 (the place also held on other mode changes: harmless) equivalent.
+- Suites: Node UI 582, overlay 502; pytest 1,770 + the load-sensitive G42 trickle test (passes alone, 55/55).
+- Test site (test @ a2caa6d, UI 1.28.9 / overlay 2.22.7 served 19:58 UTC, files = the commit; headless Chrome,
+  trusted clicks / taps; the site's own answers for 51201 rewritten through DevTools: the first with the note, the
+  re-ask's answer without it and with the table's first 6 rows dropped, a new run starting 6 h later):
+  table on screen with the overlay's speed menu open: swapped after 58 s, the same hour (11/4 22:00, offset unchanged,
+  sideways scroll 40 kept), the overlay panel the same element and its menu still open; Graph view and Summary mode:
+  swapped while away, back on the same hour (scrollTop 1500 -> 1344: the old offset would have shown 6 h later); a
+  parked window on a 375-px phone: the same hour when opened again; an error answer with a note: 0 re-asks in 75 s,
+  the error with Retry shown; two 503 answers: re-asks 60, 120 and 240 s apart, then the new run applied. Console: only
+  the two injected 503s. Storage emptied, harness stopped.

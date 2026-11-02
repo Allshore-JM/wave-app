@@ -201,6 +201,9 @@ class _Counting:
 
 
 def members(stream, deadline=None):
+    # Shared with the spectral job. One rule it tightened (G48a P3-3): a station id seen twice is refused for EVERY
+    # member, where the old winds build refused only a twin WITH wind (a windless twin was read twice and listed
+    # twice as left out). No real archive carries a twin; the product bytes of a plain archive are pinned unchanged.
     """The archive's members, (station id, bytes), one at a time from one gzip-of-a-tar stream; after the last one the
     gzip stream is read to its end (CRC32 + ISIZE checked, a cut raises: G36a P3-2). ValueError for a member the job
     cannot trust (name, type, size, twice), BudgetExceeded past `deadline` (time.monotonic()). Shared with the

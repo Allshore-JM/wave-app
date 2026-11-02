@@ -113,11 +113,22 @@ def test_a_step_without_its_point_line_or_with_too_few_numbers():
     assert math.isnan(sp.steps[0][2]) and math.isnan(sp.steps[0][3])
 
 
-@pytest.mark.parametrize("damage", ["short", "count", "junk", "magic", "header", "nosteps", "grid", "twice", "inf"])
+@pytest.mark.parametrize("damage", ["short", "extra", "count", "junk", "magic", "header", "nosteps", "grid", "twice",
+                                    "order", "jitter", "freqs", "freqs0", "inf"])
 def test_hostile_bodies_raise_value_error(damage):
     good = _synthetic(4, 6, steps=2)
     if damage == "short":
         bad = good[:len(good) - 40]
+    elif damage == "extra":                                            # one value too many in a step (R5)
+        bad = good.replace(b"20261101 130000", b"9.000E-03\n20261101 130000", 1)
+    elif damage == "order":                                            # the circle once, but not in order (R10/R11)
+        bad = _synthetic(4, 6, steps=1, dirs_deg=np.array([30.0, 150.0, 90.0, 210.0, 270.0, 330.0]))
+    elif damage == "jitter":                                           # one node 4 deg off the grid (R14)
+        bad = _synthetic(4, 6, steps=1, dirs_deg=np.array([30.0, 90.0, 154.0, 210.0, 270.0, 330.0]))
+    elif damage == "freqs":                                            # frequencies not ascending (R13)
+        bad = good.replace(b"3.500E-02 3.745E-02", b"3.745E-02 3.500E-02", 1)
+    elif damage == "freqs0":                                           # a zero frequency (R13)
+        bad = good.replace(b"3.500E-02", b"0.000E+00", 1)
     elif damage == "count":
         bad = good.replace(b"'     ", b"'     ", 1).replace(b"'WAVEWATCH III SPECTRA'      4", b"'WAVEWATCH III SPECTRA'      5")
     elif damage == "junk":

@@ -40,6 +40,10 @@ def station_cut(run, sid, steps):
     print(f"{out}: {len(data)} B")
 
 
+# NOTE (G48a P3-4): the "parts" rows below are produced by the repo's own partition_v2, so the tests that compare a
+# member's split with them are REGRESSION pins. The independent evidence that partition_v2 equals the scratch split
+# (swell76/e76.py, the measured settings) is the G48a reviewer's run: 0 of 46 fixture hours and 0 of 300 perturbed
+# real spectra differ (docs/reviews/gfs-spectral-G48-adversarial.md).
 def expect():
     sys.path.insert(0, os.path.dirname(HERE))
     sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools", "model_frames"))

@@ -99,6 +99,16 @@ def test_two_separated_systems_stay_two_and_a_close_pair_rejoins():
     assert parts2[0]["hs"] == pytest.approx(math.hypot(2.0, 1.9), rel=0.02)
 
 
+def test_a_close_pair_across_a_deep_pass_stays_two():
+    """The rejoin needs a shallow pass (pass_min): two narrow humps 28 deg apart at one period, with a deep valley
+    between them, are two systems (G48a mutant P3: without the pass rule they would rejoin)."""
+    E = _gaussian(FREQS, DIRS, 1 / 14.0, 305.0, 2.0, sd=4.0) + _gaussian(FREQS, DIRS, 1 / 14.0, 333.0, 1.9, sd=4.0)
+    parts, _ = P2.partition_v2(FREQS, DIRS, E)
+    assert len(parts) == 2 and sorted(round(p["dir"]) for p in parts) == [305, 334]
+    one, _ = P2.partition_v2(FREQS, DIRS, E, pass_min=0.0)              # the rule switched off: one system
+    assert len(one) == 1
+
+
 def test_a_system_straddling_north_has_a_mean_near_north():
     E = _gaussian(FREQS, DIRS, 1 / 12.0, 2.0, 1.5, sd=30.0)
     parts, _ = P2.partition_v2(FREQS, DIRS, E)

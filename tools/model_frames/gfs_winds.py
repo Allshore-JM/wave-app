@@ -200,15 +200,14 @@ class _Counting:
         return b
 
 
-def build(stream, run_dt, deadline=None, log=print):
-    """(winds.bin bytes, index document without sha256) from one archive stream (gzip of a tar). ValueError for a
-    member the job cannot trust (name, type, size, another run's times), BudgetExceeded past `deadline`
-    (time.monotonic()). The gzip stream is read to its end, so its CRC32 and length are checked (G36a P3-2)."""
+def members(stream, deadline=None):
+    """The archive's members, (station id, bytes), one at a time from one gzip-of-a-tar stream; after the last one the
+    gzip stream is read to its end (CRC32 + ISIZE checked, a cut raises: G36a P3-2). ValueError for a member the job
+    cannot trust (name, type, size, twice), BudgetExceeded past `deadline` (time.monotonic()). Shared with the
+    spectral job (plan section 77): the winds job's output is pinned byte-identical across the factoring."""
     gz = gzip.GzipFile(fileobj=stream)
     tf = tarfile.open(fileobj=gz, mode="r|")
-    base = run_dt.replace(tzinfo=None)
-    shifted = 0
-    body, stations, left_out, members = bytearray(), {}, [], 0
+    seen = set()
     for m in tf:
         if deadline is not None and time.monotonic() > deadline:
             raise BudgetExceeded("the build budget ran out")
@@ -218,12 +217,28 @@ def build(stream, run_dt, deadline=None, log=print):
         if not MEMBER_MIN <= m.size <= MEMBER_MAX:
             raise ValueError(f"{m.name}: size {m.size}")
         sid = hit.group(1)
-        if sid in stations:
+        if sid in seen:
             raise ValueError(f"{m.name}: twice in the archive")
+        seen.add(sid)
         data = tf.extractfile(m).read()
         if len(data) != m.size:
             raise ValueError(f"{m.name}: {len(data)} of {m.size} bytes")
-        members += 1
+        yield sid, data
+    tf.close()
+    while gz.read(1 << 20):                              # to the gzip trailer
+        if deadline is not None and time.monotonic() > deadline:
+            raise BudgetExceeded("the build budget ran out")
+
+
+def build(stream, run_dt, deadline=None, log=print):
+    """(winds.bin bytes, index document without sha256) from one archive stream (gzip of a tar). ValueError for a
+    member the job cannot trust (name, type, size, another run's times), BudgetExceeded past `deadline`
+    (time.monotonic()). The gzip stream is read to its end, so its CRC32 and length are checked (G36a P3-2)."""
+    base = run_dt.replace(tzinfo=None)
+    shifted = 0
+    body, stations, left_out, count = bytearray(), {}, [], 0
+    for sid, data in members(stream, deadline):
+        count += 1
         winds = spec_point_winds(data)
         if winds and min(winds) != base:                 # members start at the run's hour (G36a P3-3)
             shifted += 1
@@ -233,19 +248,15 @@ def build(stream, run_dt, deadline=None, log=print):
             continue
         stations[sid] = len(stations)
         body += rec
-    tf.close()
-    while gz.read(1 << 20):                              # to the gzip trailer: CRC32 + ISIZE checked, a cut raises
-        if deadline is not None and time.monotonic() > deadline:
-            raise BudgetExceeded("the build budget ran out")
-    if members < MIN_MEMBERS:
-        raise ValueError(f"{members} members: not a whole spectra archive")
-    if shifted * 10 > members:                           # another run's archive under this run's name
-        raise ValueError(f"{shifted} of {members} members do not start at the run {run_name(run_dt)}")
-    log(f"{run_name(run_dt)}: {members} members, {len(stations)} stations with wind, {len(left_out)} without")
+    if count < MIN_MEMBERS:
+        raise ValueError(f"{count} members: not a whole spectra archive")
+    if shifted * 10 > count:                             # another run's archive under this run's name
+        raise ValueError(f"{shifted} of {count} members do not start at the run {run_name(run_dt)}")
+    log(f"{run_name(run_dt)}: {count} members, {len(stations)} stations with wind, {len(left_out)} without")
     doc = {"format": FORMAT, "run": run_name(run_dt), "steps": list(range(STEPS)), "stations": stations,
            "count": len(stations), "record_bytes": RECORD_BYTES, "missing": MISSING,
            "units": {"speed": "0.01 m/s", "direction": "0.1 deg, FROM, true north"},
-           "members": members, "left_out": sorted(left_out),
+           "members": count, "left_out": sorted(left_out),
            "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "source": "GFS 10 m wind from the GFS-Wave station spectra (gfswave.tHHz.spec_tar.gz, NOAA's AWS copy)"}
     return bytes(body), doc

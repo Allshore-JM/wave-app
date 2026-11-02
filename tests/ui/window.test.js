@@ -1681,6 +1681,8 @@ test('77d loader: a noted GFS answer is asked again quietly (60 s due, 5 min lat
   t.fire(); await settle(); fs_.last().fail(); await settle();
   assert.equal(applied.length, 1); assert.deepEqual(errors.filter(Boolean), [], 'a failure is quiet'); assert.equal(t.live().length, 1, 'and retried');
   t.fire(); await settle(); fs_.last().release({ busy: true, error: 'busy' }); await settle();
+  t.fire(); await settle(); fs_.last().release({ busy: true }); await settle();
+  assert.equal(applied.length, 1); assert.equal(t.live().length, 1, 'a bare busy answer: retried');
   assert.equal(applied.length, 1); assert.equal(t.live().length, 1, 'busy: retried');
   t.fire(); await settle(); fs_.last().release({ error: 'No .bull' }); await settle();
   assert.equal(applied.length, 1); assert.equal(t.live().length, 1, 'an error answer: retried, the table stays');
@@ -1726,6 +1728,13 @@ test('77d loader: any other load cancels the re-ask, also one in flight; it neve
   const live = t.live(); assert.equal(live.length, 1);
   L.load({ unit: 'US' }); await settle();
   assert.equal(live[0].on, false, 'a load from the page cache cancels it too');
+  // an answer already on its way when another load starts (the abort comes too late for it) writes nothing
+  t.fire(); await settle(); const late = fs_.last();
+  late.release(noted({ station: '46001', graph_header: { cycle: '20261102 18 UTC', location: 'x', tz: 'UTC' }, split_note: '' }));
+  L.load({ station: '41001' });
+  await settle();
+  assert.equal(applied.filter((a) => a[1] === true).length, 0, 'the late answer is not applied');
+  assert.equal(st.station, '41001');
 });
 
 test('77d page: the open table switches to the new run in place, the note goes, the overlay hears of it; a hidden tab asks on return', async () => {

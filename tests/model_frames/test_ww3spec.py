@@ -3,6 +3,7 @@ import json
 import math
 import os
 import sys
+from datetime import datetime, timedelta
 
 import numpy as np
 import pytest
@@ -84,7 +85,7 @@ def _synthetic(nf=50, nd=36, steps=2, point=True, dirs_deg=None, values=None):
     rad = np.radians(dirs_deg)
     lines += [" ".join(f"{v:.3E}" for v in rad[i:i + 7]) for i in range(0, nd, 7)]
     for s in range(steps):
-        lines.append(f"20261101 {12 + s:02d}0000")
+        lines.append((datetime(2026, 11, 1, 12) + timedelta(hours=s)).strftime("%Y%m%d %H%M%S"))
         if point:
             lines.append("'51201     '  21.67-158.12     472.7   8.09  71.6   0.05 139.8")
         vals = values if values is not None else [f"{1e-3 * (k % 7 + 1):.3E}" for k in range(nf * nd)]

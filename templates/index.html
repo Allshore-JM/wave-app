@@ -1392,8 +1392,27 @@
     const LAT_LIMIT_SOUTH = -79;
     function clampLat(lat) { return Math.max(LAT_LIMIT_SOUTH, Math.min(LAT_LIMIT_NORTH, lat)); }
 
-    const DEFAULT_MAP_CENTER = [21.3, -157.9];
-    const DEFAULT_MAP_ZOOM = 6;
+    // Where a fresh open centres when nothing else decides (the owner's screenshot, plan section 79: Oahu in the middle)
+    const DEFAULT_MAP_CENTER = [21.5, -158.0];
+    const DEFAULT_MAP_ZOOM = 6;                 // only when the map has no size yet
+    // ---- open zoom (tests/ui/firstview.test.js runs this function) ----
+    // The zoom a fresh open uses (owner, plan section 79: "fill the screen"): the screen shows the middle of an area
+    // 5.2 degrees of longitude by 2.3 of latitude around the opening point (the owner's screenshot: Kauai to Maui at
+    // zoom 9 on a 1908 x 906 map), never more of it: the larger of the zooms that fit the area's width and its height
+    // (Mercator), a tenth below so the map's zoomSnap never rounds it out. Phones held upright: Oahu fills the screen.
+    function openZoomFor(lat, w, h) {
+      if (!(w > 0 && h > 0) || !Number.isFinite(lat)) return DEFAULT_MAP_ZOOM;
+      var SPAN_LON = 5.2, SPAN_LAT = 2.3;
+      var merc = function (la) { var sn = Math.sin(Math.max(-85, Math.min(85, la)) * Math.PI / 180); return Math.log((1 + sn) / (1 - sn)) / 2; };
+      var dx = SPAN_LON / 360, dy = (merc(lat + SPAN_LAT / 2) - merc(lat - SPAN_LAT / 2)) / (2 * Math.PI);
+      var zx = Math.log(w / (dx * 256)) / Math.LN2, zy = dy > 0 ? Math.log(h / (dy * 256)) / Math.LN2 : zx;
+      return Math.floor(Math.max(zx, zy) * 10) / 10;
+    }
+    // ---- end open zoom ----
+    function openZoom(lat) {
+      var el = document.getElementById('map');
+      return openZoomFor(lat, el ? el.clientWidth : 0, el ? el.clientHeight : 0);
+    }
 
     function normLng(lng) { return ((lng + 540) % 360) - 180; }
     // The Home view button is gone (owner, plan section 46): the view it saved is no longer read, and its key is removed.
@@ -1864,7 +1883,7 @@
       } else {
         map.setView(
           DEFAULT_MAP_CENTER,
-          Math.max(DEFAULT_MAP_ZOOM, MIN_MAP_ZOOM),
+          Math.min(MAX_MAP_ZOOM, Math.max(openZoom(DEFAULT_MAP_CENTER[0]), MIN_MAP_ZOOM)),
           { animate: false }
         );
       }
@@ -4262,7 +4281,7 @@
     window.addEventListener('resize', enforceSingleWorld);
     // ---- first view (tests/ui/firstview.test.js runs this block: keep it self-contained between the markers) ----
     // Where the site opens (plan section 46): the tab's own view (sessionStorage) > the visitor's default station (the
-    // shaka: its position at the default zoom) > the visitor's area from the IP address (the head's geo race,
+    // shaka: its position at the opening zoom, openZoom) > the visitor's area from the IP address (the head's geo race,
     // window.__early.place: the position with the nearest station; the map zooms out until the station is in view) >
     // Hawaii. A link to a station opens the map as before. While the race is pending the map pane is hidden
     // (geo-pending: no Hawaii tiles paint), at most ~2 s; a visitor who moves the map or picks a station first keeps
@@ -4282,7 +4301,7 @@
       }
       if (fixed) return;
       function onEarth(lat, lon) { return Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180; }
-      if (dflt) { if (onEarth(dflt.lat, dflt.lon)) show(dflt.lat, dflt.lon, DEFAULT_MAP_ZOOM); return; }
+      if (dflt) { if (onEarth(dflt.lat, dflt.lon)) show(dflt.lat, dflt.lon, openZoom(dflt.lat)); return; }
       var place = window.__early && window.__early.place;
       if (!place || typeof place.then !== 'function') return;   // no geo Worker configured: Hawaii, as before
       // the largest zoom at which a point is inside a w x h map centred on another (Mercator: the world is 256 px wide
@@ -4293,11 +4312,11 @@
         var zx = dx > 0 ? Math.log(w / (2 * dx * 256)) / Math.LN2 : Infinity, zy = dy > 0 ? Math.log(h / (2 * dy * 256)) / Math.LN2 : Infinity;
         return Math.min(zx, zy);
       }
-      // the view centred on the visitor at the default zoom, lowered until the nearest station is in view (the span
+      // the view centred on the visitor at the opening zoom (openZoom), lowered until the nearest station is in view (the span
       // times 1.3 fits the map: 15 % padding; the zoom a tenth below the fit, so the map's zoomSnap never rounds it up
       // out of view)
       function geoView(pl) {
-        var z = DEFAULT_MAP_ZOOM;
+        var z = openZoom(clampLat(pl.lat));
         if (Number.isFinite(pl.slat) && Number.isFinite(pl.slon)) {
           var slon = pl.slon; if (slon - pl.lon > 180) slon -= 360; else if (pl.lon - slon > 180) slon += 360;   // the station on the visitor's side of the date line
           var sz = map.getSize(), fit = fitZoom(clampLat(pl.lat), pl.lon, pl.slat, slon, sz.x / 1.3, sz.y / 1.3);

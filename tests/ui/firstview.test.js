@@ -14,7 +14,11 @@ assert.ok(a > 0 && b > a, 'the first view block is marked in the template');
 const BLOCK = html.slice(html.indexOf('\n', a) + 1, b);
 assert.ok(BLOCK.indexOf('enforceSingleWorld();') > 0 && BLOCK.indexOf('geo-pending') > 0);
 
-const MIN_Z = 2.6, MAX_Z = 18, DEFAULT_Z = 6;
+const MIN_Z = 2.6, MAX_Z = 18;
+// the template's own opening-zoom function (plan section 79), run as written
+const oa = html.indexOf('// ---- open zoom'), ob = html.indexOf('// ---- end open zoom ----');
+assert.ok(oa > 0 && ob > oa, 'the open zoom function is marked in the template');
+const openZoomFor = new Function('DEFAULT_MAP_ZOOM', html.slice(html.indexOf(String.fromCharCode(10), oa) + 1, ob) + String.fromCharCode(10) + 'return openZoomFor;')(6);
 const clampLat = (lat) => Math.max(-79, Math.min(84, lat)), normLng = (lng) => ((lng + 540) % 360) - 180;
 
 // run the block against fakes; opts: session (the saved view), search, dflt (the default station), place (a promise
@@ -28,10 +32,10 @@ function run(opts) {
   const map = { setView: (ll, z, o) => { log.views.push({ lat: ll[0], lng: ll[1], z, animate: o && o.animate }); },
     getSize: () => ({ x: (opts.size || [1280, 800])[0], y: (opts.size || [1280, 800])[1] }), getContainer: () => el };
   const storage = { 'allshore.defaultStation.v1': opts.dflt === undefined ? null : (typeof opts.dflt === 'string' ? opts.dflt : JSON.stringify(opts.dflt)) };
-  const fn = new Function('loadMapView', 'enforceSingleWorld', 'location', 'localStorage', 'map', 'clampLat', 'normLng', 'MAX_MAP_ZOOM', 'MIN_MAP_ZOOM', 'DEFAULT_MAP_ZOOM',
+  const fn = new Function('loadMapView', 'enforceSingleWorld', 'location', 'localStorage', 'map', 'clampLat', 'normLng', 'MAX_MAP_ZOOM', 'MIN_MAP_ZOOM', 'openZoom',
     'clampMapLatitude', 'refreshWrappedMarkerCopies', 'saveMapView', 'window', 'document', 'setTimeout', 'clearTimeout', 'URLSearchParams', 'forgetMapView', BLOCK);
   fn(() => (opts.session === undefined ? null : opts.session), () => { log.enforced++; }, { search: opts.search || '' },
-    { getItem: (k) => (k in storage ? storage[k] : null) }, map, clampLat, normLng, MAX_Z, MIN_Z, DEFAULT_Z,
+    { getItem: (k) => (k in storage ? storage[k] : null) }, map, clampLat, normLng, MAX_Z, MIN_Z, (lat) => openZoomFor(lat, (opts.size || [1280, 800])[0], (opts.size || [1280, 800])[1]),
     () => { log.clamped++; }, () => { log.rebuilt++; }, () => { log.saved++; },
     { __early: opts.early === undefined ? (opts.place === undefined ? undefined : { place: opts.place }) : opts.early },
     { addEventListener: (ev, fn2, o) => { (log.docListeners[ev] = log.docListeners[ev] || []).push({ fn: fn2, o }); } },
@@ -70,7 +74,8 @@ test('a link to a station opens the map as before (no race view, no pending clas
   await settle(); assert.deepEqual(r.log.views, []); assert.equal(r.pending(), false); assert.equal(r.log.timers.length, 0);
   const d = run({ dflt: { id: 'HNL01', lat: 21.25, lon: -157.8, name: 'Diamond Head', at: 1 }, place: Promise.resolve({ lat: 50, lon: 0, sid: 'X', slat: 50, slon: 1 }) });
   await settle();
-  assert.deepEqual(d.log.views, [{ lat: 21.25, lng: -157.8, z: 6, animate: false }], 'the default station at zoom 6, nothing from the race');
+  assert.deepEqual(d.log.views, [{ lat: 21.25, lng: -157.8, z: openZoomFor(21.25, 1280, 800), animate: false }], 'the default station at the opening zoom, nothing from the race');
+  assert.equal(d.log.views[0].z, 8.8, 'at 1280 x 800 the opening zoom is 8.8');
   assert.equal(d.log.saved, 1); assert.equal(d.log.clamped, 1); assert.equal(d.log.rebuilt, 1); assert.equal(d.pending(), false);
   const e = run({ dflt: { id: 'HNL01' }, place: Promise.resolve({ lat: 50, lon: 0, sid: 'X', slat: 50, slon: 1 }) });
   await settle(); assert.deepEqual(e.log.views, [], 'no position: the default decides the station only'); assert.equal(e.pending(), false);
@@ -81,7 +86,7 @@ test('a link to a station opens the map as before (no race view, no pending clas
   const g = run({ dflt: '{bad json' }); await settle(); assert.deepEqual(g.log.views, []);
 });
 
-test('the visitor\'s area: the pane is hidden while the race runs, then the view is centred on the visitor at zoom 6 with the nearest station in view, saved; the timer is cleared', async () => {
+test('the visitor\'s area: the pane is hidden while the race runs, then the view is centred on the visitor at the opening zoom with the nearest station in view, saved; the timer is cleared', async () => {
   let resolve; const place = new Promise((r) => { resolve = r; });
   const r = run({ place });
   assert.equal(r.pending(), true, 'hidden at once'); assert.deepEqual(r.log.views, []);
@@ -92,7 +97,7 @@ test('the visitor\'s area: the pane is hidden while the race runs, then the view
   resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
   assert.equal(r.pending(), false); assert.equal(r.log.timers[0].cleared, true);
   assert.deepEqual(Object.keys(r.log.listeners).filter((ev) => r.log.listeners[ev].length), [], 'the map listeners go with the answer');
-  assert.deepEqual(r.log.views, [{ lat: 21.3, lng: -157.86, z: 6, animate: false }]);
+  assert.deepEqual(r.log.views, [{ lat: 21.3, lng: -157.86, z: openZoomFor(21.3, 1280, 800), animate: false }]);
   assert.equal(r.log.saved, 1); assert.equal(r.log.clamped, 1); assert.equal(r.log.rebuilt, 1);
   assert.ok(inView(r.log.views[0], 21.25, -157.8, [1280, 800], PAD));
 });
@@ -105,22 +110,23 @@ test('a station far from the visitor (inland, or a lone coast) lowers the zoom u
       await settle();
       const v = r.log.views[0]; assert.ok(v, JSON.stringify([lat, lon, size]));
       assert.equal(v.lat, clampLat(lat)); assert.equal(v.lng, normLng(lon));
-      assert.ok(v.z >= MIN_Z && v.z <= DEFAULT_Z, JSON.stringify(v));
+      const oz = openZoomFor(clampLat(lat), size[0], size[1]);
+      assert.ok(v.z >= MIN_Z && v.z <= oz, JSON.stringify(v));
       assert.ok(Math.abs(v.z * 10 - Math.round(v.z * 10)) < 1e-9, 'a tenth of a zoom level (zoomSnap 0.1)');
       // the station is inside the view with the padding unless the minimum zoom stopped the zoom-out
       const slon2 = slon - lon > 180 ? slon - 360 : (lon - slon > 180 ? slon + 360 : slon);
       if (v.z > MIN_Z + 1e-9) assert.ok(inView(v, slat, slon2, size, PAD), 'in view with padding: ' + JSON.stringify([lat, lon, slat, slon, size, v]));
-      if (v.z < DEFAULT_Z - 1e-9) assert.ok(v.z + 0.1 > DEFAULT_Z || !inView({ ...v, z: v.z + 0.1 }, slat, slon2, size, PAD), 'the largest such zoom (a tenth more and the station leaves the padded view): ' + JSON.stringify([lat, lon, slat, slon, size, v]));
+      if (v.z < oz - 1e-9) assert.ok(v.z + 0.1 > oz || !inView({ ...v, z: v.z + 0.1 }, slat, slon2, size, PAD), 'the largest such zoom (a tenth more and the station leaves the padded view): ' + JSON.stringify([lat, lon, slat, slon, size, v]));
     }
   }
 });
 
-test('across the date line the station counts on the visitor\'s side: a visitor at 179.9 E with the station at 179.5 W keeps zoom 6', async () => {
+test('across the date line the station counts on the visitor\'s side: a visitor at 179.9 E with the station at 179.5 W keeps the opening zoom', async () => {
   const r = run({ place: Promise.resolve({ lat: -17.6, lon: 179.9, sid: 'XFJ2', slat: -17.5, slon: -179.5 }) });
   await settle();
-  assert.equal(r.log.views.length, 1); assert.equal(r.log.views[0].z, 6); assert.ok(Math.abs(r.log.views[0].lng - 179.9) < 1e-9 && r.log.views[0].lat === -17.6);
+  assert.equal(r.log.views.length, 1); assert.equal(r.log.views[0].z, openZoomFor(-17.6, 1280, 800)); assert.ok(Math.abs(r.log.views[0].lng - 179.9) < 1e-9 && r.log.views[0].lat === -17.6);
   const w = run({ place: Promise.resolve({ lat: -17.6, lon: -179.9, sid: 'XFJ1', slat: -17.5, slon: 179.4 }) });
-  await settle(); assert.equal(w.log.views[0].z, 6);
+  await settle(); assert.equal(w.log.views[0].z, openZoomFor(-17.6, 1280, 800));
   const far = run({ place: Promise.resolve({ lat: 0, lon: 179.9, sid: 'F', slat: 0, slon: -160 }) });   // 20 degrees away across the line
   await settle(); assert.ok(far.log.views[0].z < 6 && far.log.views[0].z > 3, JSON.stringify(far.log.views[0]));
 });
@@ -165,7 +171,7 @@ test('acting on the map shows it at once; a pointer, wheel, key or touch on a co
   let resolve; const c = run({ place: new Promise((res) => { resolve = res; }) });
   c.act('pointerdown', 'leaflet-control'); c.act('wheel', 'ov-sheet');
   resolve({ lat: 21.3, lon: -157.86, sid: 'HNL01', slat: 21.25, slon: -157.8 }); await settle();
-  assert.deepEqual(c.log.views, [{ lat: 21.3, lng: -157.86, z: 6, animate: false }], "only controls touched: the visitor's area still opens");
+  assert.deepEqual(c.log.views, [{ lat: 21.3, lng: -157.86, z: openZoomFor(21.3, 1280, 800), animate: false }], "only controls touched: the visitor's area still opens");
 });
 
 test("the forgotten view: only while the race decides (not with the tab's own view, a link, a default, or without the Worker)", async () => {
@@ -342,4 +348,25 @@ test('the stations list, once in, is kept, drawn, judged for a retired default a
     assert.equal(boom.timers.length, 0, 'no second request for a consumer\'s fault');
     assert.equal(logged.length, 1); assert.ok(/a drawing fault/.test(String(logged[0][1])));
   } finally { console.error = oldErr; }
+});
+
+// plan section 79 (owner: "fill the screen"): the opening zoom shows the middle of a 5.2 x 2.3 degree area, never more
+test('the opening zoom: the owner\'s screenshot (1908 x 906 at Oahu) is zoom 9.0; smaller desktops and upright phones fill the screen with the middle of the area; no size = zoom 6', () => {
+  assert.equal(openZoomFor(21.5, 1908, 906), 9.0);
+  assert.equal(openZoomFor(21.5, 1440, 900), 8.9);
+  assert.equal(openZoomFor(21.5, 1280, 720), 8.6);
+  assert.equal(openZoomFor(21.5, 375, 750), 8.7);
+  assert.equal(openZoomFor(21.5, 0, 800), 6); assert.equal(openZoomFor(NaN, 1280, 800), 6);
+  // the rule, checked by drawing: a tenth above the zoom the screen lies inside the area in both directions (fill), a tenth
+  // below it no longer does (the fill zoom, floored to a tenth)
+  const fits = (lat, w, h, z) => {
+    const c = px(lat, 0, z), e = px(lat + 1.15, 2.6, z), s2 = px(lat - 1.15, 0, z);
+    return w <= 2 * (e[0] - c[0]) + 1e-6 && h <= (s2[1] - e[1]) + 1e-6;
+  };
+  for (const lat of [21.5, -33.9, 60, 0, 83]) for (const [w, h] of [[1908, 906], [1280, 720], [375, 750], [812, 375], [2560, 1300]]) {
+    const z = openZoomFor(lat, w, h);
+    assert.ok(Math.abs(z * 10 - Math.round(z * 10)) < 1e-9, 'a tenth');
+    assert.ok(fits(lat, w, h, z + 0.1), 'a tenth more fills the screen: ' + JSON.stringify([lat, w, h, z]));
+    assert.ok(!fits(lat, w, h, z - 0.1), 'a tenth less shows more than the area in both directions: ' + JSON.stringify([lat, w, h, z]));
+  }
 });

@@ -135,13 +135,20 @@ Cloudflare's `request.cf` position for the IP address: the ISP's city; nothing i
 the station nearest that position (haversine, so the date line is no seam) and starts its forecast request (a visitor on Oahu,
 inside a box around the island, 21.2-21.76 N and 158.32-157.6 W with no other island in it, gets Waimea Bay 51201, the
 forecast most Oahu surfers want, though another station may be nearer: owner, 2026-10-18; `PREFER` in the head); the map opens
-centred on the visitor at zoom 6, zoomed out until that station is in view (15 % padding; never below the map's minimum
+centred on the visitor at the opening zoom (below), zoomed out until that station is in view (15 % padding; never below the map's minimum
 zoom), and the forecast window loads the station. The Worker's answer and the list are raced against a 2-s cap; while it runs
 the map pane is hidden (no Hawaii tiles paint; the navy background shows under the controls) and a visitor who moves the map
 or picks a station meanwhile keeps what they did. Every failure (no Worker, a slow or refused answer, a VPN exit on land far
 from the sea) lands on today's behaviour: Hawaii and 51201. Precedence: a station in the address (`?station=`: every reload,
 since the address is written after the first load, and every link) > the viewer's default station (the shaka in the
 favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201.
+The opening zoom (plan section 79, owner 2026-11-02, "fill the screen"): the screen shows the middle of an area 5.2 degrees
+of longitude by 2.3 of latitude around the opening point, never more of it (the owner's screenshot: Kauai to Maui at zoom 9.0
+on a 1908 x 906 map). `openZoomFor` takes the larger of the zooms that fit the area's width and its Mercator height, floored
+to a tenth: 1440 x 900 8.9, 1366 x 768 8.7, 1280 x 720 8.6, an upright phone (375 x 750) 8.7 (Oahu fills it), a phone held
+sideways 7.7. It is used by the IP view, the default station's view and the Hawaii fallback (no geo answer, a `?station=`
+link), now centred on Oahu (21.5 N, 158.0 W). A reload keeps the tab's own view. At zoom 9 and closer the tide and wind
+stations show from the first picture.
 The default and the favorites (owner, 2026-10-18/19): the top of the forecast window and every saved row of the dropdown
 (Favorites and My points) carry the same toggles, hollow and grey when off: the shaka ("Default: site opens here"; the
 owner's own drawing, skin toned when on; one default at a time, listed first at the next opening) and the star

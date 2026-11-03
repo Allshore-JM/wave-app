@@ -141,7 +141,7 @@ the map pane is hidden (no Hawaii tiles paint; the navy background shows under t
 or picks a station meanwhile keeps what they did. Every failure (no Worker, a slow or refused answer, a VPN exit on land far
 from the sea) lands on today's behaviour: Hawaii and 51201. Precedence: a station in the address (`?station=`: every reload,
 since the address is written after the first load, and every link) > the viewer's default station (the shaka in the
-favourites picker, localStorage `allshore.defaultStation.v1`: its position at zoom 6) > the IP's nearest station > 51201.
+favourites picker, localStorage `allshore.defaultStation.v1`: its position at the opening zoom) > the IP's nearest station > 51201.
 The opening zoom (plan section 79, owner 2026-11-02, "fill the screen"): the screen shows the middle of an area 5.2 degrees
 of longitude by 2.3 of latitude around the opening point, never more of it (the owner's screenshot: Kauai to Maui at zoom 9.0
 on a 1908 x 906 map). `openZoomFor` takes the larger of the zooms that fit the area's width and its Mercator height, floored

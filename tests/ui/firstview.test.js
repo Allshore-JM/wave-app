@@ -350,12 +350,23 @@ test('the stations list, once in, is kept, drawn, judged for a retired default a
   } finally { console.error = oldErr; }
 });
 
+// plan section 79: the other two callers, which the harness does not run (G49 review): the page's fallback view and the
+// DOM wrapper (width, then height, of the map container)
+test('the fallback view opens Oahu at the opening zoom, and openZoom reads the map container’s width then height', () => {
+  assert.ok(html.includes('const DEFAULT_MAP_CENTER = [21.5, -158.0];'));
+  assert.ok(html.includes('Math.min(MAX_MAP_ZOOM, Math.max(openZoom(DEFAULT_MAP_CENTER[0]), MIN_MAP_ZOOM))'));
+  assert.ok(html.includes("return openZoomFor(lat, el ? el.clientWidth : 0, el ? el.clientHeight : 0);"));
+  assert.ok(html.includes('show(dflt.lat, dflt.lon, openZoom(clampLat(dflt.lat)))'), 'the default station’s latitude clamped first, as geoView does');
+});
+
 // plan section 79 (owner: "fill the screen"): the opening zoom shows the middle of a 5.2 x 2.3 degree area, never more
 test('the opening zoom: the owner\'s screenshot (1908 x 906 at Oahu) is zoom 9.0; smaller desktops and upright phones fill the screen with the middle of the area; no size = zoom 6', () => {
   assert.equal(openZoomFor(21.5, 1908, 906), 9.0);
   assert.equal(openZoomFor(21.5, 1440, 900), 8.9);
   assert.equal(openZoomFor(21.5, 1280, 720), 8.6);
   assert.equal(openZoomFor(21.5, 375, 750), 8.7);
+  assert.equal(openZoomFor(21.5, 812, 322), 7.7, 'a phone held sideways: the width decides (pins the 5.2-degree span)');
+  assert.equal(openZoomFor(21.5, 1536, 400), 8.6, 'the width decides just under a tenth: 8.69 floors to 8.6 (a round would give 8.7)');
   assert.equal(openZoomFor(21.5, 0, 800), 6); assert.equal(openZoomFor(NaN, 1280, 800), 6);
   // the rule, checked by drawing: a tenth above the zoom the screen lies inside the area in both directions (fill), a tenth
   // below it no longer does (the fill zoom, floored to a tenth)

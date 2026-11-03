@@ -4304,7 +4304,7 @@
       }
       if (fixed) return;
       function onEarth(lat, lon) { return Number.isFinite(lat) && Math.abs(lat) <= 90 && Number.isFinite(lon) && Math.abs(lon) <= 180; }
-      if (dflt) { if (onEarth(dflt.lat, dflt.lon)) show(dflt.lat, dflt.lon, openZoom(dflt.lat)); return; }
+      if (dflt) { if (onEarth(dflt.lat, dflt.lon)) show(dflt.lat, dflt.lon, openZoom(clampLat(dflt.lat))); return; }
       var place = window.__early && window.__early.place;
       if (!place || typeof place.then !== 'function') return;   // no geo Worker configured: Hawaii, as before
       // the largest zoom at which a point is inside a w x h map centred on another (Mercator: the world is 256 px wide

@@ -160,8 +160,16 @@ site, review, fixes)."**
   quality flag is `swh_ocean_compression_qual`, rain / ice flags applied, NOAA's directory of cycles discovered
   (`JASON3_INDEX` default, ON by default; `ALT_JASON3_INDEX` overrides, `off` disables): no repository variable needed.
   Real local builds of both jobs against the live sources: heights 10 windows / 433k readings / 61 s, obs - model
-  median +0.13..0.17 m; swell 154 points, chunks read back equal to the NetCDF. 18 job tests pass. NEXT: the dispatch dry
-  run on the runner (workflow_dispatch on the branch), then STOP for the job-only merge (tag `prod-pre-alt-job`).
+  median +0.13..0.17 m; swell 154 points, chunks read back equal to the NetCDF. 18 job tests pass (fdc5fa5).
+- 2026-11-04: the dispatch dry run cannot run before the merge: GitHub answers 404 to a workflow_dispatch of a
+  workflow that exists only on a feature branch (it is registered from the default branch), so it is the first thing
+  after the job-only merge (Actions -> model-alt / model-sarswell -> Run workflow, dry_run = true; then a real run).
+  The job-only merge is prepared as branch `feat/satellite-jobs` @ 60102d7 off `Live-Buoy-Update` @ d973c76 (19
+  files: the jobs, workflows, pins, tests, the README's job section, the G50 record, this plan; nothing on the page;
+  293 model_frames tests pass on it). STOPPED for the owner's go-ahead: on it, tag `prod-pre-alt-job` at d973c76,
+  merge `feat/satellite-jobs` into `Live-Buoy-Update` (no force, no rebase), push, dispatch the dry run, watch the
+  first live runs (`alt/v1/latest.json`, `sarswell/v1/latest.json`), then step 4 (the test site: cherry-pick
+  `feat/satellite`'s client commits to `test`; the owner sets `ALT_OVERLAY=1` / `SARSWELL=1` on the test service).
 
 
 ---

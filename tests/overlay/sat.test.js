@@ -307,6 +307,12 @@ test('SatStore: a stalled download frees its slot (a cooldown); a pointer that f
   st.loadedAt = 0;
   const p2 = st.load(); w.answer(/latest\.json$/, null, 503); assert.equal(await p2, st, 'a failed re-read keeps the pointer in hand');
   assert.equal(st.status, 'ok');
+  // a chunk whose header does not match the pointer's record (another window, another count) is refused for good
+  const w3 = storeWorld('alt', [chunkRec('alt', '20261104T12', 1)]), st3 = w3.st;
+  const p3 = st3.load(true); w3.answer(/latest\.json$/, w3.ptr); await p3;
+  st3.ensure(T0, T0 + 3.6e6, T0);
+  w3.answer(/\.bin$/, chunkBytes('alt', [reading(0, { t: T0 + 1000 }), reading(1, { t: T0 + 2000 })], { window: '20261104T12' }));
+  assert.ok(await until(() => st3.failed[w3.ptr.chunks[0].key] === true), 'two readings for a record of one');
   const w2 = world(); const st2 = new w2.I.SatStore('https://x', 'alt'); st2.supported = () => false;
   assert.equal(await st2.load(true), null); assert.equal(st2.status, 'unsupported');
   st.abortAll();
@@ -315,10 +321,10 @@ test('SatStore: a stalled download frees its slot (a cooldown); a pointer that f
 // ------------------------------------------------------------------ the layer
 function tile(z, x, y) { return { z, x, y }; }
 test('SatLayer: dots drawn newest last (on top), hollow near land, alpha by age; empty -> empty touches nothing; the split draw; hitAt = the top-most drawn', async () => {
-  const w = storeWorld('alt', [chunkRec('alt', '20261104T12', 5)]), st = w.st;
+  const w = storeWorld('alt', [chunkRec('alt', '20261104T12', 6)]), st = w.st;
   const p = st.load(true); w.answer(/latest\.json$/, w.ptr); await p;
   // four readings at one spot (20 N, 150 W), 1 h apart, the third near land; one far away
-  const rs = [0, 1, 2, 3].map((i) => reading(i, { t: T0 + i * 3.6e6, lat: 20, lon: -150, swh: 1 + i, flags: i === 2 ? 1 : 0 })).concat([reading(4, { t: T0 + 100, lat: -40, lon: 20, swh: 2 })]);
+  const rs = [0, 1, 2, 3].map((i) => reading(i, { t: T0 + i * 3.6e6, lat: 20, lon: -150, swh: 1 + i, flags: i === 2 ? 1 : 0 })).concat([reading(4, { t: T0 + 100, lat: -40, lon: 20, swh: 2 }), reading(5, { t: T0 + 4 * 3.6e6, lat: 20, lon: -150, swh: 7 })]);   // the last one sits exactly on the window's end
   rs.sort((a, b) => a.t - b.t);
   const layer = new w.I.SatLayer(); layer._map = null;                   // off a map: every tile is drawn at once (the Node stubs)
   layer.setStore(st, 'dots');
@@ -328,10 +334,10 @@ test('SatLayer: dots drawn newest last (on top), hollow near land, alpha by age;
   layer._tiles = {}; layer._tiles[key(pac)] = { el: elP, coords: pac }; layer._tiles[key(atl)] = { el: elA, coords: atl }; layer._tiles[key(tile(Z, 3, 3))] = { el: elX, coords: tile(Z, 3, 3) };
   layer.setWindow({ t0: T0, t1: T0 + 4 * 3.6e6, ref: T0 + 3 * 3.6e6, span: 24 * 3.6e6, frame: false });
   assert.equal(elP.calls.length, 0, 'no samples yet: nothing touched');
-  w.answer(/\.bin$/, chunkBytes('alt', rs, { window: '20261104T12', segments: [[0, 0, 5]] }));
+  w.answer(/\.bin$/, chunkBytes('alt', rs, { window: '20261104T12', segments: [[0, 0, 6]] }));
   assert.ok(await until(() => elP.calls.filter((c) => c[0] === 'arc').length >= 4));
   const arcs = elP.calls.filter((c) => c[0] === 'arc');
-  assert.equal(arcs.length, 4, 'the four readings at the spot');
+  assert.equal(arcs.length, 4, 'the four readings at the spot (the one exactly at t1 lies outside the half-open window)');
   assert.equal(elX.calls.length, 0, 'an empty tile is never touched');
   assert.ok(arcs[0][4] < arcs[3][4] && arcs[3][4] === 1, 'drawn oldest to newest: the newest (alpha 1) last, on top');
   const fills = elP.calls.filter((c) => c[0] === 'fill');
@@ -341,6 +347,9 @@ test('SatLayer: dots drawn newest last (on top), hollow near land, alpha by age;
   const hit = layer.hitAt(20, -150, Z);
   assert.equal(st.flat.t[hit], T0 + 3 * 3.6e6, 'the top-most drawn = the newest of the stack');
   assert.equal(layer.hitAt(20, -140, Z), -1);
+  const px7 = 360 / (256 * 128);                                           // one tile pixel at zoom 7, in degrees of longitude
+  assert.equal(layer.hitAt(20, -150 + 4 * px7, Z), hit, '4 px away: within the dot\'s radius + 3 px');
+  assert.equal(layer.hitAt(20, -150 + 6.5 * px7, Z), -1, '6.5 px away: beyond it');
   // a narrower window: the newest two only; a world copy draws the same
   layer.setWindow({ t0: T0 + 2 * 3.6e6, t1: T0 + 4 * 3.6e6, ref: T0 + 3 * 3.6e6, span: 2 * 3.6e6, frame: false });
   assert.equal(elP.calls.filter((c) => c[0] === 'arc').length, 4 + 2);
@@ -416,7 +425,9 @@ test('controller: the own entry mounts in mode obs with the layer in obsPane, sa
   assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '3.3 ft · Jason-3 · T11:00 HST · model 3.9 ft (-0.7)');
   // Off: the layer goes, the store keeps its samples, no more requests
   const n = w.fetches.length;
+  assert.ok(ov.satTimer, 'the 12-minute recheck runs while attached');
   ov.unmount();
+  assert.equal(ov.satTimer, null, 'Off clears it');
   assert.equal(ov.satLayer, null); assert.equal(w.layers.length, 0); assert.equal(w.fetches.length, n); assert.equal(ov.sat.flat.n, 3);
   assert.equal(w.attrs.length, 0);
 });

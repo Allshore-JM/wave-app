@@ -1,9 +1,9 @@
 # Section 81, step 4: the satellite layer on the test site (owner's sheet)
 
 Branch `test` @ 81f13b6 carries the client (overlay asset 2.23.2). The jobs are live on production since
-8cd6eba (2026-11-04 22:55Z): `alt/v1/latest.json` and `sarswell/v1/latest.json` on the frames bucket
-(models.allshoresurf.com) once the first scheduled runs land (crons :07/:37 and :09/:39 until the trigger Worker
-is redeployed with the new `GH_WORKFLOW` list, see `tools/model_frames/trigger/DEPLOYMENT.md`).
+8cd6eba (2026-11-04 22:55Z) and both products are on the frames bucket since 23:07Z: `alt/v1/latest.json`
+(10 windows, 9 missions) and `sarswell/v1/latest.json` (9 windows, Sentinel-1C + CFOSAT) on models.allshoresurf.com,
+dispatched every 10 min by the trigger Worker (the crons :07/:37 and :09/:39 are the fallback).
 
 ## What to set (test service first, each with its own go-ahead)
 

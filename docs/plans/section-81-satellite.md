@@ -185,8 +185,14 @@ site, review, fixes)."**
   kept as test's, test's logo lines kept, its own golden kept; coast-build runs sat.test.js). On the worktree the 12 +
   27 Node tests pass; `tests/test_overlay_flag.py` has the same 5 failures on test's own tip (its golden is stale
   there since section 77: pre-existing, not from this change). The owner's sheet: `section-81-test-site-sheet.md`
-  (set `ALT_OVERLAY=1` then `SARSWELL=1` on the TEST service, each with its own go-ahead; the checks). WAITING: the
-  first live pointers (the crons at :07 / :09), the owner's flags, then reviewer B on the test site.
+  (set `ALT_OVERLAY=1` then `SARSWELL=1` on the TEST service, each with its own go-ahead; the checks).
+- 2026-11-04 23:07Z: BOTH PRODUCTS LIVE on the bucket, published by runs #2 of each workflow (dispatched at 23:06
+  by the trigger Worker: it already dispatches both). `alt/v1/latest.json`: build 20261104T230624Z, 10 chunks
+  20261103T15..20261104T18 (30-48k readings each), 9 missions, newest 20:46Z, model runs 12/06/00/18Z, max-age 300;
+  `sarswell/v1/latest.json`: 9 chunks 20261102T15..20261103T15 (56-524 points), keep_h 56, Sentinel-1C + CFOSAT,
+  newest 2026-11-03 16:04Z. The newest chunk of each read back from the bucket decodes with n equal to its record
+  (heights obs - model median +0.135 m; the swell header carries the quality rule). WAITING on the owner: the flags
+  on the TEST service (`ALT_OVERLAY=1`, then `SARSWELL=1`), then reviewer B on the test site, then step 6.
 
 
 ---

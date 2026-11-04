@@ -1082,6 +1082,61 @@ product) publishes the newest NASA JPL MUR SST v4.1 day as tiles; `sst_tiles.py`
   without DecompressionStream too; a rejected `cancel()` is caught. `tests/overlay/sst_timers.test.js` (with `sst_net.js`: a
   fake clock and a held network of real PNG bytes) drives the real `decodeFrame` / `readBody` path.
 
+### Satellite wave heights and Sentinel-1 swell (plan sections 45 and 81, the jobs)
+
+Two observation products beside the model overlays, published by GitHub Actions on the frames bucket and read by the
+map's satellite layer (section 81's client; nothing on the page until it ships):
+
+- **`tools/model_frames/alt.py`** (workflow `model-alt.yml`, group `model-alt`, cron `7,37 * * * *` as the fallback,
+  dispatched every 10 minutes by the trigger Worker with the other jobs, kept alive by the keepalive): the last ~30 h of
+  along-track altimeter significant wave height from Copernicus Marine `WAVE_GLO_PHY_SWH_L3_NRT_014_001` (1 Hz `VAVH`,
+  every mission flying, buoy- and cross-calibrated), read anonymously from the open CloudFerro bucket (STAC first for
+  the datasets' native prefixes, then the pointer's cached list, then the bucket's own directory listing; the 1 Hz
+  datasets only). Credit "Generated using E.U. Copernicus Marine Service Information", doi 10.48670/moi-00179, in every
+  chunk and the pointer. NOAA's Jason-3 OGDR joins as a fourth source when `ALT_JASON3_INDEX` (a repository variable:
+  the HTML index of the OGDR files) is set; its readings within 1.5 s of CMEMS's own Jason-3 pass are dropped. Each
+  reading is **collocated with GFS-Wave**: the newest run whose cycle is at or before the reading (the live run, then
+  6 / 12 / 18 h older; a run without the frame gives way to the next older), linear in time between its hourly `hs`
+  frames, each sampled bilinearly over the present 0.25-degree nodes with the client's absent rule (weight < 0.25 =
+  none); `model_edge` marks a reading beside an absent node, `near_land` one within a cell of GSHHG land (the fill
+  mask `fill_allow.png`). The frames' hs range must be `encode.FIELDS["hs"]` (else the job exits 1: a range change
+  needs a deliberate change here first).
+- **`tools/model_frames/sarswell.py`** (workflow `model-sarswell.yml`, group `model-sarswell`, cron `9,39 * * * *`,
+  dispatched and kept alive the same way): the last ~30 h of Sentinel-1 (A / C; CFOSAT when flowing) SAR wave-mode
+  swell partitions from `WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002`, the measured datasets only (the propagated "fireworks"
+  datasets, a 3-hour timestep along the swell's path, are left out). Per point up to 3 partitions, the dominant (by
+  height) first: height, PEAK period, direction the swell comes FROM. The reader refuses a file whose period variable is
+  not a peak period or whose direction is not "from" (the variables' attributes say which; the MFWAM lesson). Credit as
+  above, doi 10.48670/moi-00174.
+- **Chunks** (`altfmt.py`; one per 3-hour window, magic `ALT1` / `SWL1`): the magic, a u32 header length, a JSON header
+  (`format, window, t0, t1, build, n, columns [[name, dtype, scale, none]...], missions, segments [[mission index,
+  start, count]...]` (time-sorted per mission), the heights' `runs` and `model` block, `inputs`, `credit`) and ONE zlib
+  stream (the browser's `DecompressionStream('deflate')`) of the columns concatenated, little-endian. Heights: `t u32`
+  (s since 2000-01-01) · `lat i32` x1e-6 · `lon i32` x1e-6 (-180..180) · `swh u16` x0.001 m · `model u16` x0.001 m
+  (65535 = none) · `mission u8` · `run u8` (255 none) · `flags u8` (near_land 1, model_edge 2): 19 bytes a reading, ~44k
+  readings a window. Swell: `t, lat, lon, n u8, mission u8, flags u8`, then `hs1..3 u16` x0.001 m, `tp1..3 u16` x0.01 s,
+  `dir1..3 u16` x0.01 deg (65535 none): 33 bytes a point. A chunk over 2 MB is refused (a warning past 1 MB).
+- **Bucket**: `<prefix>/w/<WINDOW YYYYMMDDTHH>/<BUILD YYYYMMDDTHHMMSSZ>.bin` (immutable; a rebuilt window is a new
+  key), `<prefix>/stats/<BUILD>.json`, `failed/<WINDOW>.json`, `stale-alarm.json`, then `<prefix>/latest.json` LAST
+  (max-age 300): `{format, magic, build, published_utc (the last chunk change), checked_utc (every run), newest_utc,
+  window_s 10800, keep_h 30, encoding "deflate", missions [{id, short, name}], chunks [{key, window, t0, t1, n, bytes,
+  build, missions, newest_utc, inputs}] (ascending, at most 12), model, columns, datasets, stats, source}`; prefixes
+  `alt/v1` and `sarswell/v1`. A window is rebuilt when the digest of its inputs (file names and sizes + the format key)
+  differs from the pointer's (upstream regenerates a window's file every 30 min while data arrives); the window's
+  readings are `t0 <= t < t1` (half-open: a daily swell file splits into windows without duplicates); nothing changed =
+  the pointer rewritten with `checked_utc` only. A file that fails to download is dropped from that build (the chunk is
+  published with `inputs: null` and tried again; after 3 attempts on the same inputs the window is left alone); a
+  dataset whose listing fails is left out of the digest (the chunk comes back whole when the listing returns). Prune:
+  windows older than 36 h go whole (their failure records too); superseded builds older than 2 h; unnamed stats older
+  than 24 h. Stale: the newest reading older than 12 h (heights) / 48 h (swell: daily batches 7-10 h behind) ends the
+  run with `STALE:` and exit 1, at most once every 12 h; a mission silent for 48 h (HY-2B 96 h) is a summary WARNING.
+  Exit codes as the SST job (0 published / nothing new / a quiet outage; 1 a failure or the stale alarm; 2 bad
+  arguments); `--dry-run`, `--local DIR`, `--window YYYYMMDDTHH` (forced, never alarms), `--force`, `--keep-h`,
+  `--frames-root`, `--no-model`, `--jason3-index`; `sarswell.py --inspect FILE` prints a file's variables.
+- **Tests**: `tests/model_frames/test_alt.py` (a fake STAC, bucket listing, product files written with h5py and frames
+  host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
+  pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

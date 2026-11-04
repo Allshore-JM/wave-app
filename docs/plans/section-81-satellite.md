@@ -111,6 +111,18 @@ site, review, fixes)."**
   session (the cloud copy lacks the local plan / memory / scratch harness; credits expire in days). Nothing built; no
   branch. RESUME: re-print the section-81 cue and WAIT; if a cloud session is wanted then, use move_to_cloud with a
   summary carrying section 81's decisions.
+- 2026-11-04 (cloud session, branch `feat/satellite`): step 1 code survey done; `altfmt.py` (ALT1 / SWL1 chunks),
+  `alt.py` (STAC + bucket listing, the plan by inputs digest, downloads, `read_l3`, the GFS-Wave collocation, chunks,
+  pointer last, prune, stale; Jason-3 OGDR behind `ALT_JASON3_INDEX`, off until verified), `sarswell.py` (the swell
+  product on alt.py's machinery; the reader refuses a mean period or a "towards" direction), workflows `model-alt.yml`
+  / `model-sarswell.yml`, the trigger / keepalive / tests pins, `tests/model_frames/test_alt.py` (18 tests; the whole
+  model_frames suite 492 pass). BLOCKED: the session's network policy denies every data host (s3.waw3-1.cloudferro.com,
+  stac.marine.copernicus.eu, documentation.marine.copernicus.eu, models.allshoresurf.com, www.ncei.noaa.gov), so the
+  real-file checks (the SWH file's variables, the SPC-FWK datasets / file names / variables, the peak-period and FROM
+  checks, the Jason-3 OGDR index) and the dispatch dry run are still to do; the owner was asked to allow the hosts.
+  The swell dataset pattern (`_PT15S`), its file-name pattern and the variable name lists are the documented ones and
+  are UNVERIFIED: nothing is published while they fail (the job then only alarms), but they must be checked on real
+  data before the job-only merge.
 
 
 ---

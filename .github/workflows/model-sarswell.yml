@@ -1,0 +1,68 @@
+# Publishes the last ~30 h of Sentinel-1 swell partitions (Copernicus Marine WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002,
+# the measured datasets only, anonymous on the open CloudFerro bucket) to R2 under sarswell/v1/ as one chunk per
+# 3-hour window (plan section 81). Daily batches arrive a few times a day: the job runs every 10 min from the trigger
+# Worker (this cron is the fallback) and ends in seconds when nothing changed.
+# Credit: "Generated using E.U. Copernicus Marine Service Information", doi 10.48670/moi-00174 (in every chunk).
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-sarswell
+on:
+  schedule:
+    - cron: "9,39 * * * *"
+  workflow_dispatch:
+    inputs:
+      window:
+        description: "YYYYMMDDTHH (blank = every window in reach whose inputs changed)"
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      force:
+        description: "rebuild every window in reach (true/false)"
+        default: "false"
+concurrency:
+  group: model-sarswell
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: sarswell
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+            h5py=3.14.0
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|numpy|pillow|boto3|h5py|hdf5|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish Sentinel-1 swell partitions
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          WINDOW: ${{ github.event.inputs.window }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -n "$WINDOW" ] && ! [[ "$WINDOW" =~ ^[0-9]{8}T[0-9]{2}$ ]]; then echo "bad window input"; exit 2; fi
+          ARGS=()
+          [ -n "$WINDOW" ] && ARGS+=(--window "$WINDOW")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/sarswell.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"

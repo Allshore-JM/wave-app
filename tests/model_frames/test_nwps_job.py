@@ -316,7 +316,7 @@ def test_workflow_trigger_keepalive_and_tests_paths():
     assert tests.count('"nwps_stations.json"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
     assert ('"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,'
-            'model-nwps.yml"' in cfg)
+            'model-nwps.yml,model-alt.yml,model-sarswell.yml"' in cfg)
     assert Pub.NWPS_PREFIX == "nwps/v1" and J.PREFIX == Pub.NWPS_PREFIX
 
 

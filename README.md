@@ -1122,17 +1122,29 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   window_s 10800, keep_h 30, encoding "deflate", missions [{id, short, name}], chunks [{key, window, t0, t1, n, bytes,
   build, missions, newest_utc, inputs}] (ascending, at most 12), model, columns, datasets, stats, source}`; prefixes
   `alt/v1` and `sarswell/v1`. A window is rebuilt when the digest of its inputs (file names and sizes + the format key)
-  differs from the pointer's (upstream regenerates a window's file every 30 min while data arrives); the window's
-  readings are `t0 <= t < t1` (half-open: a daily swell file splits into windows without duplicates); nothing changed =
-  the pointer rewritten with `checked_utc` only. A file that fails to download is dropped from that build (the chunk is
-  published with `inputs: null` and tried again; after 3 attempts on the same inputs the window is left alone); a
-  dataset whose listing fails is left out of the digest (the chunk comes back whole when the listing returns). Prune:
-  windows older than 36 h go whole (their failure records too); superseded builds older than 2 h; unnamed stats older
-  than 24 h. Stale: the newest reading older than 12 h (heights) / 48 h (swell: daily batches 7-10 h behind) ends the
-  run with `STALE:` and exit 1, at most once every 12 h; a mission silent for 48 h (HY-2B 96 h) is a summary WARNING.
-  Exit codes as the SST job (0 published / nothing new / a quiet outage; 1 a failure or the stale alarm; 2 bad
-  arguments); `--dry-run`, `--local DIR`, `--window YYYYMMDDTHH` (forced, never alarms), `--force`, `--keep-h`,
-  `--frames-root`, `--no-model`, `--jason3-index`; `sarswell.py --inspect FILE` prints a file's variables.
+  differs from the pointer's (upstream regenerates a window's file every 30 min while data arrives); the live model run
+  joins the digest of the windows ending after its cycle, so a new run re-collocates the readings it covers (the newest
+  run whose cycle is at or before the reading holds; older windows keep their model value); the window's readings are
+  `t0 <= t < t1` (half-open: a daily swell file splits into windows without duplicates); nothing changed = the pointer
+  rewritten with `checked_utc` only. A file that fails to download (a 404 is not retried: files are purged between the
+  listing and the GET) or that the reader refuses (a summary WARNING names it) is dropped from that build (the chunk is
+  published with `inputs: null` and tried again; after 3 attempts on the same inputs the window waits 2 h between
+  tries, never given up for good); a dataset whose listing fails is left out of the digest (the chunk comes back whole
+  when the listing returns); a frames host that cannot be read ends the run quietly, charged to no window. Prune:
+  windows the pointer no longer names and older than 36 h go whole (their failure records too); a superseded build 2 h
+  after its supersession (the pointer's `superseded` list carries the time: a client holding the previous pointer still
+  reads it meanwhile); unnamed stats older than 24 h. Stale: the newest reading older than 12 h (heights) / 48 h (swell:
+  daily batches 7-10 h behind) ends the run with `STALE:` and exit 1, at most once every 12 h (a model range change
+  alarms the same way, once every 12 h, and publishes nothing); a mission whose newest reading (the pointer's
+  `missions[].newest_utc`) is older than 48 h (HY-2B 96 h) is a summary WARNING. The dataset list is re-read from STAC
+  every 6 h (the pointer caches it, `datasets_utc`). Exit codes as the SST job (0 published / nothing new / a quiet
+  outage; 1 a failure or an alarm; 2 bad arguments); a manual `--window` run never alarms and exits 1 when it fails;
+  `--dry-run`, `--local DIR`, `--force`, `--keep-h`, `--frames-root`, `--no-model`, `--jason3-index`; `sarswell.py
+  --inspect FILE` prints a file's variables. Jason-3 OGDR readings inside a CMEMS Jason-3 pass (readings up to 60 s
+  apart, 1.5 s of slack) are dropped, CMEMS's own quality gaps included; only the hours CMEMS has not delivered survive.
+- **Known limits**: the model runs tried are the live one and the three before it (publish.py keeps four), so readings
+  older than the live cycle minus 18 h (about the oldest 1-7 h of the 24-h window) carry no model value (`model` none);
+  the swell product's "newest production" is keyed by (satellite, span start) pending the real listing.
 - **Tests**: `tests/model_frames/test_alt.py` (a fake STAC, bucket listing, product files written with h5py and frames
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).

@@ -169,7 +169,7 @@ def decode_chunk(buf, magic=None, max_bytes=MAX_CHUNK_BYTES):
         raise ValueError("bad chunk header length")
     try:
         header = json.loads(buf[8:8 + hlen].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise ValueError("bad chunk header")
     if not isinstance(header, dict) or header.get("format") != fmt or header.get("columns") != [list(c) for c in cols]:
         raise ValueError("chunk header does not match the format")
@@ -178,7 +178,10 @@ def decode_chunk(buf, magic=None, max_bytes=MAX_CHUNK_BYTES):
         raise ValueError("bad reading count")
     stride = stride_of(cols)
     try:
-        raw = zlib.decompress(buf[8 + hlen:], bufsize=max(1, n * stride))
+        d = zlib.decompressobj()
+        raw = d.decompress(buf[8 + hlen:], n * stride + 1)             # bounded: never more than the header's n + 1 byte
+        if d.unconsumed_tail or not d.eof:
+            raise ValueError("chunk stream length does not match the header")
     except zlib.error:
         raise ValueError("bad chunk stream")
     if len(raw) != n * stride:
@@ -196,8 +199,29 @@ def decode_chunk(buf, magic=None, max_bytes=MAX_CHUNK_BYTES):
     if not isinstance(segs, list):
         raise ValueError("chunk header has no segments")
     check_segments(segs, n, out[cols[0][0]] if n else None)
-    if n and (out["mission"] >= max(1, len(header.get("missions") or []))).any():
+    missions = header.get("missions")
+    if not isinstance(missions, list) or (n and not missions):
+        raise ValueError("chunk header has no missions")
+    if n and (out["mission"] >= len(missions)).any():
         raise ValueError("a reading names a mission the header does not list")
+    for m, start, count in segs:
+        if (out["mission"][start:start + count] != m).any():
+            raise ValueError("a segment's readings name another mission")
+    if mg == MAGIC_ALT:
+        runs = header.get("runs")
+        if not isinstance(runs, list):
+            raise ValueError("chunk header has no runs")
+        if n and ((out["run"] != NONE_U1) & (out["run"] >= len(runs))).any():
+            raise ValueError("a reading names a run the header does not list")
+        if n and (out["flags"] & np.uint8(255 ^ (FLAG_NEAR_LAND | FLAG_MODEL_EDGE))).any():
+            raise ValueError("unknown flag bits")
+    else:
+        if n and ((out["n"] > SWELL_PARTS) | (out["flags"] & np.uint8(255 ^ FLAG_NEAR_LAND)).astype(bool)).any():
+            raise ValueError("bad partition count or flag bits")
+        for k in range(1, SWELL_PARTS + 1):
+            dk = out[f"dir{k}"]
+            if n and ((dk != NONE_U2) & (dk > 36000)).any():
+                raise ValueError("a direction beyond 360 degrees")
     return header, out
 
 

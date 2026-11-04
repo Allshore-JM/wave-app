@@ -46,7 +46,7 @@ def test_chunk_round_trip_and_every_rejection():
               "lon": F.to_stored([-179.5, 179.999999, 0, 10, -10], 1e-6, None, "i4"),
               "swh": F.to_stored([1.234, np.nan, 0, 30, 2.5], 0.001, F.NONE_U2, "u2"), "model": F.to_stored([1.0, 2.0, np.nan, 29.9, 2.4], 0.001, F.NONE_U2, "u2"),
               "mission": np.array([0, 0, 0, 0, 1], np.uint8), "run": np.array([0, 1, 255, 0, 0], np.uint8), "flags": np.array([0, 1, 2, 3, 0], np.uint8)}
-    header = {"window": "20261104T12", "missions": [{"id": "j3"}, {"id": "s3a"}], "segments": [[0, 0, 4], [1, 4, 1]]}
+    header = {"window": "20261104T12", "missions": [{"id": "j3"}, {"id": "s3a"}], "segments": [[0, 0, 4], [1, 4, 1]], "runs": ["2026110406", "2026110400"]}
     buf = F.encode_chunk(F.MAGIC_ALT, header, {}, arrays)
     assert buf[:4] == b"ALT1"
     h, cols = F.decode_chunk(buf)
@@ -78,6 +78,23 @@ def test_chunk_round_trip_and_every_rejection():
         F.to_stored([70.0], 0.001, F.NONE_U2, "u2")                   # does not fit
     with pytest.raises(ValueError):
         F.to_stored([np.nan], 1, None, "u4")
+    # the header's lists are checked against the columns: a run the header does not list, unknown flag bits, a segment
+    # naming another mission than its readings, a missing mission list
+    for bad in (dict(arrays, run=np.array([0, 2, 255, 0, 0], np.uint8)), dict(arrays, flags=np.array([0, 1, 2, 3, 4], np.uint8))):
+        with pytest.raises(ValueError):
+            F.decode_chunk(F.encode_chunk(F.MAGIC_ALT, header, {}, bad))
+    with pytest.raises(ValueError):
+        F.decode_chunk(F.encode_chunk(F.MAGIC_ALT, dict(header, segments=[[1, 0, 4], [0, 4, 1]]), {}, arrays))
+    with pytest.raises(ValueError):
+        F.decode_chunk(F.encode_chunk(F.MAGIC_ALT, dict(header, missions=[]), {}, arrays))
+    deep = "[" * 3000 + "]" * 3000
+    dj = json.dumps(dict(header, format="alt-v1", n=0, columns=F.ALT_COLUMNS)).replace('"window"', '"deep": ' + deep + ', "window"').encode()
+    with pytest.raises(ValueError):
+        F.decode_chunk(b"ALT1" + len(dj).to_bytes(4, "little") + dj + zlib.compress(b""))
+    # a stream that inflates to far more than the header's n is cut off at n x stride + 1, never inflated whole
+    big = json.dumps(dict(header, format="alt-v1", n=1, columns=F.ALT_COLUMNS, segments=[[0, 0, 1]])).encode()
+    with pytest.raises(ValueError):
+        F.decode_chunk(b"ALT1" + len(big).to_bytes(4, "little") + big + zlib.compress(b"\0" * 5_000_000))
 
 
 def test_swell_chunk_round_trip():
@@ -192,10 +209,16 @@ def test_stac_datasets_takes_the_1hz_datasets_and_their_native_hrefs_and_falls_b
     web2 = FakeWeb()
     web2.urls[f"{A.S3}/{A.BUCKET}/?list-type=2&prefix=native/{A.HEIGHTS.stac_id}/&delimiter=/"] = listing_xml([], prefixes=[
         f"native/{A.HEIGHTS.stac_id}/cmems_obs-wave_glo_phy-swh_nrt_al-l3_PT1S_202411/", f"native/{A.HEIGHTS.stac_id}/cmems_obs-wave_glo_phy-swh_nrt_al-l3_PT0.2S_202411/"])
-    got2, how = A.discover_datasets(A.HEIGHTS, {}, get=web2, log=lambda *a: None)
+    assert not [u for u in web.log if "PT0.2S" in u or "wind_nrt" in u], "only the 1 Hz wave datasets' items are fetched"
+    got2, how, _ = A.discover_datasets(A.HEIGHTS, {}, get=web2, log=lambda *a: None, now=NOW)
     assert how == "bucket" and list(got2) == ["cmems_obs-wave_glo_phy-swh_nrt_al-l3_PT1S_202411"]
-    cached, how3 = A.discover_datasets(A.HEIGHTS, {"datasets": {"d": "https://h/b/p"}}, get=FakeWeb(), log=lambda *a: None)
-    assert how3 == "pointer" and cached == {"d": "https://h/b/p"}
+    cached, how3, _ = A.discover_datasets(A.HEIGHTS, {"datasets": {"d": "https://h/b/p"}}, get=FakeWeb(), log=lambda *a: None, now=NOW)
+    assert how3 == "pointer" and cached == {"d": "https://h/b/p"}, "STAC down: the cached list whatever its age"
+    fresh = {"datasets": {"d": "https://h/b/p"}, "datasets_utc": A.utc(NOW - timedelta(hours=5))}
+    web3 = FakeWeb(); web3.urls.update(fake_stac(ds))
+    assert A.discover_datasets(A.HEIGHTS, fresh, get=web3, now=NOW)[1] == "pointer" and not web3.log, "a list under 6 h old: STAC is not read"
+    fresh["datasets_utc"] = A.utc(NOW - timedelta(hours=7))
+    assert A.discover_datasets(A.HEIGHTS, fresh, get=web3, now=NOW)[1] == "stac"
 
 
 def test_windows_in_reach_and_the_plan_digests():
@@ -432,15 +455,24 @@ def test_main_rebuilds_only_the_window_whose_file_was_regenerated_keeps_old_keys
     assert keys2[A.window_key(w)] != old_keys[A.window_key(w)] and keys2[A.window_key(w)].endswith(f"/{A.stamp(later)}.bin")
     assert [c for c in ptr2["chunks"] if c["window"] == A.window_key(w)][0]["n"] == 81 and ptr2["published_utc"] == A.utc(later)
     assert old_keys[A.window_key(w)] in fc.objects, "the superseded build stays for the clients still reading it"
+    assert [e["key"] for e in ptr2["superseded"]] == [old_keys[A.window_key(w)]] and ptr2["superseded"][0]["at"] == A.utc(later)
+    # a build superseded 2 h 10 min after its stamp (review P1): the grace runs from the supersession, so it stays 2 h more
+    assert A.prune(store, A.HEIGHTS, ptr2, now=later + timedelta(hours=1, minutes=59)) == []
+    assert old_keys[A.window_key(w)] in fc.objects
     # 3 h later the superseded build is pruned; 40 h later the windows out of reach go whole, their failure records too
     fc.objects["alt/v1/failed/" + A.window_key(ws[-2]) + ".json"] = {"body": b"{}", "ct": "", "cc": ""}
     fc.objects["sst/v1/latest.json"] = {"body": b"{}", "ct": "", "cc": ""}
     fc.objects["alt/v1/stats/20261101T000000Z.json"] = {"body": b"{}", "ct": "", "cc": ""}
-    gone = A.prune(store, A.HEIGHTS, ptr2, now=later + timedelta(hours=3))
+    gone = A.prune(store, A.HEIGHTS, ptr2, now=later + timedelta(hours=2, minutes=1))
     assert set(gone) == {old_keys[A.window_key(w)], "alt/v1/stats/20261101T000000Z.json"}
-    gone2 = A.prune(store, A.HEIGHTS, ptr2, now=later + timedelta(hours=40))
+    # the entry leaves the pointer's superseded list with the next run; a run 3 h on carries none
+    assert A.superseded_list(ptr2, ptr2["chunks"], later + timedelta(hours=3), ptr2["superseded"]) == []
+    assert A.superseded_list(ptr2, ptr2["chunks"], later + timedelta(hours=1), ptr2["superseded"]) == ptr2["superseded"]
+    assert A.prune(store, A.HEIGHTS, ptr2, now=later + timedelta(hours=40)) == ["alt/v1/failed/" + A.window_key(ws[-2]) + ".json"], "a window the pointer still names is never deleted whole (its old failure record goes)"
+    fc.objects["alt/v1/failed/" + A.window_key(ws[-2]) + ".json"] = {"body": b"{}", "ct": "", "cc": ""}
+    gone2 = A.prune(store, A.HEIGHTS, dict(ptr2, chunks=[]), now=later + timedelta(hours=40))
     assert set(gone2) >= set(keys2.values()) | {"alt/v1/failed/" + A.window_key(ws[-2]) + ".json"}
-    assert ptr2["stats"] in fc.objects and ptr["stats"] in fc.objects, "the stats of the builds the pointer's chunks name stay"
+    assert ptr2["stats"] in fc.objects and ptr["stats"] not in fc.objects, "the stats the pointer's build names stay; a build no chunk names any more goes after 24 h"
     assert "sst/v1/latest.json" in fc.objects and not [k for k in fc.objects if k.startswith("alt/v1/w/")]
 
 
@@ -510,7 +542,9 @@ def test_stale_alarm_once_per_12h_never_with_a_window_and_a_local_build_touches_
     assert A.main([], get=web, store=store, now=late) == 1
     assert "alt/v1/stale-alarm.json" in fc.objects
     assert A.main([], get=web, store=store, now=late + timedelta(minutes=10)) == 0, "once in 12 h"
-    assert A.main(["--window", A.window_key(ws[-1])], get=web, store=store, now=late + timedelta(hours=13)) == 0, "a manual window never alarms"
+    alarm = fc.objects["alt/v1/stale-alarm.json"]["body"]
+    assert A.main(["--window", A.window_key(ws[-1])], get=web, store=store, now=late + timedelta(hours=13)) == 1, "a manual window that finds nothing fails (red), never alarms"
+    assert fc.objects["alt/v1/stale-alarm.json"]["body"] == alarm
     assert A.main([], get=web, store=store, now=late + timedelta(hours=13)) == 1
     # a local build writes files only
     fc2 = FakeClient(); store2 = P.Store(fc2, "b")
@@ -529,12 +563,21 @@ def test_a_model_range_change_refuses_and_an_unavailable_frames_host_records_the
     web, by_window, ws = setup_world(tmp_path)
     fc = FakeClient(); store = P.Store(fc, "b")
     run = [u for u in web.urls if u.endswith("/manifest-x.json")][0]
+    good = web.urls[run]
     web.urls[run] = manifest_json(re.search(r"/(\d{10})/", run).group(1), 0, 15.0)
     assert A.main([], get=web, store=store, now=NOW) == 1 and "alt/v1/latest.json" not in fc.objects
+    assert A.main([], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0, "the range alarm goes out once in 12 h (144 red runs a day otherwise)"
+    assert A.main([], get=web, store=store, now=NOW + timedelta(hours=13)) == 1 and "alt/v1/latest.json" not in fc.objects
+    web.urls[run] = good
     web.down.add(f"{A.FRAMES_ROOT}/{P.PREFIX}/latest.json")
     assert A.main([], get=web, store=store, now=NOW) == 1, "nothing published yet counts as stale: the alarm goes out"
-    assert all(f"alt/v1/failed/{k}.json" in fc.objects for k in by_window) and "alt/v1/latest.json" not in fc.objects
+    assert not [k for k in fc.objects if k.startswith("alt/v1/failed/")], "a frames outage is charged to no window (the next run simply tries again)"
+    assert "alt/v1/latest.json" not in fc.objects
     web.down.clear()
+    assert A.main([], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0 and "alt/v1/latest.json" in fc.objects, "...and builds as soon as the host is back"
+    fc.objects.pop("alt/v1/latest.json"); fc.objects.pop("alt/v1/stale-alarm.json", None)
+    for k in [k for k in fc.objects if k.startswith("alt/v1/")]:
+        fc.objects.pop(k)
     assert A.main(["--no-model"], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0
     ptr = json.loads(fc.objects["alt/v1/latest.json"]["body"])
     h, cols = F.decode_chunk(fc.objects[ptr["chunks"][0]["key"]]["body"])
@@ -573,7 +616,12 @@ def test_jason3_ogdr_readings_join_as_a_mission_and_duplicates_of_the_cmems_pass
     # an unreachable index is a WARNING, not a failure
     web.down.add(index)
     assert A.main(["--jason3-index", index], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0
-    assert A.dedupe_against(np.array([10.0, 20.0]), np.array([8.4, 9.0, 11.6, 15.0, 21.0, 30.0])).tolist() == [0, 2, 3, 5]
+    # coverage, not point matching: a CMEMS pass (readings 60 s apart or closer) covers every OGDR reading inside it, the
+    # ones CMEMS rejected included; a gap over 60 s ends a pass
+    assert A.dedupe_against(np.array([10.0, 20.0]), np.array([8.4, 9.0, 11.6, 15.0, 21.0, 30.0])).tolist() == [0, 5]
+    assert A.dedupe_against(np.array([10.0, 20.0, 200.0, 210.0]), np.array([100.0, 150.0, 199.0, 205.0, 212.0])).tolist() == [0, 1, 4]
+    h, cols = F.decode_chunk(fc.objects[c["key"]]["body"])
+    assert "NOAA" in h["credit"] and A.SOURCE["credit"] in h["credit"], "both sources credited in a chunk holding OGDR readings"
 
 
 # ------------------------------------------------------------------ the swell job
@@ -629,6 +677,22 @@ def test_read_swell_sorts_partitions_by_height_keeps_three_and_refuses_a_mean_pe
     write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, dir_name="Partition direction")
     with pytest.raises(ValueError, match="convention"):
         S.read_swell(path)
+    # the review's wordings (P0): a "towards" direction whose text also says "clockwise from north" is refused
+    for name in ("Direction towards which the swell partition propagates, clockwise from true north", "Swell partition direction (to), degrees clockwise from north",
+                 "Peak direction of the partition, going towards, measured from north", "Direction the partition propagates to"):
+        write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, dir_name=name)
+        with pytest.raises(ValueError, match="comes from|convention"):
+            S.read_swell(path)
+    write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, dir_name="Partition direction, clockwise from true north (coming from)")
+    assert S.read_swell(path)["dir"][0][0] == pytest.approx(215.5), "the reference phrase is not the convention; 'coming from' is"
+    for name in ("Zero-crossing period; see the spectral peak period for comparison", "Mean period at the spectral peak", "Tm02 of the partition"):
+        write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, period_name=name)
+        with pytest.raises(ValueError, match="peak"):
+            S.read_swell(path)
+    assert S.convention("sea_surface_wave_from_direction", "Direction towards which the swell goes", S.DIR_FROM_STD, S.DIR_TO_STD, S.DIR_FROM_RE, S.DIR_TO_RE, S.DIR_REF_RE) == "pos", "a CF standard name decides"
+    assert S.convention("sea_surface_swell_wave_to_direction", "Direction the swell comes from", S.DIR_FROM_STD, S.DIR_TO_STD, S.DIR_FROM_RE, S.DIR_TO_RE, S.DIR_REF_RE) == "neg"
+    assert S.convention("sea_surface_wave_period_at_variance_spectral_density_maximum", "", S.PERIOD_PEAK_STD, S.PERIOD_MEAN_STD, S.PERIOD_PEAK_RE, S.PERIOD_MEAN_RE) == "pos"
+    assert S.convention("sea_surface_wave_mean_period", "Peak period", S.PERIOD_PEAK_STD, S.PERIOD_MEAN_STD, S.PERIOD_PEAK_RE, S.PERIOD_MEAN_RE) == "neg"
 
 
 def test_swell_main_publishes_its_own_prefix_and_chunks_with_the_dominant_partition_first(tmp_path):

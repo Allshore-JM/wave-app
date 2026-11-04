@@ -156,6 +156,43 @@
     var t = z >= SST_TIER_ZOOMS[1] ? 2 : z >= SST_TIER_ZOOMS[0] ? 1 : 0;
     return t < available ? t : available;
   }
+  // ---- satellite waves (plan sections 45 and 81) ----
+  // Two OBSERVATION products published by tools/model_frames/alt.py (altimeter wave heights, alt/v1) and sarswell.py
+  // (Sentinel-1 swell partitions, sarswell/v1): a pointer naming one chunk per 3-hour window, each chunk a header and ONE
+  // zlib stream of columns (altfmt.py). The layer's own entry ("Satellite waves") draws the last 24 h faded by age, as
+  // height dots in the wave-height colours or as swell arrows (the Heights | Swell switch); the "Satellite readings"
+  // box under Wave height draws the height dots within 3 h of the frame on the map, in the model's own colours.
+  var SAT_PREFIX = 'alt/v1', SWELL_PREFIX = 'sarswell/v1';
+  var SAT_WINDOW_MS = 24 * 3.6e6;                          // the layer's own entry: the last 24 h of readings
+  var SAT_FRAME_WINDOW_MS = 3 * 3.6e6;                     // over the model: readings within 3 h of the frame's time
+  var SAT_RECHECK_MS = 12 * 60 * 1000;                     // the pointer re-read while shown (the job publishes every ~10 min)
+  var SAT_STALE_H = 12, SWELL_STALE_H = 48;                // the jobs' own stale alarms (alt.py STALE_H, sarswell.py STALE_H)
+  var SAT_FDEF = { lo: 0, hi: 22.86, legend: [0, 18.288], units: 'm', interpolation: 'bilinear' };   // = SCALES.hs: a dot is coloured as the field would draw that value
+  var SAT_HEAD = 'Satellite waves (CMEMS, last 24 h)';
+  var SAT_CREDIT = 'Generated using E.U. Copernicus Marine Service Information: wave heights WAVE_GLO_PHY_SWH_L3_NRT_014_001 (doi:10.48670/moi-00179), Sentinel-1 swell WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002 (doi:10.48670/moi-00174); rendered by Allshore Surf';
+  // <= 29 visible characters (the GFS rule): "Overlay: Copernicus Marine"; the title carries the full credit and the DOIs
+  var SAT_ATTRIBUTION = 'Overlay: <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="' + SAT_CREDIT + '">Copernicus Marine</a>';
+  var SAT_FRAME_ATTRIBUTION = ' · <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="Satellite readings: ' + SAT_CREDIT + '">Copernicus Marine</a>';
+  var SAT_FADE = [1, 0.35];                                // a dot's alpha: the newest reading .. the window's far end
+  var MAX_SAT_CHUNKS = 12, MAX_SAT_CHUNK_BYTES = 2 * 1024 * 1024, MAX_SAT_SAMPLES = 600000, MAX_SAT_INFLIGHT = 3, SAT_BUCKET_DEG = 0.5;
+  var SAT_MAGIC = { alt: 'ALT1', swell: 'SWL1' }, SAT_FORMAT = { alt: 'alt-v1', swell: 'swell-v1' };
+  // The columns exactly as altfmt.py defines them (name, dtype, scale, none): a chunk or pointer with others is refused.
+  var SAT_COLUMNS = {
+    alt: [['t', 'u4', 1, null], ['lat', 'i4', 1e-6, null], ['lon', 'i4', 1e-6, null], ['swh', 'u2', 0.001, 65535], ['model', 'u2', 0.001, 65535],
+          ['mission', 'u1', 1, null], ['run', 'u1', 1, 255], ['flags', 'u1', 1, null]],
+    swell: [['t', 'u4', 1, null], ['lat', 'i4', 1e-6, null], ['lon', 'i4', 1e-6, null], ['n', 'u1', 1, null], ['mission', 'u1', 1, null], ['flags', 'u1', 1, null],
+            ['hs1', 'u2', 0.001, 65535], ['hs2', 'u2', 0.001, 65535], ['hs3', 'u2', 0.001, 65535], ['tp1', 'u2', 0.01, 65535], ['tp2', 'u2', 0.01, 65535], ['tp3', 'u2', 0.01, 65535],
+            ['dir1', 'u2', 0.01, 65535], ['dir2', 'u2', 0.01, 65535], ['dir3', 'u2', 0.01, 65535]]
+  };
+  var SAT_FLAG_NEAR_LAND = 1, SAT_FLAG_MODEL_EDGE = 2;
+  var SAT_EPOCH_MS = Date.UTC(2000, 0, 1);
+  var SAT_DTYPE_BYTES = { u1: 1, u2: 2, u4: 4, i4: 4 };
+  // The "Satellite readings" box's note by state (under Wave height).
+  var SAT_NOTES = { within: 'within 3 h of the frame', loading: 'loading readings…', unavailable: 'readings unavailable',
+    none: 'no readings within 3 h of this time', unsupported: 'not supported in this browser' };
+  // The observations the panel can show (mode 'obs'): own keys only (G30-9).
+  var OBS_DEFS = { sst: { label: 'sea surface temperature', attribution: SST_ATTRIBUTION }, sat: { label: 'satellite waves', attribution: SAT_ATTRIBUTION } };
+  function hasObs(key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(OBS_DEFS, key); }
 
   // The tab's saved state; anything but a plain object (a corrupted or foreign value) counts as empty,
   // so the next write replaces it instead of failing on it for the rest of the tab's life.
@@ -1179,6 +1216,440 @@
     return out;
   };
 
+  // ---- the satellite stores (plan sections 45 and 81) ----
+  // One zlib stream as ONE ArrayBuffer of exactly `size` bytes through the browser's inflater (the frames' inflate takes
+  // the stream in parts; this is the same pump over one part), capped by the expected size.
+  function inflateBytes(bytes, size) { return inflate([bytes], size); }
+  function satColumnsEqual(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      var x = a[i], y = b[i];
+      if (!Array.isArray(x) || x.length !== 4 || x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2] || x[3] !== y[3]) return false;
+    }
+    return true;
+  }
+  function satStride(cols) { var n = 0; for (var i = 0; i < cols.length; i++) n += SAT_DTYPE_BYTES[cols[i][1]]; return n; }
+  // Segments [[mission, start, count], ...] cover 0..n in order, each time-sorted (t: the u32 column).
+  function satSegmentsOk(segs, n, t, missions) {
+    if (!Array.isArray(segs)) return false;
+    var pos = 0;
+    for (var i = 0; i < segs.length; i++) {
+      var s = segs[i];
+      if (!Array.isArray(s) || s.length !== 3 || !Number.isInteger(s[0]) || !Number.isInteger(s[1]) || !Number.isInteger(s[2]) || s[0] < 0 || s[0] >= missions || s[1] !== pos || s[2] < 1) return false;
+      for (var j = s[1] + 1; j < s[1] + s[2]; j++) if (t[j] < t[j - 1]) return false;
+      pos += s[2];
+    }
+    return pos === n;
+  }
+  var LITTLE_ENDIAN = (function () { try { return new Uint8Array(new Uint16Array([1]).buffer)[0] === 1; } catch (e) { return true; } })();
+  // The columns of an inflated stream as typed arrays (little-endian; copied into aligned buffers: an odd n leaves the u16
+  // and i32 columns unaligned in the stream).
+  function satSplitColumns(raw, cols, n) {
+    var out = {}, pos = 0, dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    for (var i = 0; i < cols.length; i++) {
+      var name = cols[i][0], code = cols[i][1], size = SAT_DTYPE_BYTES[code], arr, k;
+      if (code === 'u1') arr = raw.slice(pos, pos + n);
+      else if (LITTLE_ENDIAN) arr = new (code === 'u2' ? Uint16Array : code === 'u4' ? Uint32Array : Int32Array)(raw.buffer.slice(raw.byteOffset + pos, raw.byteOffset + pos + n * size));
+      else {
+        arr = new (code === 'u2' ? Uint16Array : code === 'u4' ? Uint32Array : Int32Array)(n);
+        for (k = 0; k < n; k++) arr[k] = code === 'u2' ? dv.getUint16(pos + k * 2, true) : code === 'u4' ? dv.getUint32(pos + k * 4, true) : dv.getInt32(pos + k * 4, true);
+      }
+      out[name] = arr;
+      pos += n * size;
+    }
+    return out;
+  }
+  // A chunk (ArrayBuffer) -> Promise of {header, cols} after every check: the magic of `kind`, the header length, the
+  // format and the columns pinned above, n within the cap, the inflated length n x stride, the segments contiguous and
+  // time-sorted, every mission index listed, lat / lon in range. Anything else rejects "sat decode failed".
+  function decodeSatChunk(buf, kind) {
+    var bad = function () { return Promise.reject(new Error('sat decode failed')); };
+    if (!(buf instanceof ArrayBuffer) || buf.byteLength < 8 || buf.byteLength > MAX_SAT_CHUNK_BYTES) return bad();
+    var u8 = new Uint8Array(buf), dv = new DataView(buf), magic = String.fromCharCode(u8[0], u8[1], u8[2], u8[3]);
+    if (magic !== SAT_MAGIC[kind]) return bad();
+    var hlen = dv.getUint32(4, true), header;
+    if (hlen > 1048576 || 8 + hlen > u8.length) return bad();
+    try { header = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(u8.subarray(8, 8 + hlen))); } catch (e) { return bad(); }
+    var cols = SAT_COLUMNS[kind];
+    if (!header || typeof header !== 'object' || header.format !== SAT_FORMAT[kind] || !satColumnsEqual(header.columns, cols) || !Number.isInteger(header.n) || header.n < 0 || header.n > MAX_SAT_SAMPLES ||
+      typeof header.window !== 'string' || !Array.isArray(header.missions) || !header.missions.length || header.missions.length > 255 ||
+      !header.missions.every(function (m) { return m && typeof m === 'object' && typeof m.id === 'string'; }) || typeof header.credit !== 'string') return bad();
+    var n = header.n, stride = satStride(cols);
+    return inflateBytes(u8.subarray(8 + hlen), n * stride).then(function (raw) {
+      var c = satSplitColumns(raw, cols, n);
+      if (!satSegmentsOk(header.segments, n, c.t, header.missions.length)) throw new Error('sat decode failed');
+      for (var i = 0; i < n; i++) if (c.lat[i] < -90000000 || c.lat[i] > 90000000 || c.lon[i] < -180000000 || c.lon[i] > 180000000 || c.mission[i] >= header.missions.length) throw new Error('sat decode failed');
+      return { header: header, cols: c };
+    }, function () { throw new Error('sat decode failed'); });
+  }
+  // The pointer the client can act on: the format and magic of `kind`, the columns pinned, at most MAX_SAT_CHUNKS chunks
+  // each with a key, a window, parseable t0 < t1, a reading count and a size within the caps, missions as the chunks'.
+  function validSatPointer(p, kind) {
+    if (!p || typeof p !== 'object' || p.format !== SAT_FORMAT[kind] || p.magic !== SAT_MAGIC[kind] || p.encoding !== 'deflate' || !satColumnsEqual(p.columns, SAT_COLUMNS[kind]) ||
+      typeof p.checked_utc !== 'string' || isNaN(Date.parse(p.checked_utc)) || !Array.isArray(p.chunks) || p.chunks.length > MAX_SAT_CHUNKS || !Array.isArray(p.missions) || p.missions.length > 255 ||
+      !p.missions.every(function (m) { return m && typeof m === 'object' && typeof m.id === 'string' && typeof m.short === 'string'; })) return false;
+    var prev = -Infinity;
+    for (var i = 0; i < p.chunks.length; i++) {
+      var c = p.chunks[i];
+      if (!c || typeof c !== 'object' || !sstKey(c.key) || c.key.indexOf((kind === 'alt' ? SAT_PREFIX : SWELL_PREFIX) + '/') !== 0 || typeof c.window !== 'string' || !/^\d{8}T\d{2}$/.test(c.window) ||
+        typeof c.t0 !== 'string' || typeof c.t1 !== 'string' || isNaN(Date.parse(c.t0)) || isNaN(Date.parse(c.t1)) || Date.parse(c.t0) >= Date.parse(c.t1) || Date.parse(c.t0) < prev ||
+        !Number.isInteger(c.n) || c.n < 0 || c.n > MAX_SAT_SAMPLES || !Number.isInteger(c.bytes) || c.bytes < 0 || c.bytes > MAX_SAT_CHUNK_BYTES || typeof c.build !== 'string') return false;
+      prev = Date.parse(c.t1);
+    }
+    return true;
+  }
+  // The pointer's newest reading time in ms (newest_utc, else the last chunk's newest, else its t1), or null.
+  function satNewestMs(p) {
+    var t = typeof p.newest_utc === 'string' ? Date.parse(p.newest_utc) : NaN;
+    if (!isNaN(t)) return t;
+    for (var i = p.chunks.length - 1; i >= 0; i--) { var c = p.chunks[i], u = Date.parse(c.newest_utc || c.t1); if (!isNaN(u)) return u; }
+    return null;
+  }
+  var SAT_STORES = {};
+  function satStore(root, kind) { var k = root + '|' + kind; return SAT_STORES[k] || (SAT_STORES[k] = new SatStore(root, kind)); }
+  // The readings of one kind: the pointer (re-read every SAT_RECHECK_MS while attached: a newer one becomes `next` and is
+  // adopted only once the chunks the current window needs from it have landed, so the picture never empties between
+  // pointers), the chunks a window needs (nearest to the reference time first, <= MAX_SAT_INFLIGHT at once, per-chunk
+  // stall timers, 404 / undecodable final, else a cooldown and a retry), and the FLAT store of every loaded chunk
+  // (time-sorted, with a bucket index) the layer draws from. idle() stops the downloads and keeps the samples; abortAll()
+  // (Off) stops the pointer load too and keeps them (an On is instant).
+  function SatStore(root, kind) {
+    this.root = root; this.kind = kind; this.prefix = kind === 'alt' ? SAT_PREFIX : SWELL_PREFIX;
+    this.status = 'idle'; this.pointer = null; this.next = null; this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.checking = null;
+    this.chunks = new Map(); this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {}; this.abort = null; this.retryTimer = null;
+    this.window = null; this.flat = null; this.rev = 0; this.onChange = null; this._rebuildQ = null; this.bytes = 0;
+  }
+  SatStore.prototype.timeoutMs = 15000;
+  SatStore.prototype.stallMs = 15000;
+  SatStore.prototype.retryMs = COAST_RETRY_MS;
+  SatStore.prototype.recheckMs = SAT_RECHECK_MS;
+  SatStore.prototype._json = SstStore.prototype._json;
+  SatStore.prototype._pointer = function (sig) { return this._json(this.root + '/' + this.prefix + '/latest.json', sig, true, 256 * 1024); };
+  // The chunk's bytes as an ArrayBuffer (tests replace it); onProgress as the bytes arrive.
+  SatStore.prototype._bytes = function (url, sig, onProgress) {
+    return fetch(url, { signal: sig, mode: 'cors' }).then(function (r) {
+      if (!r.ok) throw new Error('sat ' + r.status);
+      if (Number(r.headers.get('content-length') || 0) > MAX_SAT_CHUNK_BYTES) throw new Error('sat decode failed');
+      if (onProgress) onProgress();
+      if (r.body && r.body.getReader) return readBody(r.body.getReader(), onProgress || function () {}, MAX_SAT_CHUNK_BYTES, 'sat decode failed');
+      return r.arrayBuffer();
+    });
+  };
+  SatStore.prototype.supported = function () { return typeof DecompressionStream === 'function' && typeof TextDecoder === 'function'; };
+  // Resolves to the store when a pointer is in hand, to null otherwise (never rejects). A loaded store re-reads the
+  // pointer when older than recheckMs; force (a viewer's pick, Retry, On) ignores the failure cooldown.
+  SatStore.prototype.load = function (force) {
+    var self = this;
+    if (!this.supported()) { this.status = 'unsupported'; return Promise.resolve(null); }
+    if (this.loading) return this.loading;
+    if (this.status === 'ok' && Date.now() - this.loadedAt < this.recheckMs) return Promise.resolve(this);
+    if (!force && this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
+    var was = this.pointer;
+    if (!was) this.status = 'loading';
+    var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null;
+    var kick = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, self.timeoutMs); };
+    kick();
+    this.loading = this._pointer(sig).then(function (ptr) {
+      clearTimeout(watchdog);
+      if (self.loadAbort !== ctrl || sig.aborted) throw abortError();
+      if (!validSatPointer(ptr, self.kind)) throw new Error('unsupported satellite pointer');
+      self._offer(ptr);
+      self.loadedAt = Date.now(); self.status = 'ok'; self.loading = null; self.loadAbort = null;
+      return self;
+    }).catch(function () {
+      clearTimeout(watchdog);
+      if (self.loadAbort === ctrl) {
+        self.loading = null; self.loadAbort = null;
+        if (was) { self.status = 'ok'; self.loadedAt = Date.now(); }
+        else { self.status = sig.aborted && !timedOut ? 'idle' : 'failed'; if (self.status === 'failed') self.failedAt = Date.now(); }
+      }
+      return was ? self : null;
+    });
+    return this.loading;
+  };
+  // A pointer just read: the first one is taken at once; a later one that names other chunks waits in `next` until the
+  // chunks the current window needs from it are in hand (_tryAdopt); the same chunks = the same picture (taken quietly).
+  SatStore.prototype._offer = function (ptr) {
+    if (!this.pointer) { this.pointer = ptr; this._dropUnlisted(); return; }
+    if (satChunkKeys(ptr) === satChunkKeys(this.pointer)) { this.pointer = ptr; this.next = null; return; }
+    this.next = ptr;
+    this._tryAdopt();
+    if (this.next && this.window) this._queueFor(this.next, this.window);
+  };
+  function satChunkKeys(p) { return p.chunks.map(function (c) { return c.key; }).join('\n'); }
+  // Every 12 minutes while attached: a newer pointer is offered (resolves true when one arrived).
+  SatStore.prototype.recheck = function () {
+    var self = this;
+    if (this.status !== 'ok' || this.loading) return Promise.resolve(false);
+    if (this.checking) return this.checking;
+    this.checking = this._pointer(null).then(function (ptr) {
+      if (self.status !== 'ok' || !validSatPointer(ptr, self.kind)) return false;
+      var changed = satChunkKeys(ptr) !== satChunkKeys(self.pointer);
+      self._offer(ptr); self.loadedAt = Date.now();
+      return changed;
+    }).catch(function () { return false; }).then(function (r) { self.checking = null; return r; });
+    return this.checking;
+  };
+  // The next pointer takes over once every chunk it names for the window (not failed for good) is loaded.
+  SatStore.prototype._tryAdopt = function () {
+    var nx = this.next;
+    if (!nx) return false;
+    var need = this._chunksFor(nx, this.window);
+    for (var i = 0; i < need.length; i++) if (!this.chunks.has(need[i].key) && this.failed[need[i].key] !== true) return false;
+    this.pointer = nx; this.next = null;
+    this._dropUnlisted();
+    this._scheduleRebuild();
+    return true;
+  };
+  // Chunks the pointer no longer names go (their keys were pruned or superseded); a download of one is dropped.
+  SatStore.prototype._dropUnlisted = function () {
+    var keep = {}, k;
+    for (var i = 0; i < this.pointer.chunks.length; i++) keep[this.pointer.chunks[i].key] = true;
+    var self = this, dropped = false;
+    this.chunks.forEach(function (v, key) { if (!keep[key]) { self.chunks.delete(key); self.bytes -= v.bytes; dropped = true; } });
+    for (k in this.inflight) if (!keep[k]) { this.inflight[k].abort(); delete this.inflight[k]; }
+    this.queue = this.queue.filter(function (key) { return keep[key]; });
+    this.queued = {}; for (i = 0; i < this.queue.length; i++) this.queued[this.queue[i]] = true;
+    for (k in this.failed) if (!keep[k]) delete this.failed[k];
+    if (dropped) this._scheduleRebuild();
+  };
+  // The pointer's chunks that overlap [t0, t1] (ms), nearest to ref first.
+  SatStore.prototype._chunksFor = function (ptr, win) {
+    if (!ptr || !win) return [];
+    var out = [];
+    for (var i = 0; i < ptr.chunks.length; i++) {
+      var c = ptr.chunks[i], a = Date.parse(c.t0), b = Date.parse(c.t1);
+      if (b > win.t0 && a < win.t1 && c.n > 0) out.push(c);
+    }
+    var ref = win.ref === undefined ? win.t1 : win.ref;
+    out.sort(function (x, y) { return Math.abs((Date.parse(x.t0) + Date.parse(x.t1)) / 2 - ref) - Math.abs((Date.parse(y.t0) + Date.parse(y.t1)) / 2 - ref); });
+    return out;
+  };
+  // The window the layer shows ({t0, t1, ref} in ms): the chunks it needs are queued (from the pointer in hand and from a
+  // next one waiting), nearest the reference time first. Resolves nothing; the landings call onChange.
+  SatStore.prototype.ensure = function (t0, t1, ref) {
+    this.window = { t0: t0, t1: t1, ref: ref === undefined ? t1 : ref };
+    if (this.status !== 'ok' || !this.pointer) return;
+    this._queueFor(this.pointer, this.window);
+    if (this.next) this._queueFor(this.next, this.window);
+    this._tryAdopt();
+  };
+  SatStore.prototype._queueFor = function (ptr, win) {
+    var need = this._chunksFor(ptr, win), fresh = {};
+    for (var i = 0; i < need.length; i++) {
+      var c = need[i], f = this.failed[c.key];
+      if (this.chunks.has(c.key) || this.inflight[c.key] || f === true) continue;
+      if (typeof f === 'number' && f > Date.now()) { this._armRetry(f); continue; }
+      if (!this.queued[c.key]) { this.queue.push(c.key); this.queued[c.key] = true; }
+      fresh[c.key] = c;
+    }
+    this._pump();
+  };
+  SatStore.prototype._armRetry = CoastStore.prototype._armRetry;
+  SatStore.prototype._record = function (key) {
+    var i, p = this.pointer, nx = this.next;
+    for (i = 0; p && i < p.chunks.length; i++) if (p.chunks[i].key === key) return p.chunks[i];
+    for (i = 0; nx && i < nx.chunks.length; i++) if (nx.chunks[i].key === key) return nx.chunks[i];
+    return null;
+  };
+  SatStore.prototype._pump = function () {
+    var self = this;
+    while (this.queue.length && Object.keys(this.inflight).length < MAX_SAT_INFLIGHT) {
+      var key = this.queue.shift();
+      delete this.queued[key];
+      var rec = this._record(key);
+      if (!rec || this.chunks.has(key) || this.inflight[key]) continue;
+      (function (key, rec) {
+        var ctrl = new AbortController(), timer = null;
+        function mine() { return self.inflight[key] === ctrl; }
+        var fail = function (kind) {
+          delete self.inflight[key];
+          self.failed[key] = kind === 'permanent' ? true : Date.now() + self.retryMs;
+          if (self.failed[key] !== true) self._armRetry(self.failed[key]);
+          self.rev++;
+          self._tryAdopt();
+          if (self.onChange) self.onChange();
+          self._pump();
+        };
+        var kick = function () { clearTimeout(timer); timer = setTimeout(function () { if (!mine()) return; ctrl.abort(); fail('transient'); }, self.stallMs); };
+        self.inflight[key] = ctrl;
+        kick();
+        self._bytes(self.root + '/' + key, ctrl.signal, kick).then(function (buf) {
+          clearTimeout(timer);
+          if (ctrl.signal.aborted || !mine()) return null;
+          if (rec.bytes && buf.byteLength !== rec.bytes) throw new Error('sat decode failed');          // not the object the pointer named
+          return decodeSatChunk(buf, self.kind);
+        }).then(function (res) {
+          if (!res) return;
+          clearTimeout(timer);
+          if (ctrl.signal.aborted || !mine()) return;
+          if (res.header.window !== rec.window || res.header.n !== rec.n) throw new Error('sat decode failed');
+          delete self.inflight[key];
+          self.chunks.set(key, { header: res.header, cols: res.cols, bytes: res.header.n * satStride(SAT_COLUMNS[self.kind]), rec: rec });
+          self.bytes += self.chunks.get(key).bytes;
+          delete self.failed[key];
+          self.rev++;
+          if (!self._tryAdopt()) self._scheduleRebuild();
+          self._pump();
+        }).catch(function (err) {
+          clearTimeout(timer);
+          if (!mine() || ctrl.signal.aborted || (err && err.name === 'AbortError')) return;
+          var m = /^sat (\d{3})$/.exec(String(err && err.message || ''));
+          fail((m && (m[1] === '404' || m[1] === '410')) || /decode/.test(String(err && err.message)) ? 'permanent' : 'transient');
+        });
+      })(key, rec);
+    }
+  };
+  // One rebuild per burst of landings (a task), then onChange once.
+  SatStore.prototype._scheduleRebuild = function () {
+    var self = this;
+    if (this._rebuildQ) return;
+    this._rebuildQ = setTimeout(function () { self._rebuildQ = null; self._rebuild(); if (self.onChange) self.onChange(); }, 0);
+  };
+  // The flat store: every loaded chunk the pointer names, concatenated and sorted by time; the mission index mapped onto
+  // the store's own mission list (the pointer's, plus any a chunk adds); `ord` = the reading's place in its chunk segment
+  // (the stride thinning: deterministic, independent of the view); the bucket index over SAT_BUCKET_DEG cells.
+  SatStore.prototype._rebuild = function () {
+    var self = this, p = this.pointer, parts = [], total = 0, i;
+    if (!p) { this.flat = null; this.rev++; return; }
+    var missions = p.missions.map(function (m) { return { id: m.id, short: m.short, name: m.name || m.short }; }), mid = {};
+    for (i = 0; i < missions.length; i++) mid[missions[i].id] = i;
+    for (i = 0; i < p.chunks.length; i++) {
+      var ch = this.chunks.get(p.chunks[i].key);
+      if (ch && ch.header.n) { parts.push(ch); total += ch.header.n; }
+    }
+    if (total > MAX_SAT_SAMPLES) total = MAX_SAT_SAMPLES;
+    var swell = this.kind === 'swell', n = total;
+    var t = new Float64Array(n), lat = new Float32Array(n), lon = new Float32Array(n), mission = new Uint8Array(n), flags = new Uint8Array(n), ord = new Uint32Array(n);
+    var swh = swell ? null : new Float32Array(n), model = swell ? null : new Float32Array(n), np = swell ? new Uint8Array(n) : null;
+    var hs = swell ? [new Float32Array(n), new Float32Array(n), new Float32Array(n)] : null, tp = swell ? [new Float32Array(n), new Float32Array(n), new Float32Array(n)] : null, dir = swell ? [new Float32Array(n), new Float32Array(n), new Float32Array(n)] : null;
+    var pos = 0;
+    for (i = 0; i < parts.length && pos < n; i++) {
+      var h = parts[i].header, c = parts[i].cols, map = [], k, j;
+      for (k = 0; k < h.missions.length; k++) {
+        var id = h.missions[k].id;
+        if (mid[id] === undefined) { mid[id] = missions.length; missions.push({ id: id, short: h.missions[k].short || id, name: h.missions[k].name || id }); }
+        map.push(mid[id]);
+      }
+      var segStart = {};
+      for (k = 0; k < h.segments.length; k++) segStart[h.segments[k][1]] = h.segments[k][1];
+      var start = 0;
+      for (j = 0; j < h.n && pos < n; j++, pos++) {
+        if (segStart[j] !== undefined) start = j;
+        t[pos] = SAT_EPOCH_MS + c.t[j] * 1000; lat[pos] = c.lat[j] * 1e-6; lon[pos] = c.lon[j] * 1e-6; mission[pos] = map[c.mission[j]]; flags[pos] = c.flags[j]; ord[pos] = j - start;
+        if (swell) {
+          np[pos] = c.n[j];
+          for (k = 0; k < 3; k++) {
+            var hv = c['hs' + (k + 1)][j], pv = c['tp' + (k + 1)][j], dv = c['dir' + (k + 1)][j];
+            hs[k][pos] = hv === 65535 ? NaN : hv * 0.001; tp[k][pos] = pv === 65535 ? NaN : pv * 0.01; dir[k][pos] = dv === 65535 ? NaN : dv * 0.01;
+          }
+        } else {
+          swh[pos] = c.swh[j] === 65535 ? NaN : c.swh[j] * 0.001; model[pos] = c.model[j] === 65535 ? NaN : c.model[j] * 0.001;
+        }
+      }
+    }
+    // time order (stable) so a time slice is a contiguous index range and a bucket runs time-ascending
+    var order = new Uint32Array(n);
+    for (i = 0; i < n; i++) order[i] = i;
+    var ta = Array.prototype.slice.call(order);
+    ta.sort(function (a, b) { return t[a] - t[b] || a - b; });
+    var pick = function (src) { var out = new src.constructor(n); for (var q = 0; q < n; q++) out[q] = src[ta[q]]; return out; };
+    var flat = { n: n, t: pick(t), lat: pick(lat), lon: pick(lon), mission: pick(mission), flags: pick(flags), ord: pick(ord), missions: missions, kind: this.kind };
+    if (swell) { flat.np = pick(np); flat.hs = hs.map(pick); flat.tp = tp.map(pick); flat.dir = dir.map(pick); }
+    else { flat.swh = pick(swh); flat.model = pick(model); }
+    flat.index = new SatIndex(flat.lat, flat.lon, n);
+    this.flat = flat; this.rev++;
+    self.loadedParts = parts.length;
+  };
+  // The flat store's index range [i0, i1) of readings with t0 <= t < t1 (binary search on the sorted times).
+  SatStore.prototype.slice = function (t0, t1) {
+    var f = this.flat;
+    if (!f || !f.n) return [0, 0];
+    return [satLowerBound(f.t, t0), satLowerBound(f.t, t1)];
+  };
+  function satLowerBound(arr, v) { var lo = 0, hi = arr.length; while (lo < hi) { var m = (lo + hi) >> 1; if (arr[m] < v) lo = m + 1; else hi = m; } return lo; }
+  SatStore.prototype.count = function (t0, t1) { var s = this.slice(t0, t1); return s[1] - s[0]; };
+  // Every chunk the pointer names for the window is in hand or failed for good (nothing more will come without a new pointer).
+  SatStore.prototype.complete = function (t0, t1) {
+    if (this.status !== 'ok' || !this.pointer) return false;
+    var need = this._chunksFor(this.pointer, { t0: t0, t1: t1 });
+    for (var i = 0; i < need.length; i++) if (!this.chunks.has(need[i].key) && this.failed[need[i].key] !== true) return false;
+    return true;
+  };
+  SatStore.prototype.pending = function (t0, t1) {
+    if (this.status !== 'ok' || !this.pointer) return 0;
+    var need = this._chunksFor(this.pointer, { t0: t0, t1: t1 }), n = 0;
+    for (var i = 0; i < need.length; i++) if (!this.chunks.has(need[i].key) && this.failed[need[i].key] !== true) n++;
+    return n;
+  };
+  SatStore.prototype.newestMs = function () { return this.pointer ? satNewestMs(this.pointer) : null; };
+  SatStore.prototype._stop = function () {
+    for (var k in this.inflight) this.inflight[k].abort();
+    this.inflight = {}; this.queue = []; this.queued = {};
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if (this._rebuildQ) { clearTimeout(this._rebuildQ); this._rebuildQ = null; this._rebuild(); }
+  };
+  // Detached (another field, the box unticked): the downloads stop, the samples stay.
+  SatStore.prototype.idle = function () { this._stop(); this.onChange = null; this.window = null; };
+  // Off: the same, and a pointer load in progress stops (the next On re-reads it through load()).
+  SatStore.prototype.abortAll = function () {
+    this.idle();
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.status === 'loading') { this.status = this.pointer ? 'ok' : 'idle'; this.loading = null; }
+  };
+  // ---- the bucket index (CSR over SAT_BUCKET_DEG cells; each bucket time-ascending as the flat store is) ----
+  function SatIndex(lat, lon, n) {
+    var d = SAT_BUCKET_DEG, rows = Math.round(180 / d), cols = Math.round(360 / d), N = rows * cols;
+    var cnt = new Int32Array(N + 1), bucket = new Int32Array(n), i, b;
+    for (i = 0; i < n; i++) {
+      var r = Math.min(rows - 1, Math.max(0, Math.floor((90 - lat[i]) / d))), c = ((Math.floor((lon[i] + 180) / d) % cols) + cols) % cols;
+      b = r * cols + c; bucket[i] = b; cnt[b + 1]++;
+    }
+    for (b = 0; b < N; b++) cnt[b + 1] += cnt[b];
+    var start = cnt, fill = new Int32Array(N), order = new Int32Array(n);
+    for (i = 0; i < n; i++) { b = bucket[i]; order[start[b] + fill[b]] = i; fill[b]++; }
+    this.rows = rows; this.cols = cols; this.d = d; this.start = start; this.order = order; this.n = n;
+  }
+  // The flat indices in the box (latS..latN, lonW..lonE; lonW may exceed lonE across the date line) within the time slice
+  // [i0, i1) and the stride (ord % stride === 0), ascending (= time order): walked by buckets, or by the slice when that is
+  // smaller, then sorted.
+  SatIndex.prototype.collect = function (box, i0, i1, stride, ord) {
+    var out = [], i;
+    if (i1 <= i0) return out;
+    var d = this.d, rows = this.rows, cols = this.cols;
+    var r0 = Math.max(0, Math.floor((90 - box.latN) / d)), r1 = Math.min(rows - 1, Math.floor((90 - box.latS) / d));
+    var c0 = Math.floor((box.lonW + 180) / d), c1 = Math.floor((box.lonE + 180) / d);
+    if (box.lonE < box.lonW) c1 += cols;
+    var nb = Math.max(0, r1 - r0 + 1) * Math.max(0, c1 - c0 + 1);
+    if (nb * 2 < i1 - i0 && nb < 20000) {
+      for (var r = r0; r <= r1; r++) {
+        for (var cc = c0; cc <= c1; cc++) {
+          var b = r * cols + (((cc % cols) + cols) % cols), s = this.start[b], e = this.start[b + 1];
+          for (i = s; i < e; i++) { var j = this.order[i]; if (j >= i0 && j < i1 && (stride <= 1 || ord[j] % stride === 0)) out.push(j); }
+        }
+      }
+      out.sort(function (a, b) { return a - b; });
+      return out;
+    }
+    return null;                                             // the caller scans the slice itself (the usual case at low zoom)
+  };
+  // The nearest reading to (lat, lon) within rPx at zoom z among those drawn (slice, stride), the NEWEST on a tie; -1.
+  SatIndex.prototype.nearest = function (flat, lat, lon, z, rPx, i0, i1, stride) {
+    var n = TILE * Math.pow(2, z), p = forwardPixel(lat, lon, z), degPx = 360 / n, dLat = rPx * degPx * 1.2 + 1e-9, dLon = dLat / Math.max(0.05, Math.cos(lat * Math.PI / 180));
+    var box = { latS: Math.max(-90, lat - dLat), latN: Math.min(90, lat + dLat), lonW: lon - dLon, lonE: lon + dLon };
+    if (box.lonW < -180) box.lonW += 360; if (box.lonE > 180) box.lonE -= 360;
+    var cand = this.collect(box, i0, i1, stride, flat.ord), best = -1, bd = Infinity, i, j;
+    var test = function (j) {
+      var q = forwardPixel(flat.lat[j], flat.lon[j], z), dx = q.x - p.x, dy = q.y - p.y;
+      if (dx > n / 2) dx -= n; else if (dx < -n / 2) dx += n;
+      var dd = dx * dx + dy * dy;
+      if (dd <= rPx * rPx && (dd < bd || (dd === bd && j > best))) { bd = dd; best = j; }
+    };
+    if (cand) for (i = 0; i < cand.length; i++) test(cand[i]);
+    else for (j = i0; j < i1; j++) if (stride <= 1 || flat.ord[j] % stride === 0) test(j);
+    return best;
+  };
+
   // ---- the Great Lakes (plan section 50) ----
   // NOAA's GLWU model gives the Great Lakes waves GFS-Wave masks: hourly frames to +149 h on their own 0.02-degree
   // grid (not periodic, one resolution), published under glwu/v1 with the SAME encoding and ranges as the model's
@@ -1946,14 +2417,7 @@
     },
     // The tiles the viewer sees: Leaflet's pixel bounds at the map zoom, scaled to the tile zoom (a fractional zoom keeps
     // the tiles of the nearest level, CSS-scaled); null off a map (every tile is drawn at once then: the Node stubs).
-    _viewRange: function () {
-      var map = this._map;
-      if (!map || typeof map.getPixelBounds !== 'function') return null;
-      var z = map.getZoom(), tz = typeof this._tileZoom === 'number' ? this._tileZoom : Math.round(z);
-      var scale = typeof map.getZoomScale === 'function' ? map.getZoomScale(z, tz) : Math.pow(2, z - tz), pb = map.getPixelBounds();
-      return { z: tz, x0: Math.floor(pb.min.x / scale / TILE), x1: Math.floor((pb.max.x / scale - 1) / TILE),
-        y0: Math.floor(pb.min.y / scale / TILE), y1: Math.floor((pb.max.y / scale - 1) / TILE) };
-    },
+    _viewRange: function () { return viewRangeOf(this); },
     // Draw the tiles that still show an older frame: those in view at once (a drag that brings a buffer tile into
     // view: the page calls this on 'move'), the rest while the browser has idle time (requestIdleCallback where it
     // exists, else one task), coming back for the remainder.
@@ -2246,6 +2710,179 @@
         if (d) { wt = fr * fc; acc += d * wt; w += wt; }
         out[i] = w < 0.25 ? 0 : acc / w;
       }
+    }
+  });
+
+  // The tiles a grid layer's viewer sees (ModelGridLayer and SatLayer share it): Leaflet's pixel bounds at the map zoom,
+  // scaled to the tile zoom; null off a map (every tile is drawn at once then: the Node stubs).
+  function viewRangeOf(layer) {
+    var map = layer._map;
+    if (!map || typeof map.getPixelBounds !== 'function') return null;
+    var z = map.getZoom(), tz = typeof layer._tileZoom === 'number' ? layer._tileZoom : Math.round(z);
+    var scale = typeof map.getZoomScale === 'function' ? map.getZoomScale(z, tz) : Math.pow(2, z - tz), pb = map.getPixelBounds();
+    return { z: tz, x0: Math.floor(pb.min.x / scale / TILE), x1: Math.floor((pb.max.x / scale - 1) / TILE),
+      y0: Math.floor(pb.min.y / scale / TILE), y1: Math.floor((pb.max.y / scale - 1) / TILE) };
+  }
+
+  // ---- the satellite layer (plan sections 45 and 81): height dots and swell arrows per tile ----
+  // Thinning by tile zoom: every 2^(7 - z)-th reading of a chunk segment (1 Hz readings are ~7 km apart: at zoom 2 a
+  // 32nd is ~220 km, about 3 px), everything from zoom 7.
+  function satStrideFor(z) { var zz = Math.max(0, Math.floor(z)); return zz >= 7 ? 1 : Math.pow(2, 7 - zz); }
+  // A dot's radius in px by tile zoom: 1.5 at the world view to 3 close in.
+  function satRadius(z) { return z <= 2 ? 1.5 : z >= 8 ? 3 : 1.5 + (z - 2) * 0.25; }
+  // A dot's alpha by its age fraction (0 = the newest, 1 = the window's far end): SAT_FADE[0] -> SAT_FADE[1].
+  function satAlpha(frac) { var f = frac < 0 ? 0 : frac > 1 ? 1 : frac; return SAT_FADE[0] + (SAT_FADE[1] - SAT_FADE[0]) * f; }
+  // The LUT index of a value over the legend range: composeTile's expression, so a dot is coloured exactly as the field
+  // would draw that value (the comparison's premise: the same colour = agreement).
+  function satColourIndex(v, L0, L1) { var t = Math.round((v - L0) * 255 / (L1 - L0)); return t < 0 ? 0 : t > 255 ? 255 : t; }
+  // A swell arrow's length in px from its peak period: 8 s -> 13, 14 s -> 19, 20 s -> 26 (capped 6..26).
+  function satArrowLength(tp) { var l = 4 + tp * 1.1; return l < 6 ? 6 : l > 26 ? 26 : l; }
+  // The arrow's head and tail half-widths.
+  var SAT_ARROW_HEAD = 4, SAT_ARROW_W = 1.6;
+  // The readings' positions in tile pixels for a tile (coords, any world copy): x at the copy nearest the tile.
+  function satTileXY(flat, j, coords, n, ox, oy) {
+    var p = forwardPixel(flat.lat[j], flat.lon[j], coords.z), x = p.x - ox;
+    if (x < -n / 2) x += n; else if (x > n / 2) x -= n;
+    return { x: x, y: p.y - oy };
+  }
+  // The readings to draw on a tile: the time slice [i0, i1) of the window, thinned by stride, inside the tile's box widened
+  // by `padPx` (a dot's radius, an arrow's length), in index order (= time order: the newest drawn last, on top).
+  function satTileReadings(flat, win, coords, stride, padPx) {
+    var n = TILE * Math.pow(2, coords.z), ox = coords.x * TILE, oy = coords.y * TILE;
+    var latN = Math.min(90, latOfWorldY(Math.max(0, oy - padPx), n)), latS = Math.max(-90, latOfWorldY(Math.min(n, oy + TILE + padPx), n));
+    var lonW = ((lngOfWorldX(ox - padPx, n) + 180) % 360 + 360) % 360 - 180, lonE = ((lngOfWorldX(ox + TILE + padPx, n) + 180) % 360 + 360) % 360 - 180;
+    if (TILE + 2 * padPx >= n) { lonW = -180; lonE = 180; }
+    var box = { latS: latS, latN: latN, lonW: lonW, lonE: lonE }, out = flat.index.collect(box, win.i0, win.i1, stride, flat.ord);
+    if (out) return out;
+    out = [];
+    var wrap = lonE < lonW;
+    for (var j = win.i0; j < win.i1; j++) {
+      if (stride > 1 && flat.ord[j] % stride !== 0) continue;
+      var la = flat.lat[j], lo = flat.lon[j];
+      if (la < latS || la > latN) continue;
+      if (wrap ? (lo < lonW && lo > lonE) : (lo < lonW || lo > lonE)) continue;
+      out.push(j);
+    }
+    return out;
+  }
+  // Draws the readings `ids` of the flat store onto a tile context: height dots (mode 'dots': the colour of the reading's
+  // wave height on the hs LUT over the legend, alpha by age, hollow when near land) or swell arrows (mode 'arrows': the
+  // dominant partition's height for the colour, its peak period for the length, pointing where the swell GOES: FROM + 180).
+  // -> the number drawn. Pure canvas calls (tests count them through a fake context).
+  function composeDots(ctx, flat, ids, coords, win, lut, legend, mode, z) {
+    var n = TILE * Math.pow(2, coords.z), ox = coords.x * TILE, oy = coords.y * TILE, L0 = legend[0], L1 = legend[1], r = satRadius(z), drawn = 0;
+    for (var k = 0; k < ids.length; k++) {
+      var j = ids[k], v = mode === 'arrows' ? flat.hs[0][j] : flat.swh[j];
+      if (!(v === v)) continue;
+      var p = satTileXY(flat, j, coords, n, ox, oy);
+      var frac = win.frame ? Math.abs(flat.t[j] - win.ref) / win.span : (win.ref - flat.t[j]) / win.span, a = satAlpha(frac);
+      var ci = satColourIndex(v, L0, L1), col = 'rgb(' + lut[ci * 3] + ',' + lut[ci * 3 + 1] + ',' + lut[ci * 3 + 2] + ')';
+      ctx.globalAlpha = a;
+      if (mode === 'arrows') {
+        var tp = flat.tp[0][j], d = flat.dir[0][j];
+        if (!(tp === tp) || !(d === d)) continue;
+        var len = satArrowLength(tp), ang = (d + 180) * Math.PI / 180, dx = Math.sin(ang), dy = -Math.cos(ang);
+        var x0 = p.x - dx * len / 2, y0 = p.y - dy * len / 2, x1 = p.x + dx * len / 2, y1 = p.y + dy * len / 2;
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.strokeStyle = 'rgba(0,0,0,0.65)'; ctx.lineWidth = SAT_ARROW_W + 2;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+        ctx.moveTo(x1 - dx * SAT_ARROW_HEAD - dy * SAT_ARROW_HEAD * 0.6, y1 - dy * SAT_ARROW_HEAD + dx * SAT_ARROW_HEAD * 0.6); ctx.lineTo(x1, y1);
+        ctx.lineTo(x1 - dx * SAT_ARROW_HEAD + dy * SAT_ARROW_HEAD * 0.6, y1 - dy * SAT_ARROW_HEAD - dx * SAT_ARROW_HEAD * 0.6);
+        ctx.stroke();
+        ctx.strokeStyle = col; ctx.lineWidth = SAT_ARROW_W; ctx.stroke();
+      } else {
+        var hollow = (flat.flags[j] & SAT_FLAG_NEAR_LAND) !== 0;
+        ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, 2 * Math.PI);
+        if (hollow) { ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.stroke(); }
+        else { ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,0.55)'; ctx.lineWidth = 0.8; ctx.stroke(); }
+      }
+      drawn++;
+    }
+    ctx.globalAlpha = 1;
+    return drawn;
+  }
+  var SatLayer = L.GridLayer.extend({
+    initialize: function () {
+      L.GridLayer.prototype.initialize.call(this, { pane: 'obsPane', tileSize: TILE, updateWhenZooming: false, updateWhenIdle: true, keepBuffer: 1, className: 'ov-sat-tiles' });
+      this.store = null; this.mode = 'dots'; this.win = null; this.entry = null; this._lut = buildLut('hs', SAT_FDEF.legend); this._legend = SAT_FDEF.legend;
+      this._gen = 0; this._staleQ = null; this._onStore = null; this.drawn = 0;
+    },
+    // The store the tiles draw from (null detaches): its landings redraw the tiles in view first, the buffer in idle time.
+    setStore: function (store, mode) {
+      var self = this, prev = this.store;
+      if (prev && prev.onChange === this._onStore) prev.onChange = null;
+      this.store = store || null; this.mode = mode || 'dots';
+      if (this.store) { this._onStore = function () { self._redraw(true); if (self.onRedraw) self.onRedraw(); }; this.store.onChange = this._onStore; }
+      this._redraw();
+    },
+    // The time window drawn: {t0, t1, ref, span, frame (true over the model: alpha by |t - ref| / span), entry (the frame
+    // entry it belongs to, for the landing hook's guard)}; null clears the dots. The store is asked for the window's chunks.
+    setWindow: function (w) {
+      this.win = w ? { t0: w.t0, t1: w.t1, ref: w.ref === undefined ? w.t1 : w.ref, span: w.span || (w.t1 - w.t0), frame: !!w.frame } : null;
+      this.entry = w && w.entry ? w.entry : null;
+      if (this.store && this.win) this.store.ensure(this.win.t0, this.win.t1, this.win.ref);
+      this._redraw(true);
+    },
+    hasWindow: function () { return !!this.win; },
+    count: function () { return this.store && this.win ? this.store.count(this.win.t0, this.win.t1) : 0; },
+    complete: function () { return !!(this.store && this.win && this.store.complete(this.win.t0, this.win.t1)); },
+    _slice: function () {
+      var st = this.store, w = this.win;
+      if (!st || !w || !st.flat || !st.flat.n) return null;
+      var s = st.slice(w.t0, w.t1);
+      return s[1] > s[0] ? { i0: s[0], i1: s[1], ref: w.ref, span: w.span, frame: w.frame } : null;
+    },
+    _redraw: function (split) {
+      var range = split ? viewRangeOf(this) : null, later = false;
+      this._gen++;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords) continue;
+        if (range && !tileInRange(t.coords, range)) { later = true; continue; }
+        this._draw(t.el, t.coords);
+      }
+      if (later) this._queueStale();
+    },
+    // The buffer tiles a generation behind (ModelGridLayer's rule, without its frame check).
+    _drawStale: function (inView, deadline) {
+      if (!this.store) return;
+      var range = viewRangeOf(this), left = false;
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
+        if (inView) { if (range && !tileInRange(t.coords, range)) continue; }
+        else if (deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout && deadline.timeRemaining() < STALE_TILE_MS) { left = true; break; }
+        this._draw(t.el, t.coords);
+      }
+      if (left) this._queueStale();
+    },
+    _queueStale: ModelGridLayer.prototype._queueStale,
+    _cancelStale: ModelGridLayer.prototype._cancelStale,
+    onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
+    createTile: function (coords, done) {
+      var el = document.createElement('canvas'); el.width = TILE; el.height = TILE; el._ovSatN = 0;
+      this._draw(el, coords);
+      setTimeout(function () { done(null, el); }, 0);
+      return el;
+    },
+    _padPx: function (z) { return this.mode === 'arrows' ? 26 + SAT_ARROW_HEAD : satRadius(z) + 2; },
+    _draw: function (el, coords) {
+      el._ovGen = this._gen;
+      var sl = this._slice(), ctx;
+      if (!sl) { if (el._ovSatN) { ctx = el.getContext('2d'); ctx.clearRect(0, 0, TILE, TILE); el._ovSatN = 0; } return; }   // empty -> empty touches nothing
+      var flat = this.store.flat, stride = satStrideFor(coords.z), ids = satTileReadings(flat, sl, coords, stride, this._padPx(coords.z));
+      if (!ids.length && !el._ovSatN) return;
+      ctx = el.getContext('2d');
+      ctx.clearRect(0, 0, TILE, TILE);
+      el._ovSatN = ids.length ? composeDots(ctx, flat, ids, coords, sl, this._lut, this._legend, this.mode, coords.z) : 0;
+    },
+    // The top-most DRAWN reading within satRadius + 3 px (an arrow: within its half length) of (lat, lng) at tile zoom z, as
+    // a flat index, or -1: the same window, stride and order as the tiles, so the hover is what is drawn.
+    hitAt: function (lat, lng, z) {
+      var sl = this._slice();
+      if (!sl) return -1;
+      var flat = this.store.flat, rPx = this.mode === 'arrows' ? 10 : satRadius(z) + 3;
+      return flat.index.nearest(flat, lat, lng, z, rPx, sl.i0, sl.i1, satStrideFor(z));
     }
   });
 
@@ -3901,6 +4538,15 @@
     this.sst = opts.sst ? sstStore(this.root) : null;
     this.mode = 'model';
     var s = saved();
+    // opts.sat / opts.swell (plan section 81; the page's ALT_OVERLAY / SARSWELL settings): the satellite readings. The
+    // layer's own entry ("Satellite waves", mode 'obs', field 'sat') shows the height dots or, with the swell data offered,
+    // the swell arrows (this.satKind, remembered per tab); the "Satellite readings" box under Wave height (this.satOn, per
+    // tab, off by default) draws the height dots within 3 h of the frame on the map, over the model.
+    this.sat = opts.sat ? satStore(this.root, 'alt') : null;
+    this.swell = opts.sat && opts.swell ? satStore(this.root, 'swell') : null;
+    this.satLayer = null; this.satTimer = null;
+    this.satKind = this.swell && s.satKind === 'swell' ? 'swell' : 'heights';
+    this.satOn = !!(this.sat && s.sat === true);
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = speedOf(s.speed);
     this.model = modelOf(s.model, this.models);
@@ -3943,6 +4589,7 @@
     if (this.layer) this.layer.clear();
     if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
+    if (this.mode === 'model') this._clearSatWindow();
     this._dropLakeHs();
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
@@ -3984,7 +4631,7 @@
   // saved valid time and play state are then reused when they are recent (restoreIndex), by this mount
   // or, if it never lands a frame, by the next one (another field picked meanwhile, Retry) until Off.
   Overlay.prototype.mount = function (fieldName, restore) {
-    if (fieldName === 'sst') return this._mountObs(restore);
+    if (hasObs(fieldName)) return this._mountObs(fieldName, restore);
     if (restore) this._pendingRestore = saved();
     if (this.mode === 'obs') this._leaveObs();
     // The time position survives a field change and even a run change (nearest valid time), like Update. A field switch
@@ -4046,6 +4693,7 @@
       if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self._ensureFlow();
       self._ensureIso();
+      self._syncSatAttach();                                 // the satellite readings over wave height (the box on): its window comes with the landing
       self._loadLakes(m);
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
@@ -4065,12 +4713,13 @@
       });
     }).catch(function (err) { self._fail(sig, err); });
   };
-  // ---- the observation (plan section 44): sea surface temperature ----
-  // Shown through the layer's SOURCE (the SstStore), never as a frame of a run: the model's manifest, its caches and its
-  // time stay (a switch back is instant and lands at the time the viewer had: the carry, as a model switch does), the
-  // player stops, the particles go, the panel shows the field's source, the scale and the analysis day. Errors take the
-  // frames' error panel (Retry mounts it again).
-  Overlay.prototype._mountObs = function (restore) {
+  // ---- the observations (plan sections 44 and 81): sea surface temperature, the satellite readings ----
+  // Shown beside the model, never as a frame of a run: the model's manifest, its caches and its time stay (a switch back
+  // is instant and lands at the time the viewer had: the carry, as a model switch does), the player stops, the particles
+  // go, the panel shows the observation's own lines. Errors take the frames' error panel (Retry mounts it again). The
+  // prologue is one for every kind (OBS_DEFS); the load is the kind's own (_loadSst: the layer's SOURCE; _loadSat: the
+  // SatLayer in its own pane).
+  Overlay.prototype._mountObs = function (kind, restore) {
     var self = this;
     if (restore) this._pendingRestore = saved();
     if (this.mode !== 'obs' && this.manifest && this.frameIndex !== null && this.field) {
@@ -4081,31 +4730,38 @@
     this.pause();                                            // the model's play state is saved first (its field still set)
     // ... then the field the page saved before this mount ran, and the play state the switch carries (a reload here and
     // then a model field resumes as the in-tab switch back does; G31-7)
-    if (this._carry) save({ field: 'sst', playing: !!this._carry.playing }); else save({ field: 'sst' });   // (RC-1)
+    if (this._carry) save({ field: kind, playing: !!this._carry.playing }); else save({ field: kind });   // (RC-1)
     if (this.lineTimer) { clearInterval(this.lineTimer); this.lineTimer = null; }   // the run line is not shown (G31-16)
     if (!this.map.getPane('modelPane')) {
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }
     this.abortAll();
-    this.field = 'sst'; this.mode = 'obs'; this.frameIndex = null; this.target = null; this.wasPlaying = false;
+    var was = this.field;
+    this.field = kind; this.mode = 'obs'; this.frameIndex = null; this.target = null; this.wasPlaying = false;
     this.abort = new AbortController();
     var sig = this.abort.signal;
     if (!this.layer) {
-      this.layer = new ModelGridLayer({ opacity: this._opacityFor('sst') }).addTo(this.map);
+      this.layer = new ModelGridLayer({ opacity: this._opacityFor(kind) }).addTo(this.map);
       this._bindReadout();
       this._bindMap();
       this._bindDocument();
     } else this.layer.clear();                               // never another field's picture under this label
+    if (was === 'sst' && kind !== 'sst' && this.sst) this.sst.release();   // leaving SST for another observation releases its cells (G31-9)
+    if (kind !== 'sat') this._detachSat();                   // the satellite layer serves its own entry alone here (the box's dots went with the model's frame)
     this._ensureFlow();                                      // no direction field: the particles go
-    this._ensureIso(); this.pcache.clear();                  // no pressure under SST: the isobars and their frames go (G32 A-P1-1)
-    this._syncLakeOutlines();                                // no lake outlines under SST: the set and its masks go (V7-5)
+    this._ensureIso(); this.pcache.clear();                  // no pressure under an observation: the isobars and their frames go (G32 A-P1-1)
+    this._syncLakeOutlines();                                // no lake outlines under an observation: the set and its masks go (V7-5)
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
     this._syncLook();                                        // the imagery (the wind's relief goes)
-    if (!this.sst) { this._fail(sig, new Error('sea surface temperature is not offered')); return; }
+    var def = OBS_DEFS[kind];
+    if (!(kind === 'sst' ? this.sst : this.sat)) { this._fail(sig, new Error(def.label + ' is not offered')); return; }
     this.render({ state: 'loading' });
-    var coastP = this.coast ? this.coast.load() : Promise.resolve(null);
-    Promise.all([this.sst.load(true), this._coastFirst(coastP)]).then(function (res) {      // a viewer's pick or Retry: no cooldown (G31-2); the
+    (kind === 'sst' ? this._loadSst(sig) : this._loadSat(sig)).catch(function (err) { self._fail(sig, err); });
+  };
+  Overlay.prototype._loadSst = function (sig) {
+    var self = this, coastP = this.coast ? this.coast.load() : Promise.resolve(null);
+    return Promise.all([this.sst.load(true), this._coastFirst(coastP)]).then(function (res) {      // a viewer's pick or Retry: no cooldown (G31-2); the
                                                                          // coastline waited for at most COAST_FIRST_MS (re-check R-1)
       var st = res[0], coast = res[1];
       if (sig.aborted || self.field !== 'sst' || self.mode !== 'obs' || !self.layer) throw abortError();
@@ -4118,14 +4774,215 @@
       self._attribute();
       self._syncLook();
       self.render({ state: 'ready' });
-    }).catch(function (err) { self._fail(sig, err); });
+    });
   };
-  // Back to a model field: the layer samples frames again; the store stops its downloads (its cells stay).
+  // The satellite layer's own entry: the store of the kind chosen (heights, or swell when offered), its pointer, then the
+  // SatLayer over the last 24 h of readings (newest at the far end of the fade); the chunks land one by one (the panel's
+  // readings line follows them, in place). No coastline wait: dots are drawn over the imagery, nothing is clipped.
+  Overlay.prototype._loadSat = function (sig) {
+    var self = this, store = this._satStoreFor();
+    return store.load(true).then(function (st) {
+      if (sig.aborted || self.field !== 'sat' || self.mode !== 'obs' || !self.layer) throw abortError();
+      if (!st) throw new Error(store.status === 'unsupported' ? 'satellite readings are not supported in this browser' : 'satellite readings cannot be loaded right now');
+      self._attachSat(st, self.satKind === 'swell' ? 'arrows' : 'dots');
+      self._syncSatOwnWindow();
+      if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
+      self._attribute();
+      self._syncLook();
+      self.render({ state: 'ready' });
+    });
+  };
+  // Back to a model field: the layer samples frames again; the stores stop their downloads (their samples stay).
   Overlay.prototype._leaveObs = function () {
     this.mode = 'model';
     if (this.layer) this.layer.clear();                      // (clear() also detaches the source)
     if (this.sst) this.sst.release();                        // the cells go; the day stays (owner, G31-9)
+    this._detachSat();                                       // the own entry's layer goes (the box's frame-mode layer is attached by the mount)
     this._unattribute();
+  };
+  // ---- the satellite readings (plan section 81) ----
+  // The store the own entry shows: the swell's when chosen and offered, else the heights'.
+  Overlay.prototype._satStoreFor = function () { return this.satKind === 'swell' && this.swell ? this.swell : this.sat; };
+  // The SatLayer in its own pane (obsPane, z 260: above the field tiles, below the particles), drawing from `store` in `mode`
+  // ('dots' / 'arrows'); one layer serves the own entry and the frame mode in turn. The store's pointer is re-read every
+  // SAT_RECHECK_MS while attached.
+  Overlay.prototype._attachSat = function (store, mode) {
+    var self = this;
+    if (!this.map.getPane('obsPane')) { var pane = this.map.createPane('obsPane'); pane.style.zIndex = 260; pane.style.pointerEvents = 'none'; }
+    if (!this.satLayer) {
+      this.satLayer = new SatLayer().addTo(this.map);
+      this.satLayer.onRedraw = function () { self._onSatChange(); };
+    }
+    if (this.satLayer.store !== store || this.satLayer.mode !== mode) {
+      if (this.satLayer.store && this.satLayer.store !== store) this.satLayer.store.idle();
+      this.satLayer.setStore(store, mode);
+    }
+    if (!this.satTimer) this.satTimer = setInterval(function () { self._satRecheck(); }, SAT_RECHECK_MS);
+  };
+  Overlay.prototype._detachSat = function () {
+    if (this.satTimer) { clearInterval(this.satTimer); this.satTimer = null; }
+    if (!this.satLayer) return;
+    var st = this.satLayer.store;
+    this.satLayer.setWindow(null);
+    this.satLayer.setStore(null);
+    if (st) st.idle();
+    this.map.removeLayer(this.satLayer);
+    this.satLayer = null;
+  };
+  // A chunk landed or failed: the credit (readings on screen), the readings line and the box's note follow, in place.
+  Overlay.prototype._onSatChange = function () {
+    if (!this.satLayer) return;
+    if (this._attributed) this._attribute();
+    if (this.mode === 'obs' && this.field === 'sat') this._satLineSync();
+    else this._satNoteSync();
+  };
+  // The pointer re-read (every 12 min while attached): a newer one is adopted by the store once its chunks are in; the
+  // own entry's window then follows the newest reading; the stale line follows the newest reading's age.
+  Overlay.prototype._satRecheck = function () {
+    var self = this, st = this.satLayer ? this.satLayer.store : null;
+    if (!st) return;
+    st.recheck().then(function (changed) {
+      if (!self.satLayer || self.satLayer.store !== st) return;
+      if (self.mode === 'obs' && self.field === 'sat') { if (changed) self._syncSatOwnWindow(); self._satLineSync(); }
+      else if (changed && self.frameIndex !== null && self.mode === 'model') self._syncSat(self.frameIndex);
+    });
+  };
+  // The own entry's window: the last 24 h up to the newest reading the pointer names (nothing newer exists), its
+  // reference the newest reading (alpha 1 there, SAT_FADE[1] at the far end).
+  Overlay.prototype._syncSatOwnWindow = function () {
+    var st = this.satLayer ? this.satLayer.store : null, newest = st ? st.newestMs() : null;
+    if (!this.satLayer || newest === null) return;
+    this.satLayer.setWindow({ t0: newest - SAT_WINDOW_MS, t1: newest + 1, ref: newest, span: SAT_WINDOW_MS, frame: false, entry: null });
+  };
+  // The Heights | Swell switch of the own entry (remembered per tab): the layer takes the other store at once.
+  Overlay.prototype.setSatKind = function (kind) {
+    kind = kind === 'swell' && this.swell ? 'swell' : 'heights';
+    if (kind === this.satKind) return;
+    this.satKind = kind; save({ satKind: kind });
+    if (this.mode !== 'obs' || this.field !== 'sat' || !this.layer) return;
+    var self = this, store = this._satStoreFor(), sig = this.abort ? this.abort.signal : null;
+    this.render({ state: 'loading' });
+    store.load(true).then(function (st) {
+      if ((sig && sig.aborted) || self.field !== 'sat' || self.mode !== 'obs' || self.satKind !== kind || !self.layer) return;
+      if (!st) { self._fail(sig, new Error(store.status === 'unsupported' ? 'satellite readings are not supported in this browser' : 'satellite readings cannot be loaded right now')); return; }
+      self._attachSat(st, kind === 'swell' ? 'arrows' : 'dots');
+      self._syncSatOwnWindow();
+      self._attribute();
+      self.render({ state: 'ready' });
+    });
+  };
+  // The "Satellite readings" box under Wave height (per tab, off by default): on, the height dots within 3 h of the frame
+  // on the map, in the model's colours; off, the layer goes (the store keeps its samples).
+  Overlay.prototype.setSatOn = function (on) {
+    on = !!on;
+    if (on === this.satOn) return;
+    this.satOn = on; save({ sat: on });
+    this._syncSatAttach();
+    if (this.ui && this.ui.satBox && this.ui.satBox.checked !== on) this.ui.satBox.checked = on;
+    this._satNoteSync();
+  };
+  Overlay.prototype._wantSatFrame = function () { return !!(this.sat && this.satOn && this.mode === 'model' && this.field === 'hs' && this.layer); };
+  // The frame-mode layer exists exactly while the box is on under wave height in model mode: attached here (the store's
+  // pointer loading if need be: not forced, the cooldown paces it), the window set by the landing (_syncSat).
+  Overlay.prototype._syncSatAttach = function () {
+    var self = this;
+    if (!this._wantSatFrame()) { if (this.mode === 'model' || this.field !== 'sat') this._detachSat(); return; }
+    if (!this.sat.supported()) { this._satNoteSync(); return; }
+    var st = this.sat;
+    this._attachSat(st, 'dots');
+    if (this.frameIndex !== null) this._syncSat(this.frameIndex);
+    if (st.status !== 'ok') st.load(false).then(function (ok) {
+      if (!ok || !self._wantSatFrame() || !self.satLayer || self.satLayer.store !== st) { self._satNoteSync(); return; }
+      if (self.frameIndex !== null) self._syncSat(self.frameIndex);
+      self._satNoteSync();
+    });
+  };
+  // The frame idx is on the map: the dots' window is [valid - 3 h, valid + 3 h] of THAT entry; another entry's dots are
+  // cleared (never old dots under a new time); nothing without a picture.
+  Overlay.prototype._syncSat = function (idx) {
+    if (!this.satLayer || this.mode !== 'model') return;
+    var m = this.manifest, entry = m && m.frames[idx];
+    if (!this._wantSatFrame() || !entry || !this.layer.hasFrame() || this.layer.entry !== entry) { this._clearSatWindow(); return; }
+    if (this.satLayer.entry === entry && this.satLayer.hasWindow()) return;
+    var valid = Date.parse(entry.valid_utc);
+    this.satLayer.setWindow({ t0: valid - SAT_FRAME_WINDOW_MS, t1: valid + SAT_FRAME_WINDOW_MS + 1, ref: valid, span: SAT_FRAME_WINDOW_MS, frame: true, entry: entry });
+    this._satNoteSync();
+  };
+  Overlay.prototype._clearSatWindow = function () {
+    if (this.satLayer && this.satLayer.hasWindow()) this.satLayer.setWindow(null);
+    this._satNoteSync();
+  };
+  // The box's note: by the store and layer state (SAT_NOTES).
+  Overlay.prototype._satNoteState = function () {
+    var st = this.sat;
+    if (!st) return null;
+    if (!st.supported()) return 'unsupported';
+    if (!this.satOn) return 'within';
+    if (st.status === 'failed' || (st.status === 'ok' && st.pointer && !st.pointer.chunks.length)) return 'unavailable';
+    if (!this.satLayer || !this.satLayer.hasWindow()) return st.status === 'ok' ? 'within' : 'loading';
+    if (!this.satLayer.complete()) return this.satLayer.count() ? 'within' : 'loading';
+    return this.satLayer.count() ? 'within' : 'none';
+  };
+  Overlay.prototype._satNoteSync = function () {
+    var ui = this.ui, s = this._satNoteState();
+    if (!ui || !ui.satNote || s === null) return;
+    var txt = SAT_NOTES[s];
+    if (ui.satNote.textContent !== txt) ui.satNote.textContent = txt;
+    if (ui.satBox && ui.satBox.disabled !== (s === 'unsupported')) ui.satBox.disabled = s === 'unsupported';
+  };
+  // The own entry's readings line, in place: "Readings: last 24 h, newest 11:40 AM HST (2 h ago) · 7 satellites" ("loading
+  // 3 of 8…" while chunks are on their way); the stale warning past the job's own limit re-renders the panel.
+  Overlay.prototype._satLineText = function () {
+    var st = this.satLayer ? this.satLayer.store : this._satStoreFor(), newest = st ? st.newestMs() : null;
+    if (!st || newest === null) return 'Readings: none';
+    var now = Date.now(), ago = Math.max(0, Math.round((now - newest) / 3.6e6)), win = this.satLayer && this.satLayer.win;
+    var pend = win ? st.pending(win.t0, win.t1) : 0, need = win ? st._chunksFor(st.pointer, { t0: win.t0, t1: win.t1 }).length : 0;
+    var sats = {}, f = st.flat, sl = win ? st.slice(win.t0, win.t1) : [0, 0], nsat = 0;
+    if (f) for (var i = sl[0]; i < sl[1]; i++) if (!sats[f.mission[i]]) { sats[f.mission[i]] = true; nsat++; }
+    var when = new Date(newest).toISOString().replace(/\.\d+Z$/, 'Z'), clock = this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
+    var txt = 'Readings: last 24 h, newest ' + clock + ' (' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
+    if (pend) txt += ' · loading ' + (need - pend) + ' of ' + need + '…';
+    else if (nsat) txt += ' · ' + nsat + ' satellite' + (nsat === 1 ? '' : 's');
+    return txt;
+  };
+  Overlay.prototype._satLineSync = function () {
+    var ui = this.ui;
+    if (!ui || !ui.satLine) return;
+    var txt = this._satLineText();
+    if (ui.satLine.textContent !== txt) ui.satLine.textContent = txt;
+    var st = this.satLayer ? this.satLayer.store : null, stale = this._satStale(st);
+    if (stale !== !!this._satStaleShown && this.last && this.last.state === 'ready') this.render(this.last);
+  };
+  Overlay.prototype._satStale = function (st) {
+    var newest = st ? st.newestMs() : null;
+    return newest !== null && (Date.now() - newest) / 3.6e6 > (st.kind === 'swell' ? SWELL_STALE_H : SAT_STALE_H);
+  };
+  // The hover on a reading (flat index j): a height dot gives the reading, its satellite, its time and the collocated model
+  // value with the difference (frame mode: the model value from the drawn field under the cursor); a swell point every
+  // partition. Units follow the site unit.
+  Overlay.prototype._satReadout = function (j, latlng, z) {
+    var st = this.satLayer.store, f = st.flat, u = unitOf('hs', this.opts.getUnit()), i;
+    var when = new Date(f.t[j]).toISOString().replace(/\.\d+Z$/, 'Z'), clock = this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
+    var sat = f.missions[f.mission[j]] ? f.missions[f.mission[j]].short : '?';
+    var fmt = function (v) { return u.f(v).toFixed(u.d) + ' ' + u.label; };
+    if (st.kind === 'swell') {
+      var parts = [], ago = Math.max(0, Math.round((Date.now() - f.t[j]) / 3.6e6));
+      for (i = 0; i < 3; i++) {
+        var h = f.hs[i][j], tp = f.tp[i][j], d = f.dir[i][j];
+        if (!(h === h)) continue;
+        parts.push('Swell ' + (i + 1) + ': ' + fmt(h) + ' · ' + tp.toFixed(0) + ' s · from ' + Math.round(d) + '°');
+      }
+      return parts.join(' | ') + ' (' + sat + ', ' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
+    }
+    var txt = fmt(f.swh[j]) + ' · ' + sat + ' · ' + clock, mv = null, label = 'model';
+    if (this.satLayer.win && this.satLayer.win.frame && this.layer && this.layer.fdef && this.layer.entry) {
+      mv = this.layer.readoutAt(latlng.lat, latlng.lng, z);
+      label = 'model (frame ' + this.opts.fmtTime(this.layer.entry.valid_utc, this.opts.tz) + ')';
+      txt = 'obs ' + txt;
+    } else if (f.model[j] === f.model[j]) mv = f.model[j];
+    if (mv === null) return txt + ' · ' + label + ' —';
+    var diff = u.f(f.swh[j]) - u.f(mv);
+    return txt + ' · ' + label + ' ' + fmt(mv) + ' (' + (diff >= 0 ? '+' : '') + diff.toFixed(u.d) + ')';
   };
   // The error panel's Retry. A run pinned by a carried time that cannot be shown (e.g. pruned while SST was up) is let go:
   // with nothing on the map and a newer run known, the mount takes the newer run at the carried time (re-check RC-2).
@@ -4511,6 +5368,7 @@
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
       self._syncLake(idx);                                                       // before the particles: the lake direction rides in the step's one rebuild
+      self._syncSat(idx);                                                        // the satellite readings within 3 h of this frame (plan section 81)
       self._syncFlow(idx);
       self._syncIsobars(idx);
       self._prefetch();
@@ -4611,9 +5469,11 @@
       this.layer.clear();
       if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
       if (this.iso) this.iso.clearData();
+      if (this.mode === 'model') this._clearSatWindow();
       if (this.readout) this.readout.hidden = true;
       this._unattribute();
     }
+    if (this.mode === 'obs' && this.field === 'sat') this._detachSat();   // the own entry failed: no dots under the error panel
     if (this.iso && (this.frameIndex === null || !this.layer || !this.layer.hasFrame())) this.iso.clearData();   // no picture, no lines (G32)
     if (this.layer && !this.layer.hasFrame()) this._syncLook();
     this.pause();
@@ -4690,11 +5550,13 @@
     this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
+    if (this.mode === 'model') this._clearSatWindow();
   };
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
     var self = this, model = this.model, m = this.manifest;
     if (this.mode === 'obs') {
+      if (this.field === 'sat') { this._satLineSync(); return; }     // (the pointer's own re-read runs on satTimer)
       if (this.sst) this.sst.recheck();
       var m = this.sst && this.sst.manifest, age = m ? sstAgeDays(m.day) : null;
       if (this.last && this.last.state === 'ready' && (age !== null && age > SST_STALE_DAYS) !== !!this._sstStale) this.render(this.last);   // G31-15
@@ -4871,8 +5733,9 @@
     return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
   };
   Overlay.prototype._attribution = function () {
-    var text = this.mode === 'obs' ? SST_ATTRIBUTION : this._def().attribution;
+    var text = this.mode === 'obs' ? OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].attribution : this._def().attribution;
     if (this.mode !== 'obs' && this.layer && this.layer.hasLake() && this.layer._lakeMask && this._lakeOnScreen()) text += LAKE_ATTRIBUTION;   // a lake frame drawn, the lakes' coverage, and the lakes in the view (plan section 50; G33 B-5)
+    if (this.mode !== 'obs' && this.satLayer && this.satLayer.hasWindow() && this.satLayer.count() > 0) text += SAT_FRAME_ATTRIBUTION;   // readings drawn over the model (plan section 81: the licence's visible credit)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
     return text + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
@@ -4983,6 +5846,9 @@
     if (this._onHide) { if (window.removeEventListener) window.removeEventListener('pagehide', this._onHide); this._onHide = null; }
     this._pendingRestore = null; this._pendingFocus = null; this._carry = null; this._switchT = null;
     if (this.layer) { if (this.layer._src) this.layer.setSource(null, true); this.map.removeLayer(this.layer); this.layer = null; }
+    this._detachSat();                                     // the satellite layer goes; the stores keep their samples (an On is instant)
+    if (this.sat) this.sat.abortAll();
+    if (this.swell) this.swell.abortAll();
     if (this.sst) this.sst.abortAll();                     // the day's frame and manifest stay for the next On
     if (this.lake) this.lake.abortAll();                   // the lake run stays for the next On
     if (this.lakeCoast) this.lakeCoast.abortAll();

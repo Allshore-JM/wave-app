@@ -64,11 +64,13 @@ MAX_FILE_BYTES = 20_000_000                   # a 1 Hz file is 100-215 KB; nothi
 MIN_FILE_BYTES = 1_000
 DOWNLOAD_WORKERS = 8
 DOWNLOAD_TRIES = 4
-FAILED_MAX_ATTEMPTS = 3                       # on the same inputs digest: the window is left alone after this
+FAILED_MAX_ATTEMPTS = 3                       # on the same inputs digest: the window then waits FAILED_RETRY_AFTER_H between tries
+FAILED_RETRY_AFTER_H = 2
+DATASETS_REFRESH_H = 6                        # the dataset list is re-read from STAC this often (the pointer caches it between)
 STALE_H = 12                                  # the newest reading older than this = an outage (summary STALE:, exit 1)
 STALE_ALARM_EVERY_H = 12
 MISSION_SILENT_H = 48                         # a mission with no file newer than this: a summary WARNING
-BUILD_STALE_H = 2                             # a build not named by the pointer and older than this is pruned
+BUILD_STALE_H = 2                             # a build superseded this long ago is pruned (clients re-read the pointer every 12 min)
 STATS_KEEP_H = 24
 FRAMES_ROOT = "https://models.allshoresurf.com"
 FRAMES_PREFIX = P.PREFIX
@@ -211,6 +213,8 @@ def stac_datasets(product, get=_get):
             hrefs.append(href if "://" in href else f"{base}/{href.lstrip('./')}")
     out = {}
     for href in hrefs:
+        if not product.dataset_re.search(href.rsplit("/", 2)[-2]):     # only the datasets wanted are fetched (paced)
+            continue
         try:
             item = _stac_json(get, href)
         except Exception as exc:                                       # noqa: BLE001
@@ -372,17 +376,19 @@ def files_of_window(files, w0, window_s):
     return [f for f in files if f.t0 < w1 and f.t1 > w0]
 
 
-def digest_of(product, files):
+def digest_of(product, files, extra=""):
     h = hashlib.sha256()
     for k in sorted(f.key() for f in files):
         h.update(k.encode() + b"\n")
-    h.update(("format:" + product.format_key).encode())
+    h.update(("format:" + product.format_key + ("|" + extra if extra else "")).encode())
     return h.hexdigest()[:32]
 
 
-def plan(product, pointer, files, now, force=False, only=None, since=None):
+def plan(product, pointer, files, now, force=False, only=None, since=None, run=None):
     """-> {window key: {files, digest, old}}: every window in reach with its files and digest, `old` the pointer's chunk
-    record for it (None without one); `build` is set where the digest differs (or force, or the one window asked for)."""
+    record for it (None without one); `build` is set where the digest differs (or force, or the one window asked for).
+    `run` (a datetime: the live model run) joins the digest of the windows ending after its cycle: their readings get that
+    run when it arrives (the newest run whose cycle <= t), so a new run rebuilds them; older windows keep their model."""
     old = {c["window"]: c for c in (pointer or {}).get("chunks", []) if isinstance(c, dict) and "window" in c}
     out = {}
     for w0 in windows_for(product, now, since):
@@ -390,7 +396,7 @@ def plan(product, pointer, files, now, force=False, only=None, since=None):
         if only and key != only:
             continue
         fs = files_of_window(files, w0, product.window_s)
-        d = digest_of(product, fs)
+        d = digest_of(product, fs, "run:" + P.run_key(run) if run is not None and w0 + timedelta(seconds=product.window_s) > run else "")
         rec = old.get(key)
         inputs = rec.get("inputs") if rec else None
         out[key] = {"t0": w0, "files": fs, "digest": d, "old": rec,
@@ -420,6 +426,10 @@ def download(rec, dest, get=_get, tries=DOWNLOAD_TRIES, log=print, max_bytes=MAX
             last = IOError(f"ended at {have} of {rec.size} bytes")
         except ValueError:
             raise
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:                                        # purged between the listing and the GET (common): no retries
+                raise IOError(f"{rec.name}: HTTP 404")
+            last = exc
         except Exception as exc:                                       # noqa: BLE001
             last = exc
         log(f"{rec.name}: attempt {attempt} stopped at {have} of {rec.size}: {last.__class__.__name__}")
@@ -451,10 +461,12 @@ def download_all(files, folder, get=_get, workers=DOWNLOAD_WORKERS, log=print):
 # ---------------------------------------------------------------- reading the L3 files
 def _attr(ds, name, default=None):
     v = ds.attrs.get(name, default)
+    if isinstance(v, np.ndarray) and v.size == 1:
+        v = v[0]
     if isinstance(v, (bytes, np.bytes_)):
         return v.decode("utf-8", "replace")
-    if isinstance(v, np.ndarray):
-        return v[0] if v.size == 1 else v
+    if isinstance(v, np.str_):
+        return str(v)
     return v
 
 
@@ -730,14 +742,24 @@ def collocate(frames, t, lat, lon, log=print):
 
 
 # ---------------------------------------------------------------- the build
-def dedupe_against(t_keep, t_drop, tol_s=1.5):
-    """Indices into t_drop of the readings NOT within tol_s of any t_keep reading (both sorted)."""
+def dedupe_against(t_keep, t_drop, gap_s=60.0, tol_s=1.5):
+    """Indices into t_drop of the readings OUTSIDE every span of t_keep (both sorted): a span runs from one t_keep
+    reading to the next while gaps stay within gap_s, widened by tol_s at both ends. An OGDR reading inside a CMEMS pass
+    is dropped even where CMEMS rejected its own reading (quality: rain, ice, the coast); only the hours CMEMS has not
+    delivered yet survive."""
     if len(t_keep) == 0 or len(t_drop) == 0:
         return np.arange(len(t_drop))
-    pos = np.searchsorted(t_keep, t_drop)
-    left = np.abs(t_drop - t_keep[np.clip(pos - 1, 0, len(t_keep) - 1)])
-    right = np.abs(t_drop - t_keep[np.clip(pos, 0, len(t_keep) - 1)])
-    return np.nonzero(np.minimum(left, right) > tol_s)[0]
+    tk = np.asarray(t_keep, np.float64)
+    cut = np.nonzero(np.diff(tk) > gap_s)[0] + 1
+    if len(cut):
+        starts = np.concatenate([[tk[0]], tk[cut]]) - tol_s
+        ends = np.concatenate([tk[cut - 1], [tk[-1]]]) + tol_s
+    else:
+        starts, ends = np.array([tk[0] - tol_s]), np.array([tk[-1] + tol_s])
+    td = np.asarray(t_drop, np.float64)
+    i = np.searchsorted(starts, td, side="right") - 1
+    inside = (i >= 0) & (td <= ends[np.clip(i, 0, len(ends) - 1)])
+    return np.nonzero(~inside)[0]
 
 
 def mission_index(missions_seen, pointer_missions, table):
@@ -797,11 +819,13 @@ def build_heights(window, w0, w1, read, missions, frames, build_id, inputs, log=
               "swh": F.to_stored(swh, 0.001, F.NONE_U2, "u2"), "model": F.to_stored(np.clip(model, 0, 65.534), 0.001, F.NONE_U2, "u2"),
               "mission": mission.astype(np.uint8), "run": run_idx, "flags": flags}
     newest = float(t.max()) if len(t) else None
+    credit = SOURCE["credit"] + ("; " + JASON3_SOURCE["credit"] if "j3_ogdr" in per and len(per["j3_ogdr"]["t"]) else "")
     header = {"window": window, "t0": utc(w0), "t1": utc(w1), "build": build_id, "missions": missions, "segments": segs, "runs": runs,
               "model": {"field": HS_FIELD, "lo": frames.lo if frames else None, "hi": frames.hi if frames else None, "rule": MODEL_RULE, "source": "NOAA GFS-Wave"},
-              "inputs": inputs, "credit": SOURCE["credit"], "flags": {"near_land": F.FLAG_NEAR_LAND, "model_edge": F.FLAG_MODEL_EDGE}}
+              "inputs": inputs, "credit": credit, "flags": {"near_land": F.FLAG_NEAR_LAND, "model_edge": F.FLAG_MODEL_EDGE}}
     body = F.encode_chunk(F.MAGIC_ALT, header, {}, arrays)
     per_mission = {m["id"]: int((mission == i).sum()) for i, m in enumerate(missions) if (mission == i).any()}
+    newest_by = {tok: utc(EPOCH + timedelta(seconds=float(d["t"].max()))) for tok, d in per.items() if len(d["t"])}
     ok = np.isfinite(model) & ~near
     diff = (swh - model)[ok]
     stats = {"window": window, "n": int(len(t)), "missions": per_mission, "bytes": len(body), "near_land": int(near.sum()), "model_edge": int(edge.sum()),
@@ -812,7 +836,7 @@ def build_heights(window, w0, w1, read, missions, frames, build_id, inputs, log=
                                       "p90_abs": round(float(np.percentile(np.abs(diff), 90)), 3) if len(diff) else None}}
     record = {"window": window, "t0": utc(w0), "t1": utc(w1), "n": int(len(t)), "bytes": len(body), "build": build_id,
               "missions": sorted(per_mission), "newest_utc": utc(EPOCH + timedelta(seconds=newest)) if newest is not None else None,
-              "inputs": inputs}
+              "newest_by_mission": newest_by, "inputs": inputs}
     return body, record, stats
 
 
@@ -852,15 +876,25 @@ def list_window_keys(store, product):
 
 
 def prune(store, product, pointer, now=None):
-    """Windows older than PRUNE_AFTER_H go whole; in kept windows, builds not named by the pointer and older than
-    BUILD_STALE_H; failed records of pruned windows; stats not named and older than STATS_KEEP_H. Only under the prefix."""
+    """Windows older than PRUNE_AFTER_H and not named by the pointer go whole (their failure records too); in kept
+    windows, builds the pointer does not name once superseded for BUILD_STALE_H (the pointer's `superseded` list says
+    when: a client holding the previous pointer, max-age 300 + the 12-minute recheck, still reads them meanwhile) or,
+    never named by any pointer, older than BUILD_STALE_H by their stamp; failure records of windows out of reach; stats not
+    named and older than STATS_KEEP_H. Only under the prefix."""
     now = now or datetime.now(timezone.utc)
     named = {(c["window"], c["build"]) for c in pointer.get("chunks", [])}
+    named_windows = {c["window"] for c in pointer.get("chunks", [])}
     named_builds = {c["build"] for c in pointer.get("chunks", [])} | ({pointer["build"]} if pointer.get("build") else set())
+    superseded = {}
+    for e in pointer.get("superseded") or []:
+        try:
+            superseded[e["key"]] = parse_iso(e["at"])
+        except (KeyError, TypeError, ValueError):
+            continue
     deleted = []
     for window, builds in sorted(list_window_keys(store, product).items()):
         w0 = parse_window(window)
-        if w0 + timedelta(seconds=product.window_s) < now - timedelta(hours=PRUNE_AFTER_H):
+        if window not in named_windows and w0 + timedelta(seconds=product.window_s) < now - timedelta(hours=PRUNE_AFTER_H):
             keys = [k for _b, k in builds]
             store.delete_keys(keys, window)
             deleted += keys
@@ -872,13 +906,24 @@ def prune(store, product, pointer, now=None):
         for build, key in builds:
             if (window, build) in named:
                 continue
-            try:
-                age = now - datetime.strptime(build, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
+            if key in superseded:
+                age = now - superseded[key]
+            else:
+                try:
+                    age = now - datetime.strptime(build, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
             if age > timedelta(hours=BUILD_STALE_H):
                 store.delete_keys([key], window)
                 deleted.append(key)
+    fpre = f"{product.prefix}/failed/"
+    for k in store.list_keys(fpre):
+        w = k[len(fpre):]
+        if not (w.endswith(".json") and re.fullmatch(r"\d{8}T\d{2}", w[:-5])):
+            continue
+        if parse_window(w[:-5]) + timedelta(seconds=product.window_s) < now - timedelta(hours=PRUNE_AFTER_H):
+            store.delete_keys([k], "failed")
+            deleted.append(k)
     spre = f"{product.prefix}/stats/"
     for k in store.list_keys(spre):
         b = k[len(spre):]
@@ -897,6 +942,23 @@ def prune(store, product, pointer, now=None):
     return deleted
 
 
+def superseded_list(prev_pointer, new_chunks, now, prev_superseded=None):
+    """The pointer's `superseded` entries: the previous pointer's chunk keys this run replaced (their window got a new
+    key), stamped now, plus the earlier entries still within BUILD_STALE_H."""
+    out = []
+    for e in prev_superseded or []:
+        try:
+            if now - parse_iso(e["at"]) <= timedelta(hours=BUILD_STALE_H):
+                out.append({"key": e["key"], "at": e["at"]})
+        except (KeyError, TypeError, ValueError):
+            continue
+    keep = {c["key"] for c in new_chunks}
+    for c in (prev_pointer or {}).get("chunks", []):
+        if isinstance(c, dict) and c.get("key") and c["key"] not in keep and not any(e["key"] == c["key"] for e in out):
+            out.append({"key": c["key"], "at": utc(now)})
+    return out
+
+
 def record_failure(store, product, window, digest, message):
     prev = store.get_json(product.failed_key(window)) or {"window": window, "attempts": 0}
     if prev.get("digest") != digest:
@@ -908,9 +970,37 @@ def record_failure(store, product, window, digest, message):
     return prev
 
 
-def skip_failed(store, product, window, digest):
+def skip_failed(store, product, window, digest, now=None):
+    """After FAILED_MAX_ATTEMPTS on the same inputs the window waits FAILED_RETRY_AFTER_H since the last try (a lasting
+    upstream fault is retried a few times a day, never every 10 minutes, never given up for good)."""
     rec = store.get_json(product.failed_key(window))
-    return bool(rec and rec.get("digest") == digest and rec.get("attempts", 0) >= FAILED_MAX_ATTEMPTS)
+    if not (rec and rec.get("digest") == digest and rec.get("attempts", 0) >= FAILED_MAX_ATTEMPTS):
+        return False
+    try:
+        last = parse_iso(rec["last_attempt_utc"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return ((now or datetime.now(timezone.utc)) - last) < timedelta(hours=FAILED_RETRY_AFTER_H)
+
+
+def alarm_once(store, product, line, now=None, kind="stale"):
+    """1 when no alarm of this kind went out in STALE_ALARM_EVERY_H (the record stale-alarm.json keeps one stamp per
+    kind; GitHub mails a failed run): the summary line is written then; else None (the line is printed only)."""
+    now = now or datetime.now(timezone.utc)
+    rec = store.get_json(product.stale_key()) or {}
+    field = "last_alarm_utc" if kind == "stale" else f"last_{kind}_alarm_utc"
+    last = rec.get(field)
+    if last:
+        try:
+            if (now - parse_iso(last)).total_seconds() < STALE_ALARM_EVERY_H * 3600:
+                print(f"{line} (alarm already sent)")
+                return None
+        except ValueError:
+            pass
+    rec[field] = utc(now)
+    store.put(product.stale_key(), json.dumps(rec, sort_keys=True).encode(), JSON, P.POINTER)
+    _summary(line)
+    return 1
 
 
 def stale_check(store, product, pointer, now=None, why=""):
@@ -926,28 +1016,31 @@ def stale_check(store, product, pointer, now=None, why=""):
             age_h = math.inf
     if age_h <= product.stale_h:
         return None
-    rec = store.get_json(product.stale_key()) or {}
-    last = rec.get("last_alarm_utc")
-    if last:
-        try:
-            if (now - parse_iso(last)).total_seconds() < STALE_ALARM_EVERY_H * 3600:
-                print(f"newest reading is {age_h:.1f} h old (alarm already sent)")
-                return None
-        except ValueError:
-            pass
-    store.put(product.stale_key(), json.dumps({"last_alarm_utc": utc(now), "newest_utc": newest}).encode(), JSON, P.POINTER)
-    _summary(f"STALE: the newest {product.label} reading is {newest or 'none'} ({age_h:.1f} h old){': ' + why if why else ''}")
-    return 1
+    return alarm_once(store, product, f"STALE: the newest {product.label} reading is {newest or 'none'} ({age_h:.1f} h old){': ' + why if why else ''}", now=now)
 
 
-def mission_silence(product, files, now):
-    """[(token, hours since its newest file)] for missions seen in the listing whose newest window is old."""
-    newest = {}
-    for f in files:
-        newest[f.token] = max(newest.get(f.token, f.t1), f.t1)
+def mission_newest(chunks, prev_missions):
+    """{token: newest_utc} over the pointer's chunks in reach, else the previous pointer's value (a mission that has
+    gone quiet keeps its last time until it falls out of reach of the warning)."""
+    out = {}
+    for m in prev_missions or []:
+        if isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("newest_utc"), str):
+            out[m["id"]] = m["newest_utc"]
+    for c in chunks:
+        for tok, t in (c.get("newest_by_mission") or {}).items():
+            if isinstance(t, str) and (tok not in out or t > out[tok]):
+                out[tok] = t
+    return out
+
+
+def mission_silence(newest, now):
+    """[(token, hours since its newest reading)] for the missions whose newest reading is older than their threshold."""
     out = []
-    for tok, t1 in sorted(newest.items()):
-        h = (now - t1).total_seconds() / 3600
+    for tok, t in sorted(newest.items()):
+        try:
+            h = (now - parse_iso(t)).total_seconds() / 3600
+        except ValueError:
+            continue
         if h > MISSION_SILENT_OVERRIDE_H.get(tok, MISSION_SILENT_H):
             out.append((tok, round(h, 1)))
     return out
@@ -994,23 +1087,32 @@ def _pointer_datasets(pointer):
     return ds if isinstance(ds, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in ds.items()) and ds else None
 
 
-def discover_datasets(product, pointer, get=_get, log=print):
-    """STAC, else the pointer's cached list, else the bucket's directory listing."""
+def discover_datasets(product, pointer, get=_get, log=print, now=None):
+    """The pointer's cached list while younger than DATASETS_REFRESH_H (STAC is read a few times a day, not every 10
+    minutes), else STAC, else the cached list whatever its age, else the bucket's directory listing. -> (datasets, how,
+    read_utc)."""
+    now = now or datetime.now(timezone.utc)
+    cached, read = _pointer_datasets(pointer), (pointer or {}).get("datasets_utc")
+    if cached and isinstance(read, str):
+        try:
+            if now - parse_iso(read) < timedelta(hours=DATASETS_REFRESH_H):
+                return cached, "pointer", read
+        except ValueError:
+            pass
     try:
-        return stac_datasets(product, get=get), "stac"
+        return stac_datasets(product, get=get), "stac", utc(now)
     except Exception as exc:                                           # noqa: BLE001
         log(f"STAC unavailable ({exc.__class__.__name__}: {exc}); falling back")
-    cached = _pointer_datasets(pointer)
     if cached:
-        return cached, "pointer"
-    return bucket_datasets(product, get=get), "bucket"
+        return cached, "pointer", read if isinstance(read, str) else utc(now)
+    return bucket_datasets(product, get=get), "bucket", utc(now)
 
 
 def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, now=None, readers=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="plan, download and build; upload nothing")
     ap.add_argument("--local", default=None, help="also write every object under this folder")
-    ap.add_argument("--window", default=None, help="YYYYMMDDTHH: build this one window (forced; no stale alarm)")
+    ap.add_argument("--window", default=None, help="YYYYMMDDTHH: build this one window (forced; no stale alarm; a failure exits 1)")
     ap.add_argument("--force", action="store_true", help="rebuild every window in reach")
     ap.add_argument("--keep-h", type=int, default=product.keep_h)
     ap.add_argument("--frames-root", default=os.environ.get("ALT_FRAMES_ROOT", FRAMES_ROOT))
@@ -1028,14 +1130,18 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
     if pointer.get("format") not in (None, product.format):
         print(f"pointer format {pointer.get('format')!r} is not {product.format!r}: refusing to touch it")
         return 1
-    stale = (lambda why: (stale_check(store, product, pointer, now=now, why=why) or 0)) if live and not a.window else (lambda why: 0)
+    # every quiet path of a scheduled live run ends in the stale check (the SST rule); a manual --window run, a dry run
+    # or a local build reports its own failure as 1
+    scheduled = live and not a.window
+    stale = (lambda why: (stale_check(store, product, pointer, now=now, why=why) or 0)) if scheduled else (lambda why: 0)
+    quiet = (lambda why: stale(why)) if scheduled else (lambda why: 1)
     since = now - timedelta(hours=a.keep_h)
 
     try:
-        datasets, how = discover_datasets(product, pointer, get=get)
+        datasets, how, datasets_utc = discover_datasets(product, pointer, get=get, now=now)
     except Exception as exc:                                           # noqa: BLE001
         print(f"no dataset list: {exc.__class__.__name__}: {exc}")
-        return stale("the dataset list cannot be read") if live else 1
+        return quiet("the dataset list cannot be read")
     print(f"{len(datasets)} datasets ({how})")
     files = list_files(product, datasets, now, get=get, since=since)
     if a.jason3_index and product is HEIGHTS:
@@ -1048,26 +1154,29 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
         if live and pointer:
             pointer["checked_utc"] = utc(now)
             write_pointer(store, product, pointer)
-        return stale("no product files listed") if live else 1
-    pl = plan(product, pointer, files, now, force=a.force, only=a.window, since=since)
-    todo = [k for k, v in pl.items() if v["build"]]
-    if live and not a.force and not a.window:
-        todo = [k for k in todo if not skip_failed(store, product, k, pl[k]["digest"])]
-    print(f"{len(files)} files, {len(pl)} windows in reach, {len(todo)} to build: {' '.join(todo) if todo else '-'}")
+        return quiet("no product files listed")
 
+    # the model frames first (their run is part of the newest windows' digests): a frames host that cannot be read ends
+    # this run quietly (nothing is charged to the windows: the next run tries again); a range change alarms once per
+    # STALE_ALARM_EVERY_H and publishes nothing (a deliberate alt change is needed first)
     frames = None
-    if todo and product.collocate and not a.no_model:
+    if product.collocate and not a.no_model:
         try:
             frames = (frames_factory or (lambda: Frames(root=a.frames_root, get=get)))().load()
         except Frames.RangeChanged as exc:
-            _summary(f"MODEL RANGE CHANGED: {exc}")
+            line = f"MODEL RANGE CHANGED: {exc}"
+            if live:
+                return alarm_once(store, product, line, now=now, kind="range") or 0
+            _summary(line)
             return 1
         except Exception as exc:                                       # noqa: BLE001
             print(f"model frames unavailable: {exc.__class__.__name__}: {exc}")
-            if live:
-                for k in todo:
-                    record_failure(store, product, k, pl[k]["digest"], f"model frames unavailable: {exc}")
-            return stale("the model frames cannot be read") if live else 1
+            return quiet("the model frames cannot be read")
+    pl = plan(product, pointer, files, now, force=a.force, only=a.window, since=since, run=frames.runs()[0] if frames else None)
+    todo = [k for k, v in pl.items() if v["build"]]
+    if live and not a.force and not a.window:
+        todo = [k for k in todo if not skip_failed(store, product, k, pl[k]["digest"], now=now)]
+    print(f"{len(files)} files, {len(pl)} windows in reach, {len(todo)} to build: {' '.join(todo) if todo else '-'}")
 
     build_id = stamp(now)
     chunks = {c["window"]: c for c in pointer.get("chunks", []) if isinstance(c, dict) and "window" in c}
@@ -1079,17 +1188,16 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
     tmp = tempfile.TemporaryDirectory()
     try:
         paths, dl_failed = download_all(list(needed.values()), tmp.name, get=get)
-        if dl_failed:
-            for name, err in sorted(dl_failed.items()):
-                print(f"download failed: {name}: {err}")
-        read_cache = {}
+        for name, err in sorted(dl_failed.items()):
+            print(f"download failed: {name}: {err}")
+        read_cache, unreadable = {}, {}
         for k in todo:
             w = pl[k]
             w0, w1 = w["t0"], w["t0"] + timedelta(seconds=product.window_s)
             read, missing = {}, []
             for f in w["files"]:
                 if f.name not in paths:
-                    missing.append(f.name)
+                    missing.append(f"{f.name} ({dl_failed.get(f.name, 'not downloaded')})")
                     continue
                 try:
                     if f.name not in read_cache:
@@ -1099,12 +1207,14 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
                     sel = in_window(d["t"], w0, w1)
                     read[f.name] = (f.token, {kk: vv[sel] for kk, vv in d.items()})
                 except Exception as exc:                               # noqa: BLE001
-                    print(f"{f.name}: unreadable: {exc.__class__.__name__}: {exc}")
-                    missing.append(f.name)
+                    if f.name not in unreadable:
+                        unreadable[f.name] = f"{exc.__class__.__name__}: {exc}"
+                        _summary(f"WARNING: {f.name} unreadable: {unreadable[f.name]}")   # a refused file (a mean period, a wrong scale) is said out loud
+                    missing.append(f"{f.name} ({unreadable[f.name]})")
             if missing:
-                # a file that failed is dropped from this build and the window recorded; the digest still names it, so the
-                # window is tried again next run (up to FAILED_MAX_ATTEMPTS on the same inputs)
-                msg = f"{len(missing)} of {len(w['files'])} files missing: {', '.join(missing[:4])}"
+                # a file that failed is dropped from this build and the window recorded (inputs null: tried again next run;
+                # after FAILED_MAX_ATTEMPTS on the same digest, every FAILED_RETRY_AFTER_H)
+                msg = f"{len(missing)} of {len(w['files'])} files missing: {'; '.join(missing[:4])}"
                 print(f"{k}: {msg}")
                 if live:
                     record_failure(store, product, k, w["digest"], msg)
@@ -1113,19 +1223,18 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
                     continue
             try:
                 missions = mission_index({tok for tok, _d in read.values()}, pointer.get("missions"), product.missions)
-                body, record, st = product.build(k, w0, w1, read, missions, frames, build_id, w["digest"], log=print)
+                body, record, st = product.build(k, w0, w1, read, missions, frames, build_id, None if missing else w["digest"], log=print)
             except Exception as exc:                                   # noqa: BLE001
                 print(f"{k}: build failed: {exc.__class__.__name__}: {exc}")
                 if live:
                     record_failure(store, product, k, w["digest"], f"build: {exc}")
-                failed_windows.append(k)
+                if k not in failed_windows:
+                    failed_windows.append(k)
                 continue
             if len(body) > F.WARN_CHUNK_BYTES:
                 _summary(f"WARNING: {k} chunk is {len(body) / 1e6:.2f} MB")
             key = product.chunk_key(k, build_id)
             record["key"] = key
-            if missing:
-                record["inputs"] = None                                # incomplete: rebuilt as soon as the files read
             put_object(store if live else None, a.local, key, body, BIN)
             chunks[k] = record
             stats_all[k] = st
@@ -1140,16 +1249,22 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
         in_reach.pop(0)
     chunk_list = [chunks[k] for k in in_reach]
     newest = max((c["newest_utc"] for c in chunk_list if c.get("newest_utc")), default=pointer.get("newest_utc"))
-    missions_all = mission_index({m for c in chunk_list for m in c.get("missions", [])}, pointer.get("missions"), product.missions)
+    newest_by = mission_newest(chunk_list, pointer.get("missions"))
+    missions_all = mission_index({m for c in chunk_list for m in c.get("missions", [])} | set(newest_by), pointer.get("missions"), product.missions)
+    for m in missions_all:
+        if m["id"] in newest_by:
+            m["newest_utc"] = newest_by[m["id"]]
     changed = bool(built)
+    model = None
+    if product.collocate and not a.no_model and frames:
+        model = {"name": "NOAA GFS-Wave", "field": HS_FIELD, "hs": [frames.lo, frames.hi], "runs": [P.run_key(r) for r in frames.runs()], "rule": MODEL_RULE}
     new_pointer = {"format": product.format, "build": build_id if changed else pointer.get("build"),
                    "published_utc": utc(now) if changed else pointer.get("published_utc"), "checked_utc": utc(now),
                    "newest_utc": newest, "window_s": product.window_s, "keep_h": a.keep_h, "encoding": "deflate",
-                   "magic": product.magic.decode("ascii"), "missions": missions_all, "chunks": chunk_list,
-                   "model": ({"name": "NOAA GFS-Wave", "field": HS_FIELD, "hs": [frames.lo, frames.hi], "runs": [P.run_key(r) for r in frames.runs()], "rule": MODEL_RULE}
-                             if frames else pointer.get("model")),
-                   "columns": [list(c) for c in product.columns], "source": product.source, "datasets": datasets,
-                   "stats": product.stats_key(build_id) if changed else pointer.get("stats")}
+                   "magic": product.magic.decode("ascii"), "missions": missions_all, "chunks": chunk_list, "model": model,
+                   "columns": [list(c) for c in product.columns], "source": product.source, "datasets": datasets, "datasets_utc": datasets_utc,
+                   "stats": product.stats_key(build_id) if changed else pointer.get("stats"),
+                   "superseded": superseded_list(pointer, chunk_list, now, pointer.get("superseded"))}
     if changed:
         sbody = json.dumps({"build": build_id, "windows": stats_all, "built": built, "failed": failed_windows}, separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
         put_object(store if live else None, a.local, product.stats_key(build_id), sbody, JSON)
@@ -1160,8 +1275,7 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
             print("pruned:", len(prune(store, product, new_pointer, now=now)))
         except Exception as exc:                                       # noqa: BLE001
             print(f"prune failed: {exc.__class__.__name__}: {exc}")
-    silent = mission_silence(product, files, now)
-    for tok, h in silent:
+    for tok, h in mission_silence(newest_by, now):
         _summary(f"WARNING: mission {tok} silent for {h} h")
     tot = sum(c["n"] for c in chunk_list)
     _summary(f"### {product.label}: {len(built)} windows built ({' '.join(built) if built else '-'}), {len(chunk_list)} in the pointer, "
@@ -1171,8 +1285,8 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
         d = st["obs_minus_model_open"] if "obs_minus_model_open" in st else {}
         print(f"  {k}: {st['n']} readings {st.get('missions')}" + (f", obs - model open ocean: n {d['n']} median {d['median']} |median| {d['median_abs']} p90 {d['p90_abs']}" if d.get("n") else ""))
     if failed_windows and not built:
-        return stale("every window failed to build") if live else 1   # recorded and backed off; the stale alarm names a lasting outage
-    return stale("nothing new to publish") if live and not built else 0
+        return quiet("every window failed to build")
+    return stale("nothing new to publish") if scheduled and not built else 0
 
 
 if __name__ == "__main__":

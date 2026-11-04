@@ -53,10 +53,32 @@ VARS = {
     "tp": ["VTPK_SW", "VTPK", "peak_period_partition", "tp_partition", "partition_tp", "tp", "VTM10_SW", "VTM10", "VTM02_SW", "VTM02", "mean_period_partition"],
     "dir": ["VPED_SW", "VPED", "VMDR_SW", "VMDR", "peak_direction_partition", "dir_partition", "partition_dir", "dir", "pdir"],
 }
-PERIOD_PEAK_RE = re.compile(r"peak", re.I)
-PERIOD_MEAN_RE = re.compile(r"\bmean\b|energy", re.I)
-DIR_FROM_RE = re.compile(r"\bfrom\b|from_direction|coming", re.I)
-DIR_TO_RE = re.compile(r"\btowards?\b|to_direction|going", re.I)
+# The period and direction conventions are read from the variables' standard_name first (the CF names say it outright),
+# else their long_name; a phrase about the reference ("clockwise from true north") is removed before the words are
+# looked for; a variable whose text says both (peak and mean, from and towards) is refused.
+PERIOD_PEAK_STD = re.compile(r"variance_spectral_density_maximum|peak_period", re.I)
+PERIOD_MEAN_STD = re.compile(r"mean_period|zero_upcrossing|energy_period|first_frequency_moment|second_frequency_moment", re.I)
+PERIOD_PEAK_RE = re.compile(r"\bpeak\b", re.I)
+PERIOD_MEAN_RE = re.compile(r"\bmean\b|\benergy\b|zero[- ]?(up)?crossing|\bt0?m[0-9]{1,2}\b|\baverage\b", re.I)
+DIR_FROM_STD = re.compile(r"from_direction", re.I)
+DIR_TO_STD = re.compile(r"to_direction", re.I)
+DIR_REF_RE = re.compile(r"(clockwise|counter-?clockwise|measured|degrees?|deg)\s+from\s+(true\s+|geographic\s+)?north|\bfrom\s+(true\s+|geographic\s+)?north", re.I)
+DIR_FROM_RE = re.compile(r"\bfrom\b|\bcoming\b|\borigin", re.I)
+DIR_TO_RE = re.compile(r"\btowards?\b|\bto\b|\bgoing\b|propagat", re.I)
+
+
+def convention(std, long_name, std_pos, std_neg, pos_re, neg_re, strip_re=None):
+    """'pos', 'neg' or None (unstated / contradictory) from a variable's standard_name (decisive) else its long_name."""
+    std = std or ""
+    if std_pos.search(std) and not std_neg.search(std):
+        return "pos"
+    if std_neg.search(std) and not std_pos.search(std):
+        return "neg"
+    text = long_name or ""
+    if strip_re is not None:
+        text = strip_re.sub(" ", text)
+    p, q = bool(pos_re.search(text)), bool(neg_re.search(text))
+    return "pos" if p and not q else "neg" if q and not p else None
 
 
 def _find_var(f, names):
@@ -76,13 +98,14 @@ def _find_var(f, names):
 
 
 def _text(ds):
-    """Every string attribute of a variable, joined (the checks look for words in them)."""
-    out = []
-    for k in ("long_name", "standard_name", "comment", "description", "units"):
+    """A variable's standard_name and long_name (the convention checks read these two, nothing else)."""
+    out = {}
+    for k in ("standard_name", "long_name"):
         v = A._attr(ds, k)
-        if isinstance(v, str):
-            out.append(f"{k}={v}")
-    return " ".join(out)
+        if isinstance(v, (bytes, np.bytes_)):
+            v = v.decode("utf-8", "replace")
+        out[k] = v if isinstance(v, str) else ""
+    return out
 
 
 def _stack(var, expect_units=None):
@@ -139,11 +162,13 @@ def read_swell(path, t0=None, t1=None):
         hs, _ht = _stack(hv, expect_units="m")
         tp, ptext = _stack(pv, expect_units="s")
         dr, dtext = _stack(dv, expect_units="degree")
-    if not PERIOD_PEAK_RE.search(ptext) or PERIOD_MEAN_RE.search(ptext):
+    per = convention(ptext["standard_name"], ptext["long_name"], PERIOD_PEAK_STD, PERIOD_MEAN_STD, PERIOD_PEAK_RE, PERIOD_MEAN_RE)
+    if per != "pos":
         raise ValueError(f"the partition period is not a peak period ({ptext}); the swell job stops here")
-    if DIR_TO_RE.search(dtext) and not DIR_FROM_RE.search(dtext):
+    dr_conv = convention(dtext["standard_name"], dtext["long_name"], DIR_FROM_STD, DIR_TO_STD, DIR_FROM_RE, DIR_TO_RE, DIR_REF_RE)
+    if dr_conv == "neg":
         raise ValueError(f"the partition direction is not the direction the swell comes from ({dtext})")
-    if not DIR_FROM_RE.search(dtext):
+    if dr_conv is None:
         raise ValueError(f"the partition direction's convention is not stated ({dtext}); verify the file first")
     n = len(t)
     if not (lat.shape == lon.shape == (n,)) or hs.shape[0] != n or tp.shape[0] != n or dr.shape[0] != n:

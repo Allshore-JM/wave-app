@@ -123,6 +123,15 @@ site, review, fixes)."**
   The swell dataset pattern (`_PT15S`), its file-name pattern and the variable name lists are the documented ones and
   are UNVERIFIED: nothing is published while they fail (the job then only alarms), but they must be checked on real
   data before the job-only merge.
+- 2026-11-04: step 2 review (one fresh reviewer, Opus; record below in `docs/reviews/satellite-G50-jobs.md`): 1 P0 (the
+  swell direction check took "towards ... clockwise from north" for FROM), 2 P1 (a superseded chunk pruned in the run that
+  superseded it; a frames-host outage charged to the windows' digests for good), 11 P2, nits. All fixed: the conventions
+  are read from standard_name first, the reference phrase stripped, contradictions refused; the pointer's `superseded`
+  list dates the grace; the frames outage is charged to no window; the failure back-off retries every 2 h; the live run
+  joins the newest windows' digest; mission silence from the pointer's `missions[].newest_utc`; `--window` failures exit
+  1; STAC read every 6 h and only the wanted items; the range alarm once per 12 h; bounded inflate, stricter decode
+  checks; OGDR dropped by pass coverage; failed/ records pruned; the reader's refusal in the summary. 18 job tests pass;
+  NEXT: the real-data checks (blocked on the hosts), then STOP for the job-only merge (tag `prod-pre-alt-job`).
 
 
 ---

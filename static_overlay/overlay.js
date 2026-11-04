@@ -1370,7 +1370,7 @@
   // A pointer just read: the first one is taken at once; a later one that names other chunks waits in `next` until the
   // chunks the current window needs from it are in hand (_tryAdopt); the same chunks = the same picture (taken quietly).
   SatStore.prototype._offer = function (ptr) {
-    if (!this.pointer) { this.pointer = ptr; this._dropUnlisted(); return; }
+    if (!this.pointer) { this.pointer = ptr; this._dropUnlisted(); if (this.window) this._queueFor(ptr, this.window); return; }   // a window set before the pointer: its chunks now
     if (satChunkKeys(ptr) === satChunkKeys(this.pointer)) { this.pointer = ptr; this.next = null; return; }
     this.next = ptr;
     this._tryAdopt();
@@ -1445,7 +1445,15 @@
     }
     this._pump();
   };
-  SatStore.prototype._armRetry = CoastStore.prototype._armRetry;
+  // One timer per store: when a cooldown ends the window's chunks are asked for again (the layer redraws on the landing).
+  SatStore.prototype._armRetry = function (until) {
+    var self = this;
+    if (this.retryTimer) return;
+    this.retryTimer = setTimeout(function () {
+      self.retryTimer = null;
+      if (self.window && self.pointer) { self._queueFor(self.pointer, self.window); if (self.next) self._queueFor(self.next, self.window); }
+    }, Math.max(0, until - Date.now()) + 50);
+  };
   SatStore.prototype._record = function (key) {
     var i, p = this.pointer, nx = this.next;
     for (i = 0; p && i < p.chunks.length; i++) if (p.chunks[i].key === key) return p.chunks[i];
@@ -1473,6 +1481,7 @@
         };
         var kick = function () { clearTimeout(timer); timer = setTimeout(function () { if (!mine()) return; ctrl.abort(); fail('transient'); }, self.stallMs); };
         self.inflight[key] = ctrl;
+        ctrl.signal.addEventListener('abort', function () { clearTimeout(timer); });   // idle / Off / a dropped chunk: no stall timer left behind
         kick();
         self._bytes(self.root + '/' + key, ctrl.signal, kick).then(function (buf) {
           clearTimeout(timer);
@@ -1608,7 +1617,7 @@
     for (b = 0; b < N; b++) cnt[b + 1] += cnt[b];
     var start = cnt, fill = new Int32Array(N), order = new Int32Array(n);
     for (i = 0; i < n; i++) { b = bucket[i]; order[start[b] + fill[b]] = i; fill[b]++; }
-    this.rows = rows; this.cols = cols; this.d = d; this.start = start; this.order = order; this.n = n;
+    this.rows = rows; this.cols = cols; this.d = d; this.start = start; this.order = order; this.n = n; this.lat = lat; this.lon = lon;
   }
   // The flat indices in the box (latS..latN, lonW..lonE; lonW may exceed lonE across the date line) within the time slice
   // [i0, i1) and the stride (ord % stride === 0), ascending (= time order): walked by buckets, or by the slice when that is
@@ -1622,10 +1631,18 @@
     if (box.lonE < box.lonW) c1 += cols;
     var nb = Math.max(0, r1 - r0 + 1) * Math.max(0, c1 - c0 + 1);
     if (nb * 2 < i1 - i0 && nb < 20000) {
+      var lat = this.lat, lon = this.lon, wrap = box.lonE < box.lonW;
       for (var r = r0; r <= r1; r++) {
         for (var cc = c0; cc <= c1; cc++) {
           var b = r * cols + (((cc % cols) + cols) % cols), s = this.start[b], e = this.start[b + 1];
-          for (i = s; i < e; i++) { var j = this.order[i]; if (j >= i0 && j < i1 && (stride <= 1 || ord[j] % stride === 0)) out.push(j); }
+          for (i = s; i < e; i++) {
+            var j = this.order[i];
+            if (j < i0 || j >= i1 || (stride > 1 && ord[j] % stride !== 0)) continue;
+            var la = lat[j], lo = lon[j];
+            if (la < box.latS || la > box.latN) continue;
+            if (wrap ? (lo < box.lonW && lo > box.lonE) : (lo < box.lonW || lo > box.lonE)) continue;
+            out.push(j);
+          }
         }
       }
       out.sort(function (a, b) { return a - b; });
@@ -6220,6 +6237,14 @@
         v = layer.readoutAt(latlng.lat, latlng.lng, z);            // the drawn pixel (its centre, its land mask), not the raw cursor point
       }
       last = { latlng: latlng, pt: pt };
+      // a satellite reading under the cursor comes first (plan section 81): the top-most DRAWN one within its radius; on the
+      // layer's own entry nothing else is shown
+      var sat = self.satLayer;
+      if (sat && sat.hasWindow()) {
+        var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom()), hit = sat.hitAt(latlng.lat, latlng.lng, sz);
+        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz); el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
+      }
+      if (self.mode === 'obs' && self.field === 'sat') { el.hidden = true; return; }
       if ((v === null || v === undefined) && layer && layer.fdef && layer.lakeAt(latlng.lat, latlng.lng, z)) {   // plan section 50 (owner): "no data" / "calm" (G33 B-2)
         el.textContent = self._lakeWord(latlng.lat, latlng.lng, z, function (w) {
           if (el.hidden || !last) return;
@@ -6708,7 +6733,7 @@
     // The focused ribbon's aria-valuetext has the time.
     if (st.state === 'loading') {
       // with a choice of models the dropdown stays while one loads: a slow or stuck model can be left (G30-3)
-      var obs = this.mode === 'obs', lt = obs ? 'Loading sea surface temperature…' : 'Loading model frame…';
+      var obs = this.mode === 'obs', lt = obs ? 'Loading ' + OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].label + '…' : 'Loading model frame…';
       if (this.models.length > 1 && !obs) { var lh = mk('div', 'ov-row ov-head'); lh.appendChild(this._modelSelect()); host.appendChild(lh); }
       host.appendChild(mk('div', 'ov-meta', lt)); this._say(lt); this._layoutSheet();
       if (focusCls === 'ov-model-sel' && this.models.length > 1 && !obs) this._refocus(focusCls, host); else this._pendingFocus = focusCls;
@@ -6778,6 +6803,17 @@
     wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
     body.appendChild(buildLegend(field, f, unit));
+    // The "Satellite readings" box (plan section 81): wave height only, when the readings are offered. On, the altimeter
+    // dots within 3 h of the frame on the map, in the model's own colours (the note says the state).
+    if (this.sat && field === 'hs') {
+      var srow = mk('label', 'ov-row ov-satrow'), sbox = mk('input', 'ov-sat-box'); sbox.type = 'checkbox'; sbox.checked = !!this.satOn;
+      srow.appendChild(sbox); srow.appendChild(mk('span', null, 'Satellite readings'));
+      var snote = mk('span', 'ov-sat-note'); srow.appendChild(snote);
+      sbox.addEventListener('change', function () { self.setSatOn(!!sbox.checked); });
+      body.appendChild(srow);
+      ui.satBox = sbox; ui.satNote = snote;
+      this._satNoteSync();
+    }
     // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
     var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
@@ -6815,7 +6851,7 @@
     var opens = true;
     if (room < 40) {
       wrap.removeChild(body);
-      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
+      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null; ui.satBox = ui.satNote = null;
       if (spare() < 0) opens = false;
     } else {
       body.style.maxHeight = room + 'px';
@@ -6825,7 +6861,7 @@
       host.removeChild(wrap); if (!opens) head.removeChild(btn);
       ui.collapsed = true; ui.speedSel = null; ui.slider = null;
       ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
-      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
+      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null; ui.satBox = ui.satNote = null;
       oneLine();
       if (title.classList) title.classList.remove('ov-model');
       headPlay();
@@ -6862,8 +6898,24 @@
   // fold rules as the frames' panel: open when the room allows, the viewer's fold kept, one line without a toggle when
   // nothing more would fit.
   Overlay.prototype._renderObs = function (st, host, compact, focusCls, mapH) {
-    var self = this, m = this.sst && this.sst.manifest, unit = this.opts.getUnit(), cap = Math.floor(mapH * 0.4);
+    if (this.field === 'sat') return this._renderSat(st, host, compact, focusCls, mapH);
+    var self = this, m = this.sst && this.sst.manifest, unit = this.opts.getUnit();
     var dayText = m ? sstDayText(m.day) : '…', summary = 'SST · ' + dayText;
+    var age = m ? sstAgeDays(m.day) : null;
+    this._sstStale = age !== null && age > SST_STALE_DAYS;   // also for the one-line sheet (O-2)
+    this._obsShell(st, host, compact, focusCls, mapH, SST_HEAD, summary, function (body) {
+      body.appendChild(buildLegend('sst', SST_FDEF, unit));
+      var dl = mk('div', 'ov-meta ov-day'); dl.appendChild(mk('b', null, 'Day: ')); dl.appendChild(document.createTextNode(dayText + ' (daily analysis)'));
+      body.appendChild(dl);
+      if (self._sstStale) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
+      if (self.coast && !self.layer._clip) body.appendChild(mk('div', 'ov-warn', coastNote(self.coast)));
+    });
+  };
+  // The observations' panel shell (sea surface temperature, the satellite readings): head = the toggle and the source's
+  // line (folded: the summary); details = whatever `fill(body)` appends; the same fold rules as the frames' panel: open
+  // when the room allows, the viewer's fold kept, one line without a toggle when nothing more would fit.
+  Overlay.prototype._obsShell = function (st, host, compact, focusCls, mapH, headText, summary, fill) {
+    var self = this, cap = Math.floor(mapH * 0.4);
     var collapsed = this.collapsed !== undefined ? !!this.collapsed : false;
     var head = mk('div', 'ov-row ov-head');
     var btn = mk('button', 'ov-toggle', collapsed ? '▸' : '▾'); btn.type = 'button';
@@ -6871,26 +6923,20 @@
     btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true'); btn.setAttribute('aria-controls', 'ovDetails');
     btn.addEventListener('click', function () { self.collapsed = !collapsed; self.render(st); });
     head.appendChild(btn);
-    var title = mk('span', 'ov-title' + (collapsed ? '' : ' ov-model'), collapsed ? summary : SST_HEAD);
+    var title = mk('span', 'ov-title' + (collapsed ? '' : ' ov-model'), collapsed ? summary : headText);
     head.appendChild(title);
     host.appendChild(head);
     this.ui = { host: host, title: title, obs: true, collapsed: collapsed, compact: compact };
     var fold = function (keepToggle) {
       if (!keepToggle && btn.parentNode) head.removeChild(btn);
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
-      self.ui.collapsed = true;
+      self.ui.collapsed = true; self.ui.satLine = null; self.ui.satSeg = null;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
-    var age = m ? sstAgeDays(m.day) : null;
-    this._sstStale = age !== null && age > SST_STALE_DAYS;   // also for the one-line sheet below (O-2)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
     var wrap = mk('div', 'ov-body'); wrap.id = 'ovDetails'; host.appendChild(wrap);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
-    body.appendChild(buildLegend('sst', SST_FDEF, unit));
-    var dl = mk('div', 'ov-meta ov-day'); dl.appendChild(mk('b', null, 'Day: ')); dl.appendChild(document.createTextNode(dayText + ' (daily analysis)'));
-    body.appendChild(dl);
-    if (this._sstStale) body.appendChild(mk('div', 'ov-warn', 'Sea surface temperature data is ' + Math.floor(age) + ' days old.'));
-    if (this.coast && !this.layer._clip) body.appendChild(mk('div', 'ov-warn', coastNote(this.coast)));
+    fill(body);
     if (OV_DEBUG) { this.ui.debug = mk('pre', 'ov-debug'); body.appendChild(this.ui.debug); this._debugOn(); }
     var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
     var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - ctlTop - ctl.offsetHeight - 8; };
@@ -6899,6 +6945,35 @@
     else body.style.maxHeight = room + 'px';
     this._layoutSheet();
     this._refocus(focusCls);
+  };
+  // The satellite layer's own panel (plan section 81): head "Satellite waves (CMEMS, last 24 h)"; details = the Heights |
+  // Swell switch (only with the swell data offered), the wave-height scale (both kinds colour by height), the readings
+  // line (newest reading, its age, the satellites; "loading n of m…" while chunks land), the credit line the licence
+  // requires, a warning past the job's own stale limit; folded: "Satellite · newest 11:40 AM".
+  Overlay.prototype._renderSat = function (st, host, compact, focusCls, mapH) {
+    var self = this, unit = this.opts.getUnit(), store = this.satLayer ? this.satLayer.store : this._satStoreFor(), newest = store ? store.newestMs() : null;
+    var when = newest !== null ? new Date(newest).toISOString().replace(/\.\d+Z$/, 'Z') : null;
+    var summary = 'Satellite · ' + (when ? 'newest ' + this.opts.fmtTime(when, this.opts.tz) : '…');
+    this._satStaleShown = this._satStale(store);
+    this._obsShell(st, host, compact, focusCls, mapH, SAT_HEAD, summary, function (body) {
+      if (self.swell) {
+        var seg = mk('div', 'ov-row ov-seg'); seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Satellite readings shown');
+        [['heights', 'Heights'], ['swell', 'Swell']].forEach(function (k) {
+          var b = mk('button', 'ov-btn ov-seg-btn' + (self.satKind === k[0] ? ' ov-seg-on' : ''), k[1]); b.type = 'button';
+          b.setAttribute('aria-pressed', self.satKind === k[0] ? 'true' : 'false'); b.setAttribute('data-kind', k[0]);
+          b.addEventListener('click', function () { self.setSatKind(k[0]); });
+          seg.appendChild(b);
+        });
+        body.appendChild(seg); self.ui.satSeg = seg;
+      }
+      body.appendChild(buildLegend('hs', SAT_FDEF, unit));
+      var line = mk('div', 'ov-meta ov-sat-line', self._satLineText()); body.appendChild(line); self.ui.satLine = line;
+      body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00174' : '') + ').'));
+      if (self._satStaleShown) {
+        var h = Math.round((Date.now() - newest) / 3.6e6);
+        body.appendChild(mk('div', 'ov-warn', 'The newest satellite reading is ' + h + ' h old.'));
+      }
+    });
   };
   // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its
   // successor in the new panel gets it back (else the play button, else the toggle). Never taken from outside the panel.
@@ -6916,7 +6991,7 @@
     sel.addEventListener('change', function () { var v = sel.value; if (v !== self.model) self.setModel(v); else sel.value = self.model; });
     return sel;
   };
-  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-details'];
+  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-sat-box', 'ov-seg-btn', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -7031,6 +7106,13 @@
       frameAtHour: frameAtHour, localClock: localClock, runTimes: runTimes, TimelineState: TimelineState,
       MODEL_DEFS: MODEL_DEFS, DEFAULT_MODEL: DEFAULT_MODEL, modelList: modelList, modelOf: modelOf, hasModel: hasModel, STALE_AFTER_S: STALE_AFTER_S, CYCLE_MS: CYCLE_MS,
       LOAD_STALL_MS: LOAD_STALL_MS, SST_COARSE_BELOW: SST_COARSE_BELOW, readBody: readBody,
+      SatStore: SatStore, satStore: satStore, SatIndex: SatIndex, SatLayer: SatLayer, decodeSatChunk: decodeSatChunk, validSatPointer: validSatPointer, satNewestMs: satNewestMs,
+      inflateBytes: inflateBytes, satSplitColumns: satSplitColumns, satColumnsEqual: satColumnsEqual, satStride: satStride, satSegmentsOk: satSegmentsOk, satLowerBound: satLowerBound,
+      composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
+      viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, SAT_FRAME_WINDOW_MS: SAT_FRAME_WINDOW_MS,
+      SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, SAT_FRAME_ATTRIBUTION: SAT_FRAME_ATTRIBUTION,
+      SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,
+      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_NOTES: SAT_NOTES, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

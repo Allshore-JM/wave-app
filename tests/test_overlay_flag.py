@@ -34,6 +34,8 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("POINTS_ROOT", raising=False)
     monkeypatch.delenv("MODEL_OVERLAY_MODELS", raising=False)
     monkeypatch.delenv("SST_OVERLAY", raising=False)
+    monkeypatch.delenv("ALT_OVERLAY", raising=False)
+    monkeypatch.delenv("SARSWELL", raising=False)
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.delenv("PLACES_BASE", raising=False)
@@ -88,6 +90,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert 'aria-label="Map overlay"' in body and "Model overlay <select" not in body   # no visible heading (section 37)
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
+        assert "var SAT = false;" in body and "var SWELL = false;" in body and "sat: SAT, swell: SWELL" in body and 'value="sat">Satellite waves' in body   # section 81
         assert "var GLWU = false;" in body and "glwu: GLWU" in body and "return { model: 'GLWU' }" in body   # section 50: the Great Lakes under GFS (GLWU_OVERLAY=1)
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
         assert "isobars: ISOBARS, particles: PARTICLES / 100" in body and "'ovIsobars'" in body and "'ovParticles'" in body
@@ -274,6 +277,8 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_asset_version|tojson }}", json.dumps(A.OVERLAY_ASSET_VERSION))
                    .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
                    .replace("{{ overlay_sst|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_sat|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_swell|tojson }}", json.dumps(False))
                    .replace("{{ overlay_glwu|tojson }}", json.dumps(False))
                    .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
         assert got[0] == want, name
@@ -352,6 +357,32 @@ def test_glwu_overlay_env_and_the_page(monkeypatch):
     monkeypatch.setenv("GLWU_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
         assert "var GLWU" not in rec["body"], name
+
+
+def test_sat_overlay_env_and_the_page(monkeypatch):
+    """ALT_OVERLAY / SARSWELL (section 81): "1" offers "Satellite waves" (the page's SAT, and SWELL for the Sentinel-1
+    switch, handed to the module); SARSWELL counts only with ALT_OVERLAY. The flag-off page never carries them; the
+    flag-on page differs from the default only in those lines."""
+    _on(monkeypatch)
+    for env, want in (("1", True), ("0", False), ("", False), ("true", False)):
+        monkeypatch.setenv("ALT_OVERLAY", env)
+        assert A._sat_overlay_enabled() is want, env
+    monkeypatch.setenv("SARSWELL", "1")
+    monkeypatch.delenv("ALT_OVERLAY")
+    assert A._swell_overlay_enabled() is False, "the swell switch needs the layer"
+    monkeypatch.setenv("ALT_OVERLAY", "1")
+    assert A._swell_overlay_enabled() is True
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("ALT_OVERLAY")
+    monkeypatch.delenv("SARSWELL")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var SAT = true;" in on[name]["body"] and "var SWELL = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var SAT = true;", "var SAT = false;").replace("var SWELL = true;", "var SWELL = false;") == off[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("ALT_OVERLAY", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var SAT" not in rec["body"] and "Satellite waves" not in rec["body"], name
 
 
 def test_sst_overlay_env_and_the_page(monkeypatch):

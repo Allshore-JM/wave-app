@@ -132,6 +132,16 @@ site, review, fixes)."**
   1; STAC read every 6 h and only the wanted items; the range alarm once per 12 h; bounded inflate, stricter decode
   checks; OGDR dropped by pass coverage; failed/ records pruned; the reader's refusal in the summary. 18 job tests pass;
   NEXT: the real-data checks (blocked on the hosts), then STOP for the job-only merge (tag `prod-pre-alt-job`).
+- 2026-11-04: step 3 (the client, overlay asset 2.23.0) built: `decodeSatChunk` / `inflateBytes`, `SatStore` (+ adopt
+  without a flash, stall timers, the cooldown re-ask), `SatIndex`, `SatLayer` + `composeDots` / `hitAt` (dots and swell
+  arrows), `viewRangeOf` shared with ModelGridLayer, `OBS_DEFS` / `hasObs` / `_mountObs(kind)` / `_loadSst` / `_loadSat`,
+  `_obsShell` + `_renderSat` (the Heights | Swell switch, the readings line in place, the credit line, the stale line),
+  the "Satellite readings" box under wave height (`setSatOn`, `_syncSatAttach`, `_syncSat` at `_goto`'s landing, the
+  entry guard, the notes), the hover texts (own entry and frame mode), the credits; page + `app.py` (`ALT_OVERLAY`,
+  `SARSWELL`), CSS, `tests/overlay/sat.test.js` (12), bootstrap / flag tests, README. Every overlay Node suite passes
+  (480 + 12); `tests/test_overlay_flag.py` passes but for its Node-runner test, which fails here only because
+  `isobars.test.js` exceeds the 20-s file timeout on this slow container (checked at d973c76 too: pre-existing here, not
+  on CI). NEXT: mutants, then the test-site cherry-pick (step 4) once the owner sets the flags on Render.
 
 
 ---

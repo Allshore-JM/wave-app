@@ -1149,6 +1149,55 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
 
+### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.0)
+
+- **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown and the "Satellite readings" box under
+  Wave height (both off by default: on once `alt/v1` is live); `SARSWELL=1` (with it) adds the Heights | Swell switch to
+  the layer's own entry (on once `sarswell/v1` is live). A saved `sat` with the setting off starts Off (the SST rule).
+- **The own entry** ("Satellite waves", mode `obs` like SST: no player, no model choice; the model's run, caches and time
+  stay for the switch back): the last 24 h of readings up to the newest the pointer names, drawn in a `SatLayer` (a grid
+  layer in its own pane, `obsPane` z 260, above the field tiles, below the particles) from the store of the kind
+  chosen: **Heights** = the altimeter readings as dots in the wave-height colours (`SAT_FDEF` = the 0-60 ft scale: a dot
+  is coloured exactly as the field would draw that value, `composeTile`'s LUT index), faded from alpha 1 at the newest
+  to 0.35 at the window's far end, hollow (rim only) where the job flagged the reading near land; **Swell** = the
+  Sentinel-1 points as arrows pointing where the swell GOES (the stored direction is FROM; + 180), the colour by the
+  dominant partition's height on the same scale, the length by its peak period (4 + 1.1 s px, 6-26 px). Thinning by
+  tile zoom (every 2^(7 - z)-th reading of a chunk segment, everything from zoom 7), newest drawn last (on top). The
+  panel: the head "Satellite waves (CMEMS, last 24 h)", the Heights | Swell switch (remembered per tab), the wave-height
+  scale, the readings line ("Readings: last 24 h, newest 11:40 AM HST (2 h ago) · 7 satellites"; "loading 3 of 8…" while
+  chunks land, in place), the credit line the licence requires, a warning past the job's own stale limit (12 h; swell
+  48 h); folded: "Satellite · newest 11:40 AM". The map credit reads "Overlay: Copernicus Marine" (the title carries the
+  full credit and both DOIs). The hover on a dot: "6.2 ft · Sentinel-6A · 11:40 AM HST · model 5.4 ft (+0.8)" (the chunk's
+  collocated GFS-Wave value; "model —" without one); on a swell point every partition ("Swell 1: 6.6 ft · 14 s · from 216°
+  | Swell 2: … (Sentinel-1C, 6 h ago)"); nothing else is shown on this entry.
+- **The box** ("Satellite readings", wave height only, both models, per tab, off by default): the height dots within
+  3 h of the frame on the map, in the model's own colours (the same scale: a dot whose colour differs from the field
+  under it stands out), alpha by |t - frame| / 3 h, the window set at every landing (`_syncSat`, beside the particles'
+  hook) for the SHOWN entry and cleared when the layer shows another (never old dots under a new time); a model drop,
+  an Update and a failed load clear it; peak period, wind and Off detach the layer (the store keeps its samples: a switch
+  back re-fetches nothing). The note beside the box says the state ("within 3 h of the frame" / "loading readings…" /
+  "readings unavailable" / "no readings within 3 h of this time" / "not supported in this browser": no
+  `DecompressionStream`, the box disabled). The hover with the box on: "obs 6.2 ft · Sentinel-6A · 11:40 AM HST · model
+  (frame 12:00 PM) 5.4 ft (+0.8)", the model value from the drawn field under the cursor (`readoutAt`); the map credit
+  gains " · Copernicus Marine" while readings are drawn. No swell arrows over the model (owner, 2026-11-04).
+- **The store** (`SatStore`, one per bucket root and kind): the pointer (`no-cache`, a 15-s watchdog, validated:
+  format, magic, `deflate`, the columns pinned against this file's copy of `altfmt.py`'s, at most 12 chunks each with a
+  key under its prefix, a parseable disjoint span, counts within the caps), then the chunks a window needs, nearest the
+  reference time first, at most 3 at once, each with a 15-s stall timer (404 / undecodable final; anything else a 60-s
+  cooldown, the window asked for again when it ends). `decodeSatChunk`: the magic, the header length, the header's
+  format / columns / n / missions / credit, the stream through the frames' inflater into exactly n x stride bytes, the
+  segments contiguous and time-sorted, every mission index listed, lat / lon in range. The flat store (every loaded
+  chunk the pointer names, time-sorted, missions mapped onto the pointer's list, `ord` = the reading's place in its
+  segment for the thinning) carries a bucket index (`SatIndex`, CSR over 0.5-degree cells) the tiles and the hover read:
+  `hitAt` = the top-most DRAWN reading within the dot's radius + 3 px (the same window, stride and order as the tiles).
+  The pointer is re-read every 12 min while attached: a newer one becomes `next` and is adopted only once the chunks the
+  current window needs from it have landed (no empty picture between pointers); chunks it no longer names go. `idle()`
+  (another field, the box off) stops the downloads and keeps the samples; `abortAll()` (Off) stops the pointer load too.
+- **Tests**: `tests/overlay/sat.test.js` (12: the decoder on real zlib bytes and every rejection, the pointer rules, the
+  index against a brute-force scan, the colour pin against `composeTile`, the store with held downloads, the layer's
+  draw order / hollow dots / alpha / empty-tile rule / split draw / hitAt, the controller's own entry, switch, box, notes
+  and hover texts); `bootstrap.test.js` and `tests/test_overlay_flag.py` cover the page's settings.
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

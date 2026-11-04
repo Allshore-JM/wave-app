@@ -191,8 +191,18 @@ site, review, fixes)."**
   20261103T15..20261104T18 (30-48k readings each), 9 missions, newest 20:46Z, model runs 12/06/00/18Z, max-age 300;
   `sarswell/v1/latest.json`: 9 chunks 20261102T15..20261103T15 (56-524 points), keep_h 56, Sentinel-1C + CFOSAT,
   newest 2026-11-03 16:04Z. The newest chunk of each read back from the bucket decodes with n equal to its record
-  (heights obs - model median +0.135 m; the swell header carries the quality rule). WAITING on the owner: the flags
-  on the TEST service (`ALT_OVERLAY=1`, then `SARSWELL=1`), then reviewer B on the test site, then step 6.
+  (heights obs - model median +0.135 m; the swell header carries the quality rule).
+- 2026-11-04 23:51Z: the owner set `ALT_OVERLAY=1` on the TEST service (wave-app-clean.onrender.com serves
+  `var SAT = true`, `SWELL = false`, asset 2.23.2). My own pass with headless Chromium (scratch `satcheck.js`,
+  `satcheck2.js`; screenshots sent to the owner): the entry lists "Satellite waves"; the own entry loads 339,946
+  readings (complete) with the panel "Readings: last 24 h, newest Nov 4, 04:51 PM EST (2 h ago) · 9 satellites" and
+  the credit line; the tracks draw at z3 / z5 / z7 in the scale's colours, hollow near land; hover "8.6 ft · SARAL ·
+  Nov 4, 11:19 AM EST · model 8.0 ft (+0.6)" and "14.0 ft · Sentinel-3B · 02:50 PM EST · model 13.9 ft (+0.1)"; the map
+  credit "Overlay: Copernicus Marine"; the box under Wave height draws 1,854 readings within 3 h of the frame with the
+  note "within 3 h of the frame" and the credit gains " · Copernicus Marine"; peak period detaches the layer; a reload
+  keeps the box on; the phone layout folds to the panel at the bottom with the dots drawn; no console errors on either
+  viewport. Reviewer B (fresh agent, the test site) started: record to be `docs/reviews/satellite-G52-test-site.md`.
+  WAITING on the owner's separate go-ahead for `SARSWELL=1` on the TEST service (the Swell switch).
 
 
 ---

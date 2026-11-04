@@ -180,6 +180,13 @@ site, review, fixes)."**
   56-h reach, 2,739 points, Sentinel-1C + CFOSAT, 24 s). The trigger Worker still needs the owner's deploy for the
   10-minute dispatches (`wrangler.jsonc` GH_WORKFLOW gained both; DEPLOYMENT.md); until then the crons (:07/:37,
   :09/:39) run the jobs every 30 min. NEXT: watch the first live pointers land, then step 4.
+- 2026-11-04 23:01Z: step 4, the test site: `test` @ 81f13b6 carries the client (the client paths of efb6cd0,
+  e6a9495, 5ed656e, b644b7e, fdc5fa5 as one commit, since the first jobs commit also held 892 client lines; README
+  kept as test's, test's logo lines kept, its own golden kept; coast-build runs sat.test.js). On the worktree the 12 +
+  27 Node tests pass; `tests/test_overlay_flag.py` has the same 5 failures on test's own tip (its golden is stale
+  there since section 77: pre-existing, not from this change). The owner's sheet: `section-81-test-site-sheet.md`
+  (set `ALT_OVERLAY=1` then `SARSWELL=1` on the TEST service, each with its own go-ahead; the checks). WAITING: the
+  first live pointers (the crons at :07 / :09), the owner's flags, then reviewer B on the test site.
 
 
 ---

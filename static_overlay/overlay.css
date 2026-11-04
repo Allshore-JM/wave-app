@@ -143,7 +143,8 @@
 /* The satellite readings (plan section 81): the "Satellite readings" box under wave height with its muted note; the
    Heights | Swell switch of the layer's own entry (two buttons, the chosen one filled); the readings and credit lines. */
 .leaflet-obs-pane { pointer-events: none; }
-.ov-satrow { gap: 6px; cursor: pointer; margin-top: 6px; }
+.ov-satrow { gap: 6px; margin-top: 6px; }
+.ov-sat-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin: 0; }
 .ov-satrow input { margin: 0; accent-color: #0f8f8c; }
 .ov-sat-note { color: #3f4d6e; font-size: 11px; }
 .ov-seg { gap: 0; margin-top: 2px; }

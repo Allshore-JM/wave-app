@@ -1149,7 +1149,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
 
-### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.0)
+### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.1)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown and the "Satellite readings" box under
   Wave height (both off by default: on once `alt/v1` is live); `SARSWELL=1` (with it) adds the Heights | Swell switch to
@@ -1189,7 +1189,9 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   segments contiguous and time-sorted, every mission index listed, lat / lon in range. The flat store (every loaded
   chunk the pointer names, time-sorted, missions mapped onto the pointer's list, `ord` = the reading's place in its
   segment for the thinning) carries a bucket index (`SatIndex`, CSR over 0.5-degree cells) the tiles and the hover read:
-  `hitAt` = the top-most DRAWN reading within the dot's radius + 3 px (the same window, stride and order as the tiles).
+  `hitAt` = the top-most DRAWN mark holding the cursor (a dot's disc, an arrow's shaft and head: the newest, painted last,
+  wins where tracks cross), else the nearest mark centre within 3 px of slack (the same window, stride and order as the
+  tiles); G51 fix round, asset 2.23.1: see `docs/reviews/satellite-G51-client.md`.
   The pointer is re-read every 12 min while attached: a newer one becomes `next` and is adopted only once the chunks the
   current window needs from it have landed (no empty picture between pointers); chunks it no longer names go. `idle()`
   (another field, the box off) stops the downloads and keeps the samples; `abortAll()` (Off) stops the pointer load too.

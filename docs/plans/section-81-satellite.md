@@ -142,6 +142,11 @@ site, review, fixes)."**
   (480 + 12); `tests/test_overlay_flag.py` passes but for its Node-runner test, which fails here only because
   `isobars.test.js` exceeds the 20-s file timeout on this slow container (checked at d973c76 too: pre-existing here, not
   on CI). NEXT: mutants, then the test-site cherry-pick (step 4) once the owner sets the flags on Render.
+- 2026-11-04: step 5 reviewer A (code, Fable; record `docs/reviews/satellite-G51-client.md`): 1 P0 (the hover took the
+  nearest dot centre, not the top-most drawn), 3 P1 (Off during a re-read latched the store; a deferred adoption left
+  the own window behind; the credit one landing behind), 9 P2, nits: all fixed (asset 2.23.1); 12 Node tests + the
+  review's cases; 20 of 22 mutants caught (two behaviour-equivalent). Reviewer B (the test site) waits for the data and the flags. NEXT: the
+  owner allows the data hosts -> the real-file checks and the dispatch dry runs -> STOP for the job-only merge.
 
 
 ---

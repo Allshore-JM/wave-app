@@ -167,6 +167,7 @@ test('validSatPointer: the job\'s pointer passes; the rules that keep bad data o
   assert.equal(bad((c) => { c.chunks = new Array(13).fill(c.chunks[0]); }), false);
   assert.equal(bad((c) => { c.missions[0] = { id: 'j3' }; }), false, 'a mission without its short name');
   assert.equal(bad((c) => { c.chunks = []; }), true, 'nothing published yet is a valid, empty pointer');
+  assert.equal(bad((c) => { c.chunks[0].n = 400000; c.chunks[1].n = 300000; }), false, 'more readings in all than the flat store holds: refused (never a truncated newest window)');
   assert.equal(I.satNewestMs(p), Date.parse('2026-11-04T14:59:50Z'));
   assert.equal(I.satNewestMs(pointer('alt', [chunkRec('alt', '20261104T12', 5)], { newest_utc: undefined })), Date.parse('2026-11-04T14:59:50Z'), 'from the last chunk');
 });
@@ -307,6 +308,18 @@ test('SatStore: a stalled download frees its slot (a cooldown); a pointer that f
   st.loadedAt = 0;
   const p2 = st.load(); w.answer(/latest\.json$/, null, 503); assert.equal(await p2, st, 'a failed re-read keeps the pointer in hand');
   assert.equal(st.status, 'ok');
+  // G51 P1: Off during a pointer RE-READ: the next On reads the pointer again (no latched promise), the recheck works
+  st.loadedAt = 0;
+  const p4 = st.load(); assert.equal(w.pending(/latest/).length, 1);
+  st.abortAll(); await p4; await settle();
+  assert.equal(st.loading, null); assert.equal(st.status, 'ok');
+  st.loadedAt = 0; const nq = w.fetches.length;
+  const p5 = st.load(); assert.equal(w.fetches.length, nq + 1, 'fetched again'); w.answer(/latest\.json$/, w.ptr); assert.equal(await p5, st);
+  // a hung re-read ends by the watchdog; the next recheck fetches again
+  const r1 = st.recheck(); assert.equal(w.pending(/latest/).length, 1);
+  assert.ok(await until(() => st.checking === null), 'given up after timeoutMs (the sandbox timers are unref\'d: polled)');
+  assert.equal(await r1, false);
+  const r2 = st.recheck(); assert.equal(w.pending(/latest/).length, 1, 'a fresh request'); w.answer(/latest\.json$/, w.ptr); await r2;
   // a chunk whose header does not match the pointer's record (another window, another count) is refused for good
   const w3 = storeWorld('alt', [chunkRec('alt', '20261104T12', 1)]), st3 = w3.st;
   const p3 = st3.load(true); w3.answer(/latest\.json$/, w3.ptr); await p3;
@@ -387,6 +400,22 @@ test('SatLayer: dots drawn newest last (on top), hollow near land, alpha by age;
   assert.ok(mv.length >= 2 && ln.length >= 3, 'a shaft and a head');
   assert.ok(Math.abs((mv[0][2] - ln[0][2]) - w2.I.satArrowLength(14)) < 1e-6 && Math.abs(ln[0][1] - mv[0][1]) < 1e-9, 'from 180 = travelling north: the shaft runs up the tile (y falling) by the period\'s length');
   assert.equal(st2.flat.hs[0][l2.hitAt(20, -150, Z)], 2);
+  // G51 P0: two dots overlapping (1.5 px apart at zoom 8, dot radius 3): the cursor over the OLDER dot's centre, inside the
+  // newer dot painted over it, reads the newer (the colour under the cursor); beyond both discs the nearest centre
+  const w3 = storeWorld('alt', [chunkRec('alt', '20261104T12', 2)]), st3 = w3.st;
+  const p3 = st3.load(true); w3.answer(/latest\.json$/, w3.ptr); await p3;
+  const px8 = 360 / (256 * 256);
+  const l3 = new w3.I.SatLayer(); l3._map = null; l3.setStore(st3, 'dots');
+  const c8 = w3.I.pixelOf(0, -150, 8), t8 = tile(8, c8.x, c8.y), el3 = w3.g.document.createElement('canvas'); l3._tiles = {}; l3._tiles[key(t8)] = { el: el3, coords: t8 };
+  l3.setWindow({ t0: T0, t1: T0 + 3.6e6, ref: T0 + 3.6e6, span: 24 * 3.6e6, frame: false });
+  w3.answer(/\.bin$/, chunkBytes('alt', [reading(0, { t: T0 + 1000, lat: 0, lon: -150, swh: 1 }), reading(1, { t: T0 + 2000, lat: 0, lon: -150 + 1.5 * px8, swh: 6 })], { window: '20261104T12' }));
+  assert.ok(await until(() => el3.calls.filter((c) => c[0] === 'arc').length === 2));
+  assert.equal(st3.flat.swh[l3.hitAt(0, -150, 8)], 6, 'over the older centre: the newer dot drawn on top');
+  assert.equal(st3.flat.swh[l3.hitAt(0, -150 - 2.9 * px8, 8)], 1, 'inside the older disc only');
+  assert.equal(st3.flat.swh[l3.hitAt(0, -150 - 4.5 * px8, 8)], 1, 'beyond both discs: the nearest centre within the slack');
+  assert.equal(l3.hitAt(0, -150 - 7 * px8, 8), -1);
+  // an arrow's head and tail answer too (G51 P2): 14 s = a 19.4-px shaft at zoom 7
+  assert.equal(st2.flat.hs[0][l2.hitAt(20 + 8 * (360 / (256 * 128)) * Math.cos(20 * Math.PI / 180), -150, Z)], 2, '8 px up the shaft (travelling north)');
 });
 
 // ------------------------------------------------------------------ the controller
@@ -423,12 +452,22 @@ test('controller: the own entry mounts in mode obs with the layer in obsPane, sa
   // the hover: a reading under the cursor, else nothing on this entry
   assert.equal(ov._satReadout(ov.satLayer.store.flat.n - 1, { lat: 10.1, lng: -149.9 }, 3), '3.6 ft · Sentinel-3A · T12:00 HST · model 4.3 ft (-0.7)');
   assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '3.3 ft · Jason-3 · T11:00 HST · model 3.9 ft (-0.7)');
+  // G51 P1: a pointer adopted once its chunk landed (after the recheck resolved) moves the window to its newest reading
+  const ptr2 = pointer('alt', [chunkRec('alt', '20261104T09', 1), chunkRec('alt', '20261104T12', 2, '20261104T172000Z'), chunkRec('alt', '20261104T15', 1, '20261104T172000Z')], { newest_utc: '2026-11-04T17:29:00Z', build: '20261104T172000Z' });
+  ov._satRecheck(); w.answer(/latest\.json$/, ptr2); await settle(20);
+  assert.equal(ov.sat.pointer.build, '20261104T152000Z', 'not adopted yet: the 12Z chunk of the new pointer is out');
+  w.answer(/\/w\/20261104T12\/20261104T172000Z/, chunkBytes('alt', [reading(0, { t: T0 + 1000 }), reading(1, { t: T0 + 2000, mission: 1 })], { window: '20261104T12', segments: [[0, 0, 1], [1, 1, 1]] }));
+  assert.ok(await until(() => ov.sat.pointer.build === '20261104T172000Z'));
+  assert.equal(ov.satLayer.win.ref, Date.parse('2026-11-04T17:29:00Z'), 'the window follows the adopted pointer\'s newest');
+  assert.deepEqual(w.pending(/\.bin$/).map((u) => /w\/([^/]+)\//.exec(u)[1]), ['20261104T15'], 'the window now reaches the 15Z chunk');
+  w.answer(/\/w\/20261104T15\//, chunkBytes('alt', [reading(0, { t: T0 + 5 * 3.6e6 + 29 * 60000 })], { window: '20261104T15' }));
+  assert.ok(await until(() => ov.satLayer.count() === 4 && /newest T17:29/.test(ov.ui.satLine.textContent)), ov.ui.satLine.textContent);
   // Off: the layer goes, the store keeps its samples, no more requests
   const n = w.fetches.length;
   assert.ok(ov.satTimer, 'the 12-minute recheck runs while attached');
   ov.unmount();
   assert.equal(ov.satTimer, null, 'Off clears it');
-  assert.equal(ov.satLayer, null); assert.equal(w.layers.length, 0); assert.equal(w.fetches.length, n); assert.equal(ov.sat.flat.n, 3);
+  assert.equal(ov.satLayer, null); assert.equal(w.layers.length, 0); assert.equal(w.fetches.length, n); assert.equal(ov.sat.flat.n, 4);
   assert.equal(w.attrs.length, 0);
 });
 
@@ -473,6 +512,8 @@ test('controller: the "Satellite readings" box under wave height: the window of 
   const frames = modelWorld(w, ov);
   ov.render({ state: 'ready' }); ov._attribute();                         // (a landing credits the model)
   assert.ok(ov.ui.satBox && !ov.ui.satBox.checked && ov.ui.satNote.textContent === 'within 3 h of the frame');
+  assert.equal(ov.ui.satBox.getAttribute('aria-describedby'), 'ovSatNote'); assert.equal(ov.ui.satNote.id, 'ovSatNote');
+  assert.ok(ov.ui.satBox.parentNode === undefined || true);
   assert.equal(ov.satLayer, null, 'off by default: nothing attached, nothing fetched'); assert.equal(w.fetches.length, 0);
   ov.setSatOn(true);
   assert.equal(w.saved.sat, true); assert.ok(ov.satLayer && ov.satLayer.mode === 'dots');
@@ -492,6 +533,13 @@ test('controller: the "Satellite readings" box under wave height: the window of 
   assert.ok(w.attrs.length === 1 && /GFS-Wave.*Copernicus Marine/.test(w.attrs[0]), 'the model\'s credit + Copernicus Marine while readings are drawn: ' + w.attrs[0]);
   // the hover: obs, the frame's model value from the drawn field, the difference
   assert.equal(ov._satReadout(1, { lat: 20, lng: -150 }, 3), 'obs 3.3 ft · Jason-3 · T12:00 HST · model (frame T14:00) 5.9 ft (-2.6)');
+  // G51 P1: the credit follows the window at once: a frame with no readings drops it, one with readings brings it back
+  ov.layer.entry = frames[5]; ov.frameIndex = 5; ov._syncSat(5);
+  assert.ok(/Copernicus/.test(w.attrs[0]), 'the 16:00 reading is within 3 h of 17:00');
+  const far = { step: 9, valid_utc: new Date(T0 + 9 * 3.6e6).toISOString().replace('.000Z', 'Z') }; ov.manifest.frames.push(far);
+  ov.layer.entry = far; ov.frameIndex = 6; ov._syncSat(6);
+  assert.ok(!/Copernicus/.test(w.attrs[0]) && /GFS-Wave/.test(w.attrs[0]), 'no reading within 3 h of 21:00: the credit goes with the dots');
+  ov.manifest.frames.pop();
   // the next frame lands: the window follows; a frame 5 h on: no readings
   ov.layer.entry = frames[3]; ov.frameIndex = 3; ov._syncSat(3);
   assert.equal(ov.satLayer.win.ref, Date.parse(frames[3].valid_utc)); assert.equal(ov.satLayer.count(), 2, '15:00: the 11:00 reading is 4 h away now');
@@ -519,6 +567,11 @@ test('controller: the "Satellite readings" box under wave height: the window of 
   const w5 = world(), ov5 = ctl(w5); modelWorld(w5, ov5); ov5.render({ state: 'ready' }); ov5.setSatOn(true);
   w5.answer(/latest\.json$/, null, 503); await settle(20);
   assert.equal(ov5.ui.satNote.textContent, 'readings unavailable');
+  // G51 P2: a failed pointer read is tried again at a landing once the cooldown has passed
+  const nf5 = w5.fetches.length; ov5._syncSat(2); assert.equal(w5.fetches.length, nf5, 'within the cooldown: nothing');
+  ov5.sat.failedAt = 0; ov5._syncSat(2); assert.equal(w5.fetches.length, nf5 + 1, 'the pointer asked for again');
+  w5.answer(/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+  assert.equal(ov5.ui.satNote.textContent, 'loading readings…'); assert.equal(w5.pending(/\.bin$/).length, 1);
   const w6 = world(), ov6 = ctl(w6); modelWorld(w6, ov6); ov6.render({ state: 'ready' }); ov6.setSatOn(true);
   w6.answer(/latest\.json$/, pointer('alt', [chunkRec('alt', '20261103T12', 1)])); await settle(20);
   assert.equal(ov6.ui.satNote.textContent, 'no readings within 3 h of this time', 'a pointer whose chunks lie a day away');

@@ -1288,15 +1288,15 @@
     if (!p || typeof p !== 'object' || p.format !== SAT_FORMAT[kind] || p.magic !== SAT_MAGIC[kind] || p.encoding !== 'deflate' || !satColumnsEqual(p.columns, SAT_COLUMNS[kind]) ||
       typeof p.checked_utc !== 'string' || isNaN(Date.parse(p.checked_utc)) || !Array.isArray(p.chunks) || p.chunks.length > MAX_SAT_CHUNKS || !Array.isArray(p.missions) || p.missions.length > 255 ||
       !p.missions.every(function (m) { return m && typeof m === 'object' && typeof m.id === 'string' && typeof m.short === 'string'; })) return false;
-    var prev = -Infinity;
+    var prev = -Infinity, total = 0;
     for (var i = 0; i < p.chunks.length; i++) {
       var c = p.chunks[i];
       if (!c || typeof c !== 'object' || !sstKey(c.key) || c.key.indexOf((kind === 'alt' ? SAT_PREFIX : SWELL_PREFIX) + '/') !== 0 || typeof c.window !== 'string' || !/^\d{8}T\d{2}$/.test(c.window) ||
         typeof c.t0 !== 'string' || typeof c.t1 !== 'string' || isNaN(Date.parse(c.t0)) || isNaN(Date.parse(c.t1)) || Date.parse(c.t0) >= Date.parse(c.t1) || Date.parse(c.t0) < prev ||
         !Number.isInteger(c.n) || c.n < 0 || c.n > MAX_SAT_SAMPLES || !Number.isInteger(c.bytes) || c.bytes < 0 || c.bytes > MAX_SAT_CHUNK_BYTES || typeof c.build !== 'string') return false;
-      prev = Date.parse(c.t1);
+      prev = Date.parse(c.t1); total += c.n;
     }
-    return true;
+    return total <= MAX_SAT_SAMPLES;
   }
   // The pointer's newest reading time in ms (newest_utc, else the last chunk's newest, else its t1), or null.
   function satNewestMs(p) {
@@ -1315,7 +1315,7 @@
   // (Off) stops the pointer load too and keeps them (an On is instant).
   function SatStore(root, kind) {
     this.root = root; this.kind = kind; this.prefix = kind === 'alt' ? SAT_PREFIX : SWELL_PREFIX;
-    this.status = 'idle'; this.pointer = null; this.next = null; this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.checking = null;
+    this.status = 'idle'; this.pointer = null; this.next = null; this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.checking = null; this.checkAbort = null;
     this.chunks = new Map(); this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {}; this.abort = null; this.retryTimer = null;
     this.window = null; this.flat = null; this.rev = 0; this.onChange = null; this._rebuildQ = null; this.bytes = 0;
   }
@@ -1382,13 +1382,14 @@
     var self = this;
     if (this.status !== 'ok' || this.loading) return Promise.resolve(false);
     if (this.checking) return this.checking;
-    this.checking = this._pointer(null).then(function (ptr) {
-      if (self.status !== 'ok' || !validSatPointer(ptr, self.kind)) return false;
+    var ctrl = this.checkAbort = new AbortController(), watchdog = setTimeout(function () { ctrl.abort(); }, this.timeoutMs);   // a hung re-read never latches the 12-min check
+    var p = this.checking = this._pointer(ctrl.signal).then(function (ptr) {
+      if (self.checkAbort !== ctrl || self.status !== 'ok' || !validSatPointer(ptr, self.kind)) return false;
       var changed = satChunkKeys(ptr) !== satChunkKeys(self.pointer);
       self._offer(ptr); self.loadedAt = Date.now();
       return changed;
-    }).catch(function () { return false; }).then(function (r) { self.checking = null; return r; });
-    return this.checking;
+    }).catch(function () { return false; }).then(function (r) { clearTimeout(watchdog); if (self.checking === p) { self.checking = null; self.checkAbort = null; } return r; });
+    return p;
   };
   // The next pointer takes over once every chunk it names for the window (not failed for good) is loaded.
   SatStore.prototype._tryAdopt = function () {
@@ -1448,7 +1449,9 @@
   // One timer per store: when a cooldown ends the window's chunks are asked for again (the layer redraws on the landing).
   SatStore.prototype._armRetry = function (until) {
     var self = this;
-    if (this.retryTimer) return;
+    if (this.retryTimer && this.retryAt <= until) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);                 // an earlier cooldown than the one armed: re-armed for it
+    this.retryAt = until;
     this.retryTimer = setTimeout(function () {
       self.retryTimer = null;
       if (self.window && self.pointer) { self._queueFor(self.pointer, self.window); if (self.next) self._queueFor(self.next, self.window); }
@@ -1557,11 +1560,15 @@
         }
       }
     }
-    // time order (stable) so a time slice is a contiguous index range and a bucket runs time-ascending
-    var order = new Uint32Array(n);
-    for (i = 0; i < n; i++) order[i] = i;
-    var ta = Array.prototype.slice.call(order);
-    ta.sort(function (a, b) { return t[a] - t[b] || a - b; });
+    // time order (stable) so a time slice is a contiguous index range and a bucket runs time-ascending: a typed sort on
+    // packed keys (seconds from the oldest reading x 2^20 + the index, exact in a double: n <= 600k, a span < 2^33 s)
+    var tmin = Infinity;
+    for (i = 0; i < n; i++) if (t[i] < tmin) tmin = t[i];
+    var keys = new Float64Array(n), M = 1048576;
+    for (i = 0; i < n; i++) keys[i] = Math.round((t[i] - tmin) / 1000) * M + i;
+    keys.sort();
+    var ta = new Uint32Array(n);
+    for (i = 0; i < n; i++) ta[i] = keys[i] % M;
     var pick = function (src) { var out = new src.constructor(n); for (var q = 0; q < n; q++) out[q] = src[ta[q]]; return out; };
     var flat = { n: n, t: pick(t), lat: pick(lat), lon: pick(lon), mission: pick(mission), flags: pick(flags), ord: pick(ord), missions: missions, kind: this.kind };
     if (swell) { flat.np = pick(np); flat.hs = hs.map(pick); flat.tp = tp.map(pick); flat.dir = dir.map(pick); }
@@ -1603,7 +1610,8 @@
   // Off: the same, and a pointer load in progress stops (the next On re-reads it through load()).
   SatStore.prototype.abortAll = function () {
     this.idle();
-    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; this.loading = null; }   // a re-read too (its catch sees another owner): never a latched promise
+    if (this.checkAbort) { this.checkAbort.abort(); this.checkAbort = null; this.checking = null; }
     if (this.status === 'loading') { this.status = this.pointer ? 'ok' : 'idle'; this.loading = null; }
   };
   // ---- the bucket index (CSR over SAT_BUCKET_DEG cells; each bucket time-ascending as the flat store is) ----
@@ -1650,21 +1658,24 @@
     }
     return null;                                             // the caller scans the slice itself (the usual case at low zoom)
   };
-  // The nearest reading to (lat, lon) within rPx at zoom z among those drawn (slice, stride), the NEWEST on a tie; -1.
-  SatIndex.prototype.nearest = function (flat, lat, lon, z, rPx, i0, i1, stride) {
+  // The reading under (lat, lon) at zoom z among those drawn (slice, stride): the TOP-MOST drawn one (the highest index:
+  // the newest, painted last) whose mark holds the cursor (`inside(j, dx, dy)`: a dot's disc, an arrow's shaft), else the
+  // nearest mark centre within rPx (the hover's slack), the newest on a tie; -1 for none.
+  SatIndex.prototype.nearest = function (flat, lat, lon, z, rPx, i0, i1, stride, inside) {
     var n = TILE * Math.pow(2, z), p = forwardPixel(lat, lon, z), degPx = 360 / n, dLat = rPx * degPx * 1.2 + 1e-9, dLon = dLat / Math.max(0.05, Math.cos(lat * Math.PI / 180));
     var box = { latS: Math.max(-90, lat - dLat), latN: Math.min(90, lat + dLat), lonW: lon - dLon, lonE: lon + dLon };
     if (box.lonW < -180) box.lonW += 360; if (box.lonE > 180) box.lonE -= 360;
-    var cand = this.collect(box, i0, i1, stride, flat.ord), best = -1, bd = Infinity, i, j;
+    var cand = this.collect(box, i0, i1, stride, flat.ord), best = -1, bd = Infinity, top = -1, i, j;
     var test = function (j) {
-      var q = forwardPixel(flat.lat[j], flat.lon[j], z), dx = q.x - p.x, dy = q.y - p.y;
+      var q = forwardPixel(flat.lat[j], flat.lon[j], z), dx = p.x - q.x, dy = p.y - q.y;
       if (dx > n / 2) dx -= n; else if (dx < -n / 2) dx += n;
       var dd = dx * dx + dy * dy;
+      if (inside && j > top && inside(j, dx, dy)) top = j;
       if (dd <= rPx * rPx && (dd < bd || (dd === bd && j > best))) { bd = dd; best = j; }
     };
     if (cand) for (i = 0; i < cand.length; i++) test(cand[i]);
     else for (j = i0; j < i1; j++) if (stride <= 1 || flat.ord[j] % stride === 0) test(j);
-    return best;
+    return top >= 0 ? top : best;
   };
 
   // ---- the Great Lakes (plan section 50) ----
@@ -2898,8 +2909,18 @@
     hitAt: function (lat, lng, z) {
       var sl = this._slice();
       if (!sl) return -1;
-      var flat = this.store.flat, rPx = this.mode === 'arrows' ? 10 : satRadius(z) + 3;
-      return flat.index.nearest(flat, lat, lng, z, rPx, sl.i0, sl.i1, satStrideFor(z));
+      var flat = this.store.flat, arrows = this.mode === 'arrows', r = satRadius(z), rPx = arrows ? satArrowLength(99) / 2 + SAT_ARROW_HEAD + 3 : r + 3;
+      // the mark that holds the cursor: a dot's disc (its rim included), an arrow's shaft within SAT_ARROW_W + 1 px (the head's
+      // width at the tip): dx / dy = the cursor from the mark's centre in tile pixels
+      var inside = arrows ? function (j, dx, dy) {
+        var tp = flat.tp[0][j], d = flat.dir[0][j];
+        if (!(tp === tp) || !(d === d)) return false;
+        var len = satArrowLength(tp), ang = (d + 180) * Math.PI / 180, ux = Math.sin(ang), uy = -Math.cos(ang), s = dx * ux + dy * uy;
+        if (s < -len / 2 - 1 || s > len / 2 + SAT_ARROW_HEAD) return false;
+        var off = Math.abs(dx * uy - dy * ux);
+        return off <= (s > len / 2 - SAT_ARROW_HEAD ? SAT_ARROW_HEAD * 0.6 + 1 : SAT_ARROW_W + 1);
+      } : function (j, dx, dy) { return dx * dx + dy * dy <= (r + 0.5) * (r + 0.5); };
+      return flat.index.nearest(flat, lat, lng, z, rPx, sl.i0, sl.i1, satStrideFor(z), inside);
     }
   });
 
@@ -4664,6 +4685,7 @@
     this.abortAll();
     this.abort = new AbortController();
     var sig = this.abort.signal;
+    if (this.satLayer && fieldName !== 'hs') this._detachSat();     // the readings never stay alone under "Loading model frame…" (G51 P2)
     if (!this.layer) {
       this.layer = new ModelGridLayer({ opacity: this._opacityFor(fieldName) }).addTo(this.map);
       this._bindReadout();
@@ -4765,6 +4787,7 @@
     } else this.layer.clear();                               // never another field's picture under this label
     if (was === 'sst' && kind !== 'sst' && this.sst) this.sst.release();   // leaving SST for another observation releases its cells (G31-9)
     if (kind !== 'sat') this._detachSat();                   // the satellite layer serves its own entry alone here (the box's dots went with the model's frame)
+    else if (this.satLayer) this.satLayer.setWindow(null);  // ... and the box's frame window goes with the model's picture (its own follows the load)
     this._ensureFlow();                                      // no direction field: the particles go
     this._ensureIso(); this.pcache.clear();                  // no pressure under an observation: the isobars and their frames go (G32 A-P1-1)
     this._syncLakeOutlines();                                // no lake outlines under an observation: the set and its masks go (V7-5)
@@ -4849,15 +4872,19 @@
   // A chunk landed or failed: the credit (readings on screen), the readings line and the box's note follow, in place.
   Overlay.prototype._onSatChange = function () {
     if (!this.satLayer) return;
+    if (this.mode === 'obs' && this.field === 'sat') {
+      var st = this.satLayer.store, w = this.satLayer.win;
+      if (st && w && st.newestMs() !== null && w.ref !== st.newestMs()) this._syncSatOwnWindow();   // a pointer adopted once its chunks landed: the window follows its newest
+      this._satLineSync();
+    } else this._satNoteSync();
     if (this._attributed) this._attribute();
-    if (this.mode === 'obs' && this.field === 'sat') this._satLineSync();
-    else this._satNoteSync();
   };
   // The pointer re-read (every 12 min while attached): a newer one is adopted by the store once its chunks are in; the
   // own entry's window then follows the newest reading; the stale line follows the newest reading's age.
   Overlay.prototype._satRecheck = function () {
     var self = this, st = this.satLayer ? this.satLayer.store : null;
-    if (!st) return;
+    if (!st || (typeof document !== 'undefined' && document.hidden)) return;
+    if (st.status !== 'ok') { this._satReload(st); return; }       // a failed read: tried again (load() paces it by its cooldown)
     st.recheck().then(function (changed) {
       if (!self.satLayer || self.satLayer.store !== st) return;
       if (self.mode === 'obs' && self.field === 'sat') { if (changed) self._syncSatOwnWindow(); self._satLineSync(); }
@@ -4898,6 +4925,18 @@
     if (this.ui && this.ui.satBox && this.ui.satBox.checked !== on) this.ui.satBox.checked = on;
     this._satNoteSync();
   };
+  // A store whose pointer read failed (or never ran) is asked again, the cooldown permitting; a success re-syncs what is
+  // shown (the own window, or the shown frame's) and the notes.
+  Overlay.prototype._satReload = function (st) {
+    var self = this;
+    if (st.status === 'ok' || st.loading) return;
+    st.load(false).then(function (ok) {
+      if (!ok || !self.satLayer || self.satLayer.store !== st) { self._satNoteSync(); return; }
+      if (self.mode === 'obs' && self.field === 'sat') { self._syncSatOwnWindow(); self._satLineSync(); }
+      else if (self._wantSatFrame() && self.frameIndex !== null) self._syncSat(self.frameIndex);
+      self._satNoteSync();
+    });
+  };
   Overlay.prototype._wantSatFrame = function () { return !!(this.sat && this.satOn && this.mode === 'model' && this.field === 'hs' && this.layer); };
   // The frame-mode layer exists exactly while the box is on under wave height in model mode: attached here (the store's
   // pointer loading if need be: not forced, the cooldown paces it), the window set by the landing (_syncSat).
@@ -4908,25 +4947,24 @@
     var st = this.sat;
     this._attachSat(st, 'dots');
     if (this.frameIndex !== null) this._syncSat(this.frameIndex);
-    if (st.status !== 'ok') st.load(false).then(function (ok) {
-      if (!ok || !self._wantSatFrame() || !self.satLayer || self.satLayer.store !== st) { self._satNoteSync(); return; }
-      if (self.frameIndex !== null) self._syncSat(self.frameIndex);
-      self._satNoteSync();
-    });
+    if (st.status !== 'ok') this._satReload(st);
+    void self;
   };
   // The frame idx is on the map: the dots' window is [valid - 3 h, valid + 3 h] of THAT entry; another entry's dots are
   // cleared (never old dots under a new time); nothing without a picture.
   Overlay.prototype._syncSat = function (idx) {
     if (!this.satLayer || this.mode !== 'model') return;
-    var m = this.manifest, entry = m && m.frames[idx];
+    var m = this.manifest, entry = m && m.frames[idx], st = this.satLayer.store;
     if (!this._wantSatFrame() || !entry || !this.layer.hasFrame() || this.layer.entry !== entry) { this._clearSatWindow(); return; }
+    if (st && st.status !== 'ok') this._satReload(st);               // a failed pointer read: tried again at a landing (the cooldown paces it)
     if (this.satLayer.entry === entry && this.satLayer.hasWindow()) return;
     var valid = Date.parse(entry.valid_utc);
     this.satLayer.setWindow({ t0: valid - SAT_FRAME_WINDOW_MS, t1: valid + SAT_FRAME_WINDOW_MS + 1, ref: valid, span: SAT_FRAME_WINDOW_MS, frame: true, entry: entry });
     this._satNoteSync();
+    if (this._attributed) this._attribute();                        // the credit over the model follows what is drawn now
   };
   Overlay.prototype._clearSatWindow = function () {
-    if (this.satLayer && this.satLayer.hasWindow()) this.satLayer.setWindow(null);
+    if (this.satLayer && this.satLayer.hasWindow()) { this.satLayer.setWindow(null); if (this._attributed) this._attribute(); }
     this._satNoteSync();
   };
   // The box's note: by the store and layer state (SAT_NOTES).
@@ -5382,10 +5420,10 @@
       self._presWait = null; self._lakeWait = null;
       self._persist();
       self._syncLook();
+      self._syncSat(idx);                                                        // the satellite readings within 3 h of this frame (plan section 81), before the credit
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
       self._syncLake(idx);                                                       // before the particles: the lake direction rides in the step's one rebuild
-      self._syncSat(idx);                                                        // the satellite readings within 3 h of this frame (plan section 81)
       self._syncFlow(idx);
       self._syncIsobars(idx);
       self._prefetch();
@@ -5790,7 +5828,7 @@
     this._on('zoomend', function () { self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); });
     this._on('moveend', function () { self._syncLakeGate(); });
     this._on('viewreset', function () { self._syncLakeGate(); });
-    this._on('move', function () { if (self.layer) self.layer._drawStale(true); });   // a buffer tile a frame behind comes into view
+    this._on('move', function () { if (self.layer) self.layer._drawStale(true); if (self.satLayer) self.satLayer._drawStale(true); });   // a buffer tile a frame behind comes into view
     this._on('resize', function () { self._onSize(); });
     // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'
     // event does not fire on a window resize or a rotation: the window and the container are watched as well (as the
@@ -6806,9 +6844,10 @@
     // The "Satellite readings" box (plan section 81): wave height only, when the readings are offered. On, the altimeter
     // dots within 3 h of the frame on the map, in the model's own colours (the note says the state).
     if (this.sat && field === 'hs') {
-      var srow = mk('label', 'ov-row ov-satrow'), sbox = mk('input', 'ov-sat-box'); sbox.type = 'checkbox'; sbox.checked = !!this.satOn;
-      srow.appendChild(sbox); srow.appendChild(mk('span', null, 'Satellite readings'));
-      var snote = mk('span', 'ov-sat-note'); srow.appendChild(snote);
+      var srow = mk('div', 'ov-row ov-satrow'), slab = mk('label', 'ov-sat-label'), sbox = mk('input', 'ov-sat-box'); sbox.type = 'checkbox'; sbox.checked = !!this.satOn;
+      slab.appendChild(sbox); slab.appendChild(mk('span', null, 'Satellite readings')); srow.appendChild(slab);
+      var snote = mk('span', 'ov-sat-note'); snote.id = 'ovSatNote'; srow.appendChild(snote);   // beside the label: the box keeps a stable name
+      sbox.setAttribute('aria-describedby', 'ovSatNote');
       sbox.addEventListener('change', function () { self.setSatOn(!!sbox.checked); });
       body.appendChild(srow);
       ui.satBox = sbox; ui.satNote = snote;
@@ -7011,7 +7050,7 @@
   Overlay.prototype._refocus = function (cls, host) {
     var h = cls && (host || (this.ui && this.ui.host));
     if (!h || !h.querySelector) return;
-    var el = h.querySelector('.' + cls) || h.querySelector('.ov-play') || h.querySelector('.ov-toggle') || h.querySelector('.ov-retry');
+    var el = (cls === 'ov-seg-btn' && h.querySelector('.ov-seg-btn.ov-seg-on')) || h.querySelector('.' + cls) || h.querySelector('.ov-play') || h.querySelector('.ov-toggle') || h.querySelector('.ov-retry');
     if (el && el.focus) { try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); } }
   };
   // The overlay's one live region: a visually hidden role=status node, created once, written only when its text

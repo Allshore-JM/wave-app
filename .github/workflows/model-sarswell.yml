@@ -1,8 +1,9 @@
-# Publishes the last ~30 h of Sentinel-1 swell partitions (Copernicus Marine WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002,
-# the measured datasets only, anonymous on the open CloudFerro bucket) to R2 under sarswell/v1/ as one chunk per
-# 3-hour window (plan section 81). Daily batches arrive a few times a day: the job runs every 10 min from the trigger
-# Worker (this cron is the fallback) and ends in seconds when nothing changed.
-# Credit: "Generated using E.U. Copernicus Marine Service Information", doi 10.48670/moi-00174 (in every chunk).
+# Publishes the last ~56 h of Sentinel-1 / CFOSAT swell partitions (Copernicus Marine WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002,
+# the 3-hour observation files only, anonymous on the open CloudFerro bucket) to R2 under sarswell/v1/ as one chunk per
+# 3-hour window (plan section 81). One batch a day lands about 23Z (the 24 h before its newest point stay in reach until
+# the next): the job runs every 10 min from the trigger Worker (this cron is the fallback) and ends in seconds when
+# nothing changed.
+# Credit: "Generated using E.U. Copernicus Marine Service Information", doi 10.48670/moi-00178 (in every chunk).
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: model-sarswell
 on:

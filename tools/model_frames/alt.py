@@ -5,9 +5,11 @@ Source: Copernicus Marine WAVE_GLO_PHY_SWH_L3_NRT_014_001 (1 Hz along-track SWH,
 cross-calibrated, EMD-filtered `VAVH`), read anonymously from the open CloudFerro bucket the site already reads European
 buoys from (one NetCDF-4 file per mission per 3-hour window, regenerated every 30 min while data arrives, the older
 production purged). Licence: free, any purpose; credit "Generated using E.U. Copernicus Marine Service Information",
-doi 10.48670/moi-00179 (SOURCE below, in every chunk and the pointer). NOAA's Jason-3 OGDR (public domain) is a fourth
-height source when its index is configured (ALT_JASON3_INDEX; off until verified against a real file), its readings
-dropped where CMEMS's own Jason-3 pass already covers the time.
+doi 10.48670/moi-00179 (SOURCE below, in every chunk and the pointer). NOAA's Jason-3 OGDR (public domain, ~25 min
+behind) is a fourth height source (JASON3_INDEX, NOAA's per-cycle directory listing; ALT_JASON3_INDEX overrides it,
+"off" leaves it out), its readings dropped where CMEMS's own Jason-3 pass already covers the time. Verified against real
+files on 2026-11-04 (plan section 81, step 1b): the OGDR's 1 Hz Ku-band ocean SWH matches CMEMS's Jason-3 VAVH to the
+second over the same pass (median difference 3 mm, 5-95 % within 0.2 m, CMEMS's calibration and editing).
 
 Layout (every key immutable but the pointer):
   alt/v1/w/<WINDOW YYYYMMDDTHH>/<BUILD YYYYMMDDTHHMMSSZ>.bin    one window, every mission (altfmt: magic ALT1)
@@ -59,7 +61,7 @@ EPOCH = datetime(2000, 1, 1, tzinfo=timezone.utc)
 WINDOW_S = 3 * 3600
 KEEP_H = 30                                   # 24 h + the client's 3 h frame margin + slack
 PRUNE_AFTER_H = KEEP_H + 6
-MAX_CHUNKS = 12
+MAX_CHUNKS = 20                               # the pointer names at most this many windows (the swell keeps 56 h: 19; the client caps at 20 too)
 MAX_FILE_BYTES = 20_000_000                   # a 1 Hz file is 100-215 KB; nothing far larger is a product file
 MIN_FILE_BYTES = 1_000
 DOWNLOAD_WORKERS = 8
@@ -98,6 +100,11 @@ FILE_RE = re.compile(r"^global_vavh_l3_rt_(?P<token>[a-z0-9]+(?:_[a-z0-9]+)?)_(?
 DATASET_RE = re.compile(r"swh_nrt_([a-z0-9]+(?:-[a-z0-9]+)?)-l3_PT1S", re.I)   # the 1 Hz datasets only (5 Hz ones exist too)
 NC_SUFFIX = ".nc"
 JASON3_FILE_RE = re.compile(r"^JA3_OPN_2P[a-zA-Z]S(\d{3})_(\d{3})_(\d{8})_(\d{6})_(\d{8})_(\d{6})\.nc$")
+# NOAA's OGDR directory: one folder per ~10-day cycle (cycle713/), each an HTML index of pass files (~9 MB, ~12 a day,
+# ~25 min behind); the newest two cycles are read (a window near the cycle boundary spans both)
+JASON3_INDEX = "https://www.ncei.noaa.gov/data/oceans/jason3/ogdr/ogdr/"
+JASON3_CYCLE_RE = re.compile(r'href="(?:[^"]*/)?(cycle(\d{3}))/?"')
+JASON3_CYCLES = 2
 
 
 def _summary(line):
@@ -122,7 +129,10 @@ def stamp(dt):
 
 
 def parse_stamp(s):
-    return datetime.strptime(s, "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+    """YYYYMMDDTHHMMSS, or YYYYMMDDTHHMM (the swell files' production stamp); anything else is a ValueError."""
+    if len(s) not in (13, 15):
+        raise ValueError(f"not a stamp: {s!r}")
+    return datetime.strptime(s, "%Y%m%dT%H%M%S" if len(s) == 15 else "%Y%m%dT%H%M").replace(tzinfo=timezone.utc)
 
 
 def parse_iso(s):
@@ -530,8 +540,14 @@ def in_window(t, t0, t1):
 
 def read_jason3_ogdr(path, t0=None, t1=None):
     """A NOAA Jason-3 OGDR (GDR-F NetCDF-4, groups data_01/...; the flat GDR-D layout too) -> the same dict as read_l3.
-    Keeps Ku-band ocean SWH with its quality flag 0 and the surface classed as open ocean."""
+    Keeps the 1 Hz Ku-band ocean SWH whose retracking quality flag is 0 (GDR-F: swh_ocean_compression_qual, the real
+    files' name; swh_ocean_qual read too), over open ocean (surface_classification_flag 0), not under rain (rain_flag 1
+    rain / 2 high rain probability) nor ice (ice_flag 1): the filters CMEMS's own edit applies most."""
     import h5py
+
+    def flag(group, name, shape):
+        return group[name][()] if name in group else np.zeros(shape, np.int8)
+
     with h5py.File(path, "r") as f:
         if "data_01" in f:                                             # GDR-F
             g = f["data_01"]
@@ -539,21 +555,24 @@ def read_jason3_ogdr(path, t0=None, t1=None):
             lat = _scaled(g["latitude"], expect_units="degrees_north")
             lon = _scaled(g["longitude"], expect_units="degrees_east")
             swh = _scaled(g["ku"]["swh_ocean"], expect_units="m")
-            qual = g["ku"]["swh_ocean_qual"][()] if "swh_ocean_qual" in g["ku"] else np.zeros(swh.shape, np.int8)
-            surf = g["surface_classification_flag"][()] if "surface_classification_flag" in g else np.zeros(swh.shape, np.int8)
+            qual = flag(g["ku"], "swh_ocean_compression_qual", swh.shape) | flag(g["ku"], "swh_ocean_qual", swh.shape)
+            surf = flag(g, "surface_classification_flag", swh.shape)
+            rain, ice = flag(g, "rain_flag", swh.shape), flag(g, "ice_flag", swh.shape)
         else:                                                          # GDR-D: flat
             tv = f["time"]
             lat = _scaled(f["lat"], expect_units="degrees_north")
             lon = _scaled(f["lon"], expect_units="degrees_east")
             swh = _scaled(f["swh_ku"], expect_units="m")
-            qual = f["qual_alt_1hz_swh_ku"][()] if "qual_alt_1hz_swh_ku" in f else np.zeros(swh.shape, np.int8)
-            surf = f["surface_type"][()] if "surface_type" in f else np.zeros(swh.shape, np.int8)
+            qual = flag(f, "qual_alt_1hz_swh_ku", swh.shape)
+            surf = flag(f, "surface_type", swh.shape)
+            rain, ice = flag(f, "rain_flag", swh.shape), flag(f, "ice_flag", swh.shape)
         tunits = _attr(tv, "units", "")
         if not (isinstance(tunits, str) and re.match(r"^seconds since 2000-01-01[ T]00:00:00", tunits)):
             raise ValueError(f"time units {tunits!r} are not seconds since 2000-01-01")
         t = _scaled(tv)
     lon = (lon + 180.0) % 360.0 - 180.0
-    ok = np.isfinite(t) & np.isfinite(lat) & np.isfinite(lon) & np.isfinite(swh) & (swh >= 0) & (swh <= 30) & (qual == 0) & (surf == 0)
+    ok = (np.isfinite(t) & np.isfinite(lat) & np.isfinite(lon) & np.isfinite(swh) & (swh >= 0) & (swh <= 30)
+          & (qual == 0) & (surf == 0) & (rain != 1) & (rain != 2) & (ice != 1))
     if t0 is not None:
         ok &= in_window(t, t0, t1)
     idx = np.nonzero(ok)[0]
@@ -1053,11 +1072,29 @@ def _store_from_env():
 
 
 # ---------------------------------------------------------------- Jason-3 OGDR (the fourth height source)
+def _html(get, url):
+    with get(url, timeout=60) as r:
+        return r.read(MAX_FILE_BYTES).decode("utf-8", "replace")
+
+
 def jason3_index_files(index_url, now, get=_get, since=None):
-    """[FileRec] from an HTML index of OGDR files (NOAA's directory listing): names JA3_OPN_2P?S<cycle>_<pass>_<start>_
-    <end>.nc; only the files whose span ends after `since`."""
-    with get(index_url, timeout=60) as r:
-        html = r.read(MAX_FILE_BYTES).decode("utf-8", "replace")
+    """[FileRec] from NOAA's HTML directory listing of OGDR files: names JA3_OPN_2P?S<cycle>_<pass>_<start>_<end>.nc;
+    only the files whose span ends after `since`. The URL is a cycle's index, or the directory of cycles (cycleNNN/):
+    then the newest JASON3_CYCLES cycles are read (two listings: a window at the cycle boundary spans both)."""
+    html = _html(get, index_url)
+    cycles = sorted({(int(m.group(2)), m.group(1)) for m in JASON3_CYCLE_RE.finditer(html)})
+    if cycles and not re.search(r'href="[^"]*\.nc"', html):
+        urls = [index_url.rstrip("/") + "/" + name + "/" for _, name in cycles[-JASON3_CYCLES:]]
+        pages = [(url, _html(get, url)) for url in urls]
+    else:
+        pages = [(index_url, html)]
+    out = {}
+    for url, page in pages:
+        out.update(_jason3_files_of(url, page, since))
+    return sorted(out.values(), key=lambda r: r.t0)
+
+
+def _jason3_files_of(index_url, html, since):
     out = {}
     for m in re.finditer(r'href="([^"]+\.nc)"', html):
         name = m.group(1).rsplit("/", 1)[-1]
@@ -1073,7 +1110,7 @@ def jason3_index_files(index_url, now, get=_get, since=None):
             continue
         href = m.group(1) if "://" in m.group(1) else index_url.rstrip("/") + "/" + m.group(1).lstrip("./")
         out[name] = FileRec("j3_ogdr", name, href, 0, t0, t1, t1)        # size unknown (0): bounded by MAX_FILE_BYTES
-    return sorted(out.values(), key=lambda r: r.t0)
+    return out
 
 
 # ---------------------------------------------------------------- main
@@ -1117,7 +1154,8 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
     ap.add_argument("--keep-h", type=int, default=product.keep_h)
     ap.add_argument("--frames-root", default=os.environ.get("ALT_FRAMES_ROOT", FRAMES_ROOT))
     ap.add_argument("--no-model", action="store_true", help="no collocation (the model column stays empty)")
-    ap.add_argument("--jason3-index", default=os.environ.get("ALT_JASON3_INDEX", ""), help="HTML index URL of NOAA's Jason-3 OGDR files (empty: no OGDR)")
+    ap.add_argument("--jason3-index", default=os.environ.get("ALT_JASON3_INDEX") or JASON3_INDEX,
+                    help="NOAA's Jason-3 OGDR directory (the cycles' folder or one cycle's index); 'off': no OGDR")
     a = ap.parse_args(argv)
     if a.keep_h < 3 or (a.window and not re.fullmatch(r"\d{8}T\d{2}", a.window)):
         print("bad arguments (--keep-h >= 3; --window YYYYMMDDTHH)")
@@ -1144,7 +1182,7 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
         return quiet("the dataset list cannot be read")
     print(f"{len(datasets)} datasets ({how})")
     files = list_files(product, datasets, now, get=get, since=since)
-    if a.jason3_index and product is HEIGHTS:
+    if a.jason3_index and a.jason3_index.lower() != "off" and product is HEIGHTS:
         try:
             files += jason3_index_files(a.jason3_index, now, get=get, since=since)
         except Exception as exc:                                       # noqa: BLE001
@@ -1205,7 +1243,7 @@ def main(argv=None, get=_get, store=None, product=HEIGHTS, frames_factory=None, 
                         read_cache[f.name] = rd(paths[f.name])
                     d = read_cache[f.name]
                     sel = in_window(d["t"], w0, w1)
-                    read[f.name] = (f.token, {kk: vv[sel] for kk, vv in d.items()})
+                    read[f.name] = (f.token, {kk: (vv[sel] if isinstance(vv, np.ndarray) else vv) for kk, vv in d.items()})
                 except Exception as exc:                               # noqa: BLE001
                     if f.name not in unreadable:
                         unreadable[f.name] = f"{exc.__class__.__name__}: {exc}"

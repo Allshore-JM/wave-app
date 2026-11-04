@@ -1093,8 +1093,13 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   every mission flying, buoy- and cross-calibrated), read anonymously from the open CloudFerro bucket (STAC first for
   the datasets' native prefixes, then the pointer's cached list, then the bucket's own directory listing; the 1 Hz
   datasets only). Credit "Generated using E.U. Copernicus Marine Service Information", doi 10.48670/moi-00179, in every
-  chunk and the pointer. NOAA's Jason-3 OGDR joins as a fourth source when `ALT_JASON3_INDEX` (a repository variable:
-  the HTML index of the OGDR files) is set; its readings within 1.5 s of CMEMS's own Jason-3 pass are dropped. Each
+  chunk and the pointer. NOAA's Jason-3 OGDR (public domain, ~25 min behind) joins as a fourth source from NOAA's
+  public directory of cycles (`alt.JASON3_INDEX`; the newest two cycle indexes are read; the repository variable
+  `ALT_JASON3_INDEX` overrides the URL, `off` leaves OGDR out): its 1 Hz Ku-band ocean readings with the retracking
+  quality flag 0 (`swh_ocean_compression_qual`), over open ocean, under neither rain nor ice; those inside CMEMS's own
+  Jason-3 pass are dropped, so OGDR only fills the hours CMEMS has not delivered (a real day: 13-134 readings a window
+  survive). Verified on 2026-11-04 against CMEMS's Jason-3 file of the same pass: 3594 readings match to the second,
+  median difference 3 mm, 5-95 % within 0.2 m. Each
   reading is **collocated with GFS-Wave**: the newest run whose cycle is at or before the reading (the live run, then
   6 / 12 / 18 h older; a run without the frame gives way to the next older), linear in time between its hourly `hs`
   frames, each sampled bilinearly over the present 0.25-degree nodes with the client's absent rule (weight < 0.25 =
@@ -1102,12 +1107,24 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   mask `fill_allow.png`). The frames' hs range must be `encode.FIELDS["hs"]` (else the job exits 1: a range change
   needs a deliberate change here first).
 - **`tools/model_frames/sarswell.py`** (workflow `model-sarswell.yml`, group `model-sarswell`, cron `9,39 * * * *`,
-  dispatched and kept alive the same way): the last ~30 h of Sentinel-1 (A / C; CFOSAT when flowing) SAR wave-mode
-  swell partitions from `WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002`, the measured datasets only (the propagated "fireworks"
-  datasets, a 3-hour timestep along the swell's path, are left out). Per point up to 3 partitions, the dominant (by
-  height) first: height, PEAK period, direction the swell comes FROM. The reader refuses a file whose period variable is
-  not a peak period or whose direction is not "from" (the variables' attributes say which; the MFWAM lesson). Credit as
-  above, doi 10.48670/moi-00174.
+  dispatched and kept alive the same way): the last ~56 h of Sentinel-1C and CFOSAT (Sentinel-1A's dataset ended in
+  April 2026, 1B's in 2020) SAR wave-mode swell partitions from `WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002`. Verified on a real
+  file (2026-11-04): a dataset folder holds the 3-hour observation files
+  (`dataset-wav-sar-l3-spc-nrt-global-<sat>_<t0>Z_<t1>Z_P<production>Z-3H-nrt.nc`, the only ones read) beside the
+  propagated storm-source "fireworks" files (a 20-day span, a storm id in the name: never matched); the observations are
+  the group `obs_params`, one row per partition (`VAVH` m, `VTPK` s with the CF name `..._at_variance_spectral_density_
+  maximum` = the PEAK period, `VPED` with `..._from_direction_...` = FROM, time in days since 1950, the product's
+  per-partition quality flag `L2_partition_quality_flag` 0 very_good .. 4 poor), the rows sharing a time and position one
+  point; the file's root arrays of the same names are the partitions propagated along their great circles (left out).
+  Per point up to 3 partitions of quality very_good / good / medium (low and poor dropped), the dominant (by height)
+  first: height, PEAK period, direction the swell comes FROM; the per-variable coherency flags (`VAVH_flag` etc.) are
+  counted in the stats, not filtered (38 % of a real file's partitions fail the Hs one while the product's own flag calls
+  them very good). The reader refuses a file whose period variable is not a peak period or whose direction is not
+  "from" (the variables' attributes say which; the MFWAM lesson), one without `obs_params`, a time axis in neither
+  days since 1950 nor seconds since 2000. One batch a day lands about 23Z covering the 36 h up to ~18Z (the day
+  before's windows produced again under the new stamp: rebuilt), so the newest point is 5-31 h old and the job keeps
+  56 h (19 windows): the 24 h before the newest point stay in reach until the next batch. Credit as above, doi
+  10.48670/moi-00178.
 - **Chunks** (`altfmt.py`; one per 3-hour window, magic `ALT1` / `SWL1`): the magic, a u32 header length, a JSON header
   (`format, window, t0, t1, build, n, columns [[name, dtype, scale, none]...], missions, segments [[mission index,
   start, count]...]` (time-sorted per mission), the heights' `runs` and `model` block, `inputs`, `credit`) and ONE zlib
@@ -1119,8 +1136,8 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
 - **Bucket**: `<prefix>/w/<WINDOW YYYYMMDDTHH>/<BUILD YYYYMMDDTHHMMSSZ>.bin` (immutable; a rebuilt window is a new
   key), `<prefix>/stats/<BUILD>.json`, `failed/<WINDOW>.json`, `stale-alarm.json`, then `<prefix>/latest.json` LAST
   (max-age 300): `{format, magic, build, published_utc (the last chunk change), checked_utc (every run), newest_utc,
-  window_s 10800, keep_h 30, encoding "deflate", missions [{id, short, name}], chunks [{key, window, t0, t1, n, bytes,
-  build, missions, newest_utc, inputs}] (ascending, at most 12), model, columns, datasets, stats, source}`; prefixes
+  window_s 10800, keep_h 30 (swell 56), encoding "deflate", missions [{id, short, name}], chunks [{key, window, t0, t1,
+  n, bytes, build, missions, newest_utc, inputs}] (ascending, at most 20), model, columns, datasets, stats, source}`; prefixes
   `alt/v1` and `sarswell/v1`. A window is rebuilt when the digest of its inputs (file names and sizes + the format key)
   differs from the pointer's (upstream regenerates a window's file every 30 min while data arrives); the live model run
   joins the digest of the windows ending after its cycle, so a new run re-collocates the readings it covers (the newest
@@ -1139,17 +1156,22 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   `missions[].newest_utc`) is older than 48 h (HY-2B 96 h) is a summary WARNING. The dataset list is re-read from STAC
   every 6 h (the pointer caches it, `datasets_utc`). Exit codes as the SST job (0 published / nothing new / a quiet
   outage; 1 a failure or an alarm; 2 bad arguments); a manual `--window` run never alarms and exits 1 when it fails;
-  `--dry-run`, `--local DIR`, `--force`, `--keep-h`, `--frames-root`, `--no-model`, `--jason3-index`; `sarswell.py
-  --inspect FILE` prints a file's variables. Jason-3 OGDR readings inside a CMEMS Jason-3 pass (readings up to 60 s
-  apart, 1.5 s of slack) are dropped, CMEMS's own quality gaps included; only the hours CMEMS has not delivered survive.
+  `--dry-run`, `--local DIR`, `--force`, `--keep-h`, `--frames-root`, `--no-model`, `--jason3-index URL|off`;
+  `sarswell.py --inspect FILE` prints a file's variables. Jason-3 OGDR readings inside a CMEMS Jason-3 pass (readings
+  up to 60 s apart, 1.5 s of slack) are dropped, CMEMS's own quality gaps included; only the hours CMEMS has not
+  delivered survive. A real local build (2026-11-04, `--local`): heights 10 windows, 433k readings, 9 missions, 61 s,
+  obs - model over open ocean median +0.13 .. +0.17 m, p90 0.5-0.6 m (the altimeters read above GFS-Wave); swell 1
+  window in reach that evening (154 points: Sentinel-1C 84, CFOSAT 70), the chunk read back equal to the NetCDF.
 - **Known limits**: the model runs tried are the live one and the three before it (publish.py keeps four), so readings
   older than the live cycle minus 18 h (about the oldest 1-7 h of the 24-h window) carry no model value (`model` none);
-  the swell product's "newest production" is keyed by (satellite, span start) pending the real listing.
+  the swell layer's "last 24 h" are the 24 h before its newest point, 5-31 h behind the clock (one batch a day); a swell
+  partition's height is drawn whatever its Hs coherency flag (`VAVH_flag`; counted in the stats) because the product's
+  own quality flag, the documented one, keeps most of them: the owner can tighten this later.
 - **Tests**: `tests/model_frames/test_alt.py` (a fake STAC, bucket listing, product files written with h5py and frames
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
 
-### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.1)
+### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.2)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown and the "Satellite readings" box under
   Wave height (both off by default: on once `alt/v1` is live); `SARSWELL=1` (with it) adds the Heights | Swell switch to
@@ -1181,7 +1203,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   (frame 12:00 PM) 5.4 ft (+0.8)", the model value from the drawn field under the cursor (`readoutAt`); the map credit
   gains " · Copernicus Marine" while readings are drawn. No swell arrows over the model (owner, 2026-11-04).
 - **The store** (`SatStore`, one per bucket root and kind): the pointer (`no-cache`, a 15-s watchdog, validated:
-  format, magic, `deflate`, the columns pinned against this file's copy of `altfmt.py`'s, at most 12 chunks each with a
+  format, magic, `deflate`, the columns pinned against this file's copy of `altfmt.py`'s, at most 20 chunks each with a
   key under its prefix, a parseable disjoint span, counts within the caps), then the chunks a window needs, nearest the
   reference time first, at most 3 at once, each with a 15-s stall timer (404 / undecodable final; anything else a 60-s
   cooldown, the window asked for again when it ends). `decodeSatChunk`: the magic, the header length, the header's
@@ -1191,7 +1213,9 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   segment for the thinning) carries a bucket index (`SatIndex`, CSR over 0.5-degree cells) the tiles and the hover read:
   `hitAt` = the top-most DRAWN mark holding the cursor (a dot's disc, an arrow's shaft and head: the newest, painted last,
   wins where tracks cross), else the nearest mark centre within 3 px of slack (the same window, stride and order as the
-  tiles); G51 fix round, asset 2.23.1: see `docs/reviews/satellite-G51-client.md`.
+  tiles); G51 fix round, asset 2.23.1: see `docs/reviews/satellite-G51-client.md`; asset 2.23.2 (the real-data checks):
+  the swell product's DOI is 10.48670/moi-00178 (the credit title and the panel's credit line), at most 20 chunks a
+  pointer (the swell job keeps 56 h).
   The pointer is re-read every 12 min while attached: a newer one becomes `next` and is adopted only once the chunks the
   current window needs from it have landed (no empty picture between pointers); chunks it no longer names go. `idle()`
   (another field, the box off) stops the downloads and keeps the samples; `abortAll()` (Off) stops the pointer load too.

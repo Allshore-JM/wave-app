@@ -147,6 +147,21 @@ site, review, fixes)."**
   the own window behind; the credit one landing behind), 9 P2, nits: all fixed (asset 2.23.1); 12 Node tests + the
   review's cases; 20 of 22 mutants caught (two behaviour-equivalent). Reviewer B (the test site) waits for the data and the flags. NEXT: the
   owner allows the data hosts -> the real-file checks and the dispatch dry runs -> STOP for the job-only merge.
+- 2026-11-04: step 1b real-data checks done (the owner allowed the hosts). SWH: the files are exactly as `read_l3`
+  expects (token `s6a_lr` etc.). SPC-FWK: the real layout differed from the documented one and the swell job was
+  rewritten for it: observation files `dataset-wav-sar-l3-spc-nrt-global-<sat>_<t0>Z_<t1>Z_P<prod YYYYMMDDTHHMM>Z-3H-nrt.nc`
+  (the fireworks files in the same folder never match), the group `obs_params` with one row per partition (`VAVH`,
+  `VTPK` = PEAK by its CF name, `VPED` = FROM by its CF name and its description, time in days since 1950, the
+  product's `L2_partition_quality_flag`: very_good / good / medium kept), rows grouped into points; the 014_002 DOI is
+  10.48670/moi-00178 (fixed in the job, the client's credits, the README; asset 2.23.2). One batch a day lands ~23Z
+  covering the 36 h up to ~18Z, so the swell product keeps 56 h (19 windows; MAX_CHUNKS / MAX_SAT_CHUNKS 20): the 24 h
+  before its newest point stay in reach (OWNER TO CONFIRM: the "last 24 h" of swell are 5-31 h behind the clock).
+  Jason-3 OGDR: verified against CMEMS's file of the same pass (3594 readings match to the second, median 3 mm), the
+  quality flag is `swh_ocean_compression_qual`, rain / ice flags applied, NOAA's directory of cycles discovered
+  (`JASON3_INDEX` default, ON by default; `ALT_JASON3_INDEX` overrides, `off` disables): no repository variable needed.
+  Real local builds of both jobs against the live sources: heights 10 windows / 433k readings / 61 s, obs - model
+  median +0.13..0.17 m; swell 154 points, chunks read back equal to the NetCDF. 18 job tests pass. NEXT: the dispatch dry
+  run on the runner (workflow_dispatch on the branch), then STOP for the job-only merge (tag `prod-pre-alt-job`).
 
 
 ---

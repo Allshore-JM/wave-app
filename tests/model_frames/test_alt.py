@@ -140,11 +140,17 @@ def test_file_names_the_tokens_s6a_lr_and_swot_two_productions_of_one_window_and
     assert p.parse_file("global_vavh_l3_rt_j3_20261104T090000_20261104T120000.nc") is None
     assert p.parse_file("global_vavh_l3_rt_j3_20261104T090000_20261104T120000_20261104T134512.nc.part") is None
     assert p.parse_file("global_vavh_l3_rt_j3_20261399T090000_20261104T120000_20261104T134512.nc") is None
-    # the swell product: the span from the file, the mission from the dataset
-    tok, t0, t1, prod = S.SWELL.parse_file("global_s1a_l3_spc_fwk_nrt_20261104T001512_20261104T235959_20261105T061200.nc", "s1a")
-    assert tok == "s1a" and t0.hour == 0 and t1.hour == 23 and prod.day == 5
-    assert S.SWELL.parse_file("x_20261104T001512_20261104T235959.nc", "s1c")[3] == datetime(2026, 11, 4, 23, 59, 59, tzinfo=timezone.utc)
-    assert S.SWELL.parse_file("x_20261104T001512_20261104T235959.nc", None) is None
+    # the swell product (the real names of 2026-11-04): the 3-hour span from the file, the production stamp with
+    # minutes only, the mission from the dataset; the fireworks files (4-digit stamps, a storm id) and the reprocessed
+    # files never match
+    tok, t0, t1, prod = S.SWELL.parse_file("dataset-wav-sar-l3-spc-nrt-global-s1c_20261103T150000Z_20261103T180000Z_P20261103T2317Z-3H-nrt.nc", "s1c")
+    assert tok == "s1c" and t0 == datetime(2026, 11, 3, 15, tzinfo=timezone.utc) and t1 == datetime(2026, 11, 3, 18, tzinfo=timezone.utc) and prod == datetime(2026, 11, 3, 23, 17, tzinfo=timezone.utc)
+    assert S.SWELL.parse_file("dataset-wav-sar-l3-spc-nrt-global-s1c_20261103T150000Z_20261103T180000Z_P20261103T2317Z-3H-nrt.nc", None) is None
+    assert S.SWELL.parse_file("dataset-wav-sar-l3-spc-nrt-global-s1a_20260407T1800Z_20260427T0600Z_P20260427T0444Z_08-APR-2026-00H_lon_E042_lat_S63-nrt.nc", "s1a") is None
+    assert S.SWELL.parse_file("dataset-wav-sar-l3-spc-nrt-global-s1b_20200423T150000Z_20200423T180000Z_P20200511T0530Z-3H-rep.nc", "s1b") is None
+    assert A.parse_stamp("20261103T2317") == datetime(2026, 11, 3, 23, 17, tzinfo=timezone.utc) and A.parse_stamp("20261103T231705").second == 5
+    with pytest.raises(ValueError):
+        A.parse_stamp("20261103T23")
     assert A._dataset_token(S.SWELL, "cmems-obs-wave_glo_phy_spc-fwk_nrt_s1c_l3_PT15S-i_202511") == "s1c"
     assert A._dataset_token(S.SWELL, "cmems-obs-wave_glo_phy_spc-fwk_nrt_s1c_l3_PT3H_202511") is None, "a propagated dataset is not an observation one"
     assert A._dataset_token(A.HEIGHTS, "cmems_obs-wave_glo_phy-swh_nrt_s6a-lr-l3_PT1S_202411") == "s6a_lr"
@@ -599,23 +605,38 @@ def test_jason3_ogdr_readings_join_as_a_mission_and_duplicates_of_the_cmems_pass
         d = g.create_dataset("longitude", data=np.rint(np.full(15, 200.0) / 1e-6).astype(np.int32)); d.attrs["scale_factor"] = np.array([1e-6]); d.attrs["units"] = "degrees_east"
         ku = g.create_group("ku")
         d = ku.create_dataset("swh_ocean", data=np.rint(np.full(15, 1.75) / 0.001).astype(np.int16)); d.attrs["scale_factor"] = np.array([0.001]); d.attrs["units"] = "m"; d.attrs["_FillValue"] = np.array([32767], np.int16)
-        q = np.zeros(15, np.int8); q[14] = 1                            # the last one flagged bad
-        ku.create_dataset("swh_ocean_qual", data=q)
+        q = np.zeros(15, np.int8); q[14] = 1                            # the last one flagged bad (the real file's flag name)
+        ku.create_dataset("swh_ocean_compression_qual", data=q)
+        rain = np.zeros(15, np.int8); rain[13] = 2                      # high rain probability: dropped too
+        g.create_dataset("rain_flag", data=rain)
+        ice = np.zeros(15, np.int8); ice[12] = 1
+        g.create_dataset("ice_flag", data=ice)
+        g.create_dataset("surface_classification_flag", data=np.zeros(15, np.int8))
     d = A.read_jason3_ogdr(path)
-    assert len(d["t"]) == 14 and d["lon"][0] == pytest.approx(-160.0)
-    index = "https://ogdr.example/cycle312/"
+    assert len(d["t"]) == 12 and d["lon"][0] == pytest.approx(-160.0)
+    # the index is NOAA's directory of cycles: the newest two are listed (a window at a cycle boundary spans both)
+    base = "https://ogdr.example/ogdr/"
+    index = base + "cycle312/"
+    web.urls[base] = b'<html><a href="/data/x/">Parent</a> <a href="cycle310/">cycle310/</a> <a href="cycle311/">cycle311/</a> <a href="cycle312/">cycle312/</a></html>'
+    web.urls[base + "cycle311/"] = b'<html><a href="JA3_OPN_2PgS311_250_20261001_000000_20261001_020000.nc">old</a></html>'
     web.urls[index] = f'<html><a href="{name}">{name}</a> 2026-11-04 12:00 1.2M <a href="other.txt">x</a></html>'.encode()
     web.urls[index + name] = path
+    found = A.jason3_index_files(base, NOW, get=web, since=NOW - timedelta(hours=30))
+    assert [f.name for f in found] == [name] and found[0].url == index + name and base + "cycle310/" not in web.log and base + "cycle311/" in web.log
+    assert [f.name for f in A.jason3_index_files(index, NOW, get=web)] == [name], "one cycle's index reads as before"
+    assert A.JASON3_INDEX.startswith("https://www.ncei.noaa.gov/") and A.JASON3_CYCLES == 2
     fc = FakeClient(); store = P.Store(fc, "b")
     assert A.main(["--jason3-index", index], get=web, store=store, now=NOW) == 0
     ptr = json.loads(fc.objects["alt/v1/latest.json"]["body"])
     c = [c for c in ptr["chunks"] if c["window"] == A.window_key(w)][0]
-    assert c["missions"] == ["j3", "j3_ogdr"] and c["n"] == 40 + 4, "10 duplicates within 1.5 s of the CMEMS pass dropped, the flagged one too"
+    assert c["missions"] == ["j3", "j3_ogdr"] and c["n"] == 40 + 2, "10 duplicates within 1.5 s of the CMEMS pass dropped, the flagged ones too"
     h, cols = F.decode_chunk(fc.objects[c["key"]]["body"])
-    assert [m["id"] for m in h["missions"]] == ["j3", "j3_ogdr"] and h["segments"] == [[0, 0, 40], [1, 40, 4]]
-    # an unreachable index is a WARNING, not a failure
+    assert [m["id"] for m in h["missions"]] == ["j3", "j3_ogdr"] and h["segments"] == [[0, 0, 40], [1, 40, 2]]
+    # an unreachable index is a WARNING, not a failure; 'off' leaves OGDR out
     web.down.add(index)
     assert A.main(["--jason3-index", index], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0
+    n0 = len(web.log)
+    assert A.main(["--jason3-index", "off"], get=web, store=store, now=NOW + timedelta(minutes=20)) == 0 and not [u for u in web.log[n0:] if "ogdr.example" in u]
     # coverage, not point matching: a CMEMS pass (readings 60 s apart or closer) covers every OGDR reading inside it, the
     # ones CMEMS rejected included; a gap over 60 s ends a pass
     assert A.dedupe_against(np.array([10.0, 20.0]), np.array([8.4, 9.0, 11.6, 15.0, 21.0, 30.0])).tolist() == [0, 5]
@@ -625,34 +646,36 @@ def test_jason3_ogdr_readings_join_as_a_mission_and_duplicates_of_the_cmems_pass
 
 
 # ------------------------------------------------------------------ the swell job
-def write_swell(path, t, lat, lon, hs, tp, dr, period_name="Peak period of the swell partition", dir_name="Direction the swell partition comes from (degrees true)", two_d=True):
+def write_swell(path, t, lat, lon, hs, tp, dr, period_name="Peak period of the swell partition", dir_name="Direction the swell partition comes from (degrees true)",
+                std_names=False, quality=None, group=True, time_1950=True):
+    """The real layout (2026-11-04): the group obs_params, ONE ROW PER PARTITION (a point's NaN partitions are rows too,
+    as the product's poor data would be), time in days since 1950, the per-partition quality flag."""
+    t, lat, lon, hs, tp, dr = (np.asarray(x, np.float64) for x in (t, lat, lon, hs, tp, dr))
+    P = hs.shape[1]
+    ri = np.repeat(np.arange(len(t)), P)
+    rk = np.tile(np.arange(P), len(t))
+    q = np.zeros(len(ri), np.int8) if quality is None else np.asarray(quality, np.int8)
     with h5py.File(path, "w") as f:
-        d = f.create_dataset("time", data=np.asarray(t, np.float64)); d.attrs["units"] = "seconds since 2000-01-01T00:00:00Z"
-        d = f.create_dataset("latitude", data=np.asarray(lat, np.float32)); d.attrs["units"] = "degrees_north"
-        d = f.create_dataset("longitude", data=np.asarray(lon, np.float32)); d.attrs["units"] = "degrees_east"
-        fill = -32767
-
-        def var(name, data, scale, units, long_name):
-            if scale is None:                                           # a float variable, unscaled, NaN as its fill
-                data = np.asarray(data, np.float32)
-                for k in range(data.shape[1] if not two_d else 1):
-                    d = f.create_dataset(name if two_d else f"{name}{k + 1}", data=data if two_d else data[:, k])
-                    d.attrs["units"] = units; d.attrs["long_name"] = long_name
-                return
-            raw = np.where(np.isnan(data), fill, np.rint(np.asarray(data, np.float64) / scale)).astype(np.int16)
-            if two_d:
-                d = f.create_dataset(name, data=raw)
-                d.attrs["scale_factor"] = np.array([scale]); d.attrs["_FillValue"] = np.array([fill], np.int16); d.attrs["units"] = units; d.attrs["long_name"] = long_name
-            else:
-                for k in range(raw.shape[1]):
-                    d = f.create_dataset(f"{name}{k + 1}", data=raw[:, k])
-                    d.attrs["scale_factor"] = np.array([scale]); d.attrs["_FillValue"] = np.array([fill], np.int16); d.attrs["units"] = units; d.attrs["long_name"] = long_name
-        var("VHM0_SW", hs, 0.001, "m", "Spectral significant wave height of the swell partition")
-        var("VTPK_SW", tp, 0.01, "s", period_name)
-        var("VPED_SW", dr, None, "degree", dir_name)                 # degrees do not fit an int16 at 0.01: a float variable
+        g = f.create_group(S.OBS_GROUP) if group else f
+        d = g.create_dataset("time", data=(t[ri] / 86400.0 + S.DAYS_1950_TO_2000) if time_1950 else t[ri])
+        d.attrs["units"] = "days since 1950-01-01T00:00:00Z" if time_1950 else "seconds since 2000-01-01T00:00:00Z"
+        d = g.create_dataset("latitude", data=lat[ri].astype(np.float32)); d.attrs["units"] = "degrees_north"
+        d = g.create_dataset("longitude", data=lon[ri].astype(np.float32)); d.attrs["units"] = "degrees_east"
+        d = g.create_dataset("VAVH", data=hs[ri, rk]); d.attrs["units"] = "m"; d.attrs["long_name"] = "Partition significant wave height at observation time"
+        d = g.create_dataset("VTPK", data=tp[ri, rk].astype(np.float32)); d.attrs["units"] = "s"; d.attrs["long_name"] = period_name
+        if std_names:
+            d.attrs["standard_name"] = "sea_surface_wave_period_at_variance_spectral_density_maximum"
+        d = g.create_dataset("VPED", data=dr[ri, rk].astype(np.float32)); d.attrs["units"] = "degree"; d.attrs["long_name"] = dir_name
+        if std_names:
+            d.attrs["standard_name"] = "sea_surface_wave_from_direction_at_variance_spectral_density_maximum"
+        d = g.create_dataset(S.QUALITY_VAR, data=q); d.attrs["flag_meanings"] = "very_good good medium low poor"
+        g.create_dataset("VAVH_flag", data=np.where(np.isfinite(hs[ri, rk]), 1, 0).astype(np.int32))
+        if group:                                                       # the root carries the propagated arrays under the same names (the fireworks): never read
+            f.create_dataset("VAVH", data=np.full((4, len(ri)), 9.0)); f.create_dataset("VPED", data=np.full((4, len(ri)), 180.0))
+            d = f.create_dataset("time", data=np.arange(4, dtype=np.float64) + 30000); d.attrs["units"] = "days since 1950-01-01T00:00:00Z"
 
 
-def test_read_swell_sorts_partitions_by_height_keeps_three_and_refuses_a_mean_period_or_a_direction_towards(tmp_path):
+def test_read_swell_groups_the_rows_into_points_sorts_partitions_by_height_keeps_three_filters_quality_and_refuses_a_mean_period_or_a_direction_towards(tmp_path):
     path = str(tmp_path / "sw.nc")
     t = np.array([100.0, 200.0, 300.0, 400.0])
     hs = np.array([[1.0, 2.5, 0.5, 0.2], [np.nan, np.nan, np.nan, np.nan], [3.0, np.nan, 1.0, np.nan], [0.0, 1.0, np.nan, np.nan]])
@@ -660,14 +683,28 @@ def test_read_swell_sorts_partitions_by_height_keeps_three_and_refuses_a_mean_pe
     dr = np.array([[100, 215.5, 300, 10], [0, 0, 0, 0], [270, 0, 90, 0], [10, 370, 0, 0]], np.float64)
     write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr)
     d = S.read_swell(path)
-    assert d["t"].tolist() == [100.0, 300.0, 400.0], "a point without a partition is dropped"
-    assert d["hs"][0].tolist() == [2.5, 1.0, 0.5] and d["tp"][0].tolist() == [14, 10, 8] and d["dir"][0].tolist() == [215.5, 100, 300], "the dominant first, three kept"
-    assert d["hs"][1].tolist()[:2] == [3.0, 1.0] and np.isnan(d["hs"][1][2]) and d["lon"][0] == pytest.approx(-170.0)
-    assert d["hs"][2].tolist()[0] == 1.0 and d["dir"][2][0] == pytest.approx(10.0), "a 0 m partition is no partition; 370 wraps to 10"
+    assert d["t"].tolist() == pytest.approx([100.0, 300.0, 400.0]), "a point without a partition is dropped"
+    assert d["hs"][0].tolist() == pytest.approx([2.5, 1.0, 0.5]) and d["tp"][0].tolist() == pytest.approx([14, 10, 8]) and d["dir"][0].tolist() == pytest.approx([215.5, 100, 300]), "the dominant first, three kept"
+    assert d["hs"][1].tolist()[:2] == pytest.approx([3.0, 1.0]) and np.isnan(d["hs"][1][2]) and d["lon"][0] == pytest.approx(-170.0)
+    assert d["hs"][2].tolist()[0] == pytest.approx(1.0) and d["dir"][2][0] == pytest.approx(10.0), "a 0 m partition is no partition; 370 wraps to 10"
+    assert d["quality"]["rows"] == 16 and d["quality"]["kept"] == 7 and d["quality"]["grades"]["0"] == 16 and d["quality"]["coherency_failed"]["hs"] == 0
     d2 = S.read_swell(path, A.EPOCH + timedelta(seconds=250), A.EPOCH + timedelta(seconds=330))
-    assert d2["t"].tolist() == [300.0]
-    write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, two_d=False)
-    assert S.read_swell(path)["hs"][0].tolist() == [2.5, 1.0, 0.5], "per-partition variables read the same"
+    assert d2["t"].tolist() == pytest.approx([300.0])
+    # the product's quality flag: low (3) and poor (4) partitions are left out, the dominant one re-chosen
+    q = np.zeros(16, np.int8); q[1] = 3; q[8] = 4; q[9] = 2
+    write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, quality=q)
+    d3 = S.read_swell(path)
+    assert d3["hs"][0].tolist() == pytest.approx([1.0, 0.5, 0.2]) and d3["hs"][1].tolist()[:1] == pytest.approx([1.0]) and np.isnan(d3["hs"][1][1])
+    assert d3["quality"]["kept"] == 5 and d3["quality"]["grades"] == {"0": 13, "1": 0, "2": 1, "3": 1, "4": 1}
+    # the real file's attributes: the CF standard names decide (the long names say nothing about from / towards)
+    write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, std_names=True, period_name="Partition peak period",
+                dir_name="Partition peak direction at observation time (oceano. convention)")
+    assert S.read_swell(path)["hs"][0].tolist() == pytest.approx([2.5, 1.0, 0.5])
+    write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, time_1950=False)
+    assert S.read_swell(path)["t"].tolist() == pytest.approx([100.0, 300.0, 400.0]), "seconds since 2000 read too"
+    write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, group=False)
+    with pytest.raises(ValueError, match="obs_params"):
+        S.read_swell(path)                                              # the root's arrays are the propagated ones
     write_swell(path, t, [10, 20, 30, 40], [190, -10, 0, 20], hs, tp, dr, period_name="Mean period of the swell partition")
     with pytest.raises(ValueError, match="peak"):
         S.read_swell(path)
@@ -698,40 +735,48 @@ def test_read_swell_sorts_partitions_by_height_keeps_three_and_refuses_a_mean_pe
 def test_swell_main_publishes_its_own_prefix_and_chunks_with_the_dominant_partition_first(tmp_path):
     web = FakeWeb()
     base = f"{A.STAC}/{S.STAC_ID}"
-    did = "cmems-obs-wave_glo_phy_spc-fwk_nrt_s1a_l3_PT15S-i_202511"
-    fw = "cmems-obs-wave_glo_phy_spc-fwk_nrt_s1a_l3_PT3H-i_202511"
+    did = "cmems-obs-wave_glo_phy_spc-fwk_nrt_s1c_l3_PT15S-i_202607"
     native = f"{A.S3}/{A.BUCKET}/native/{S.STAC_ID}/{did}"
-    web.urls[f"{base}/product.stac.json"] = {"links": [{"rel": "item", "href": f"{did}/dataset.stac.json"}, {"rel": "item", "href": f"{fw}/dataset.stac.json"}]}
+    web.urls[f"{base}/product.stac.json"] = {"links": [{"rel": "item", "href": f"{did}/dataset.stac.json"}]}
     web.urls[f"{base}/{did}/dataset.stac.json"] = {"id": did, "assets": {"native": {"href": native}}}
-    web.urls[f"{base}/{fw}/dataset.stac.json"] = {"id": fw, "assets": {"native": {"href": native.replace(did, fw)}}}
     day0 = NOW.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
-    name = f"global_s1a_l3_spc_fwk_nrt_{day0:%Y%m%dT%H%M%S}_{day0 + timedelta(hours=23, minutes=59):%Y%m%dT%H%M%S}_{day0 + timedelta(hours=31):%Y%m%dT%H%M%S}.nc"
-    t = ss(day0) + np.arange(0, 24 * 3600, 900, dtype=np.float64)       # a point every 15 min through the day
-    n = len(t)
-    hs = np.stack([1.0 + 0.5 * np.sin(np.arange(n) / 5), 2.0 + 0 * t, np.where(np.arange(n) % 3 == 0, np.nan, 0.5)], axis=1)
-    tp = np.stack([9.0 + 0 * t, 14.0 + 0 * t, 6.0 + 0 * t], axis=1)
-    dr = np.stack([100.0 + 0 * t, 215.0 + 0 * t, 300.0 + 0 * t], axis=1)
-    path = str(tmp_path / name)
-    write_swell(path, t, -30 + 0 * t, 170 + np.linspace(0, 20, n), hs, tp, dr)
-    key = f"native/{S.STAC_ID}/{did}/{day0:%Y}/{day0:%m}/{name}"
-    web.urls[f"{A.S3}/{A.BUCKET}/{key}"] = path
+    prod = day0 + timedelta(hours=31, minutes=17)
+    entries = []
+    for h in range(0, 24, 3):                                           # the real layout: one file per 3-hour window, a day's batch
+        w = day0 + timedelta(hours=h)
+        name = f"dataset-wav-sar-l3-spc-nrt-global-s1c_{w:%Y%m%dT%H%M%S}Z_{w + timedelta(hours=3):%Y%m%dT%H%M%S}Z_P{prod:%Y%m%dT%H%M}Z-3H-nrt.nc"
+        t = ss(w) + np.arange(0, 3 * 3600, 900, dtype=np.float64)       # a point every 15 min
+        n = len(t)
+        hs = np.stack([1.0 + 0.5 * np.sin(np.arange(n) / 5), 2.0 + 0 * t, np.where(np.arange(n) % 3 == 0, np.nan, 0.5)], axis=1)
+        tp = np.stack([9.0 + 0 * t, 14.0 + 0 * t, 6.0 + 0 * t], axis=1)
+        dr = np.stack([100.0 + 0 * t, 215.0 + 0 * t, 300.0 + 0 * t], axis=1)
+        path = str(tmp_path / name)
+        write_swell(path, t, -30 + 0 * t, 170 + np.linspace(0, 20, n), hs, tp, dr)
+        key = f"native/{S.STAC_ID}/{did}/{day0:%Y}/{day0:%m}/{name}"
+        web.urls[f"{A.S3}/{A.BUCKET}/{key}"] = path
+        entries.append((key, os.path.getsize(path)))
+    fw = f"native/{S.STAC_ID}/{did}/{day0:%Y}/{day0:%m}/dataset-wav-sar-l3-spc-nrt-global-s1c_{day0:%Y%m%dT%H%M}Z_{day0 + timedelta(days=20):%Y%m%dT%H%M}Z_P{prod:%Y%m%dT%H%M}Z_03-NOV-2026-00H_lon_E042_lat_S63-nrt.nc"
+    entries.append((fw, 5_000_000))                                     # a fireworks file in the same folder
     for month in A.months_touching(NOW - timedelta(hours=A.KEEP_H), NOW):
-        web.urls[f"{A.S3}/{A.BUCKET}/?list-type=2&prefix=native/{S.STAC_ID}/{did}/{month:%Y}/{month:%m}/&max-keys=1000"] = listing_xml([(key, os.path.getsize(path))] if month.month == day0.month else [])
+        web.urls[f"{A.S3}/{A.BUCKET}/?list-type=2&prefix=native/{S.STAC_ID}/{did}/{month:%Y}/{month:%m}/&max-keys=1000"] = listing_xml(entries if month.month == day0.month else [])
     fc = FakeClient(); store = P.Store(fc, "b")
     assert S.main([], get=web, store=store, now=NOW) == 0
-    assert not [u for u in web.log if fw in u and "list-type" in u], "the propagated (fireworks) dataset is never listed"
+    assert not [u for u in web.log if "lon_E042" in u], "the fireworks file is never downloaded"
     assert [k for k in puts(fc, "sarswell/v1/")][-1] == "sarswell/v1/latest.json" and not puts(fc, "alt/")
     ptr = json.loads(fc.objects["sarswell/v1/latest.json"]["body"])
     assert ptr["format"] == "swell-v1" and ptr["magic"] == "SWL1" and ptr["columns"] == F.SWELL_COLUMNS and ptr["model"] is None
-    assert [m["id"] for m in ptr["missions"]] == ["s1a"] and ptr["source"]["doi"] == "10.48670/moi-00174"
+    assert [m["id"] for m in ptr["missions"]] == ["s1c"] and ptr["source"]["doi"] == "10.48670/moi-00178" and "moi-00178" in ptr["source"]["credit"]
     wins = [c["window"] for c in ptr["chunks"]]
-    assert wins[0] == A.window_key(datetime(2026, 11, 3, 9, tzinfo=timezone.utc)) and wins[-1] == A.window_key(datetime(2026, 11, 3, 21, tzinfo=timezone.utc)) and len(wins) == 5
+    assert wins[0] == A.window_key(datetime(2026, 11, 3, 0, tzinfo=timezone.utc)) and wins[-1] == A.window_key(datetime(2026, 11, 3, 21, tzinfo=timezone.utc)) and len(wins) == 8, "56 h in reach: the whole day's batch"
+    assert ptr["keep_h"] == 56
     c = ptr["chunks"][0]
     h, cols = F.decode_chunk(fc.objects[c["key"]]["body"], magic=F.MAGIC_SWELL)
     v = F.values(h, cols)
-    assert h["period"] == "peak" and h["direction"] == "from" and h["parts"] == 3 and c["n"] == 12 and h["segments"] == [[0, 0, 12]], "12 points per 3 h: the boundary point lands in one chunk only"
+    assert h["period"] == "peak" and h["direction"] == "from" and h["parts"] == 3 and c["n"] == 12 and h["segments"] == [[0, 0, 12]] and h["quality"] == {"flag": S.QUALITY_VAR, "kept_up_to": 2}
     assert (v["hs1"] == 2.0).all() and (v["tp1"] == 14.0).all() and (v["dir1"] == 215.0).all(), "the 2 m partition is the dominant one"
     assert (v["n"] >= 2).all() and (v["n"] == 3).sum() == 8
+    st = json.loads(fc.objects[f"sarswell/v1/stats/{ptr['build']}.json"]["body"])
+    assert st["windows"][wins[0]]["quality"] == {"rows": 36, "kept": 32, "grades": {"0": 36, "1": 0, "2": 0, "3": 0, "4": 0}, "coherency_failed": {"hs": 0}}, "the flags absent from a file are not counted"
     # the same day again: the heartbeat (the newest point is 15 h old: daily batches are not stale at 12 h); the job's own
     # stale alarm once the newest point is older than 48 h
     assert S.main([], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0 and "sarswell/v1/stale-alarm.json" not in fc.objects
@@ -759,5 +804,7 @@ def test_the_workflows_are_pinned_dispatched_and_kept_alive():
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
     gw = re.search(r'"GH_WORKFLOW":\s*"([^"]+)"', cfg).group(1).split(",")
     assert "model-alt.yml" in gw and "model-sarswell.yml" in gw, "the 10-minute trigger dispatches both (files land every 30 min)"
-    assert (A.KEEP_H, A.STALE_H, A.STALE_ALARM_EVERY_H, A.FAILED_MAX_ATTEMPTS, A.MAX_CHUNKS, A.WINDOW_S) == (30, 12, 12, 3, 12, 10800)
+    assert (A.KEEP_H, A.STALE_H, A.STALE_ALARM_EVERY_H, A.FAILED_MAX_ATTEMPTS, A.MAX_CHUNKS, A.WINDOW_S) == (30, 12, 12, 3, 20, 10800)
+    assert (S.KEEP_H, S.SWELL.keep_h, A.HEIGHTS.keep_h) == (56, 56, 30), "the swell's daily batch: the 24 h before its newest point stay in reach"
+    assert 56 // 3 + 1 <= A.MAX_CHUNKS
     assert A.RUN_LOOKBACK == (0, 6, 12, 18) and F.MAX_CHUNK_BYTES == 2 * 1024 * 1024 and F.SWELL_PARTS == 3

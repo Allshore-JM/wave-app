@@ -169,12 +169,12 @@
   var SAT_STALE_H = 12, SWELL_STALE_H = 48;                // the jobs' own stale alarms (alt.py STALE_H, sarswell.py STALE_H)
   var SAT_FDEF = { lo: 0, hi: 22.86, legend: [0, 18.288], units: 'm', interpolation: 'bilinear' };   // = SCALES.hs: a dot is coloured as the field would draw that value
   var SAT_HEAD = 'Satellite waves (CMEMS, last 24 h)';
-  var SAT_CREDIT = 'Generated using E.U. Copernicus Marine Service Information: wave heights WAVE_GLO_PHY_SWH_L3_NRT_014_001 (doi:10.48670/moi-00179), Sentinel-1 swell WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002 (doi:10.48670/moi-00174); rendered by Allshore Surf';
+  var SAT_CREDIT = 'Generated using E.U. Copernicus Marine Service Information: wave heights WAVE_GLO_PHY_SWH_L3_NRT_014_001 (doi:10.48670/moi-00179), Sentinel-1 swell WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002 (doi:10.48670/moi-00178); rendered by Allshore Surf';
   // <= 29 visible characters (the GFS rule): "Overlay: Copernicus Marine"; the title carries the full credit and the DOIs
   var SAT_ATTRIBUTION = 'Overlay: <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="' + SAT_CREDIT + '">Copernicus Marine</a>';
   var SAT_FRAME_ATTRIBUTION = ' · <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="Satellite readings: ' + SAT_CREDIT + '">Copernicus Marine</a>';
   var SAT_FADE = [1, 0.35];                                // a dot's alpha: the newest reading .. the window's far end
-  var MAX_SAT_CHUNKS = 12, MAX_SAT_CHUNK_BYTES = 2 * 1024 * 1024, MAX_SAT_SAMPLES = 600000, MAX_SAT_INFLIGHT = 3, SAT_BUCKET_DEG = 0.5;
+  var MAX_SAT_CHUNKS = 20, MAX_SAT_CHUNK_BYTES = 2 * 1024 * 1024, MAX_SAT_SAMPLES = 600000, MAX_SAT_INFLIGHT = 3, SAT_BUCKET_DEG = 0.5;
   var SAT_MAGIC = { alt: 'ALT1', swell: 'SWL1' }, SAT_FORMAT = { alt: 'alt-v1', swell: 'swell-v1' };
   // The columns exactly as altfmt.py defines them (name, dtype, scale, none): a chunk or pointer with others is refused.
   var SAT_COLUMNS = {
@@ -7007,7 +7007,7 @@
       }
       body.appendChild(buildLegend('hs', SAT_FDEF, unit));
       var line = mk('div', 'ov-meta ov-sat-line', self._satLineText()); body.appendChild(line); self.ui.satLine = line;
-      body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00174' : '') + ').'));
+      body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00178' : '') + ').'));
       if (self._satStaleShown) {
         var h = Math.round((Date.now() - newest) / 3.6e6);
         body.appendChild(mk('div', 'ov-warn', 'The newest satellite reading is ' + h + ' h old.'));

@@ -1,5 +1,6 @@
 # Publishes the last ~30 h of satellite altimeter wave heights (Copernicus Marine WAVE_GLO_PHY_SWH_L3_NRT_014_001,
-# anonymous on the open CloudFerro bucket; NOAA Jason-3 OGDR when ALT_JASON3_INDEX is set) collocated with the GFS-Wave
+# anonymous on the open CloudFerro bucket; NOAA Jason-3 OGDR from its public directory, ALT_JASON3_INDEX overrides the
+# URL, "off" leaves it out) collocated with the GFS-Wave
 # frames, to R2 under alt/v1/ as one chunk per 3-hour window (plan sections 45 and 81). Files are regenerated upstream
 # every 30 min while data arrives: the job runs every 10 min from the trigger Worker (this cron is the fallback), a quiet
 # run ends in seconds, a changed window takes 20-40 s.

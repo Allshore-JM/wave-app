@@ -189,7 +189,8 @@ test('satStrideFor / satRadius / satAlpha / satColourIndex: the thinning by zoom
   for (const [tp, want] of [[4, 8.4], [8, 12.8], [14, 19.4], [20, 26], [30, 26]]) assert.ok(Math.abs(I.satArrowLength(tp) - want) < 1e-9, 'tp ' + tp);
   assert.deepEqual(I.SAT_FDEF, { lo: 0, hi: 22.86, legend: [0, 18.288], units: 'm', interpolation: 'bilinear' }, '= SCALES.hs / encode.FIELDS hs');
   assert.ok(I.SAT_ATTRIBUTION.replace(/<[^>]+>/g, '').length <= 29, 'the credit\'s visible text: ' + I.SAT_ATTRIBUTION.replace(/<[^>]+>/g, ''));
-  assert.ok(/10\.48670\/moi-00179/.test(I.SAT_ATTRIBUTION) && /10\.48670\/moi-00174/.test(I.SAT_ATTRIBUTION), 'both DOIs in the title');
+  assert.ok(/10\.48670\/moi-00179/.test(I.SAT_ATTRIBUTION) && /10\.48670\/moi-00178/.test(I.SAT_ATTRIBUTION) && !/moi-00174/.test(I.SAT_ATTRIBUTION), 'both DOIs in the title (014_002 is moi-00178)');
+  assert.equal(I.MAX_SAT_CHUNKS, 20, 'the swell job keeps 56 h (19 windows)');
   assert.deepEqual(Object.keys(I.OBS_DEFS), ['sst', 'sat']); assert.equal(I.hasObs('constructor'), false); assert.equal(I.hasObs('sat'), true);
 });
 

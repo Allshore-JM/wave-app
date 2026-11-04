@@ -170,6 +170,16 @@ site, review, fixes)."**
   merge `feat/satellite-jobs` into `Live-Buoy-Update` (no force, no rebase), push, dispatch the dry run, watch the
   first live runs (`alt/v1/latest.json`, `sarswell/v1/latest.json`), then step 4 (the test site: cherry-pick
   `feat/satellite`'s client commits to `test`; the owner sets `ALT_OVERLAY=1` / `SARSWELL=1` on the test service).
+- 2026-11-04 22:55Z: JOB-ONLY MERGE DONE on the owner's explicit go-ahead ("merge the jobs to production"):
+  `feat/satellite-jobs` @ 60102d7 merged into `Live-Buoy-Update` (merge 8cd6eba, no force, no rebase, the tree equal
+  to the branch). The rollback point is d973c76: the tag `prod-pre-alt-job` exists locally but the session's git proxy
+  refuses tag pushes ("the remote end hung up") and the API proxy refuses ref writes, so the same point is on the remote
+  as BRANCH `prod-pre-alt-job` (d973c76); the owner can add the tag from their machine (`git tag prod-pre-alt-job
+  d973c76 && git push origin prod-pre-alt-job`). Dispatch dry runs on the runner, both success: model-alt #1 (10
+  windows, 437,591 readings, 11 datasets, 31 frames, OGDR duplicates dropped) and model-sarswell #1 (10 windows in the
+  56-h reach, 2,739 points, Sentinel-1C + CFOSAT, 24 s). The trigger Worker still needs the owner's deploy for the
+  10-minute dispatches (`wrangler.jsonc` GH_WORKFLOW gained both; DEPLOYMENT.md); until then the crons (:07/:37,
+  :09/:39) run the jobs every 30 min. NEXT: watch the first live pointers land, then step 4.
 
 
 ---

@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_sat: false, overlay_swell: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -19,7 +19,7 @@ function gatedScript(subs) {
   for (const k of Object.keys(subs)) src = src.split('{{ ' + k + '|tojson }}').join(JSON.stringify(subs[k]));
   return src;
 }
-const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true }), SRC_SAT = gatedScript({ overlay_sat: true, overlay_swell: true });
+const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true }), SRC_SAT = gatedScript({ overlay_sat: true, overlay_swell: true, overlay_grid: true });
 const KEY = 'allshore.overlay.v1';
 
 function page(opt) {
@@ -306,7 +306,7 @@ test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SS
 
 test('section 81: "Satellite waves" is offered only with ALT_OVERLAY (SAT); SARSWELL reaches the module; a saved sat without it starts Off', async () => {
   assert.ok(SRC.indexOf('var SAT = false;') >= 0 && SRC.indexOf('var SWELL = false;') >= 0 && SRC_SAT.indexOf('var SAT = true;') >= 0 && SRC_SAT.indexOf('var SWELL = true;') >= 0);
-  assert.ok(SRC.indexOf('sat: SAT, swell: SWELL') >= 0);
+  assert.ok(SRC.indexOf('sat: SAT, swell: SWELL, grid: GRID') >= 0 && SRC.indexOf('var GRID = false;') >= 0 && SRC_SAT.indexOf('var GRID = true;') >= 0);   // section 82
   const off = page({ complete: true }), on = page({ complete: true, sat: true });
   assert.ok(off.boxes[0].innerHTML.indexOf('value="sat"') < 0);
   assert.ok(on.boxes[0].innerHTML.indexOf('<option value="sat">Satellite waves</option></select>') >= 0);
@@ -314,7 +314,7 @@ test('section 81: "Satellite waves" is offered only with ALT_OVERLAY (SAT); SARS
   assert.equal(p1.sel.value, 'sat');
   await loadedAndIdle(p1);
   assert.deepEqual(p1.overlays[0].mounts, [['sat', true]]);
-  assert.equal(p1.overlays[0].opts.sat, true); assert.equal(p1.overlays[0].opts.swell, true);
+  assert.equal(p1.overlays[0].opts.sat, true); assert.equal(p1.overlays[0].opts.swell, true); assert.equal(p1.overlays[0].opts.grid, true);
   const p2 = page({ init: { field: 'sat' } });
   assert.equal(p2.sel.value, '');
   await loadedAndIdle(p2);

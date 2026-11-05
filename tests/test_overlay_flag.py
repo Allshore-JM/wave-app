@@ -36,6 +36,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("SST_OVERLAY", raising=False)
     monkeypatch.delenv("ALT_OVERLAY", raising=False)
     monkeypatch.delenv("SARSWELL", raising=False)
+    monkeypatch.delenv("ALT_GRID", raising=False)
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.delenv("PLACES_BASE", raising=False)
@@ -91,6 +92,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
         assert "var SAT = false;" in body and "var SWELL = false;" in body and "sat: SAT, swell: SWELL" in body and 'value="sat">Satellite waves' in body   # section 81
+        assert "var GRID = false;" in body and "sat: SAT, swell: SWELL, grid: GRID" in body                            # section 82
         assert "var GLWU = false;" in body and "glwu: GLWU" in body and "return { model: 'GLWU' }" in body   # section 50: the Great Lakes under GFS (GLWU_OVERLAY=1)
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
         assert "isobars: ISOBARS, particles: PARTICLES / 100" in body and "'ovIsobars'" in body and "'ovParticles'" in body
@@ -236,7 +238,9 @@ def test_overlay_js_syntax_and_contract_strings():
                    "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
                    "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles",                                            # section 46 step 5
                    "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "self._hpaText(latlng.lat, latlng.lng)", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX",
-                   "LAKEOUT_TIER0", "'lakeoutlines-i.bin'", "'static/coast/lakeoutlines-v1'", "setLakeOutlineCoast", "_lakeOutFor", "_syncLakeOutlines", "dropQueue", "self._syncLakeOutlines(); });"):   # section 51 step 3   # fix round 3 (the readout's call site: its closure is not driven by the Node harness)
+                   "LAKEOUT_TIER0", "'lakeoutlines-i.bin'", "'static/coast/lakeoutlines-v1'", "setLakeOutlineCoast", "_lakeOutFor", "_syncLakeOutlines", "dropQueue", "self._syncLakeOutlines(); });",
+                   "GridStore", "'altgrid/v1'", "setSatGrid", "_syncGrid", "10.48670/moi-00180", "'Gridded map'"):                     # section 82: the gridded map
+  # section 51 step 3   # fix round 3 (the readout's call site: its closure is not driven by the Node harness)
         assert needle in js, needle
     for gone in ("setLakeOutlines", "this.lakeOutlines",                                  # owner 2026-10-23: lake outlines always on
                  "'Opacity '", "Overlay opacity", "' Contours'", "' Animation'", "opacityWind",   # owner 2026-09-26: no settings row
@@ -279,6 +283,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_sst|tojson }}", json.dumps(False))
                    .replace("{{ overlay_sat|tojson }}", json.dumps(False))
                    .replace("{{ overlay_swell|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_grid|tojson }}", json.dumps(False))
                    .replace("{{ overlay_glwu|tojson }}", json.dumps(False))
                    .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
         assert got[0] == want, name
@@ -372,17 +377,23 @@ def test_sat_overlay_env_and_the_page(monkeypatch):
     assert A._swell_overlay_enabled() is False, "the swell switch needs the layer"
     monkeypatch.setenv("ALT_OVERLAY", "1")
     assert A._swell_overlay_enabled() is True
+    monkeypatch.setenv("ALT_GRID", "1")                                  # section 82: the gridded map box, with the layer only
+    monkeypatch.delenv("ALT_OVERLAY")
+    assert A._grid_overlay_enabled() is False, "the gridded map needs the layer"
+    monkeypatch.setenv("ALT_OVERLAY", "1")
+    assert A._grid_overlay_enabled() is True
     on = G.run_scenarios(A)
     monkeypatch.delenv("ALT_OVERLAY")
     monkeypatch.delenv("SARSWELL")
+    monkeypatch.delenv("ALT_GRID")
     off = G.run_scenarios(A)
     for name in GOLDEN:
-        assert "var SAT = true;" in on[name]["body"] and "var SWELL = true;" in on[name]["body"], name
-        assert on[name]["body"].replace("var SAT = true;", "var SAT = false;").replace("var SWELL = true;", "var SWELL = false;") == off[name]["body"], name
+        assert "var SAT = true;" in on[name]["body"] and "var SWELL = true;" in on[name]["body"] and "var GRID = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var SAT = true;", "var SAT = false;").replace("var SWELL = true;", "var SWELL = false;").replace("var GRID = true;", "var GRID = false;") == off[name]["body"], name
     monkeypatch.delenv("MODEL_OVERLAYS")
     monkeypatch.setenv("ALT_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
-        assert "var SAT" not in rec["body"] and "Satellite waves" not in rec["body"], name
+        assert "var SAT" not in rec["body"] and "Satellite waves" not in rec["body"] and "var GRID" not in rec["body"], name
 
 
 def test_sst_overlay_env_and_the_page(monkeypatch):

@@ -4905,6 +4905,7 @@
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
       var SAT = {{ overlay_sat|tojson }};                       // "Satellite waves" offered (ALT_OVERLAY; plan section 81)
       var SWELL = {{ overlay_swell|tojson }};                   // ... with the Sentinel-1 swell switch (SARSWELL; plan section 81)
+      var GRID = {{ overlay_grid|tojson }};                     // ... with the "Gridded map" box (ALT_GRID; plan section 82)
       var GLWU = {{ overlay_glwu|tojson }};                     // the Great Lakes waves under GFS (GLWU_OVERLAY; plan section 50)
       var TZ = {{ forecast_tz_name|tojson }};
       // The settings gear's overlay rows (plan section 46), remembered in this browser: the pressure isobars under the wind
@@ -5005,7 +5006,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, sat: SAT, swell: SWELL, glwu: GLWU,
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, sat: SAT, swell: SWELL, grid: GRID, glwu: GLWU,
             isobars: ISOBARS, particles: PARTICLES / 100
           });
           overlay.mount(field, restore);

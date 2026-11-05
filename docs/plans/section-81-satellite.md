@@ -160,8 +160,131 @@ site, review, fixes)."**
   quality flag is `swh_ocean_compression_qual`, rain / ice flags applied, NOAA's directory of cycles discovered
   (`JASON3_INDEX` default, ON by default; `ALT_JASON3_INDEX` overrides, `off` disables): no repository variable needed.
   Real local builds of both jobs against the live sources: heights 10 windows / 433k readings / 61 s, obs - model
-  median +0.13..0.17 m; swell 154 points, chunks read back equal to the NetCDF. 18 job tests pass. NEXT: the dispatch dry
-  run on the runner (workflow_dispatch on the branch), then STOP for the job-only merge (tag `prod-pre-alt-job`).
+  median +0.13..0.17 m; swell 154 points, chunks read back equal to the NetCDF. 18 job tests pass (fdc5fa5).
+- 2026-11-04: the dispatch dry run cannot run before the merge: GitHub answers 404 to a workflow_dispatch of a
+  workflow that exists only on a feature branch (it is registered from the default branch), so it is the first thing
+  after the job-only merge (Actions -> model-alt / model-sarswell -> Run workflow, dry_run = true; then a real run).
+  The job-only merge is prepared as branch `feat/satellite-jobs` @ 60102d7 off `Live-Buoy-Update` @ d973c76 (19
+  files: the jobs, workflows, pins, tests, the README's job section, the G50 record, this plan; nothing on the page;
+  293 model_frames tests pass on it). STOPPED for the owner's go-ahead: on it, tag `prod-pre-alt-job` at d973c76,
+  merge `feat/satellite-jobs` into `Live-Buoy-Update` (no force, no rebase), push, dispatch the dry run, watch the
+  first live runs (`alt/v1/latest.json`, `sarswell/v1/latest.json`), then step 4 (the test site: cherry-pick
+  `feat/satellite`'s client commits to `test`; the owner sets `ALT_OVERLAY=1` / `SARSWELL=1` on the test service).
+- 2026-11-04 22:55Z: JOB-ONLY MERGE DONE on the owner's explicit go-ahead ("merge the jobs to production"):
+  `feat/satellite-jobs` @ 60102d7 merged into `Live-Buoy-Update` (merge 8cd6eba, no force, no rebase, the tree equal
+  to the branch). The rollback point is d973c76: the tag `prod-pre-alt-job` exists locally but the session's git proxy
+  refuses tag pushes ("the remote end hung up") and the API proxy refuses ref writes, so the same point is on the remote
+  as BRANCH `prod-pre-alt-job` (d973c76); the owner can add the tag from their machine (`git tag prod-pre-alt-job
+  d973c76 && git push origin prod-pre-alt-job`). Dispatch dry runs on the runner, both success: model-alt #1 (10
+  windows, 437,591 readings, 11 datasets, 31 frames, OGDR duplicates dropped) and model-sarswell #1 (10 windows in the
+  56-h reach, 2,739 points, Sentinel-1C + CFOSAT, 24 s). The trigger Worker still needs the owner's deploy for the
+  10-minute dispatches (`wrangler.jsonc` GH_WORKFLOW gained both; DEPLOYMENT.md); until then the crons (:07/:37,
+  :09/:39) run the jobs every 30 min. NEXT: watch the first live pointers land, then step 4.
+- 2026-11-04 23:01Z: step 4, the test site: `test` @ 81f13b6 carries the client (the client paths of efb6cd0,
+  e6a9495, 5ed656e, b644b7e, fdc5fa5 as one commit, since the first jobs commit also held 892 client lines; README
+  kept as test's, test's logo lines kept, its own golden kept; coast-build runs sat.test.js). On the worktree the 12 +
+  27 Node tests pass; `tests/test_overlay_flag.py` has the same 5 failures on test's own tip (its golden is stale
+  there since section 77: pre-existing, not from this change). The owner's sheet: `section-81-test-site-sheet.md`
+  (set `ALT_OVERLAY=1` then `SARSWELL=1` on the TEST service, each with its own go-ahead; the checks).
+- 2026-11-04 23:07Z: BOTH PRODUCTS LIVE on the bucket, published by runs #2 of each workflow (dispatched at 23:06
+  by the trigger Worker: it already dispatches both). `alt/v1/latest.json`: build 20261104T230624Z, 10 chunks
+  20261103T15..20261104T18 (30-48k readings each), 9 missions, newest 20:46Z, model runs 12/06/00/18Z, max-age 300;
+  `sarswell/v1/latest.json`: 9 chunks 20261102T15..20261103T15 (56-524 points), keep_h 56, Sentinel-1C + CFOSAT,
+  newest 2026-11-03 16:04Z. The newest chunk of each read back from the bucket decodes with n equal to its record
+  (heights obs - model median +0.135 m; the swell header carries the quality rule).
+- 2026-11-04 23:51Z: the owner set `ALT_OVERLAY=1` on the TEST service (wave-app-clean.onrender.com serves
+  `var SAT = true`, `SWELL = false`, asset 2.23.2). My own pass with headless Chromium (scratch `satcheck.js`,
+  `satcheck2.js`; screenshots sent to the owner): the entry lists "Satellite waves"; the own entry loads 339,946
+  readings (complete) with the panel "Readings: last 24 h, newest Nov 4, 04:51 PM EST (2 h ago) · 9 satellites" and
+  the credit line; the tracks draw at z3 / z5 / z7 in the scale's colours, hollow near land; hover "8.6 ft · SARAL ·
+  Nov 4, 11:19 AM EST · model 8.0 ft (+0.6)" and "14.0 ft · Sentinel-3B · 02:50 PM EST · model 13.9 ft (+0.1)"; the map
+  credit "Overlay: Copernicus Marine"; the box under Wave height draws 1,854 readings within 3 h of the frame with the
+  note "within 3 h of the frame" and the credit gains " · Copernicus Marine"; peak period detaches the layer; a reload
+  keeps the box on; the phone layout folds to the panel at the bottom with the dots drawn; no console errors on either
+  viewport. Reviewer B (fresh agent, the test site) started: record to be `docs/reviews/satellite-G52-test-site.md`.
+  WAITING on the owner's separate go-ahead for `SARSWELL=1` on the TEST service (the Swell switch).
+- 2026-11-05 00:02Z: the owner set `SARSWELL=1` on the TEST service. My pass (scratch `swellcheck.js`, `probe.js`;
+  screenshots sent): the Heights | Swell switch shows with aria-pressed; Swell loads 1,962 points (17 chunks on the
+  bucket now: the Nov 4 batch landed at ~23:17Z), the arrows draw at z3 / z5 with colour by height and length by period,
+  hover "Swell 1: 6.6 ft · 15 s · from 304° (CFOSAT, 9 h ago)", the credit line carries both DOIs, the title too; the
+  kind is kept across a reload and across a visit to Wave height; no console errors, no failed requests, on either
+  viewport. Two observations, both the data, not bugs: (1) the readings line says "1 satellite" because the swell
+  window hangs off the NEWEST point (CFOSAT, Nov 4 17:23Z) while Sentinel-1C's newest is Nov 3 16:04Z, outside the
+  24 h: when one satellite's batch lags the other's, the window shows one satellite (OWNER: widen the swell window to
+  48 h, or hang it off the clock, if that reads wrong); (2) at a frame whose 3-h window lies beyond the newest height
+  reading (01Z with readings to 21:51Z) the box says "no readings within 3 h of this time", as designed. Reviewer B
+  told about the switch. WAITING: reviewer B's record.
+- 2026-11-05 00:35Z: reviewer B's record `docs/reviews/satellite-G52-test-site.md`: 0 P0, 1 P1 (a `model_edge`
+  reading's hover showed the under-ice model value as a +10 ft miss), 3 P2 (hollow dots unexplained; "9 satellites"
+  counting Jason-3 twice; a plain tap shows nothing on the phone), 5 P3 (the difference computed before rounding; a
+  persistent 503 / a 404 unnamed on the readings line; the hollow rings beside the station rings; the swell line's
+  "last 24 h"). Fix round (asset 2.23.3): 1-7 fixed as the record's fix table says (edge / near land in the hover, the
+  key line, spacecraft counted once, the difference of the printed values, retrying / missing windows named, a tap on
+  a mark shows its readout for 4 s); 8 and 9 left to the owner. 12 Node tests pass with the new cases. NEXT: cherry-pick
+  the fix round to `test`, the owner's look, then STOP for the client merge (tag `prod-pre-alt`).
+- 2026-11-05 00:40Z: the fix round is on `feat/satellite` @ bfae515 and on `test` @ ce6afe2 (the client paths; asset
+  2.23.3 served once Render deploys). STEP 6 PREPARED AND STOPPED: the client merge `feat/satellite` -> `Live-Buoy-Update`
+  is built locally as merge commit 1de5702 (README and the plan copy taken from the branch, supersets of production's;
+  the merged tree equals the branch's tree exactly; 15 files, +2122 / -57 against production: the client, the page flags,
+  the tests, the README's client section). On the owner's explicit go-ahead: the rollback point is production's tip
+  8cd6eba (tag `prod-pre-alt`, pushed as a branch too if the proxy still refuses tags), fast-forward `Live-Buoy-Update`
+  to 1de5702, push; nothing shows on production until the owner sets `ALT_OVERLAY=1` / `SARSWELL=1` there, each with
+  its own go-ahead.
+- 2026-11-05 00:50Z: coast-build #584 (feat/satellite @ bfae515) and #585 (test @ ce6afe2) FAILED: the fix round's
+  readout flag used `el.removeAttribute('data-sat')`, which the lake / playback test worlds' fake elements lack
+  (`TypeError: el.removeAttribute is not a function` in lake.test.js:697 and playback.test.js:3683 / 3721); sat.test.js's
+  sandbox has the attribute methods, so the satellite suite alone did not catch it. Fixed as a closure flag `satShown`
+  (asset 2.23.4); the whole coast-build list run locally before the push this time. The prepared merge 1de5702 is
+  superseded: rebuilt from the branch's tip at the go-ahead.
+- 2026-11-05 00:50Z: coast-build #586 / #587 green on the fix (a16206f / 4708b04).
+- 2026-11-05 01:00Z: OWNER: "the satellite reading overlays on the wave heights aren't very helpful, since it only
+  covers a few frames": the "Satellite readings" box under Wave height REMOVED (asset 2.23.5): `setSatOn`,
+  `_wantSatFrame`, `_syncSatAttach`, `_syncSat`, `_clearSatWindow`, the notes, the frame-mode hover and credit, the
+  row and its CSS, the saved `sat` state, the box's test; the own entry is untouched (decision 6 of the design is
+  withdrawn; the G51 / G52 records keep their history). The owner also asked for an assessment of a full
+  interpolated wave-height map from the readings, on / off inside the Satellite waves entry: below, "Assessment".
+
+
+## Assessment (2026-11-05): a full interpolated wave-height map from the satellite readings, on / off in "Satellite waves"
+
+**What the readings can and cannot give.** Nine altimeters measure 1 Hz along their tracks (a reading every ~7 km along
+a line a few km wide). In 24 h the tracks lie roughly 1.5-3 degrees apart at mid-latitudes and nothing is measured
+between them; a swell field moves ~1,000 km a day, so a map stitched from 24 h of tracks mixes times as well as
+places. Every "full map" from these readings is therefore an interpolation that is mostly guesswork between tracks,
+and a smooth picture hides that. It can still be useful as context (where the big seas are, how the model compares
+over a basin), not as a nowcast to read a spot from.
+
+**Option A (recommended): the Copernicus gridded product, not our own interpolation.** CMEMS publishes exactly this
+map, made properly: `WAVE_GLO_PHY_SWH_L4_NRT_014_003`, dataset `cmems_obs-wave_glo_phy-swh_nrt_multi-l4-0.5deg_PT6H-i`
+= `VAVH_INST`, "an estimate of the instantaneous wave field every 6 h at 0.5 degrees, using all available level-3
+along-track measurements and accounting for their spatial and temporal proximity", with a flag field; and a 2-degree
+daily mean beside it. Checked on the bucket on 2026-11-05: anonymous under `native/WAVE_GLO_PHY_SWH_L4_NRT_014_003/`,
+one ~9 MB NetCDF a day holding the four steps 00 / 06 / 12 / 18Z of the day before (`..._20261103T120000Z_
+P20261104T073010Z.nc`, produced 07:30Z the next day), int16 x 0.001 m on a 720 x 359 grid, 55 % of the cells valid
+(open ocean; blank within ~50 km of coasts and under ice). So the newest step is 13-37 h behind the clock. Same
+licence and credit as the other CMEMS products (its own DOI in the credit line).
+  - Job: a third product on `alt.py`'s machinery (download the daily file, one PNG frame per step in the frames'
+    encoding on its own 0.5-degree grid, a manifest naming the steps and their production time, `altgrid/v1/`, prune
+    and stale as the others): about a day, the GLWU job being the precedent for a layer on its own grid.
+  - Client: a "Gridded map" toggle in the Satellite waves panel (off by default, remembered per tab) that draws the
+    step nearest the window's reference under the dots / arrows through the existing `ModelGridLayer` (it already draws
+    a non-model grid for the lakes), with the step's valid time and age in the panel ("CMEMS gridded map · Nov 3,
+    18:00 UTC (31 h ago)") and the credit; a hover gives the gridded value beside the reading's: about a day, plus a
+    review round, the test site and the two merges.
+  - Limits: a day old, 55-km cells, nothing within ~50 km of the coast (so no use near a break), four steps a day.
+
+**Option B: our own interpolation from the readings in hand.** The heights job has every reading of the last 30 h,
+the newest 1-2 h old; a Gaussian-weighted space-time average on a 0.5-degree grid (scales ~300 km / 12 h), blank
+where no reading lies within ~400 km / 12 h, with an age field, is 1-2 days of job work and the same client work.
+It would be fresher than CMEMS's by a day, but it is an unvalidated product: streaks along the tracks, false
+smoothness between them, no error estimate, and the owner's name on it. A sounder variant interpolates the
+obs - model differences onto the GFS-Wave field (a "model corrected by the satellites" map), which is a real
+design in its own right (section 45's discrepancy view, reworked) and not a quick addition.
+
+**Advice.** Build option A as a separate section (82) after section 81's client merge: it answers the question
+("a full wave-height map from the satellites, on or off") with an official, credited product for about two days of
+work, and its one-day lag is the honest state of the art for a gridded satellite field. Revisit option B only if the
+lag proves unacceptable in use; do not ship a home-made full map before that.
 
 
 ---

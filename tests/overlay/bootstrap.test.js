@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_sat: false, overlay_swell: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -19,7 +19,7 @@ function gatedScript(subs) {
   for (const k of Object.keys(subs)) src = src.split('{{ ' + k + '|tojson }}').join(JSON.stringify(subs[k]));
   return src;
 }
-const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true });
+const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true }), SRC_SAT = gatedScript({ overlay_sat: true, overlay_swell: true });
 const KEY = 'allshore.overlay.v1';
 
 function page(opt) {
@@ -39,7 +39,7 @@ function page(opt) {
     for (;;) { timers.sort((x, y) => x.at - y.at); const t = timers[0]; if (!t || t.at > end) break; timers.shift(); now = t.at; t.fn(); }
     now = end;
   }
-  const OPTS = opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : ['', 'hs', 'tp', 'wind'];
+  const OPTS = opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : opt.sat ? ['', 'hs', 'tp', 'wind', 'sat'] : ['', 'hs', 'tp', 'wind'];
   const sel = { _v: '', _ls: [], get value() { return this._v; }, set value(v) { v = String(v); this._v = OPTS.includes(v) ? v : ''; },
     addEventListener(ev, fn) { this._ls.push(fn); }, userPick(v) { this.value = v; this._ls.forEach((f) => f({})); } };
   const panel = { textContent: '' }, unit = { _ls: [], addEventListener(ev, fn) { this._ls.push(fn); } };
@@ -84,7 +84,7 @@ function page(opt) {
   const map = { addControl: (c) => c.onAdd() };
   if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
   if (opt.zoom) { map.zoomControl = { tag: 'zoom' }; map.removed = []; map.removeControl = (c) => map.removed.push(c); }
-  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : SRC)(
+  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : opt.sat ? SRC_SAT : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
     log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId, win: window,
@@ -302,6 +302,28 @@ test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SS
   p3.sel.userPick('hs'); await settle();
   assert.deepEqual(p3.overlays[0].mounts[1], ['hs', false]); assert.equal(p3.read().field, 'hs');
   assert.equal(page({ sst: false, init: { field: '' } }).overlays.length, 0);
+});
+
+test('section 81: "Satellite waves" is offered only with ALT_OVERLAY (SAT); SARSWELL reaches the module; a saved sat without it starts Off', async () => {
+  assert.ok(SRC.indexOf('var SAT = false;') >= 0 && SRC.indexOf('var SWELL = false;') >= 0 && SRC_SAT.indexOf('var SAT = true;') >= 0 && SRC_SAT.indexOf('var SWELL = true;') >= 0);
+  assert.ok(SRC.indexOf('sat: SAT, swell: SWELL') >= 0);
+  const off = page({ complete: true }), on = page({ complete: true, sat: true });
+  assert.ok(off.boxes[0].innerHTML.indexOf('value="sat"') < 0);
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="sat">Satellite waves</option></select>') >= 0);
+  const p1 = page({ init: { field: 'sat' }, sat: true });
+  assert.equal(p1.sel.value, 'sat');
+  await loadedAndIdle(p1);
+  assert.deepEqual(p1.overlays[0].mounts, [['sat', true]]);
+  assert.equal(p1.overlays[0].opts.sat, true); assert.equal(p1.overlays[0].opts.swell, true);
+  const p2 = page({ init: { field: 'sat' } });
+  assert.equal(p2.sel.value, '');
+  await loadedAndIdle(p2);
+  assert.equal(p2.overlays.length, 0, 'nothing mounted');
+  const p3 = page({ sat: true, init: { field: '' } });
+  p3.sel.userPick('sat'); await settle();
+  assert.deepEqual(p3.overlays[0].mounts, [['sat', false]]); assert.equal(p3.read().field, 'sat');
+  p3.sel.userPick('hs'); await settle();
+  assert.deepEqual(p3.overlays[0].mounts[1], ['hs', false]); assert.equal(p3.read().field, 'hs');
 });
 
 test('section 50: the Great Lakes setting (GLWU) reaches the module; the page reads a Great Lakes table\'s cycle as model GLWU', async () => {

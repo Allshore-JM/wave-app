@@ -45,7 +45,8 @@ Without the flags the page is byte-identical to the pre-feature page (`tests/tes
 
 ## Phone checks (Safari and Chrome)
 
-- The own entry: the panel folds to "Satellite · newest <time>"; the dots stay tappable (the hover text on tap).
+- The own entry: the panel folds to "Satellite · newest <time>"; a tap (or a long press) on a dot or an arrow shows
+  its readout for 4 s; the field under Wave height keeps its long press.
 - The box under Wave height fits the phone panel; the note wraps.
 - No horizontal scroll from the Heights | Swell switch.
 

@@ -450,9 +450,32 @@ test('controller: the own entry mounts in mode obs with the layer in obsPane, sa
   assert.ok(await until(() => ov.sat.flat && ov.sat.flat.n === 3 && /satellites$/.test(ov.ui.satLine.textContent)));
   assert.ok(/· 2 satellites$/.test(ov.ui.satLine.textContent), ov.ui.satLine.textContent);
   assert.equal(ov.satLayer.count(), 3);
+  const deepText = (n) => (n.textContent || '') + ' ' + (n.children || []).map(deepText).join(' ');
+  assert.ok(deepText(ov.opts.panel).indexOf(I.SAT_KEY) >= 0 && /Hollow dots/.test(I.SAT_KEY), 'the hollow dots explained on the panel (G52 B-2)');
   // the hover: a reading under the cursor, else nothing on this entry
   assert.equal(ov._satReadout(ov.satLayer.store.flat.n - 1, { lat: 10.1, lng: -149.9 }, 3), '3.6 ft · Sentinel-3A · T12:00 HST · model 4.3 ft (-0.7)');
-  assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '3.3 ft · Jason-3 · T11:00 HST · model 3.9 ft (-0.7)');
+  assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '3.3 ft · Jason-3 · T11:00 HST · model 3.9 ft (-0.6)', 'the difference of the printed values (3.3 - 3.9), not of the raw ones (-0.66)');
+  // G52 B-1 / B-2 / B-5: a model-edge reading shows the model's value without a comparison, a near-land one says so, the
+  // difference is that of the two numbers printed (2.5 - 1.2 = 1.3, not 1.4); B-3: Jason-3 and its OGDR feed count once
+  {
+    const f = ov.satLayer.store.flat, save = { flags: f.flags.slice(), swh: f.swh.slice(), model: f.model.slice(), missions: f.missions };
+    f.flags[0] = I.SAT_FLAG_MODEL_EDGE; assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '3.3 ft · Jason-3 · T11:00 HST · model 3.9 ft (edge)');
+    f.flags[0] = I.SAT_FLAG_NEAR_LAND; assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '3.3 ft · Jason-3 · T11:00 HST · near land · model 3.9 ft (-0.6)');
+    f.flags[0] = 0; f.swh[0] = 2.5 / 3.28084 + 0.0004; f.model[0] = 1.2 / 3.28084 - 0.0004;
+    assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3), '2.5 ft · Jason-3 · T11:00 HST · model 1.2 ft (+1.3)');
+    f.missions = [{ id: 'j3', short: 'Jason-3' }, { id: 'j3_ogdr', short: 'Jason-3 OGDR' }];
+    ov._satLineSync(); assert.ok(/· 1 satellite$/.test(ov.ui.satLine.textContent), 'one spacecraft: ' + ov.ui.satLine.textContent);
+    f.flags.set(save.flags); f.swh.set(save.swh); f.model.set(save.model); f.missions = save.missions; ov._satLineSync();
+    assert.ok(/· 2 satellites$/.test(ov.ui.satLine.textContent));
+    // G52 B-6 / B-7: a needed chunk retrying after a failure, or one the bucket lacks, is named on the line
+    const key = ov.sat.pointer.chunks[0].key, had = ov.sat.chunks.get(key);
+    ov.sat.chunks.delete(key); ov.sat.failed[key] = Date.now() + 60000; ov._satLineSync();
+    assert.ok(/loading 1 of 2… \(1 retrying\)$/.test(ov.ui.satLine.textContent), ov.ui.satLine.textContent);
+    ov.sat.failed[key] = true; ov._satLineSync();
+    assert.ok(/· 1 of 2 windows$/.test(ov.ui.satLine.textContent), ov.ui.satLine.textContent);
+    delete ov.sat.failed[key]; ov.sat.chunks.set(key, had); ov._satLineSync();
+    assert.ok(/· 2 satellites$/.test(ov.ui.satLine.textContent));
+  }
   // G51 P1: a pointer adopted once its chunk landed (after the recheck resolved) moves the window to its newest reading
   const ptr2 = pointer('alt', [chunkRec('alt', '20261104T09', 1), chunkRec('alt', '20261104T12', 2, '20261104T172000Z'), chunkRec('alt', '20261104T15', 1, '20261104T172000Z')], { newest_utc: '2026-11-04T17:29:00Z', build: '20261104T172000Z' });
   ov._satRecheck(); w.answer(/latest\.json$/, ptr2); await settle(20);

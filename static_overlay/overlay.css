@@ -152,7 +152,7 @@
 .ov-seg-btn:first-child { border-radius: 8px 0 0 8px; }
 .ov-seg-btn:last-child { border-radius: 0 8px 8px 0; margin-left: -1px; }
 .ov-seg-btn.ov-seg-on { background: #0f8f8c; color: #fff; }
-.ov-sat-credit { font-size: 10.5px; color: #3f4d6e; }
+.ov-sat-credit, .ov-sat-key { font-size: 10.5px; color: #3f4d6e; }
 @media (pointer: coarse) { .ov-satrow input { width: 20px; height: 20px; } .ov-seg-btn { min-height: 28px; } }
 /* the overlay's one live region (loading / error / unavailable frames): read out, not shown */
 .ov-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }

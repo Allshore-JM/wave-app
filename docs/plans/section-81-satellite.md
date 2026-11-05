@@ -214,6 +214,14 @@ site, review, fixes)."**
   48 h, or hang it off the clock, if that reads wrong); (2) at a frame whose 3-h window lies beyond the newest height
   reading (01Z with readings to 21:51Z) the box says "no readings within 3 h of this time", as designed. Reviewer B
   told about the switch. WAITING: reviewer B's record.
+- 2026-11-05 00:35Z: reviewer B's record `docs/reviews/satellite-G52-test-site.md`: 0 P0, 1 P1 (a `model_edge`
+  reading's hover showed the under-ice model value as a +10 ft miss), 3 P2 (hollow dots unexplained; "9 satellites"
+  counting Jason-3 twice; a plain tap shows nothing on the phone), 5 P3 (the difference computed before rounding; a
+  persistent 503 / a 404 unnamed on the readings line; the hollow rings beside the station rings; the swell line's
+  "last 24 h"). Fix round (asset 2.23.3): 1-7 fixed as the record's fix table says (edge / near land in the hover, the
+  key line, spacecraft counted once, the difference of the printed values, retrying / missing windows named, a tap on
+  a mark shows its readout for 4 s); 8 and 9 left to the owner. 12 Node tests pass with the new cases. NEXT: cherry-pick
+  the fix round to `test`, the owner's look, then STOP for the client merge (tag `prod-pre-alt`).
 
 
 ---

@@ -1171,7 +1171,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
 
-### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.2)
+### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.3)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown and the "Satellite readings" box under
   Wave height (both off by default: on once `alt/v1` is live); `SARSWELL=1` (with it) adds the Heights | Swell switch to
@@ -1215,11 +1215,17 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   wins where tracks cross), else the nearest mark centre within 3 px of slack (the same window, stride and order as the
   tiles); G51 fix round, asset 2.23.1: see `docs/reviews/satellite-G51-client.md`; asset 2.23.2 (the real-data checks):
   the swell product's DOI is 10.48670/moi-00178 (the credit title and the panel's credit line), at most 20 chunks a
-  pointer (the swell job keeps 56 h).
+  pointer (the swell job keeps 56 h). G52 fix round (reviewer B, the test site; asset 2.23.3; record
+  `docs/reviews/satellite-G52-test-site.md`): a reading the job flagged `model_edge` shows "model 0.6 ft (edge)" with no
+  difference (the model beside an absent node is no comparison); a near-land reading says " · near land" and the panel
+  carries the key "Hollow dots: within a grid cell of land (less reliable)."; the difference is that of the two numbers
+  printed; the readings line counts spacecraft (Jason-3 and its OGDR feed once) and names a window retrying ("loading
+  8 of 9… (1 retrying)") or one the bucket lacks ("· 8 of 9 windows"); on touch a plain tap on a dot or an arrow shows
+  its readout for 4 s (the field keeps its long press).
   The pointer is re-read every 12 min while attached: a newer one becomes `next` and is adopted only once the chunks the
   current window needs from it have landed (no empty picture between pointers); chunks it no longer names go. `idle()`
   (another field, the box off) stops the downloads and keeps the samples; `abortAll()` (Off) stops the pointer load too.
-- **Tests**: `tests/overlay/sat.test.js` (12: the decoder on real zlib bytes and every rejection, the pointer rules, the
+- **Tests**: `tests/overlay/sat.test.js` (12, with the G52 cases: the decoder on real zlib bytes and every rejection, the pointer rules, the
   index against a brute-force scan, the colour pin against `composeTile`, the store with held downloads, the layer's
   draw order / hollow dots / alpha / empty-tile rule / split draw / hitAt, the controller's own entry, switch, box, notes
   and hover texts); `bootstrap.test.js` and `tests/test_overlay_flag.py` cover the page's settings.

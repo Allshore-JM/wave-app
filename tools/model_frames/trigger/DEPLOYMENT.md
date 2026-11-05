@@ -18,7 +18,7 @@ Runtime configuration (Settings -> Variables and secrets, Production):
 
 | Name | Kind | Value |
 |---|---|---|
-| `GH_REPO`, `GH_WORKFLOW`, `GH_REF` | plain vars from `wrangler.jsonc` | `Allshore-JM/wave-app`, the list in `wrangler.jsonc` (a comma-separated list: every workflow in it is dispatched on every tick; the satellite jobs `model-alt.yml` and `model-sarswell.yml` are in it since plan section 81), `Live-Buoy-Update` |
+| `GH_REPO`, `GH_WORKFLOW`, `GH_REF` | plain vars from `wrangler.jsonc` | `Allshore-JM/wave-app`, the list in `wrangler.jsonc` (a comma-separated list: every workflow in it is dispatched on every tick; the satellite jobs `model-alt.yml` and `model-sarswell.yml` are in it since plan section 81; the daily `model-altgrid.yml` of plan section 82 is not: its own cron suffices, as `model-sst.yml`), `Live-Buoy-Update` |
 | `GITHUB_TOKEN` | **secret, entered in the dashboard** | GitHub fine-grained personal access token: repository access = only `Allshore-JM/wave-app`, repository permission Actions = Read and write (Metadata read is implied), expiry per policy. Survives deploys. Rotate here. |
 
 Cron: `5,15,25,35,45,55 * * * *` UTC (Settings -> Trigger events after a successful deploy). Each tick

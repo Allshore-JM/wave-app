@@ -1,0 +1,70 @@
+# Publishes the newest day of Copernicus Marine's level-4 gridded significant wave height
+# (WAVE_GLO_PHY_SWH_L4_NRT_014_003, 0.5 deg, 6-hourly, anonymous on the open CloudFerro bucket) to R2 under altgrid/v1/
+# as four PNG frames on the model's half grid (plan section 82). One file a day lands about 07:30Z for the day before:
+# the job runs twice an hour 07-10Z and every 3 h otherwise (a daily product: not on the trigger Worker), and ends in
+# seconds when the newest day is already live (a ~9 MB download and a few seconds of encoding otherwise).
+# Credit: "Generated using E.U. Copernicus Marine Service Information", doi 10.48670/moi-00180 (manifest + pointer).
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-altgrid
+on:
+  schedule:
+    - cron: "17,47 7-10 * * *"
+    - cron: "17 0,3,6,12,15,18,21 * * *"
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "YYYYMMDD (blank = the newest L4 day listed)"
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      force:
+        description: "re-publish even if the production is live (true/false)"
+        default: "false"
+concurrency:
+  group: model-altgrid
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: altgrid
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+            h5py=3.14.0
+          cache-environment: true
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|numpy|pillow|boto3|h5py|hdf5|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish the gridded satellite wave height
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DAY: ${{ github.event.inputs.day }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          if [ -n "$DAY" ] && ! [[ "$DAY" =~ ^[0-9]{8}$ ]]; then echo "bad day input"; exit 2; fi
+          ARGS=()
+          [ -n "$DAY" ] && ARGS+=(--day "$DAY")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ "$FORCE" = "true" ] && ARGS+=(--force)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/altgrid.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"

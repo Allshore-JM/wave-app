@@ -222,6 +222,14 @@ site, review, fixes)."**
   key line, spacecraft counted once, the difference of the printed values, retrying / missing windows named, a tap on
   a mark shows its readout for 4 s); 8 and 9 left to the owner. 12 Node tests pass with the new cases. NEXT: cherry-pick
   the fix round to `test`, the owner's look, then STOP for the client merge (tag `prod-pre-alt`).
+- 2026-11-05 00:40Z: the fix round is on `feat/satellite` @ bfae515 and on `test` @ ce6afe2 (the client paths; asset
+  2.23.3 served once Render deploys). STEP 6 PREPARED AND STOPPED: the client merge `feat/satellite` -> `Live-Buoy-Update`
+  is built locally as merge commit 1de5702 (README and the plan copy taken from the branch, supersets of production's;
+  the merged tree equals the branch's tree exactly; 15 files, +2122 / -57 against production: the client, the page flags,
+  the tests, the README's client section). On the owner's explicit go-ahead: the rollback point is production's tip
+  8cd6eba (tag `prod-pre-alt`, pushed as a branch too if the proxy still refuses tags), fast-forward `Live-Buoy-Update`
+  to 1de5702, push; nothing shows on production until the owner sets `ALT_OVERLAY=1` / `SARSWELL=1` there, each with
+  its own go-ahead.
 
 
 ---

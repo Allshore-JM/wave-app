@@ -213,3 +213,12 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   regressed the live pointer), 4 P2 (a manual `--day` retry skipped while backed off; an all-fill production accepted;
   prune errors escaping `main`; download outages charged to the production), 4 P3 + nits. All fixed (the record's fix
   table); `test_altgrid.py` 11; 9 of the reviewer's 10 defect proofs now fail. NEXT: STOP for the job-only merge.
+- 2026-11-05 02:02Z: JOB-ONLY MERGE DONE on the owner's explicit go-ahead ("merge the gridded job to production"):
+  model-frames-tests #164 (feat/gridded @ 8da9924) and #165 (feat/gridded-job @ 78a1aec) green first; rollback point
+  584a772 on the remote as branch `prod-pre-altgrid-job` (tag pushes refused by the session's proxy; the tag exists
+  locally); `feat/gridded-job` merged into `Live-Buoy-Update` as 06a965f (no force, no rebase, the tree equal to the
+  branch). model-altgrid #1 (dry run) and #2 (live) succeeded: `altgrid/v1/latest.json` names day 20261103,
+  production 20261104T073010Z, newest step 18Z; the newest frame read back from the bucket: 720 x 361, 143,046 coded
+  cells = the manifest's valid_cells, the poles absent. The crons take it from here (07:17-10:47Z twice an hour, then
+  every 3 h). NEXT: the owner sets `ALT_GRID=1` on the TEST service (the client is on `test` @ 077ff90), then the
+  test-site checks and the two client reviewers, then STOP for the client merge (`prod-pre-altgrid`).

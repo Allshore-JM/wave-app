@@ -272,3 +272,11 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   off), readings 8 satellites, the Swell line's new wording, no sideways scroll, no console errors; CI on 3d53c03 (tests,
   client-tests, the trigger Worker's build) and on test @ bbceef8 green. Rollback: re-push prod-pre-altgrid. NEXT:
   ALT_GRID=1 on the production Render service only with the owner's own go-ahead, then verify the box live.
+- 2026-11-05 05:51Z: ALT_GRID=1 SET ON PRODUCTION (owner "set ALT_GRID=1 on production using my browser"; added in the
+  owner's Chrome on the Render wave-app service, "Save, rebuild, and deploy"; the other variables untouched). Served
+  from 05:51:54 (`var GRID = true`, /healthz ok). Verified on allshoresurf.com (headless Chrome, trusted input): the
+  reviewer's value script = the test-site run exactly (1,250 of 1,250 readouts and drawn colours = an independent
+  sample of the published frame; the 89 hidden points under the page's own edge controls, as on the test site); the
+  box off by default, ticked by click / tap, note "CMEMS L4 · Nov 3, 08:00 AM HST (36 h ago)", the credit's third DOI,
+  kept through a reload, no sideways scroll at 375 px, no console errors. Rollback: unset ALT_GRID (or re-push
+  prod-pre-altgrid). SECTION 82 COMPLETE.

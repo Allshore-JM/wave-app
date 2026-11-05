@@ -164,7 +164,6 @@
   // box under Wave height draws the height dots within 3 h of the frame on the map, in the model's own colours.
   var SAT_PREFIX = 'alt/v1', SWELL_PREFIX = 'sarswell/v1';
   var SAT_WINDOW_MS = 24 * 3.6e6;                          // the layer's own entry: the last 24 h of readings
-  var SAT_FRAME_WINDOW_MS = 3 * 3.6e6;                     // over the model: readings within 3 h of the frame's time
   var SAT_RECHECK_MS = 12 * 60 * 1000;                     // the pointer re-read while shown (the job publishes every ~10 min)
   var SAT_STALE_H = 12, SWELL_STALE_H = 48;                // the jobs' own stale alarms (alt.py STALE_H, sarswell.py STALE_H)
   var SAT_FDEF = { lo: 0, hi: 22.86, legend: [0, 18.288], units: 'm', interpolation: 'bilinear' };   // = SCALES.hs: a dot is coloured as the field would draw that value
@@ -172,7 +171,6 @@
   var SAT_CREDIT = 'Generated using E.U. Copernicus Marine Service Information: wave heights WAVE_GLO_PHY_SWH_L3_NRT_014_001 (doi:10.48670/moi-00179), Sentinel-1 swell WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002 (doi:10.48670/moi-00178); rendered by Allshore Surf';
   // <= 29 visible characters (the GFS rule): "Overlay: Copernicus Marine"; the title carries the full credit and the DOIs
   var SAT_ATTRIBUTION = 'Overlay: <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="' + SAT_CREDIT + '">Copernicus Marine</a>';
-  var SAT_FRAME_ATTRIBUTION = ' · <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="Satellite readings: ' + SAT_CREDIT + '">Copernicus Marine</a>';
   var SAT_FADE = [1, 0.35];                                // a dot's alpha: the newest reading .. the window's far end
   var MAX_SAT_CHUNKS = 20, MAX_SAT_CHUNK_BYTES = 2 * 1024 * 1024, MAX_SAT_SAMPLES = 600000, MAX_SAT_INFLIGHT = 3, SAT_BUCKET_DEG = 0.5;
   var SAT_MAGIC = { alt: 'ALT1', swell: 'SWL1' }, SAT_FORMAT = { alt: 'alt-v1', swell: 'swell-v1' };
@@ -187,11 +185,8 @@
   var SAT_FLAG_NEAR_LAND = 1, SAT_FLAG_MODEL_EDGE = 2;
   var SAT_EPOCH_MS = Date.UTC(2000, 0, 1);
   var SAT_DTYPE_BYTES = { u1: 1, u2: 2, u4: 4, i4: 4 };
-  // The "Satellite readings" box's note by state (under Wave height).
   var SAT_KEY = 'Hollow dots: within a grid cell of land (less reliable).';
   var SAT_TAP_MS = 4000;                                   // a tapped satellite mark's readout stays this long (G52 B-4)
-  var SAT_NOTES = { within: 'within 3 h of the frame', loading: 'loading readings…', unavailable: 'readings unavailable',
-    none: 'no readings within 3 h of this time', unsupported: 'not supported in this browser' };
   // The observations the panel can show (mode 'obs'): own keys only (G30-9).
   var OBS_DEFS = { sst: { label: 'sea surface temperature', attribution: SST_ATTRIBUTION }, sat: { label: 'satellite waves', attribution: SAT_ATTRIBUTION } };
   function hasObs(key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(OBS_DEFS, key); }
@@ -2805,7 +2800,7 @@
       var j = ids[k], v = mode === 'arrows' ? flat.hs[0][j] : flat.swh[j];
       if (!(v === v)) continue;
       var p = satTileXY(flat, j, coords, n, ox, oy);
-      var frac = win.frame ? Math.abs(flat.t[j] - win.ref) / win.span : (win.ref - flat.t[j]) / win.span, a = satAlpha(frac);
+      var frac = (win.ref - flat.t[j]) / win.span, a = satAlpha(frac);
       var ci = satColourIndex(v, L0, L1), col = 'rgb(' + lut[ci * 3] + ',' + lut[ci * 3 + 1] + ',' + lut[ci * 3 + 2] + ')';
       ctx.globalAlpha = a;
       if (mode === 'arrows') {
@@ -4580,13 +4575,12 @@
     var s = saved();
     // opts.sat / opts.swell (plan section 81; the page's ALT_OVERLAY / SARSWELL settings): the satellite readings. The
     // layer's own entry ("Satellite waves", mode 'obs', field 'sat') shows the height dots or, with the swell data offered,
-    // the swell arrows (this.satKind, remembered per tab); the "Satellite readings" box under Wave height (this.satOn, per
-    // tab, off by default) draws the height dots within 3 h of the frame on the map, over the model.
+    // the swell arrows (this.satKind, remembered per tab). (The "Satellite readings" box under Wave height was removed by
+    // the owner on 2026-11-05: a 3-h window of tracks covered too few frames to help.)
     this.sat = opts.sat ? satStore(this.root, 'alt') : null;
     this.swell = opts.sat && opts.swell ? satStore(this.root, 'swell') : null;
     this.satLayer = null; this.satTimer = null;
     this.satKind = this.swell && s.satKind === 'swell' ? 'swell' : 'heights';
-    this.satOn = !!(this.sat && s.sat === true);
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = speedOf(s.speed);
     this.model = modelOf(s.model, this.models);
@@ -4629,7 +4623,6 @@
     if (this.layer) this.layer.clear();
     if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
-    if (this.mode === 'model') this._clearSatWindow();
     this._dropLakeHs();
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
@@ -4734,7 +4727,6 @@
       if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self._ensureFlow();
       self._ensureIso();
-      self._syncSatAttach();                                 // the satellite readings over wave height (the box on): its window comes with the landing
       self._loadLakes(m);
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
@@ -4788,8 +4780,8 @@
       this._bindDocument();
     } else this.layer.clear();                               // never another field's picture under this label
     if (was === 'sst' && kind !== 'sst' && this.sst) this.sst.release();   // leaving SST for another observation releases its cells (G31-9)
-    if (kind !== 'sat') this._detachSat();                   // the satellite layer serves its own entry alone here (the box's dots went with the model's frame)
-    else if (this.satLayer) this.satLayer.setWindow(null);  // ... and the box's frame window goes with the model's picture (its own follows the load)
+    if (kind !== 'sat') this._detachSat();                   // the satellite layer serves its own entry alone (the other observation entry drops it)
+    else if (this.satLayer) this.satLayer.setWindow(null);  // ... and its window goes with the picture (its own follows the load)
     this._ensureFlow();                                      // no direction field: the particles go
     this._ensureIso(); this.pcache.clear();                  // no pressure under an observation: the isobars and their frames go (G32 A-P1-1)
     this._syncLakeOutlines();                                // no lake outlines under an observation: the set and its masks go (V7-5)
@@ -4839,7 +4831,7 @@
     this.mode = 'model';
     if (this.layer) this.layer.clear();                      // (clear() also detaches the source)
     if (this.sst) this.sst.release();                        // the cells go; the day stays (owner, G31-9)
-    this._detachSat();                                       // the own entry's layer goes (the box's frame-mode layer is attached by the mount)
+    this._detachSat();                                       // the own entry's layer goes
     this._unattribute();
   };
   // ---- the satellite readings (plan section 81) ----
@@ -4871,14 +4863,14 @@
     this.map.removeLayer(this.satLayer);
     this.satLayer = null;
   };
-  // A chunk landed or failed: the credit (readings on screen), the readings line and the box's note follow, in place.
+  // A chunk landed or failed: the credit (readings on screen) and the readings line follow, in place.
   Overlay.prototype._onSatChange = function () {
     if (!this.satLayer) return;
     if (this.mode === 'obs' && this.field === 'sat') {
       var st = this.satLayer.store, w = this.satLayer.win;
       if (st && w && st.newestMs() !== null && w.ref !== st.newestMs()) this._syncSatOwnWindow();   // a pointer adopted once its chunks landed: the window follows its newest
       this._satLineSync();
-    } else this._satNoteSync();
+    }
     if (this._attributed) this._attribute();
   };
   // The pointer re-read (every 12 min while attached): a newer one is adopted by the store once its chunks are in; the
@@ -4890,7 +4882,6 @@
     st.recheck().then(function (changed) {
       if (!self.satLayer || self.satLayer.store !== st) return;
       if (self.mode === 'obs' && self.field === 'sat') { if (changed) self._syncSatOwnWindow(); self._satLineSync(); }
-      else if (changed && self.frameIndex !== null && self.mode === 'model') self._syncSat(self.frameIndex);
     });
   };
   // The own entry's window: the last 24 h up to the newest reading the pointer names (nothing newer exists), its
@@ -4917,75 +4908,15 @@
       self.render({ state: 'ready' });
     });
   };
-  // The "Satellite readings" box under Wave height (per tab, off by default): on, the height dots within 3 h of the frame
-  // on the map, in the model's colours; off, the layer goes (the store keeps its samples).
-  Overlay.prototype.setSatOn = function (on) {
-    on = !!on;
-    if (on === this.satOn) return;
-    this.satOn = on; save({ sat: on });
-    this._syncSatAttach();
-    if (this.ui && this.ui.satBox && this.ui.satBox.checked !== on) this.ui.satBox.checked = on;
-    this._satNoteSync();
-  };
-  // A store whose pointer read failed (or never ran) is asked again, the cooldown permitting; a success re-syncs what is
-  // shown (the own window, or the shown frame's) and the notes.
+  // A store whose pointer read failed (or never ran) is asked again, the cooldown permitting; a success re-syncs the own
+  // window and the readings line.
   Overlay.prototype._satReload = function (st) {
     var self = this;
     if (st.status === 'ok' || st.loading) return;
     st.load(false).then(function (ok) {
-      if (!ok || !self.satLayer || self.satLayer.store !== st) { self._satNoteSync(); return; }
+      if (!ok || !self.satLayer || self.satLayer.store !== st) return;
       if (self.mode === 'obs' && self.field === 'sat') { self._syncSatOwnWindow(); self._satLineSync(); }
-      else if (self._wantSatFrame() && self.frameIndex !== null) self._syncSat(self.frameIndex);
-      self._satNoteSync();
     });
-  };
-  Overlay.prototype._wantSatFrame = function () { return !!(this.sat && this.satOn && this.mode === 'model' && this.field === 'hs' && this.layer); };
-  // The frame-mode layer exists exactly while the box is on under wave height in model mode: attached here (the store's
-  // pointer loading if need be: not forced, the cooldown paces it), the window set by the landing (_syncSat).
-  Overlay.prototype._syncSatAttach = function () {
-    var self = this;
-    if (!this._wantSatFrame()) { if (this.mode === 'model' || this.field !== 'sat') this._detachSat(); return; }
-    if (!this.sat.supported()) { this._satNoteSync(); return; }
-    var st = this.sat;
-    this._attachSat(st, 'dots');
-    if (this.frameIndex !== null) this._syncSat(this.frameIndex);
-    if (st.status !== 'ok') this._satReload(st);
-    void self;
-  };
-  // The frame idx is on the map: the dots' window is [valid - 3 h, valid + 3 h] of THAT entry; another entry's dots are
-  // cleared (never old dots under a new time); nothing without a picture.
-  Overlay.prototype._syncSat = function (idx) {
-    if (!this.satLayer || this.mode !== 'model') return;
-    var m = this.manifest, entry = m && m.frames[idx], st = this.satLayer.store;
-    if (!this._wantSatFrame() || !entry || !this.layer.hasFrame() || this.layer.entry !== entry) { this._clearSatWindow(); return; }
-    if (st && st.status !== 'ok') this._satReload(st);               // a failed pointer read: tried again at a landing (the cooldown paces it)
-    if (this.satLayer.entry === entry && this.satLayer.hasWindow()) return;
-    var valid = Date.parse(entry.valid_utc);
-    this.satLayer.setWindow({ t0: valid - SAT_FRAME_WINDOW_MS, t1: valid + SAT_FRAME_WINDOW_MS + 1, ref: valid, span: SAT_FRAME_WINDOW_MS, frame: true, entry: entry });
-    this._satNoteSync();
-    if (this._attributed) this._attribute();                        // the credit over the model follows what is drawn now
-  };
-  Overlay.prototype._clearSatWindow = function () {
-    if (this.satLayer && this.satLayer.hasWindow()) { this.satLayer.setWindow(null); if (this._attributed) this._attribute(); }
-    this._satNoteSync();
-  };
-  // The box's note: by the store and layer state (SAT_NOTES).
-  Overlay.prototype._satNoteState = function () {
-    var st = this.sat;
-    if (!st) return null;
-    if (!st.supported()) return 'unsupported';
-    if (!this.satOn) return 'within';
-    if (st.status === 'failed' || (st.status === 'ok' && st.pointer && !st.pointer.chunks.length)) return 'unavailable';
-    if (!this.satLayer || !this.satLayer.hasWindow()) return st.status === 'ok' ? 'within' : 'loading';
-    if (!this.satLayer.complete()) return this.satLayer.count() ? 'within' : 'loading';
-    return this.satLayer.count() ? 'within' : 'none';
-  };
-  Overlay.prototype._satNoteSync = function () {
-    var ui = this.ui, s = this._satNoteState();
-    if (!ui || !ui.satNote || s === null) return;
-    var txt = SAT_NOTES[s];
-    if (ui.satNote.textContent !== txt) ui.satNote.textContent = txt;
-    if (ui.satBox && ui.satBox.disabled !== (s === 'unsupported')) ui.satBox.disabled = s === 'unsupported';
   };
   // The own entry's readings line, in place: "Readings: last 24 h, newest 11:40 AM HST (2 h ago) · 7 satellites" ("loading
   // 3 of 8…" while chunks are on their way); the stale warning past the job's own limit re-renders the panel.
@@ -5039,11 +4970,7 @@
       return parts.join(' | ') + ' (' + sat + (near ? ', near land' : '') + ', ' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
     }
     var txt = fmt(f.swh[j]) + ' · ' + sat + ' · ' + clock + (near ? ' · near land' : ''), mv = null, label = 'model';
-    if (this.satLayer.win && this.satLayer.win.frame && this.layer && this.layer.fdef && this.layer.entry) {
-      mv = this.layer.readoutAt(latlng.lat, latlng.lng, z);
-      label = 'model (frame ' + this.opts.fmtTime(this.layer.entry.valid_utc, this.opts.tz) + ')';
-      txt = 'obs ' + txt;
-    } else if (f.model[j] === f.model[j]) mv = f.model[j];
+    if (f.model[j] === f.model[j]) mv = f.model[j];
     if (mv === null) return txt + ' · ' + label + ' —';
     if (edge) return txt + ' · ' + label + ' ' + fmt(mv) + ' (edge)';
     var diff = +u.f(f.swh[j]).toFixed(u.d) - +u.f(mv).toFixed(u.d);   // of the two numbers printed (G52 B-5)
@@ -5430,7 +5357,6 @@
       self._presWait = null; self._lakeWait = null;
       self._persist();
       self._syncLook();
-      self._syncSat(idx);                                                        // the satellite readings within 3 h of this frame (plan section 81), before the credit
       self._attribute();
       if (!self.last || self.last.state !== 'ready') self.render({ state: 'ready' }); else self._syncUI();
       self._syncLake(idx);                                                       // before the particles: the lake direction rides in the step's one rebuild
@@ -5534,7 +5460,6 @@
       this.layer.clear();
       if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
       if (this.iso) this.iso.clearData();
-      if (this.mode === 'model') this._clearSatWindow();
       if (this.readout) this.readout.hidden = true;
       this._unattribute();
     }
@@ -5615,7 +5540,6 @@
     this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
-    if (this.mode === 'model') this._clearSatWindow();
   };
   // Every RUN_CHECK_MS while mounted: a newer complete run only raises the "Update" banner.
   Overlay.prototype._checkRun = function () {
@@ -5800,7 +5724,6 @@
   Overlay.prototype._attribution = function () {
     var text = this.mode === 'obs' ? OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].attribution : this._def().attribution;
     if (this.mode !== 'obs' && this.layer && this.layer.hasLake() && this.layer._lakeMask && this._lakeOnScreen()) text += LAKE_ATTRIBUTION;   // a lake frame drawn, the lakes' coverage, and the lakes in the view (plan section 50; G33 B-5)
-    if (this.mode !== 'obs' && this.satLayer && this.satLayer.hasWindow() && this.satLayer.count() > 0) text += SAT_FRAME_ATTRIBUTION;   // readings drawn over the model (plan section 81: the licence's visible credit)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
     return text + ' · <a href="' + url + '" target="_blank" rel="noopener license">GSHHG</a>';
@@ -6864,18 +6787,6 @@
     wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
     body.appendChild(buildLegend(field, f, unit));
-    // The "Satellite readings" box (plan section 81): wave height only, when the readings are offered. On, the altimeter
-    // dots within 3 h of the frame on the map, in the model's own colours (the note says the state).
-    if (this.sat && field === 'hs') {
-      var srow = mk('div', 'ov-row ov-satrow'), slab = mk('label', 'ov-sat-label'), sbox = mk('input', 'ov-sat-box'); sbox.type = 'checkbox'; sbox.checked = !!this.satOn;
-      slab.appendChild(sbox); slab.appendChild(mk('span', null, 'Satellite readings')); srow.appendChild(slab);
-      var snote = mk('span', 'ov-sat-note'); snote.id = 'ovSatNote'; srow.appendChild(snote);   // beside the label: the box keeps a stable name
-      sbox.setAttribute('aria-describedby', 'ovSatNote');
-      sbox.addEventListener('change', function () { self.setSatOn(!!sbox.checked); });
-      body.appendChild(srow);
-      ui.satBox = sbox; ui.satNote = snote;
-      this._satNoteSync();
-    }
     // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
     var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
@@ -6913,7 +6824,7 @@
     var opens = true;
     if (room < 40) {
       wrap.removeChild(body);
-      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null; ui.satBox = ui.satNote = null;
+      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
       if (spare() < 0) opens = false;
     } else {
       body.style.maxHeight = room + 'px';
@@ -6923,7 +6834,7 @@
       host.removeChild(wrap); if (!opens) head.removeChild(btn);
       ui.collapsed = true; ui.speedSel = null; ui.slider = null;
       ui.ribbon = ui.track = ui.rb = ui.nowText = ui.stateEl = null;
-      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null; ui.satBox = ui.satNote = null;
+      ui.unavail = null; ui.runText = ui.updText = ui.nextText = ui.updLine = ui.nextLine = null;
       oneLine();
       if (title.classList) title.classList.remove('ov-model');
       headPlay();
@@ -7054,7 +6965,7 @@
     sel.addEventListener('change', function () { var v = sel.value; if (v !== self.model) self.setModel(v); else sel.value = self.model; });
     return sel;
   };
-  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-sat-box', 'ov-seg-btn', 'ov-details'];
+  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -7172,10 +7083,10 @@
       SatStore: SatStore, satStore: satStore, SatIndex: SatIndex, SatLayer: SatLayer, decodeSatChunk: decodeSatChunk, validSatPointer: validSatPointer, satNewestMs: satNewestMs,
       inflateBytes: inflateBytes, satSplitColumns: satSplitColumns, satColumnsEqual: satColumnsEqual, satStride: satStride, satSegmentsOk: satSegmentsOk, satLowerBound: satLowerBound,
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
-      viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, SAT_FRAME_WINDOW_MS: SAT_FRAME_WINDOW_MS,
-      SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, SAT_FRAME_ATTRIBUTION: SAT_FRAME_ATTRIBUTION,
+      viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
+      SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,
-      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_NOTES: SAT_NOTES, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
+      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

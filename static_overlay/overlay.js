@@ -7176,8 +7176,10 @@
         if (self._gridWarnShown) { var gw = mk('div', 'ov-warn ov-grid-warn', self._gridWarnText()); body.appendChild(gw); self.ui.gridWarn = gw; }
       }
       var line = mk('div', 'ov-meta ov-sat-line', self._satLineText()); body.appendChild(line); self.ui.satLine = line;
-      if (self.satKind !== 'swell') body.appendChild(mk('div', 'ov-meta ov-sat-key', SAT_KEY));   // the hollow dots explained (G52 B-2)
       body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00178' : '') + (self.satGrid && self.grid ? ', doi:' + GRID_DOI : '') + ').'));
+      // the key last: on the smallest phones the details box cuts its bottom line, and the licence credit above must stay
+      // in view (G55 fix check: with the grid warning under the box the credit fell 10 px below a 360 x 640 sheet)
+      if (self.satKind !== 'swell') body.appendChild(mk('div', 'ov-meta ov-sat-key', SAT_KEY));   // the hollow dots explained (G52 B-2)
       if (self._satStaleShown) {
         var h = Math.round((Date.now() - newest) / 3.6e6);
         body.appendChild(mk('div', 'ov-warn', 'The newest satellite reading is ' + h + ' h old.'));

@@ -244,6 +244,15 @@ site, review, fixes)."**
   withdrawn; the G51 / G52 records keep their history). The owner also asked for an assessment of a full
   interpolated wave-height map from the readings, on / off inside the Satellite waves entry: below, "Assessment".
 
+- 2026-11-05 01:05Z: CLIENT MERGE DONE on the owner's explicit go-ahead ("merge to production"): coast-build #588
+  (feat/satellite @ c960ce7) and #589 (test @ 0a18647) green; the test site at asset 2.23.5 checked once more (no box
+  under Wave height, the own entry 342,383 readings, peak period detaches the layer, no errors); rollback point
+  8cd6eba on the remote as BRANCH `prod-pre-alt` (the proxy still refuses tag pushes; the tag exists locally: the
+  owner can push it from their machine); `feat/satellite` @ c960ce7 merged into `Live-Buoy-Update` as 584a772 (no
+  force, no rebase; README and the plan copy from the branch; the merged tree equals the branch's). Nothing shows on
+  production until the owner sets `ALT_OVERLAY=1` and `SARSWELL=1` on the PRODUCTION service, each with its own
+  go-ahead. Section 81 is complete but for those flags; the gridded map is proposed as section 82 (the assessment).
+
 
 ## Assessment (2026-11-05): a full interpolated wave-height map from the satellite readings, on / off in "Satellite waves"
 

@@ -188,6 +188,8 @@
   var SAT_EPOCH_MS = Date.UTC(2000, 0, 1);
   var SAT_DTYPE_BYTES = { u1: 1, u2: 2, u4: 4, i4: 4 };
   // The "Satellite readings" box's note by state (under Wave height).
+  var SAT_KEY = 'Hollow dots: within a grid cell of land (less reliable).';
+  var SAT_TAP_MS = 4000;                                   // a tapped satellite mark's readout stays this long (G52 B-4)
   var SAT_NOTES = { within: 'within 3 h of the frame', loading: 'loading readings…', unavailable: 'readings unavailable',
     none: 'no readings within 3 h of this time', unsupported: 'not supported in this browser' };
   // The observations the panel can show (mode 'obs'): own keys only (G30-9).
@@ -4991,13 +4993,17 @@
     var st = this.satLayer ? this.satLayer.store : this._satStoreFor(), newest = st ? st.newestMs() : null;
     if (!st || newest === null) return 'Readings: none';
     var now = Date.now(), ago = Math.max(0, Math.round((now - newest) / 3.6e6)), win = this.satLayer && this.satLayer.win;
-    var pend = win ? st.pending(win.t0, win.t1) : 0, need = win ? st._chunksFor(st.pointer, { t0: win.t0, t1: win.t1 }).length : 0;
+    var pend = win ? st.pending(win.t0, win.t1) : 0, needed = win ? st._chunksFor(st.pointer, { t0: win.t0, t1: win.t1 }) : [], need = needed.length;
+    var retrying = 0, missing = 0, k;
+    for (k = 0; k < need; k++) { var fk = st.failed[needed[k].key]; if (fk === true) missing++; else if (fk && !st.chunks.has(needed[k].key)) retrying++; }
+    // the spacecraft, not the mission ids: Jason-3 and its OGDR feed are one satellite (G52 B-3)
     var sats = {}, f = st.flat, sl = win ? st.slice(win.t0, win.t1) : [0, 0], nsat = 0;
-    if (f) for (var i = sl[0]; i < sl[1]; i++) if (!sats[f.mission[i]]) { sats[f.mission[i]] = true; nsat++; }
+    if (f) for (var i = sl[0]; i < sl[1]; i++) { var m = f.missions[f.mission[i]], name = (m && m.short ? m.short : String(f.mission[i])).replace(/ OGDR$/, ''); if (!sats[name]) { sats[name] = true; nsat++; } }
     var when = new Date(newest).toISOString().replace(/\.\d+Z$/, 'Z'), clock = this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
     var txt = 'Readings: last 24 h, newest ' + clock + ' (' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
-    if (pend) txt += ' · loading ' + (need - pend) + ' of ' + need + '…';
+    if (pend) txt += ' · loading ' + (need - pend) + ' of ' + need + '…' + (retrying ? ' (' + retrying + ' retrying)' : '');   // G52 B-6
     else if (nsat) txt += ' · ' + nsat + ' satellite' + (nsat === 1 ? '' : 's');
+    if (!pend && missing) txt += ' · ' + (need - missing) + ' of ' + need + ' windows';                                          // G52 B-7: a chunk the bucket lacks
     return txt;
   };
   Overlay.prototype._satLineSync = function () {
@@ -5020,6 +5026,9 @@
     var when = new Date(f.t[j]).toISOString().replace(/\.\d+Z$/, 'Z'), clock = this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
     var sat = f.missions[f.mission[j]] ? f.missions[f.mission[j]].short : '?';
     var fmt = function (v) { return u.f(v).toFixed(u.d) + ' ' + u.label; };
+    // the job's flags (G52 B-1, B-2): near land = a reading within a grid cell of land (drawn hollow); model edge = the
+    // model sampled beside an absent node (the ice edge, a coast): its value is shown, the comparison is not
+    var near = (f.flags[j] & SAT_FLAG_NEAR_LAND) !== 0, edge = (f.flags[j] & SAT_FLAG_MODEL_EDGE) !== 0;
     if (st.kind === 'swell') {
       var parts = [], ago = Math.max(0, Math.round((Date.now() - f.t[j]) / 3.6e6));
       for (i = 0; i < 3; i++) {
@@ -5027,16 +5036,17 @@
         if (!(h === h)) continue;
         parts.push('Swell ' + (i + 1) + ': ' + fmt(h) + ' · ' + tp.toFixed(0) + ' s · from ' + Math.round(d) + '°');
       }
-      return parts.join(' | ') + ' (' + sat + ', ' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
+      return parts.join(' | ') + ' (' + sat + (near ? ', near land' : '') + ', ' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
     }
-    var txt = fmt(f.swh[j]) + ' · ' + sat + ' · ' + clock, mv = null, label = 'model';
+    var txt = fmt(f.swh[j]) + ' · ' + sat + ' · ' + clock + (near ? ' · near land' : ''), mv = null, label = 'model';
     if (this.satLayer.win && this.satLayer.win.frame && this.layer && this.layer.fdef && this.layer.entry) {
       mv = this.layer.readoutAt(latlng.lat, latlng.lng, z);
       label = 'model (frame ' + this.opts.fmtTime(this.layer.entry.valid_utc, this.opts.tz) + ')';
       txt = 'obs ' + txt;
     } else if (f.model[j] === f.model[j]) mv = f.model[j];
     if (mv === null) return txt + ' · ' + label + ' —';
-    var diff = u.f(f.swh[j]) - u.f(mv);
+    if (edge) return txt + ' · ' + label + ' ' + fmt(mv) + ' (edge)';
+    var diff = +u.f(f.swh[j]).toFixed(u.d) - +u.f(mv).toFixed(u.d);   // of the two numbers printed (G52 B-5)
     return txt + ' · ' + label + ' ' + fmt(mv) + ' (' + (diff >= 0 ? '+' : '') + diff.toFixed(u.d) + ')';
   };
   // The error panel's Retry. A run pinned by a carried time that cannot be shown (e.g. pruned while SST was up) is let go:
@@ -6195,7 +6205,7 @@
   };
 
   // Readout: hover only on hover-capable pointers, long-press (450 ms) on touch; a plain tap shows
-  // nothing. Marker events are unaffected (the pane has no pointer events); controls are ignored.
+  // nothing (but on a satellite mark: its readout, plan section 81). Marker events are unaffected (the pane has no pointer events); controls are ignored.
   // The isobars' pressure at a point, rounded to the hPa (the readout's "· 1004 hPa"): only from the pressure frame of the
   // step on the map (never another step's lines' frame), else null.
   Overlay.prototype._hpaAt = function (lat, lng) {
@@ -6280,8 +6290,9 @@
       var sat = self.satLayer;
       if (sat && sat.hasWindow()) {
         var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom()), hit = sat.hitAt(latlng.lat, latlng.lng, sz);
-        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz); el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
+        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz); el.setAttribute('data-sat', '1'); el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
       }
+      el.removeAttribute('data-sat');
       if (self.mode === 'obs' && self.field === 'sat') { el.hidden = true; return; }
       if ((v === null || v === undefined) && layer && layer.fdef && layer.lakeAt(latlng.lat, latlng.lng, z)) {   // plan section 50 (owner): "no data" / "calm" (G33 B-2)
         el.textContent = self._lakeWord(latlng.lat, latlng.lng, z, function (w) {
@@ -6316,7 +6327,19 @@
       var t = e.touches[0];
       pressTimer = setTimeout(function () { pressTimer = null; var pt = map.mouseEventToContainerPoint(t); show(map.containerPointToLatLng(pt), pt); }, 450);
     }
-    function te() { lastTouch = Date.now(); if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } setTimeout(function () { el.hidden = true; }, 1500); }
+    // a plain tap on a satellite mark shows its readout for SAT_TAP_MS (plan section 81; G52 B-4): the field keeps the long press
+    function te(e) {
+      lastTouch = Date.now();
+      var quick = !!pressTimer;
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+      var sat = self.satLayer;
+      if (quick && e && e.type === 'touchend' && e.changedTouches && e.changedTouches.length === 1 && sat && sat.hasWindow() && !overControl(e)) {
+        var pt = map.mouseEventToContainerPoint(e.changedTouches[0]), ll = map.containerPointToLatLng(pt);
+        var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom());
+        if (sat.hitAt(ll.lat, ll.lng, sz) >= 0) { show(ll, pt); setTimeout(function () { el.hidden = true; }, SAT_TAP_MS); return; }
+      }
+      setTimeout(function () { el.hidden = true; }, !el.hidden && el.getAttribute('data-sat') === '1' ? SAT_TAP_MS : 1500);
+    }
     c.addEventListener('touchstart', ts, { passive: true }); c.addEventListener('touchend', te, { passive: true }); c.addEventListener('touchmove', te, { passive: true });
     this._touch = [c, ts, te, function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } }];
   };
@@ -7007,6 +7030,7 @@
       }
       body.appendChild(buildLegend('hs', SAT_FDEF, unit));
       var line = mk('div', 'ov-meta ov-sat-line', self._satLineText()); body.appendChild(line); self.ui.satLine = line;
+      if (self.satKind !== 'swell') body.appendChild(mk('div', 'ov-meta ov-sat-key', SAT_KEY));   // the hollow dots explained (G52 B-2)
       body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00178' : '') + ').'));
       if (self._satStaleShown) {
         var h = Math.round((Date.now() - newest) / 3.6e6);
@@ -7151,7 +7175,7 @@
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, SAT_FRAME_WINDOW_MS: SAT_FRAME_WINDOW_MS,
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, SAT_FRAME_ATTRIBUTION: SAT_FRAME_ATTRIBUTION,
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,
-      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_NOTES: SAT_NOTES, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
+      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_NOTES: SAT_NOTES, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

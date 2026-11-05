@@ -264,3 +264,11 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   taken from this branch, nothing of production's lost), so the client merge is a fast-forward. STOP for the owner's
   explicit go-ahead for the client merge (rollback tag `prod-pre-altgrid` @ 06a965f), then ALT_GRID=1 on production
   with its own go-ahead.
+- 2026-11-05 05:3xZ: CLIENT MERGE LIVE ON PRODUCTION (owner "go-ahead for the production merge"): tag
+  `prod-pre-altgrid` @ 06a965f pushed; `Live-Buoy-Update` fast-forwarded 06a965f..3d53c03 (overlay asset 2.24.3).
+  Verified: overlay.js / overlay.css served = the commit, immutable + nosniff; the 51201 / 51003 pages differ from the
+  pre-merge capture only by the version line and the two `GRID` lines (`var GRID = false`, `grid: GRID`); /healthz ok;
+  headless Chrome on allshoresurf.com desktop + phone: Satellite waves with no Gridded map row and no grid store (flag
+  off), readings 8 satellites, the Swell line's new wording, no sideways scroll, no console errors; CI on 3d53c03 (tests,
+  client-tests, the trigger Worker's build) and on test @ bbceef8 green. Rollback: re-push prod-pre-altgrid. NEXT:
+  ALT_GRID=1 on the production Render service only with the owner's own go-ahead, then verify the box live.

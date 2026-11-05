@@ -28,3 +28,4 @@ jobs:
           gh workflow enable model-sst.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-alt.yml --repo "$GITHUB_REPOSITORY"
           gh workflow enable model-sarswell.yml --repo "$GITHUB_REPOSITORY"
+          gh workflow enable model-altgrid.yml --repo "$GITHUB_REPOSITORY"

@@ -1174,7 +1174,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
 ### The gridded satellite wave height (plan section 82, the job)
 
 - **`tools/model_frames/altgrid.py`** (workflow `model-altgrid.yml`, group `model-altgrid`, crons `17,47 7-10 * * *`
-  and `17 */3 * * *`; a daily product, so NOT on the trigger Worker; kept alive by the keepalive): the newest day of
+  and `17 0,3,6,12,15,18,21 * * *`; a daily product, so NOT on the trigger Worker; kept alive by the keepalive): the newest day of
   Copernicus Marine's level-4 gridded significant wave height, `WAVE_GLO_PHY_SWH_L4_NRT_014_003` (doi
   10.48670/moi-00180), dataset `cmems_obs-wave_glo_phy-swh_nrt_multi-l4-0.5deg_PT6H-i`: `VAVH_INST`, "an estimate of
   the instantaneous wave field every 6 h at 0.5 degrees, using all available level-3 along-track measurements and
@@ -1195,11 +1195,15 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   production, production_utc, published_utc, checked_utc, datasets, datasets_utc, credit}`).
 - **Runs**: the newest listed day (the newest production per day); the same day and production = a heartbeat
   (`checked_utc`); a re-produced day = new frame keys, the older production kept 2 h after the pointer left it, then
-  pruned (also on quiet runs); an older day never regresses the pointer; 3 complete days kept. A failure (download,
-  a refused file) is recorded under `altgrid/v1/failed/<day>.json` (3 attempts on the same production, then a try
-  every 2 h); the newest step older than 48 h ends a scheduled run with `STALE:` and exit 1, at most once every 12 h.
-  `--dry-run`, `--local DIR`, `--day YYYYMMDD`, `--file PATH` (a local L4 file: the real-file check), `--force`,
-  `--keep N`. Tests: `tests/model_frames/test_altgrid.py`.
+  pruned (also on quiet runs; a prune error is a warning); an older day or production never moves the pointer (under
+  `--force` it is rebuilt beside the live one, the pointer untouched); 3 complete days kept (`--keep` >= 2). A refused
+  file (the reader's checks; a step with fewer than 50,000 valid cells, a real one holding ~143,000) is recorded under
+  `altgrid/v1/failed/<day>.json` (3 attempts on the same production, then a scheduled try every 2 h; a manual `--day`
+  run goes ahead); a failed download is a warning, never charged to the production; a pointer that is not an
+  altgrid-v1 object is refused (nothing written over it). The newest step older than 48 h ends a scheduled run with
+  `STALE:` and exit 1, at most once every 12 h. `--dry-run`, `--local DIR`, `--day YYYYMMDD`, `--file PATH` (a local
+  L4 file: the real-file check; a LIVE publish without `--local` / `--dry-run`), `--force`, `--keep N`. Tests:
+  `tests/model_frames/test_altgrid.py`; review record `docs/reviews/gridded-G53-job.md`.
 
 ### The satellite layer on the map (plan sections 81 and 82, the client; overlay asset 2.24.0)
 

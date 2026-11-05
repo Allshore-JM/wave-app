@@ -69,6 +69,7 @@ STALE_H = 48                                                # the newest step ol
 SUPERSEDED_H = 2                                            # an older production of the live day goes this long after the pointer left it
 MAX_VALUE_M = 30.0                                          # a value above this (or below 0) is a fault: absent, counted
 TIME_SLACK_S = 300                                          # the float32 time axis (~2.8-min quantum at 2026) rounds to the hour within this
+MIN_VALID_CELLS = 50_000                                    # a step with fewer valid cells is a broken production (a real step: ~143,000), refused (G53-3)
 EPOCH_1950 = datetime(1950, 1, 1, tzinfo=timezone.utc)
 JSON = "application/json"
 
@@ -188,6 +189,9 @@ def read_l4(path, day):
     out_of = np.isfinite(hs) & ((hs < 0) | (hs > MAX_VALUE_M))
     dropped = int(out_of.sum())
     hs = np.where(out_of, np.nan, hs)
+    for k, n in enumerate(np.isfinite(hs).sum(axis=(1, 2)).tolist()):
+        if n < MIN_VALID_CELLS:
+            raise ValueError(f"step {valid[k].hour:02d}Z holds {n} valid cells (< {MIN_VALID_CELLS}): a broken production")
     return {"valid": valid, "hs": hs[:, ::-1, :].astype(np.float32), "flagged": flagged, "dropped": dropped}
 
 
@@ -230,13 +234,17 @@ def build(day, prod, prod_dt, data, store, local, published_utc, log=print):
     return manifest, stats
 
 
-def publish(store, local, day, manifest, stats, pointer_extra):
-    """The stats sidecar, the immutable manifest, then the pointer LAST -> (manifest key, pointer)."""
+def publish(store, local, day, manifest, stats, pointer_extra, advance=True):
+    """The stats sidecar, the immutable manifest, then the pointer LAST -> (manifest key, pointer). advance False (a
+    forced rebuild of an older day or production, G53-1): the stats and the manifest only, the pointer untouched
+    (-> (manifest key, None))."""
     pub = manifest["published_utc"]
     skey, mkey = stats_key(day, pub), manifest_key(day, pub)
     A.put_object(store, local, skey, json.dumps(stats, separators=(",", ":"), sort_keys=True, allow_nan=False).encode(), JSON, P.IMMUTABLE)
     body = dict(manifest, stats=skey)
     A.put_object(store, local, mkey, json.dumps(body, separators=(",", ":"), sort_keys=True, allow_nan=False).encode(), JSON, P.IMMUTABLE)
+    if not advance:
+        return mkey, None
     pointer = dict(pointer_extra, format=FORMAT, day=manifest["day"], run=day, manifest=mkey, complete=True,
                    newest_utc=manifest["newest_utc"], production=manifest["production"],
                    production_utc=manifest["production_utc"], published_utc=pub, checked_utc=pub, credit=SOURCE["credit"])
@@ -263,8 +271,8 @@ def prune(store, pointer, keep=KEEP_DAYS, now=None):
     complete one: a build in progress); inside the pointer's day, the other productions and manifests once the pointer
     has named its own for SUPERSEDED_H (a client holding the previous pointer still reads them meanwhile); failure
     records of days older than every kept one. Only under altgrid/v1/. -> the deleted day dirs and keys."""
-    if keep < 1:
-        raise ValueError("keep must be >= 1")
+    if keep < 2:
+        raise ValueError("keep must be >= 2 (the day the previous pointer named stays for its readers)")
     now = now or datetime.now(timezone.utc)
     days = stored_days(store)
     complete = sorted(d for d, ok in days.items() if ok)
@@ -299,6 +307,15 @@ def prune(store, pointer, keep=KEEP_DAYS, now=None):
     return deleted
 
 
+def safe_prune(store, pointer, keep, now):
+    """prune(), its errors a summary WARNING (an R2 delete error never turns a published or quiet run red; the next run
+    prunes again; G53-4)."""
+    try:
+        print(f"pruned: {len(prune(store, pointer, keep=keep, now=now))}")
+    except Exception as exc:                                           # noqa: BLE001
+        A._summary(f"WARNING: prune failed ({exc.__class__.__name__}: {P.redact(str(exc), store.bucket)})")
+
+
 # ---------------------------------------------------------------- failures
 def record_failure(store, day, digest, message, now):
     """alt.record_failure's record (same shape, so alt.skip_failed reads it) stamped with the run's `now`."""
@@ -329,12 +346,14 @@ def main(argv=None, get=A._get, store=None, reader=None, now=None):
     ap.add_argument("--dry-run", action="store_true", help="download and build; upload nothing")
     ap.add_argument("--local", default=None, help="also write every object under this folder")
     ap.add_argument("--day", default=None, help="YYYYMMDD: build this day (no stale alarm; a failure exits 1)")
-    ap.add_argument("--file", default=None, help="build from this local L4 file (its name gives the day and production)")
-    ap.add_argument("--force", action="store_true", help="rebuild even when the pointer names this production")
+    ap.add_argument("--file", default=None, help="build from this local L4 file (its name gives the day and production); "
+                    "a LIVE publish to the bucket unless --local or --dry-run is given")
+    ap.add_argument("--force", action="store_true", help="rebuild even when the pointer names this production; an older day or "
+                    "production is rebuilt (frames, manifest) without moving the pointer")
     ap.add_argument("--keep", type=int, default=KEEP_DAYS)
     a = ap.parse_args(argv)
-    if a.keep < 1 or (a.day and not re.fullmatch(r"\d{8}", a.day)):
-        print("bad arguments (--keep >= 1; --day YYYYMMDD)")
+    if a.keep < 2 or (a.day and not re.fullmatch(r"\d{8}", a.day)):
+        print("bad arguments (--keep >= 2; --day YYYYMMDD)")
         return 2
     rec_file = None
     if a.file:
@@ -351,9 +370,14 @@ def main(argv=None, get=A._get, store=None, reader=None, now=None):
     live = not a.dry_run and a.local is None
     if live and store is None:
         store = A._store_from_env()
-    pointer = (store.get_json(PRODUCT.latest_key()) if store is not None else None) or {}
-    if pointer.get("format") not in (None, FORMAT):
-        print(f"pointer format {pointer.get('format')!r} is not {FORMAT!r}: refusing to touch it")
+    try:
+        pointer = (store.get_json(PRODUCT.latest_key()) if store is not None else None) or {}
+    except ValueError as exc:                                          # not JSON (G53-6)
+        print(f"the pointer cannot be read ({exc}): refusing to touch it")
+        return 1
+    if not isinstance(pointer, dict) or pointer.get("format") not in (None, FORMAT) or not isinstance(pointer.get("run", ""), str) \
+            or not isinstance(pointer.get("production", ""), str):
+        print("the pointer is not an altgrid-v1 pointer: refusing to touch it")
         return 1
     scheduled = live and not a.day and not a.file
 
@@ -370,7 +394,7 @@ def main(argv=None, get=A._get, store=None, reader=None, now=None):
             if datasets:
                 pointer["datasets"], pointer["datasets_utc"] = datasets, datasets_utc
             A.write_pointer(store, PRODUCT, pointer)
-            print(f"pruned: {len(prune(store, pointer, keep=a.keep, now=now))}")   # a superseded production's grace ends on a quiet run too
+            safe_prune(store, pointer, a.keep, now)                    # a superseded production's grace ends on a quiet run too
         return stale(why)
 
     datasets, datasets_utc = pointer.get("datasets"), pointer.get("datasets_utc")
@@ -397,48 +421,57 @@ def main(argv=None, get=A._get, store=None, reader=None, now=None):
         rec = days[day]
         prod = parse_file(rec.name)[2]
     live_run, live_prod = pointer.get("run"), pointer.get("production")
-    if not a.force and live_run:
-        if day < live_run or (day == live_run and prod <= (live_prod or "")):
-            return heartbeat(f"nothing newer: {day} {prod} (live {live_run} {live_prod})", datasets, datasets_utc)
-    if live and not a.force and A.skip_failed(store, PRODUCT, day, prod, now):
+    # never regress (G53-1): an older day, or an older production of the live day, never moves the pointer; under --force
+    # it is rebuilt (frames, manifest) beside it, the pointer untouched
+    older = bool(live_run) and (day < live_run or (day == live_run and prod < (live_prod or "")))
+    same = bool(live_run) and day == live_run and prod == live_prod
+    if not a.force and (older or same):
+        return heartbeat(f"nothing newer: {day} {prod} (live {live_run} {live_prod})", datasets, datasets_utc)
+    advance = not older
+    if live and not a.force and not a.day and A.skip_failed(store, PRODUCT, day, prod, now):   # a manual --day retry goes ahead (G53-2)
         print(f"{day} {prod}: failed {A.FAILED_MAX_ATTEMPTS} times; waiting {A.FAILED_RETRY_AFTER_H} h between tries")
         return stale(f"day {day} keeps failing")
     t0 = datetime.now(timezone.utc)
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            if rec_file is not None:
-                path = a.file
-            else:
-                path = os.path.join(tmp, rec.name)
-                A.download(rec, path, get=get, max_bytes=MAX_FILE_BYTES)
-            data = reader(path, day)
-        published = A.utc(now)
-        manifest, stats = build(day, prod, rec.prod, data, store if live else None, a.local, published)
-        stats["build_seconds"] = round((datetime.now(timezone.utc) - t0).total_seconds(), 1)
-        extra = {"datasets": datasets, "datasets_utc": datasets_utc} if datasets else {}
-        if live or a.local is not None:
-            mkey, pointer_new = publish(store if live else None, a.local, day, manifest, stats, extra)
+    with tempfile.TemporaryDirectory() as tmp:
+        if rec_file is not None:
+            path = a.file
         else:
-            mkey, pointer_new = manifest_key(day, published), None
-    except Exception as exc:                                           # noqa: BLE001
-        msg = f"{exc.__class__.__name__}: {exc}"
-        print(f"{day} {prod}: FAILED {msg}")
-        if live:
-            record_failure(store, day, prod, msg, now)
-        A._summary(f"FAILED: gridded satellite wave height {day} ({prod}): {P.redact(msg)}")
-        return 1
+            # a download that fails (503s, a reset, a truncation, a purge between the listing and the GET) is an outage,
+            # not a fault of the production: reported, never charged to its back-off (G53-5)
+            path = os.path.join(tmp, rec.name)
+            try:
+                A.download(rec, path, get=get, max_bytes=MAX_FILE_BYTES)
+            except Exception as exc:                                   # noqa: BLE001
+                A._summary(f"WARNING: gridded satellite wave height {day} ({prod}): download failed: {exc.__class__.__name__}: {exc}")
+                return quiet(f"the {day} file cannot be downloaded")
+        try:
+            data = reader(path, day)
+            published = A.utc(now)
+            manifest, stats = build(day, prod, rec.prod, data, store if live else None, a.local, published)
+            stats["build_seconds"] = round((datetime.now(timezone.utc) - t0).total_seconds(), 1)
+            extra = {"datasets": datasets, "datasets_utc": datasets_utc} if datasets else {}
+            if live or a.local is not None:
+                mkey, pointer_new = publish(store if live else None, a.local, day, manifest, stats, extra, advance=advance)
+            else:
+                mkey, pointer_new = manifest_key(day, published), None
+        except Exception as exc:                                       # noqa: BLE001
+            msg = f"{exc.__class__.__name__}: {exc}"
+            print(f"{day} {prod}: FAILED {msg}")
+            if live:
+                record_failure(store, day, prod, msg, now)
+            A._summary(f"FAILED: gridded satellite wave height {day} ({prod}): {P.redact(msg)}")
+            return 1
     cells = [f["valid_cells"] for f in manifest["frames"]]
     A._summary(f"### gridded satellite wave height: {day} production {prod}, steps {[f['step'] for f in manifest['frames']]}, "
                f"newest {manifest['newest_utc']}, cells {cells}, max {max((f['max_m'] or 0) for f in manifest['frames'])} m, "
                f"clamped {sum(f['clamped_high'] for f in manifest['frames'])}, flagged {stats['flagged']}, dropped {stats['dropped']}"
-               f"{' (dry run)' if a.dry_run else ''} -> {mkey}")
-    if live:
+               f"{' (dry run)' if a.dry_run else ''}{'' if advance else ' (an older day or production: the pointer NOT moved)'} -> {mkey}")
+    if live and pointer_new is not None:
         pointer.clear()
         pointer.update(pointer_new)
-        deleted = prune(store, pointer, keep=a.keep, now=now)
-        print(f"pruned: {len(deleted)}")
+        safe_prune(store, pointer, a.keep, now)
         return stale("")
-    return 0
+    return stale("") if live else 0
 
 
 if __name__ == "__main__":

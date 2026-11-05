@@ -209,3 +209,7 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   killed; the 2 survivors are behaviour-equivalent (the hover's box guard: the layer is already clear with the box
   off; the SST-source reset: every observation mount already clears it). NEXT: the job reviewer's record, fixes, then
   STOP for the job-only merge.
+- 2026-11-05: step 2 review (one fresh Fable reviewer; record `docs/reviews/gridded-G53-job.md`): 0 P0, 1 P1 (`--force`
+  regressed the live pointer), 4 P2 (a manual `--day` retry skipped while backed off; an all-fill production accepted;
+  prune errors escaping `main`; download outages charged to the production), 4 P3 + nits. All fixed (the record's fix
+  table); `test_altgrid.py` 11; 9 of the reviewer's 10 defect proofs now fail. NEXT: STOP for the job-only merge.

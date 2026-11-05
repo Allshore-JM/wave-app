@@ -122,6 +122,7 @@ def test_parse_file_and_the_dataset_pattern_take_the_half_degree_6_hourly_produc
 def test_read_l4_checks_the_axes_scale_fill_units_and_steps_and_returns_north_up_steps_flags_as_absent(tmp_path):
     p = str(tmp_path / "a.nc")
     v = np.full((4, 359, 720), np.nan)
+    v[:, 200:300, :] = 1.5                                             # 72,000 valid cells a step (MIN_VALID_CELLS 50,000)
     j, i = int(np.where(np.isclose(LAT, 10.0))[0][0]), int(np.where(np.isclose(LON, -150.0))[0][0])
     v[:, j, i] = [1.0, 2.0, 3.0, 4.0]
     v[0, 5, 5], v[0, 6, 6] = 31.0, 0.0                                   # out of range -> absent (counted); 0 m is a value
@@ -137,13 +138,24 @@ def test_read_l4_checks_the_axes_scale_fill_units_and_steps_and_returns_north_up
     for kw, msg in ((dict(scale=0.01), "scale_factor"), (dict(tunits="hours since 1950-01-01"), "days since"),
                     (dict(lat=LAT[:-1]), "latitude"), (dict(lat=LAT[::-1]), "latitude"), (dict(hours=(0, 3, 12, 18)), "00 / 06"),
                     (dict(hours=(0, 6, 12)), "time steps"), (dict(lat_units="degrees"), "degrees_north"), (dict(fill=-9999), "_FillValue")):
-        vv = np.full((len(kw.get("hours", (0, 6, 12, 18))), len(kw.get("lat", LAT)), 720), np.nan)
+        vv = np.full((len(kw.get("hours", (0, 6, 12, 18))), len(kw.get("lat", LAT)), 720), 1.5)
         write_l4(p, "20261103", values=vv, **kw)
         with pytest.raises(ValueError, match=msg):
             G.read_l4(p, "20261103")
-    write_l4(p, "20261103")
+    write_l4(p, "20261103", values=np.full((4, 359, 720), 1.5))
     with pytest.raises(ValueError, match="00 / 06"):
         G.read_l4(p, "20261104"), "the steps must be the named day's"
+    # the float32 time axis rounds to the hour within TIME_SLACK_S (G53-9): 2 min off is the hour, 6 min off is refused
+    write_l4(p, "20261103", values=np.full((4, 359, 720), 1.5), hours=(2 / 60, 6, 12, 18))
+    assert G.read_l4(p, "20261103")["valid"][0] == datetime(2026, 11, 3, tzinfo=timezone.utc)
+    write_l4(p, "20261103", values=np.full((4, 359, 720), 1.5), hours=(6 / 60, 6, 12, 18))
+    with pytest.raises(ValueError, match="not on the hour"):
+        G.read_l4(p, "20261103")
+    # a step with too few valid cells is a broken production (G53-3): an all-fill day is refused, never published blank
+    vv = np.full((4, 359, 720), 1.5); vv[2] = np.nan; vv[2, :10, :] = 2.0
+    write_l4(p, "20261103", values=vv)
+    with pytest.raises(ValueError, match="12Z holds 7200 valid cells"):
+        G.read_l4(p, "20261103")
 
 
 def test_place_half_puts_row_r_at_latitude_90_minus_half_r_with_absent_poles_on_the_model_half_grid():
@@ -233,7 +245,7 @@ def test_prune_keeps_three_complete_days_the_live_one_and_in_progress_days_and_n
     assert "altgrid/v1/failed/20261028.json" not in fc.objects and "altgrid/v1/failed/20261102.json" in fc.objects
     assert "sst/v1/20261029/x" in fc.objects
     with pytest.raises(ValueError):
-        G.prune(store, {}, keep=0)
+        G.prune(store, {}, keep=1)
 
 
 def test_the_stale_alarm_fires_once_per_12_h_on_scheduled_runs_only(tmp_path):
@@ -284,7 +296,7 @@ def test_the_workflow_is_pinned_scheduled_kept_alive_and_not_dispatched_by_the_t
     wf = os.path.join(ROOT, ".github", "workflows")
     text = open(os.path.join(wf, "model-altgrid.yml"), encoding="utf-8").read()
     assert "python tools/model_frames/altgrid.py" in text and "group: model-altgrid" in text and "timeout-minutes: 30" in text
-    assert 'cron: "17,47 7-10 * * *"' in text and 'cron: "17 */3 * * *"' in text
+    assert 'cron: "17,47 7-10 * * *"' in text and 'cron: "17 0,3,6,12,15,18,21 * * *"' in text, "the two crons never meet (G53 nit)"
     uses = re.findall(r"uses:[ ]*([^ \n]+)", text)
     assert uses and all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", u) for u in uses)
     pkgs = text.split("create-args: >-", 1)[1].split("cache-environment", 1)[0].split()
@@ -296,3 +308,52 @@ def test_the_workflow_is_pinned_scheduled_kept_alive_and_not_dispatched_by_the_t
     assert tests.count('".github/workflows/model-altgrid.yml"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
     assert "model-altgrid.yml" not in cfg, "a daily product: the cron suffices (the SST rule)"
+
+
+# ------------------------------------------------------------------ the G53 review's findings
+def test_g53_force_never_moves_the_pointer_back_a_manual_day_retry_goes_ahead_downloads_are_not_charged_prune_errors_warn(tmp_path, monkeypatch):
+    p2 = big(tmp_path, "20261102", "20261103T073010"); p3 = big(tmp_path, "20261103", "20261104T073010")
+    web = web_for(tmp_path, {("20261102", "20261103T073010"): p2, ("20261103", "20261104T073010"): p3})
+    fc = FakeClient(); store = P.Store(fc, "b")
+    assert G.main([], get=web, store=store, now=NOW) == 0
+    ptr = json.loads(fc.objects["altgrid/v1/latest.json"]["body"]); assert ptr["run"] == "20261103"
+    # 1: --day <older> --force rebuilds that day's frames and manifest beside the live day; the pointer stays
+    n = len(puts(fc))
+    assert G.main(["--day", "20261102", "--force"], get=web, store=store, now=NOW + timedelta(minutes=5)) == 0
+    new = puts(fc)[n:]
+    assert "altgrid/v1/latest.json" not in new and any(k.startswith("altgrid/v1/20261102/manifest-") for k in new)
+    assert json.loads(fc.objects["altgrid/v1/latest.json"]["body"]) == ptr, "the pointer never moves back"
+    # 2: after three failures a manual --day retry still runs (an operator's dispatch), a scheduled run waits
+    for k in range(3):
+        G.record_failure(store, "20261103", "20261104T073010Z", "boom", NOW + timedelta(minutes=k))
+    n = len(web.log)
+    assert G.main(["--day", "20261103", "--force"], get=web, store=store, now=NOW + timedelta(minutes=10)) == 0
+    assert any("20261104T073010Z.nc" in u for u in web.log[n:]), "the manual retry downloads"
+    # 5: a download that fails is a warning, not a failure charged to the production
+    fc2 = FakeClient(); s2 = P.Store(fc2, "b")
+    url3 = f"{A.S3}/{A.BUCKET}/native/{G.STAC_ID}/{DID}/2026/11/{l4_name('20261103', '20261104T073010')}"
+    web.down.add(url3)
+    monkeypatch.setattr(A.time, "sleep", lambda s: None)
+    for k in range(4):
+        assert G.main([], get=web, store=s2, now=NOW + timedelta(minutes=k)) in (0, 1)
+    assert "altgrid/v1/failed/20261103.json" not in fc2.objects, "an outage is never charged to the production"
+    web.down.discard(url3)
+    # 4: a prune error is a summary warning; the run that published stays green
+    calls = []
+    def boom(*a, **k):
+        calls.append(1); raise RuntimeError("delete errors: 1")
+    monkeypatch.setattr(G, "prune", boom)
+    assert G.main([], get=web, store=s2, now=NOW + timedelta(minutes=30)) == 0 and calls
+    assert json.loads(fc2.objects["altgrid/v1/latest.json"]["body"])["run"] == "20261103"
+    assert G.main([], get=web, store=s2, now=NOW + timedelta(minutes=40)) == 0, "the quiet run's prune error warns too"
+
+
+def test_g53_a_corrupt_pointer_is_refused_cleanly_and_keep_must_spare_the_previous_day(tmp_path):
+    web = web_for(tmp_path, {})
+    for body in (b"{not json", b'"x"', b'{"format": "altgrid-v1", "run": 20261103}', b'{"format": "sst-v1"}'):
+        fc = FakeClient(); fc.objects["altgrid/v1/latest.json"] = {"body": body, "ct": "", "cc": ""}
+        assert G.main([], get=web, store=P.Store(fc, "b"), now=NOW) == 1, body
+        assert [k for op, k in fc.log if op == "put"] == [], "nothing written over it"
+    assert G.main(["--keep", "1"], get=web, now=NOW) == 2
+    with pytest.raises(ValueError):
+        G.prune(P.Store(FakeClient(), "b"), {}, keep=1)

@@ -1205,7 +1205,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   L4 file: the real-file check; a LIVE publish without `--local` / `--dry-run`), `--force`, `--keep N`. Tests:
   `tests/model_frames/test_altgrid.py`; review record `docs/reviews/gridded-G53-job.md`.
 
-### The satellite layer on the map (plan sections 81 and 82, the client; overlay asset 2.24.1)
+### The satellite layer on the map (plan sections 81 and 82, the client; overlay asset 2.24.3)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown (off by default: on once `alt/v1` is
   live); `SARSWELL=1` (with it) adds the Heights | Swell switch to the layer's own entry (on once `sarswell/v1` is live).

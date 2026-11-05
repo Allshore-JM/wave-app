@@ -257,3 +257,10 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   1,102/1,102, flag tests 17/17. NEXT: 2.24.2 on the test site, CI green, then STOP for the client merge
   (`prod-pre-altgrid` @ production 06a965f + the owner's explicit go-ahead), then ALT_GRID=1 on production with its
   own go-ahead.
+- 2026-11-05 ~05:30Z (desktop): the live check of the G55 fixes found the licence credit 10 px below a 360 x 640
+  sheet once the warning moved up: asset 2.24.3 puts the key line last (credit 546-575 inside the 390-581 box, the
+  warning 494-513; served overlay.js = f31b35a; test @ bbceef8). CI coast-build green on f31b35a. Production
+  (06a965f, the job-only merge commit) merged into feat/gridded (docs conflicts only: README heading, this file; both
+  taken from this branch, nothing of production's lost), so the client merge is a fast-forward. STOP for the owner's
+  explicit go-ahead for the client merge (rollback tag `prod-pre-altgrid` @ 06a965f), then ALT_GRID=1 on production
+  with its own go-ahead.

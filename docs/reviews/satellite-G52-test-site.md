@@ -51,7 +51,7 @@ chunk was re-asked three times on the cooldown, as the finding says).
 | 1 | `_satReadout`: a `model_edge` reading reads "model 0.6 ft (edge)", no difference, in both the own entry and the frame mode. |
 | 2 | `_satReadout` appends " · near land" (swell: ", near land" in the parenthesis); `_renderSat` adds the key line "Hollow dots: within a grid cell of land (less reliable)." under the readings line (`SAT_KEY`, heights only). |
 | 3 | `_satLineText` counts spacecraft by the mission's short name with " OGDR" stripped: Jason-3 once. |
-| 4 | `_bindReadout`: a plain tap (touchend before the 450-ms press) whose point `hitAt`s a satellite mark shows the readout for `SAT_TAP_MS` 4 s; a long-pressed satellite readout stays 4 s too (`data-sat` on the readout); the field keeps its rule. The owner's sheet says so. |
+| 4 | `_bindReadout`: a plain tap (touchend before the 450-ms press) whose point `hitAt`s a satellite mark shows the readout for `SAT_TAP_MS` 4 s; a long-pressed satellite readout stays 4 s too (`satShown`, a closure flag; asset 2.23.4 after coast-build #584 / #585 failed on a `removeAttribute` the other suites' fake elements lack); the field keeps its rule. The owner's sheet says so. |
 | 5 | The difference is computed from the two printed values (`toFixed` first). |
 | 6 | `_satLineText`: "loading 8 of 9… (1 retrying)" while a needed chunk waits out its cooldown. |
 | 7 | `_satLineText`: "· 8 of 9 windows" after the satellites when a needed chunk is a permanent failure (404 / undecodable). |

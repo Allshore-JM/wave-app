@@ -1357,7 +1357,8 @@
     var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null;
     var kick = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, self.timeoutMs); };
     kick();
-    this.loading = this._pointer(sig).then(function (ptr) {
+    var noted = this.newer;                                  // recheck() just read it: not read twice (G54-7)
+    this.loading = (noted ? Promise.resolve(noted) : this._pointer(sig)).then(function (ptr) {
       kick();
       if (!validGridPointer(ptr)) throw new Error('unsupported gridded map pointer');
       if (was && was.manifest === ptr.manifest) return null;               // the step on the map is still the newest
@@ -1365,6 +1366,7 @@
         kick();
         if (!validGridManifest(m, ptr)) throw new Error('unsupported gridded map manifest');
         var entry = m.frames[m.frames.length - 1];
+        if (was && self.entry && self.frame && entry.file === self.entry.file) return { ptr: ptr, m: m, entry: self.entry, frame: self.frame };   // the same frame under a new manifest: kept, not fetched (G54-6)
         return self._decode(self.root + '/' + entry.file, sig, GRID_EXPECT, kick).then(function (frame) {
           validateGrid(m.grid, frame, SAT_FDEF);
           return { ptr: ptr, m: m, entry: entry, frame: frame };
@@ -5034,7 +5036,7 @@
   // ---- the gridded map (plan section 82) ----
   // Wanted: the box on, on the Satellite waves entry. The map is drawn in the entry's ModelGridLayer (modelPane, under the
   // dots' obsPane) as field 'sat' (the coast clip; no lake mask, no contours), the newest step only.
-  Overlay.prototype._wantGrid = function () { return !!(this.grid && this.satGrid && this.mode === 'obs' && this.field === 'sat' && this.layer); };
+  Overlay.prototype._wantGrid = function () { return !!(this.grid && this.satGrid && this.mode === 'obs' && this.field === 'sat' && this.layer && this.satLayer); };   // satLayer: never under the error panel (G54-1)
   Overlay.prototype._gridShown = function () { return !!(this.layer && this.layer.field === 'sat' && this.layer.hasFrame()); };
   Overlay.prototype._gridState = function () {                // '' fresh / 'warn' past GRID_WARN_H / 'hide' past GRID_HIDE_H (owner)
     var st = this.grid, h = st && this.satGrid ? st.ageH() : null;
@@ -5045,14 +5047,14 @@
     if (on === this.satGrid) return;
     this.satGrid = on; save({ satGrid: on });
     if (this.ui && this.ui.gridBox && this.ui.gridBox.checked !== on) this.ui.gridBox.checked = on;
-    this._syncGrid(true);
+    this._syncGrid(true, true);                              // quiet: the render below is the one (G54-5)
     if (this.last && this.last.state === 'ready' && this.mode === 'obs' && this.field === 'sat') this.render(this.last);   // the credit line, the warning
   };
-  Overlay.prototype._syncGrid = function (force) {
+  Overlay.prototype._syncGrid = function (force, quiet) {
     var self = this, st = this.grid;
-    if (!this._wantGrid()) { this._clearGrid(); this._gridLineSync(); return; }
-    if (st.status === 'ok' && st.frame) this._showGrid(st);
-    this._gridLineSync();
+    if (!this._wantGrid()) { this._clearGrid(); this._gridLineSync(quiet); return; }
+    if (st.frame) this._showGrid(st);                        // the frame in hand at once, even while a re-read runs (it stays valid until a newer one lands)
+    this._gridLineSync(quiet);
     st.load(force).then(function (ok) {
       if (ok && self._wantGrid()) self._showGrid(ok);
       self._gridLineSync();
@@ -5062,6 +5064,7 @@
   Overlay.prototype._clearGrid = function () {
     if (!this._gridShown()) return;
     this.layer.clear();
+    if (this.readout) this.readout.hidden = true;            // never "grid …" over a map that is gone (G54-4)
     if (this._attributed) this._attribute();
   };
   Overlay.prototype._showGrid = function (st) {
@@ -5103,12 +5106,12 @@
     }
     return st.status === 'failed' ? 'unavailable' : 'loading…';
   };
-  Overlay.prototype._gridLineSync = function () {
+  Overlay.prototype._gridLineSync = function (quiet) {
     var ui = this.ui;
     if (ui && ui.gridNote) { var t = this._gridLineText(); if (ui.gridNote.textContent !== t) ui.gridNote.textContent = t; }
     var state = this._gridState();
     if (state === 'hide') this._clearGrid();
-    if (this.mode === 'obs' && this.field === 'sat' && state !== (this._gridWarnShown || '') && this.last && this.last.state === 'ready') this.render(this.last);
+    if (!quiet && this.mode === 'obs' && this.field === 'sat' && state !== (this._gridWarnShown || '') && this.last && this.last.state === 'ready') this.render(this.last);
   };
   Overlay.prototype._gridValueText = function (v) {
     var u = unitOf('hs', this.opts.getUnit());
@@ -5116,7 +5119,7 @@
   };
   // The hover over water with no reading under the cursor: the gridded map's value and its step's time.
   Overlay.prototype._gridReadout = function (v) {
-    var when = this.grid.entry.valid_utc;
+    var when = (this._gridShown() && this.layer.entry ? this.layer.entry : this.grid.entry).valid_utc;   // the drawn step's time
     return 'grid ' + this._gridValueText(v) + ' · ' + this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
   };
   // The own entry's readings line, in place: "Readings: last 24 h, newest 11:40 AM HST (2 h ago) · 7 satellites" ("loading
@@ -7310,7 +7313,7 @@
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,
-      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS,
+      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS, FOCUS_PARTS: FOCUS_PARTS,
       GridStore: GridStore, gridStore: gridStore, validGridPointer: validGridPointer, validGridManifest: validGridManifest, GRID_PREFIX: GRID_PREFIX, GRID_FORMAT: GRID_FORMAT,
       GRID_DOI: GRID_DOI, GRID_WARN_H: GRID_WARN_H, GRID_HIDE_H: GRID_HIDE_H, GRID_EXPECT: GRID_EXPECT, GRID_HALF: GRID_HALF, satLut: satLut, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,

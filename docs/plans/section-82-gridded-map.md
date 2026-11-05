@@ -222,3 +222,10 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   cells = the manifest's valid_cells, the poles absent. The crons take it from here (07:17-10:47Z twice an hour, then
   every 3 h). NEXT: the owner sets `ALT_GRID=1` on the TEST service (the client is on `test` @ 077ff90), then the
   test-site checks and the two client reviewers, then STOP for the client merge (`prod-pre-altgrid`).
+- 2026-11-05 03:48Z: the owner set `ALT_GRID=1` on the TEST service; the test site serves `var GRID = true`, asset
+  2.24.0. My checks (headless Chromium, desktop + phone; screenshots sent): the box, the field under the dots and the
+  arrows, the note "CMEMS L4 · Nov 3, 01:00 PM EST (34 h ago)", the hovers ("· grid 14.4 ft" on a dot; "grid 10.1 ft ·
+  Nov 3, 01:00 PM EST" over water), the third DOI, Swell's new line, reload, Off, Wave height and back, phone 375 px;
+  the drawn values equal the published frame at every point probed; no errors. The owner's sheet
+  `section-82-test-site-sheet.md`. NEXT: the two Fable reviewers (code G54, test site G55), fixes, then STOP for the
+  client merge.

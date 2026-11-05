@@ -187,3 +187,12 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
 ## §82 progress
 - 2026-11-05: planned (the owner's decisions 1-6, the model choice Opus 5.5 HIGH with Fable reviews, the credits
   rule) and approved; branch `feat/gridded` created off 584a772; nothing built. NEXT: the cue, then step 1 (the job).
+- 2026-11-05 (Opus 5.5, HIGH): step 1 built: `tools/model_frames/altgrid.py` (alt.py's discovery / listing / download /
+  alarms imported; `L4Product.parse_file` makes one record per day; `read_l4` with the checks; `place_half`;
+  `encode_frame(fill=False)`; manifest + pointer last; prune 3 days + the 2-h supersession grace, also on quiet runs;
+  failures stamped with the run's time), `model-altgrid.yml` (crons 17,47 7-10 and 17 */3; not on the Worker), the
+  pins (tests.yml x2, keepalive), README job section, DEPLOYMENT note, `tests/model_frames/test_altgrid.py` (9).
+  Real-file check on the 2026-11-03 file: 2,000 cells a step within half a quantum (0.045 m) of the NetCDF, exact
+  latitude placement, poles absent, the blank mask = the product's valid-and-unflagged mask exactly; a live local
+  build against the bucket in 8 s (production 20261104T073010Z, newest step 18Z Nov 3). model_frames suite 502 pass.
+  NEXT: step 2 (one fresh Fable reviewer on the job), then STOP for the job-only merge.

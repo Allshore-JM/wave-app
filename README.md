@@ -1171,6 +1171,36 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
 
+### The gridded satellite wave height (plan section 82, the job)
+
+- **`tools/model_frames/altgrid.py`** (workflow `model-altgrid.yml`, group `model-altgrid`, crons `17,47 7-10 * * *`
+  and `17 */3 * * *`; a daily product, so NOT on the trigger Worker; kept alive by the keepalive): the newest day of
+  Copernicus Marine's level-4 gridded significant wave height, `WAVE_GLO_PHY_SWH_L4_NRT_014_003` (doi
+  10.48670/moi-00180), dataset `cmems_obs-wave_glo_phy-swh_nrt_multi-l4-0.5deg_PT6H-i`: `VAVH_INST`, "an estimate of
+  the instantaneous wave field every 6 h at 0.5 degrees, using all available level-3 along-track measurements and
+  accounting for their spatial and temporal proximity". Anonymous on the same CloudFerro bucket as the level-3 jobs
+  (`alt.py`'s STAC discovery, listing, download and failure machinery, imported). One ~9 MB NetCDF a day holds the
+  four steps 00 / 06 / 12 / 18Z of a day and lands about 07:30Z the next day (the day's older production purged), so
+  the newest step is 13-37 h behind the clock. Verified on the real file of 2026-11-03: the axes, scale and fill as
+  expected, 55 % of the cells valid (open ocean only: blank within ~50 km of coasts and under ice), `VAVH_INST_FLAG`
+  1 = an invalid value thresholded to 0 m (treated as absent); a local build decoded within half a quantum of the
+  NetCDF at every cell sampled.
+- **Frames**: the 359 x 720 grid (latitude ascending -89.5 .. 89.5) is flipped north-up and placed at rows 1..359 of
+  the model's half grid (`run.GRID_HALF`: 720 x 361, lat0 90, lon0 -180, 0.5 deg, centre, periodic), the poles
+  absent, so the client draws it through `ModelGridLayer` as it stands; quantised on `encode.FIELDS["hs"]` (the
+  model's and the dots' colours), no coastal fill. Keys `altgrid/v1/<day>/<production>/hs-<HH>.png` (immutable),
+  `altgrid/v1/<day>/manifest-<published>.json` (`{format "altgrid-v1", day, run, production, production_utc, grid,
+  fields {hs}, frames [{step, valid_utc, file, valid_cells, max_m, clamped_high}], newest_utc, source, credit}`) and
+  `stats-<published>.json`, then `altgrid/v1/latest.json` LAST (max-age 300: `{format, day, run, manifest, newest_utc,
+  production, production_utc, published_utc, checked_utc, datasets, datasets_utc, credit}`).
+- **Runs**: the newest listed day (the newest production per day); the same day and production = a heartbeat
+  (`checked_utc`); a re-produced day = new frame keys, the older production kept 2 h after the pointer left it, then
+  pruned (also on quiet runs); an older day never regresses the pointer; 3 complete days kept. A failure (download,
+  a refused file) is recorded under `altgrid/v1/failed/<day>.json` (3 attempts on the same production, then a try
+  every 2 h); the newest step older than 48 h ends a scheduled run with `STALE:` and exit 1, at most once every 12 h.
+  `--dry-run`, `--local DIR`, `--day YYYYMMDD`, `--file PATH` (a local L4 file: the real-file check), `--force`,
+  `--keep N`. Tests: `tests/model_frames/test_altgrid.py`.
+
 ### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.5)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown (off by default: on once `alt/v1` is

@@ -203,6 +203,17 @@ site, review, fixes)."**
   keeps the box on; the phone layout folds to the panel at the bottom with the dots drawn; no console errors on either
   viewport. Reviewer B (fresh agent, the test site) started: record to be `docs/reviews/satellite-G52-test-site.md`.
   WAITING on the owner's separate go-ahead for `SARSWELL=1` on the TEST service (the Swell switch).
+- 2026-11-05 00:02Z: the owner set `SARSWELL=1` on the TEST service. My pass (scratch `swellcheck.js`, `probe.js`;
+  screenshots sent): the Heights | Swell switch shows with aria-pressed; Swell loads 1,962 points (17 chunks on the
+  bucket now: the Nov 4 batch landed at ~23:17Z), the arrows draw at z3 / z5 with colour by height and length by period,
+  hover "Swell 1: 6.6 ft · 15 s · from 304° (CFOSAT, 9 h ago)", the credit line carries both DOIs, the title too; the
+  kind is kept across a reload and across a visit to Wave height; no console errors, no failed requests, on either
+  viewport. Two observations, both the data, not bugs: (1) the readings line says "1 satellite" because the swell
+  window hangs off the NEWEST point (CFOSAT, Nov 4 17:23Z) while Sentinel-1C's newest is Nov 3 16:04Z, outside the
+  24 h: when one satellite's batch lags the other's, the window shows one satellite (OWNER: widen the swell window to
+  48 h, or hang it off the clock, if that reads wrong); (2) at a frame whose 3-h window lies beyond the newest height
+  reading (01Z with readings to 21:51Z) the box says "no readings within 3 h of this time", as designed. Reviewer B
+  told about the switch. WAITING: reviewer B's record.
 
 
 ---

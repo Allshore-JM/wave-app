@@ -217,3 +217,12 @@ B-3 the warn line half below the 360 x 640 sheet) · 3 observations outside the 
 
 Suites after the fixes: `tests/overlay/sat.test.js` 15 / 15; the whole client-tests list (34 files) 1,102 / 1,102;
 `tests/test_overlay_flag.py` 17 / 17 (asset pin re-made for 2.24.2).
+
+## Live check of the fixes (test site, asset 2.24.2, then 2.24.3)
+
+The reviewer's own scripts re-run against the test site on 2.24.2 (served overlay.js = be6853d): B-1 live, the warning
+went "50 h old" -> "56 h old" with the note (t8); B-3 live, at 360 x 640 the warning sits at 494-513 inside the details
+box (390-581). FOUND by that check: the licence credit line had moved down to 563-591, 10 px below the box. Fixed in
+2.24.3: the "Hollow dots" key line now comes after the credit (the box's bottom line on the smallest phones is the key,
+reachable by scrolling), with a test that fails on the 2.24.2 order. Suites: client-tests list 1,102 / 1,102, flag
+tests 17 / 17.

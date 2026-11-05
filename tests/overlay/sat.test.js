@@ -680,6 +680,7 @@ test('controller: the gridded map\'s age: the note, a warning past 48 h, hidden 
   assert.ok(ovA.ui.gridWarn, 'the warning element is kept for in-place updates');
   assert.ok(at('Gridded map') >= 0 && at('Gridded map') < at('The gridded map is 56 h old.'), 'after the box');
   assert.ok(at('The gridded map is 56 h old.') < at('Readings:') && at('The gridded map is 56 h old.') < at('Generated using'), 'before the readings line and the credit');
+  assert.ok(at('Hollow dots') > at('Generated using'), 'the key after the licence credit (the credit stays in a 360-px sheet)');
   atAge(73, () => { ovA._gridLineSync(); });
   assert.equal(ovA.layer.hasFrame(), false, 'past 72 h: hidden');
   assert.equal(atAge(73, () => ovA._gridLineText()), 'hidden: 73 h old');

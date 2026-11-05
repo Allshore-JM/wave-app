@@ -8,7 +8,7 @@ dispatched every 10 min by the trigger Worker (the crons :07/:37 and :09/:39 are
 ## What to set (test service first, each with its own go-ahead)
 
 1. `ALT_OVERLAY=1` on the Render TEST service, then redeploy / restart. The page gains "Satellite waves" in the
-   Map overlay dropdown and the "Satellite readings" box under Wave height.
+   Map overlay dropdown.
 2. `SARSWELL=1` (needs `ALT_OVERLAY=1` too): the Heights | Swell switch appears on the layer's own entry.
 3. Nothing on production until step 6 (the client merge, tag `prod-pre-alt`).
 
@@ -33,12 +33,8 @@ Without the flags the page is byte-identical to the pre-feature page (`tests/tes
   period; hover: "Swell 1: 6.6 ft · 14 s · from 216° | Swell 2: … (Sentinel-1C, 6 h ago)".
 - The map credit reads "Overlay: Copernicus Marine" (the title carries both DOIs: moi-00179, moi-00178).
 - Switch to Wave height (GFS-Wave and ECMWF): the layer leaves; the model's run, time and play state are as before.
-  Tick "Satellite readings": dots within 3 h of the frame in the model's colours; the note beside the box says the
-  state ("within 3 h of the frame" / "loading readings…" / "no readings within 3 h of this time"); play: the dots
-  follow the frame; hover: "obs 6.2 ft · Sentinel-6A · 11:40 AM HST · model (frame 12:00 PM) 5.4 ft (+0.8)"; the map
-  credit gains " · Copernicus Marine". Peak period, wind and Off detach the dots; back to Wave height brings them
-  back without a new download. No swell arrows over the model.
-- Reload: the box's state and the Heights | Swell choice are kept per tab; a saved "sat" entry with the flag off
+  (The "Satellite readings" box under Wave height was removed on 2026-11-05.)
+- Reload: the Heights | Swell choice is kept per tab; a saved "sat" entry with the flag off
   starts Off.
 - Leave the tab open 15 min on the satellite entry: the pointer is re-read every 12 min; no flash when a new
   pointer is adopted.
@@ -47,13 +43,11 @@ Without the flags the page is byte-identical to the pre-feature page (`tests/tes
 
 - The own entry: the panel folds to "Satellite · newest <time>"; a tap (or a long press) on a dot or an arrow shows
   its readout for 4 s; the field under Wave height keeps its long press.
-- The box under Wave height fits the phone panel; the note wraps.
 - No horizontal scroll from the Heights | Swell switch.
 
 ## When something is wrong
 
-- "readings unavailable" in the note / the panel: the pointer did not load (check
-  `https://models.allshoresurf.com/alt/v1/latest.json`), or the browser lacks `DecompressionStream` (the box is
-  disabled with "not supported in this browser").
+- "satellite readings cannot be loaded right now" in the panel: the pointer did not load (check
+  `https://models.allshoresurf.com/alt/v1/latest.json`); "not supported in this browser": no `DecompressionStream`.
 - Write down: the browser, the entry, the time shown, what the note said; the sheet's reviewer B pass goes into
   `docs/reviews/`.

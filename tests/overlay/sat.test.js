@@ -5,7 +5,7 @@
 // in-flight cap, 404 final / 503 cooldown, a newer pointer adopted only once its chunks landed, idle / abortAll keep the
 // samples), the layer (split draw, empty -> empty untouched, hitAt = the top-most drawn), and the controller (the own
 // entry: mode obs, the layer in its pane, the credit, the Heights | Swell switch; the box under wave height: the window
-// of the shown frame, cleared with it, detached under peak period and Off; the notes; the hover texts).
+// the hover texts; the "Satellite readings" box under wave height was removed by the owner on 2026-11-05).
 //   node --test tests/overlay/sat.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -372,11 +372,8 @@ test('SatLayer: dots drawn newest last (on top), hollow near land, alpha by age;
   const a1 = elP.calls.filter((c) => c[0] === 'arc').slice(-2), a2 = copy.calls.filter((c) => c[0] === 'arc');
   assert.equal(a2.length, a1.length);
   for (let k = 0; k < a1.length; k++) assert.ok(Math.abs(a2[k][1] - a1[k][1]) < 1e-9 && Math.abs(a2[k][2] - a1[k][2]) < 1e-9, 'a world copy draws the same pixels');
-  // frame mode: alpha by |t - ref| / span, the entry kept; setWindow(null) clears the tiles that had dots and no other
-  layer.setWindow({ t0: T0 - 3 * 3.6e6, t1: T0 + 3 * 3.6e6 + 1, ref: T0, span: 3 * 3.6e6, frame: true, entry: { step: 5 } });
-  assert.equal(layer.entry.step, 5);
-  const fa = elP.calls.filter((c) => c[0] === 'arc').slice(-4);
-  assert.ok(fa[0][4] === 1 && fa[3][4] < fa[0][4], 'at the frame\'s time alpha 1, 3 h away the far end');
+  // a window set again (the own window of another reference); setWindow(null) clears the tiles that had dots and no other
+  layer.setWindow({ t0: T0 - 3 * 3.6e6, t1: T0 + 3 * 3.6e6 + 1, ref: T0 + 3 * 3.6e6, span: 6 * 3.6e6, frame: false, entry: null });
   const before = elX.calls.length, pb = elP.calls.length;
   layer.setWindow(null);
   assert.equal(elX.calls.length, before, 'an empty tile stays untouched'); assert.ok(elP.calls.length > pb && elP.calls[elP.calls.length - 1][0] === 'clear');
@@ -531,78 +528,6 @@ function modelWorld(w, ov) {
   ov.frameIndex = 2;
   return frames;
 }
-test('controller: the "Satellite readings" box under wave height: the window of the shown frame (+- 3 h), cleared with it; under peak period, Off and a model drop the layer goes; the notes; the hover with the frame\'s model value', async () => {
-  const w = world(), ov = ctl(w);
-  const frames = modelWorld(w, ov);
-  ov.render({ state: 'ready' }); ov._attribute();                         // (a landing credits the model)
-  assert.ok(ov.ui.satBox && !ov.ui.satBox.checked && ov.ui.satNote.textContent === 'within 3 h of the frame');
-  assert.equal(ov.ui.satBox.getAttribute('aria-describedby'), 'ovSatNote'); assert.equal(ov.ui.satNote.id, 'ovSatNote');
-  assert.ok(ov.ui.satBox.parentNode === undefined || true);
-  assert.equal(ov.satLayer, null, 'off by default: nothing attached, nothing fetched'); assert.equal(w.fetches.length, 0);
-  ov.setSatOn(true);
-  assert.equal(w.saved.sat, true); assert.ok(ov.satLayer && ov.satLayer.mode === 'dots');
-  assert.equal(ov.ui.satNote.textContent, 'loading readings…');
-  assert.deepEqual(w.pending(), ['https://x/alt/v1/latest.json']);
-  const ptr = pointer('alt', [chunkRec('alt', '20261104T09', 1), chunkRec('alt', '20261104T12', 1), chunkRec('alt', '20261104T15', 1)]);
-  w.answer(/latest\.json$/, ptr); await settle(20);
-  const valid = Date.parse(frames[2].valid_utc);
-  assert.deepEqual([ov.satLayer.win.t0, ov.satLayer.win.t1, ov.satLayer.win.ref, ov.satLayer.win.frame, ov.satLayer.entry], [valid - 3 * 3.6e6, valid + 3 * 3.6e6 + 1, valid, true, frames[2]]);
-  assert.equal(w.pending(/\.bin$/).length, 3, 'the three chunks within 3 h');
-  w.answer(wre('20261104T12'), chunkBytes('alt', [reading(0, { t: T0 + 1000, lat: 20, lon: -150 })], { window: '20261104T12' }));
-  w.answer(wre('20261104T09'), chunkBytes('alt', [reading(0, { t: T0 - 3.6e6, lat: 21, lon: -150 })], { window: '20261104T09' }));
-  w.answer(wre('20261104T15'), chunkBytes('alt', [reading(0, { t: T0 + 4 * 3.6e6, lat: 22, lon: -150 })], { window: '20261104T15' }));
-  assert.ok(await until(() => ov.sat.flat && ov.sat.flat.n === 3));
-  assert.equal(ov.ui.satNote.textContent, 'within 3 h of the frame');
-  assert.equal(ov.satLayer.count(), 3, 'the window [valid - 3 h, valid + 3 h]: 11:00, 12:00 and 16:00 lie within 3 h of 14:00');
-  assert.ok(w.attrs.length === 1 && /GFS-Wave.*Copernicus Marine/.test(w.attrs[0]), 'the model\'s credit + Copernicus Marine while readings are drawn: ' + w.attrs[0]);
-  // the hover: obs, the frame's model value from the drawn field, the difference
-  assert.equal(ov._satReadout(1, { lat: 20, lng: -150 }, 3), 'obs 3.3 ft · Jason-3 · T12:00 HST · model (frame T14:00) 5.9 ft (-2.6)');
-  // G51 P1: the credit follows the window at once: a frame with no readings drops it, one with readings brings it back
-  ov.layer.entry = frames[5]; ov.frameIndex = 5; ov._syncSat(5);
-  assert.ok(/Copernicus/.test(w.attrs[0]), 'the 16:00 reading is within 3 h of 17:00');
-  const far = { step: 9, valid_utc: new Date(T0 + 9 * 3.6e6).toISOString().replace('.000Z', 'Z') }; ov.manifest.frames.push(far);
-  ov.layer.entry = far; ov.frameIndex = 6; ov._syncSat(6);
-  assert.ok(!/Copernicus/.test(w.attrs[0]) && /GFS-Wave/.test(w.attrs[0]), 'no reading within 3 h of 21:00: the credit goes with the dots');
-  ov.manifest.frames.pop();
-  // the next frame lands: the window follows; a frame 5 h on: no readings
-  ov.layer.entry = frames[3]; ov.frameIndex = 3; ov._syncSat(3);
-  assert.equal(ov.satLayer.win.ref, Date.parse(frames[3].valid_utc)); assert.equal(ov.satLayer.count(), 2, '15:00: the 11:00 reading is 4 h away now');
-  ov.layer.entry = frames[5]; ov.frameIndex = 5; ov._syncSat(5);
-  assert.equal(ov.satLayer.count(), 1, '17:00: the 16:00 reading alone'); assert.equal(ov.ui.satNote.textContent, 'within 3 h of the frame');
-  // the layer's entry guard: the picture of another entry under a new time is never kept
-  ov.layer.entry = frames[4]; ov._syncSat(5);
-  assert.equal(ov.satLayer.hasWindow(), false, 'the layer shows another entry: cleared');
-  ov.layer.entry = frames[5]; ov._syncSat(5); assert.equal(ov.satLayer.hasWindow(), true);
-  // a model drop clears the window (no old dots under a new run); a field switch to tp detaches; back to hs re-attaches
-  ov._dropRun(); assert.equal(ov.satLayer.hasWindow(), false);
-  modelWorld(w, ov);                                                        // (a new run lands)
-  ov.field = 'tp'; ov._syncSatAttach(); assert.equal(ov.satLayer, null); assert.equal(ov.sat.flat.n, 3, 'the samples stay');
-  ov.field = 'hs'; ov.frameIndex = 2; ov.layer.entry = ov.manifest.frames[2]; ov._syncSatAttach();
-  assert.ok(ov.satLayer && ov.satLayer.hasWindow() && ov.satLayer.count() === 3);
-  const nf = w.fetches.length; await settle(5); assert.equal(w.fetches.length, nf, 'nothing re-fetched: the store had every chunk');
-  // the box off: the layer goes; a reload restores the box
-  ov.setSatOn(false); assert.equal(ov.satLayer, null); assert.equal(w.saved.sat, false); assert.equal(ov.ui.satNote.textContent, 'within 3 h of the frame');
-  const w2 = world(); w2.saved = { field: 'hs', sat: true }; const ov2 = ctl(w2); assert.equal(ov2.satOn, true);
-  const w3 = world(); w3.saved = { field: 'hs', sat: true }; const ov3 = ctl(w3, { sat: false }); assert.equal(ov3.satOn, false, 'not offered: off, no row');
-  modelWorld(w3, ov3); ov3.render({ state: 'ready' }); assert.equal(ov3.ui.satBox, undefined);
-  // not supported: the box disabled, the note says so; a failed pointer: unavailable
-  const w4 = world(), ov4 = ctl(w4); modelWorld(w4, ov4); ov4.sat.supported = () => false; ov4.render({ state: 'ready' });
-  assert.equal(ov4.ui.satNote.textContent, 'not supported in this browser'); assert.equal(ov4.ui.satBox.disabled, true);
-  const w5 = world(), ov5 = ctl(w5); modelWorld(w5, ov5); ov5.render({ state: 'ready' }); ov5.setSatOn(true);
-  w5.answer(/latest\.json$/, null, 503); await settle(20);
-  assert.equal(ov5.ui.satNote.textContent, 'readings unavailable');
-  // G51 P2: a failed pointer read is tried again at a landing once the cooldown has passed
-  const nf5 = w5.fetches.length; ov5._syncSat(2); assert.equal(w5.fetches.length, nf5, 'within the cooldown: nothing');
-  ov5.sat.failedAt = 0; ov5._syncSat(2); assert.equal(w5.fetches.length, nf5 + 1, 'the pointer asked for again');
-  w5.answer(/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
-  assert.equal(ov5.ui.satNote.textContent, 'loading readings…'); assert.equal(w5.pending(/\.bin$/).length, 1);
-  const w6 = world(), ov6 = ctl(w6); modelWorld(w6, ov6); ov6.render({ state: 'ready' }); ov6.setSatOn(true);
-  w6.answer(/latest\.json$/, pointer('alt', [chunkRec('alt', '20261103T12', 1)])); await settle(20);
-  assert.equal(ov6.ui.satNote.textContent, 'no readings within 3 h of this time', 'a pointer whose chunks lie a day away');
-  assert.equal(w6.pending(/\.bin$/).length, 0, 'nothing fetched for a window no chunk touches');
-  ov.unmount(); ov5.unmount(); ov6.unmount();
-});
-
 test('controller: the own entry on a page without the swell data shows no switch; mount(\'sat\') with the setting off fails with the error panel; the loading text', async () => {
   const w = world(), ov = ctl(w, { swell: false });
   ov.mount('sat');

@@ -236,6 +236,55 @@ site, review, fixes)."**
   sandbox has the attribute methods, so the satellite suite alone did not catch it. Fixed as a closure flag `satShown`
   (asset 2.23.4); the whole coast-build list run locally before the push this time. The prepared merge 1de5702 is
   superseded: rebuilt from the branch's tip at the go-ahead.
+- 2026-11-05 00:50Z: coast-build #586 / #587 green on the fix (a16206f / 4708b04).
+- 2026-11-05 01:00Z: OWNER: "the satellite reading overlays on the wave heights aren't very helpful, since it only
+  covers a few frames": the "Satellite readings" box under Wave height REMOVED (asset 2.23.5): `setSatOn`,
+  `_wantSatFrame`, `_syncSatAttach`, `_syncSat`, `_clearSatWindow`, the notes, the frame-mode hover and credit, the
+  row and its CSS, the saved `sat` state, the box's test; the own entry is untouched (decision 6 of the design is
+  withdrawn; the G51 / G52 records keep their history). The owner also asked for an assessment of a full
+  interpolated wave-height map from the readings, on / off inside the Satellite waves entry: below, "Assessment".
+
+
+## Assessment (2026-11-05): a full interpolated wave-height map from the satellite readings, on / off in "Satellite waves"
+
+**What the readings can and cannot give.** Nine altimeters measure 1 Hz along their tracks (a reading every ~7 km along
+a line a few km wide). In 24 h the tracks lie roughly 1.5-3 degrees apart at mid-latitudes and nothing is measured
+between them; a swell field moves ~1,000 km a day, so a map stitched from 24 h of tracks mixes times as well as
+places. Every "full map" from these readings is therefore an interpolation that is mostly guesswork between tracks,
+and a smooth picture hides that. It can still be useful as context (where the big seas are, how the model compares
+over a basin), not as a nowcast to read a spot from.
+
+**Option A (recommended): the Copernicus gridded product, not our own interpolation.** CMEMS publishes exactly this
+map, made properly: `WAVE_GLO_PHY_SWH_L4_NRT_014_003`, dataset `cmems_obs-wave_glo_phy-swh_nrt_multi-l4-0.5deg_PT6H-i`
+= `VAVH_INST`, "an estimate of the instantaneous wave field every 6 h at 0.5 degrees, using all available level-3
+along-track measurements and accounting for their spatial and temporal proximity", with a flag field; and a 2-degree
+daily mean beside it. Checked on the bucket on 2026-11-05: anonymous under `native/WAVE_GLO_PHY_SWH_L4_NRT_014_003/`,
+one ~9 MB NetCDF a day holding the four steps 00 / 06 / 12 / 18Z of the day before (`..._20261103T120000Z_
+P20261104T073010Z.nc`, produced 07:30Z the next day), int16 x 0.001 m on a 720 x 359 grid, 55 % of the cells valid
+(open ocean; blank within ~50 km of coasts and under ice). So the newest step is 13-37 h behind the clock. Same
+licence and credit as the other CMEMS products (its own DOI in the credit line).
+  - Job: a third product on `alt.py`'s machinery (download the daily file, one PNG frame per step in the frames'
+    encoding on its own 0.5-degree grid, a manifest naming the steps and their production time, `altgrid/v1/`, prune
+    and stale as the others): about a day, the GLWU job being the precedent for a layer on its own grid.
+  - Client: a "Gridded map" toggle in the Satellite waves panel (off by default, remembered per tab) that draws the
+    step nearest the window's reference under the dots / arrows through the existing `ModelGridLayer` (it already draws
+    a non-model grid for the lakes), with the step's valid time and age in the panel ("CMEMS gridded map · Nov 3,
+    18:00 UTC (31 h ago)") and the credit; a hover gives the gridded value beside the reading's: about a day, plus a
+    review round, the test site and the two merges.
+  - Limits: a day old, 55-km cells, nothing within ~50 km of the coast (so no use near a break), four steps a day.
+
+**Option B: our own interpolation from the readings in hand.** The heights job has every reading of the last 30 h,
+the newest 1-2 h old; a Gaussian-weighted space-time average on a 0.5-degree grid (scales ~300 km / 12 h), blank
+where no reading lies within ~400 km / 12 h, with an age field, is 1-2 days of job work and the same client work.
+It would be fresher than CMEMS's by a day, but it is an unvalidated product: streaks along the tracks, false
+smoothness between them, no error estimate, and the owner's name on it. A sounder variant interpolates the
+obs - model differences onto the GFS-Wave field (a "model corrected by the satellites" map), which is a real
+design in its own right (section 45's discrepancy view, reworked) and not a quick addition.
+
+**Advice.** Build option A as a separate section (82) after section 81's client merge: it answers the question
+("a full wave-height map from the satellites, on or off") with an official, credited product for about two days of
+work, and its one-day lag is the honest state of the art for a gridded satellite field. Revisit option B only if the
+lag proves unacceptable in use; do not ship a home-made full map before that.
 
 
 ---

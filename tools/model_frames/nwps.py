@@ -411,7 +411,8 @@ def main(argv=None, request=None, store=None, now=None, stations=None):
             _write_out(a.out, office, run, built)
             continue
         publish_office(store, pointer, office, region, run, built, left)
-        prune_office(store, office, set(pointer["offices"][office]["runs"]))
+        # the office's run is live: a storage error while deleting old runs is a warning, the next run prunes again
+        P.safe_prune(lambda o=office: prune_office(store, o, set(pointer["offices"][o]["runs"])), store.bucket, _summary)
         published.append(f"{office} {run}")
     secs = time.monotonic() - t0
     print(f"tick: {len(published)} published, {len(failures)} failed, {len(waiting)} waiting, {secs:.0f} s")

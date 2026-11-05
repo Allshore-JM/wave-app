@@ -455,7 +455,7 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
         print("dry run: nothing published")
         return 0
     publish(store, run, body, doc)
-    deleted = prune(store)
+    deleted = P.safe_prune(lambda: prune(store), store.bucket, _summary)      # live already: a warning at most
     print(f"published {run}; pruned {deleted or 'nothing'}")
     return 0
 

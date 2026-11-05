@@ -505,7 +505,8 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
         if tmp is not None:
             tmp.cleanup()
     if live:
-        print("pruned:", prune(store, keep=a.keep))
+        # the day is live: a storage error while deleting old days is a warning, the next run prunes again
+        print("pruned:", P.safe_prune(lambda: prune(store, keep=a.keep), store.bucket, _summary))
     tt = stats["tiers"]
     _summary(f"### MUR day {day}: t2 {tt['t2']['cells']} cells, t1 {tt['t1']['cells']} cells, "
              f"{uploads.bytes / 1e6:.1f} MB, {manifest['build_seconds']} s, steps <= {max(tt['t2']['max_step_c'], tt['t1']['max_step_c']):.3f} C")

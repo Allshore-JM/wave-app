@@ -43,6 +43,10 @@ jobs:
             certifi=2026.10.23
             ca-certificates=2026.10.23
           cache-environment: true
+          # a fixed address for the micromamba binary: without it the action asks GitHub for the newest release and
+          # checks it with one request that is never retried (8 failed runs, 2026-10-29 .. 11-05). To move to a newer
+          # micromamba, change the version in every publisher at once (tests/model_frames/test_ci_robust.py).
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
       - name: Record environment
         shell: bash -l {0}
         run: |

@@ -2533,3 +2533,25 @@ revocation, so the protection is the trust list itself:
   `tests/model_frames/test_tls_pins.py` and `tests/test_swan_cert.py` name the release). model-frames-tests runs
   `test_tls_pins.py` when a workflow, the check tool or the tests change; `tests/test_swan_cert.py` (the site's floor,
   no other trust list in any site module or start file, `/healthz`) runs with the site's suite, which no workflow runs.
+
+## The publishers' set-up step and clean-up (failed-run mail, 2026-11-05)
+
+Two causes of GitHub "Run failed" mail that were not data problems, and what the workflows and jobs do about them.
+
+- **The micromamba set-up step.** Every publisher (`model-*.yml` with `mamba-org/setup-micromamba`) names the
+  micromamba binary's address (`micromamba-url:`, release 2.10.0-0). Without it the action asks GitHub's API for the
+  newest release and then checks that release's file with one request that is never retried; when GitHub hiccups the
+  step fails before any of our code runs (8 of the 9 set-up failures between 2026-10-29 and 2026-11-05; the ninth was
+  the download itself answering 504 three times, which only the next tick cures). With the address given the action
+  makes neither request and downloads with three tries. Side effect: the cached environment's key holds the binary's
+  hash, so a new micromamba release no longer rebuilds every publisher's environment by itself. To move to a newer
+  micromamba, change the version in every publisher at once (`tests/model_frames/test_ci_robust.py` wants one address
+  everywhere); the first run after that rebuilds each environment once.
+- **The prune after a publish.** On 2026-11-03 model-points published its run and then exited 1: the bucket timed out
+  five times (60 s each) on a 1,000-key delete of the old run. A run that is already live must not turn red over old
+  objects, so every job's prune after a publish goes through `publish.safe_prune` (a WARNING in the log and the step
+  summary; whatever is left is deleted by the next run's prune, which lists the bucket afresh), and
+  `Store.delete_keys` sends 250 keys a call (`DELETE_BATCH`). The altimeter jobs already worked this way.
+- **What still sends mail by design:** the stale alarms (a source that stopped updating, e.g. NOAA's MUR mirror stuck
+  on 2026-10-29 for four days), a build that fails before it publishes (recorded under `failed/`, retried), and the
+  tests.

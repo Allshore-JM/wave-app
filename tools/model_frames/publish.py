@@ -18,6 +18,7 @@ import time
 PREFIX = "gfswave/0p25/v1"
 IMMUTABLE = "public, max-age=31536000, immutable"
 POINTER = "public, max-age=300"
+DELETE_BATCH = 250                     # keys per DeleteObjects call (the API limit is 1,000)
 ECMWF_PREFIX = "ecmwf/0p25/v1"
 GLWU_PREFIX = "glwu/v1"                 # the Great Lakes frames (plan section 50)
 GFSWINDS_PREFIX = "gfswave/winds/v1"    # the GFS stations' winds from the spectra archive (plan section 53)
@@ -107,8 +108,10 @@ class Store:
         return runs
 
     def delete_keys(self, keys, what="keys"):
-        for i in range(0, len(keys), 1000):                 # DeleteObjects hard limit
-            batch = [{"Key": k} for k in keys[i:i + 1000]]
+        # DeleteObjects takes 1,000 keys at most; R2 answered a 1,000-key call too slowly on 2026-11-03 (five 60-s read
+        # time-outs in a row, after the points run was live), so the batches are smaller
+        for i in range(0, len(keys), DELETE_BATCH):
+            batch = [{"Key": k} for k in keys[i:i + DELETE_BATCH]]
             r = self.client.delete_objects(Bucket=self.bucket, Delete={"Objects": batch, "Quiet": True})
             if r.get("Errors"):
                 raise RuntimeError(f"delete errors under {what}: {r['Errors'][:3]}")
@@ -218,6 +221,20 @@ def redact(message, bucket=None, limit=500):
     if bucket:
         s = s.replace(bucket, "<bucket>")
     return s[:limit]
+
+
+def safe_prune(fn, bucket=None, summary=None):
+    """A prune AFTER a publish: its result, or None with a WARNING when it fails. The run is live by then, so a
+    storage error while deleting old objects must not turn the run red (model-points, 2026-11-03: published, then
+    exit 1 on a delete time-out); whatever is left is deleted by the next run's prune."""
+    try:
+        return fn()
+    except Exception as exc:                                 # noqa: BLE001
+        line = f"WARNING: prune failed ({exc.__class__.__name__}: {redact(str(exc), bucket)}); the next run prunes again"
+        print(line)
+        if summary is not None:
+            summary(line)
+        return None
 
 
 def notready_key(run, prefix=PREFIX):

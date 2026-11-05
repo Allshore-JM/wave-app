@@ -457,9 +457,10 @@ def main(argv=None, src=GFS):
         raise
     print(json.dumps({k: manifest[k] for k in ("run", "complete", "build_seconds")}))
     if store is not None and manifest["complete"]:
-        print("pruned:", P.prune(store, keep=a.keep, prefix=src.prefix))
+        # the run is live: a storage error while deleting old runs is a warning, the next run prunes again
+        print("pruned:", P.safe_prune(lambda: P.prune(store, keep=a.keep, prefix=src.prefix), store.bucket, _summary))
         if src.prune_legacy:
-            print("legacy objects removed:", P.prune_legacy(store))
+            print("legacy objects removed:", P.safe_prune(lambda: P.prune_legacy(store), store.bucket, _summary))
     tot = sum(v["bytes_full"] + v["bytes_half"] for f in manifest["_stats"]["frames"] for v in f["fields"].values())
     published = datetime.strptime(manifest["published_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     lag_h = (published - run_dt).total_seconds() / 3600

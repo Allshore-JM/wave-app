@@ -879,7 +879,8 @@ def main(argv=None):
             shutil.rmtree(work, ignore_errors=True)
     print(json.dumps({k: manifest[k] for k in ("run", "complete", "decode_seconds", "build_seconds")}))
     if store is not None and manifest["complete"]:
-        print("pruned:", prune(store, keep=a.keep))
+        # the run is live: a storage error while deleting old runs is a warning, the next run prunes again
+        print("pruned:", P.safe_prune(lambda: prune(store, keep=a.keep), store.bucket, _summary))
     published = datetime.strptime(manifest["published_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     lag_h = (published - run_dt).total_seconds() / 3600
     obj = manifest["_objects"]

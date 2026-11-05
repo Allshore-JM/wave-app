@@ -229,3 +229,22 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   the drawn values equal the published frame at every point probed; no errors. The owner's sheet
   `section-82-test-site-sheet.md`. NEXT: the two Fable reviewers (code G54, test site G55), fixes, then STOP for the
   client merge.
+- 2026-11-05 ~05:00Z: STOPPED BY THE OWNER ("stop and resume this on the desktop"). State for the desktop session:
+  - Reviewer A (code, Fable) DONE: record `docs/reviews/gridded-G54-client.md` (0 P0, 1 P1 map under the error panel,
+    1 P2 wall-clock test bombs, 5 P3); ALL FIXED on `feat/gridded` (this commit, overlay asset 2.24.1; the record's
+    fix table): `sat.test.js` 15 pass, also with the clock +3 days; the reviewer's 5 defect proofs now fail; mutants:
+    only 2 behaviour-equivalent survivors.
+  - NOT YET DONE: the whole coast-build Node list was not re-run locally on 2.24.1 (stopped mid-run; CI runs it on
+    this push: check coast-build for this commit); `tests/test_overlay_flag.py` not re-run on 2.24.1.
+  - Reviewer B (the live test site) was STOPPED before writing anything: no `gridded-G55-test-site.md`. Re-run it on
+    the desktop (its brief: the test site wave-app-clean.onrender.com with ALT_GRID on; try to break the box, the
+    draw, the hover, the ages, the phone; record G55).
+  - `test` is still at 077ff90 (asset 2.24.0): the 2.24.1 fixes are NOT on the test site yet. Cherry-pick the client
+    paths of this commit to `test` (app.py, static_overlay/overlay.js, tests/overlay/sat.test.js,
+    tests/fixtures/overlay_assets.json, docs/reviews/gridded-G54-client.md; README kept as test's), after reviewer B
+    or before it, as the owner prefers.
+  - Then: fixes for G55, CI green on both branches, STOP for the client merge (rollback `prod-pre-altgrid` at
+    production 06a965f + the owner's explicit go-ahead), then `ALT_GRID=1` on production with its own go-ahead.
+  - Production: 06a965f (section 81 client + the section 82 job; the gridded frames publishing on their crons);
+    rollback points on the remote as branches `prod-pre-alt-job` (d973c76), `prod-pre-alt` (8cd6eba),
+    `prod-pre-altgrid-job` (584a772). Flags on production: ALT_OVERLAY=1, SARSWELL=1 (ALT_GRID not set there).

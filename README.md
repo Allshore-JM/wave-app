@@ -1205,7 +1205,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   L4 file: the real-file check; a LIVE publish without `--local` / `--dry-run`), `--force`, `--keep N`. Tests:
   `tests/model_frames/test_altgrid.py`; review record `docs/reviews/gridded-G53-job.md`.
 
-### The satellite layer on the map (plan sections 81 and 82, the client; overlay asset 2.24.0)
+### The satellite layer on the map (plan sections 81 and 82, the client; overlay asset 2.24.1)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown (off by default: on once `alt/v1` is
   live); `SARSWELL=1` (with it) adds the Heights | Swell switch to the layer's own entry (on once `sarswell/v1` is live).
@@ -1240,7 +1240,10 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   water with no reading under the cursor, shows "grid 8.1 ft · Nov 3, 1:00 PM EST"; the credit line adds
   `doi:10.48670/moi-00180` while the box is on (the map credit's title always lists the three DOIs). The Swell
   readings line names its window's end ("Readings: 24 h to 12:23 PM EST (7 h ago) · 2 satellites": the daily batch
-  runs up to 31 h behind; owner).
+  runs up to 31 h behind; owner). G54 fix round (asset 2.24.1; record `docs/reviews/gridded-G54-client.md`): the map
+  needs the readings layer (never under the error panel); the hover readout goes with the map; one render a toggle;
+  the frame in hand is drawn at once while a re-read runs; a new manifest naming the same newest frame keeps it (not
+  fetched again); a pointer noted by the re-check is not read twice; the hover names the drawn step.
 - **No readings over the model** (owner, 2026-11-05): the "Satellite readings" box under Wave height (the height dots
   within 3 h of the frame, in the model's colours; G51 / G52 reviewed) was removed in asset 2.23.5: a 3-h window of
   tracks covered too few frames to help. The hover's "model" value is the chunk's collocated one.

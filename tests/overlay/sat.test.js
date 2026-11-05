@@ -81,7 +81,7 @@ function world(opts) {
       createTextNode(t) { return { nodeValue: t, textContent: t }; }, activeElement: null },
     sessionStorage: { getItem: (k) => (w.saved === undefined ? null : JSON.stringify(w.saved)), setItem(k, v) { w.saved = JSON.parse(v); } },
     fetch: (url, o) => {
-      w.fetches.push(url);
+      w.fetches.push(url); (w.fetchOpts = w.fetchOpts || []).push([url, o || {}]);
       if (o && o.signal && o.signal.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
       return new Promise((res, rej) => {
         const h = { url, res, rej, sig: o && o.signal };
@@ -583,6 +583,8 @@ test('GridStore: the pointer (no-cache), the manifest, the NEWEST step; every re
 });
 
 test('controller: the "Gridded map" box (off by default, per tab) draws the newest step in the entry\'s field layer under the readings; Heights | Swell keeps it; Off clears it, the store keeps it', async () => {
+  const now0 = Date.now; Date.now = () => GRID_NEWEST + 31 * 3.6e6;   // the fixture's clock, never the wall's (G54-2)
+  try {
   const w = world(), ov = ctl(w, { grid: true });
   ov.grid._decode = gridFrame;
   assert.equal(ov.satGrid, false);
@@ -650,9 +652,12 @@ test('controller: the "Gridded map" box (off by default, per tab) draws the newe
   assert.deepEqual(w3.pending(/altgrid/), ['https://x/altgrid/v1/latest.json']);
   ov3.unmount();
   assert.equal(ov3.grid.status, 'idle', 'Off stops the load in progress');
+  } finally { Date.now = now0; }
 });
 
 test('controller: the gridded map\'s age: the note, a warning past 48 h, hidden past 72 h; the 12-min recheck adopts a newer production in place; a failure says unavailable', async () => {
+  const now0 = Date.now; Date.now = () => GRID_NEWEST + 31 * 3.6e6;   // the fixture's clock, never the wall's (G54-2)
+  try {
   const w = world(), ov = ctl(w, { grid: true });
   ov.grid._decode = gridFrame;
   w.saved = { satGrid: true };
@@ -687,6 +692,87 @@ test('controller: the gridded map\'s age: the note, a warning past 48 h, hidden 
   w2.answer(/altgrid\/v1\/latest\.json$/, null, 503); await settle(10);
   assert.equal(ov2.ui.gridNote.textContent, 'unavailable'); assert.equal(ov2.layer.hasFrame(), false);
   ov2.unmount(); ov.unmount();
+  } finally { Date.now = now0; }
+});
+
+test('G54: never under the error panel; the timers reach the map; the hover goes with it; one render a toggle; the same frame under a new manifest is kept; the store\'s rules', async () => {
+  const now0 = Date.now; Date.now = () => GRID_NEWEST + 31 * 3.6e6;
+  try {
+    // 1: a Swell switch that fails while the grid is loading: the error panel, and no map drawn under it
+    const w = world(); w.saved = { satGrid: true };
+    const ov = ctl(w, { grid: true }); ov.grid._decode = gridFrame;
+    ov.mount('sat');
+    w.answer(/alt\/v1\/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+    assert.deepEqual(w.pending(/altgrid/), ['https://x/altgrid/v1/latest.json'], 'the grid on its way');
+    ov.setSatKind('swell');
+    w.answer(/sarswell\/v1\/latest\.json$/, null, 503); await settle(20);
+    assert.equal(ov.last.state, 'error');
+    w.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5);
+    w.answer(/manifest-/, gridManifest()); await settle(20);
+    assert.equal(ov.layer.hasFrame(), false, 'no Copernicus map under "Overlay unavailable"');
+    ov.unmount();
+    // the timers: the 12-min satellite re-check reads the grid's pointer; the 30-min run check moves the age state
+    const w2 = world(); w2.saved = { satGrid: true };
+    const ov2 = ctl(w2, { grid: true }); ov2.grid._decode = gridFrame;
+    const freshAlt = pointer('alt', [chunkRec('alt', '20261104T12', 1)], { newest_utc: '2026-11-05T18:30:00Z' });   // readings fresh at 49 h: only the grid moves the panel
+    const calls = []; const j0 = ov2.grid._json; ov2.grid._json = function (url, sig, noCache, max) { calls.push([url.split('/').pop(), noCache]); return j0.call(this, url, sig, noCache, max); };
+    ov2.mount('sat');
+    w2.answer(/alt\/v1\/latest\.json$/, freshAlt); await settle(20);
+    w2.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5);
+    w2.answer(/manifest-/, gridManifest());
+    assert.ok(await until(() => ov2.layer.hasFrame()));
+    assert.deepEqual(calls.map((c) => c[1]), [true, false], 'the pointer no-cache, the manifest not');
+    assert.deepEqual(w2.fetchOpts.filter((f) => /altgrid/.test(f[0])).map((f) => [f[0].split('/').pop(), f[1].cache || '']), [['latest.json', 'no-cache'], ['manifest-20261105T084700Z.json', '']], 'no-cache on the wire');
+    ov2._satRecheck();
+    assert.deepEqual(w2.pending(/altgrid/), ['https://x/altgrid/v1/latest.json'], 'the 12-min re-check reads the grid pointer');
+    w2.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5);
+    let renders = 0; const r0 = ov2.render; ov2.render = function (st) { renders++; return r0.call(this, st); };
+    atAge(49, () => ov2._checkRun());
+    assert.equal(ov2._gridWarnShown, 'warn', 'the run check moves the warning without a user action'); assert.equal(renders, 1);
+    assert.equal(atAge(49, () => ov2._satStale(ov2.satLayer.store)), false, 'the readings were not what re-rendered');
+    atAge(31, () => ov2._checkRun()); assert.equal(ov2._gridWarnShown, '');
+    // 5: one render a toggle, even when the age state flips with it
+    ov2.setSatGrid(false); renders = 0;
+    Date.now = () => GRID_NEWEST + 49 * 3.6e6;                       // the step past 48 h for the whole toggle (its async tail too)
+    ov2.setSatGrid(true); await settle(10);
+    assert.equal(renders, 1, 'one render for one toggle'); assert.equal(ov2._gridWarnShown, 'warn');
+    Date.now = () => GRID_NEWEST + 31 * 3.6e6; ov2._gridLineSync();
+    // 4: the readout goes with the map
+    ov2.readout.hidden = false; ov2.readout.textContent = 'grid 8.2 ft · T18:00 HST';
+    ov2.setSatGrid(false);
+    assert.equal(ov2.readout.hidden, true, 'no "grid …" left over a map that is gone');
+    // the clear never touches another field's picture
+    assert.equal(ov2.grid.status, 'loading', 'the 49-h clock made the store re-read its pointer');
+    ov2.setSatGrid(true); await settle(10); assert.ok(ov2.layer.hasFrame(), 'the frame in hand is drawn at once, the re-read still running');
+    w2.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5); assert.equal(ov2.grid.status, 'ok');
+    ov2.layer.field = 'hs'; ov2._clearGrid(); assert.ok(ov2.layer.hasFrame(), 'not the grid: left alone'); ov2.layer.field = 'sat';
+    assert.ok(w2.I.FOCUS_PARTS.indexOf('ov-sat-box') >= 0, 'the box keeps the focus through a render');
+    assert.deepEqual([48, 48.01, 72, 72.01].map((h) => atAge(h, () => ov2._gridState())), ['', 'warn', 'warn', 'hide'], 'past 48 h a warning, past 72 h hidden (strictly past)');
+    ov2.setSatGrid(false); ov2.satGrid = true;                       // the box state without its sync: _showGrid alone must refuse a hidden step
+    Date.now = () => GRID_NEWEST + 73 * 3.6e6; ov2._showGrid(ov2.grid); await settle(5);
+    assert.equal(ov2.layer.hasFrame(), false, 'the draw itself refuses a step past 72 h');
+    Date.now = () => GRID_NEWEST + 31 * 3.6e6; ov2.satGrid = false;
+    ov2.unmount();
+    // 6 + 7: a recheck notes a newer manifest; load() takes that pointer as is (one read) and keeps the same frame file
+    const w3 = world(), st = new w3.I.GridStore('https://z');
+    let decodes = 0; st._decode = () => { decodes++; return gridFrame(); };
+    const q = st.load(true); w3.answer(/latest\.json$/, gridPointer()); await settle(5); w3.answer(/manifest-/, gridManifest()); await q;
+    const e0 = st.entry, f0 = st.frame;
+    const rc = st.recheck(); w3.answer(/latest\.json$/, gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T101000Z.json' })); assert.equal(await rc, true);
+    const n = w3.fetches.length, q2 = st.load(false); await settle(2);
+    assert.deepEqual(w3.fetches.slice(n), ['https://z/altgrid/v1/20261103/manifest-20261105T101000Z.json'], 'the noted pointer: not read again');
+    w3.answer(/manifest-20261105T101000Z/, gridManifest()); assert.equal(await q2, st);
+    assert.equal(decodes, 1, 'the same newest file: not fetched again'); assert.equal(st.entry, e0); assert.equal(st.frame, f0);
+    assert.equal(st.newer, null); assert.equal(st.pointer.manifest, 'altgrid/v1/20261103/manifest-20261105T101000Z.json');
+    // the same manifest re-read: nothing beyond the pointer
+    st.newer = gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T101000Z.json' });
+    const m2 = w3.fetches.length; assert.equal(await st.load(false), st); assert.equal(w3.fetches.length, m2, 'the manifest in hand: nothing asked');
+    // recheck ignores an older run; the rules for > 4 frames and a non-numeric step
+    const rc2 = st.recheck(); w3.answer(/latest\.json$/, gridPointer({ run: '20261102', manifest: 'altgrid/v1/20261102/manifest-x.json' })); assert.equal(await rc2, false);
+    const fr = gridManifest().frames, V = w3.I.validGridManifest, ptr = gridPointer();
+    assert.equal(V(gridManifest({ frames: fr.concat([{ step: 24, valid_utc: '2026-11-04T00:00:00Z', file: 'altgrid/v1/20261103/x/hs-24.png' }]) }), ptr), false, 'at most 4 frames');
+    assert.equal(V(gridManifest({ frames: fr.slice(0, 3).concat([Object.assign({}, fr[3], { step: '18' })]) }), ptr), false, 'a numeric step');
+  } finally { Date.now = now0; }
 });
 
 test('controller: the own entry on a page without the swell data shows no switch; mount(\'sat\') with the setting off fails with the error panel; the loading text', async () => {

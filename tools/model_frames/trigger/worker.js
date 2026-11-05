@@ -7,13 +7,30 @@
 // the Great Lakes frames, the GFS station winds and the NWPS tables); every one is dispatched on every tick, and one that fails never
 // holds back the others.
 //
+// GH_HOURLY (optional, the same form): workflows dispatched on the FIRST tick of each hour only (minute < 10), for
+// products that change once a day and need no 10-minute polling (the SST day: GitHub fired its own hourly cron only
+// every 6-9 h, 2026-11-05). Owner: hourly is enough.
+//
 // Cron-only: no fetch handler and no public URL (workers_dev = false in wrangler.jsonc).
 // Secret GITHUB_TOKEN: a fine-grained token for the repository with "Actions: read and write",
 // entered in the Cloudflare dashboard, never in this repository. Plain vars (wrangler.jsonc):
 // GH_REPO, GH_WORKFLOW, GH_REF.
 
+function list(value) {
+  return String(value || "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
 export function workflows(env) {
-  return String(env.GH_WORKFLOW || "").split(",").map((s) => s.trim()).filter(Boolean);
+  return list(env.GH_WORKFLOW);
+}
+
+// The workflows of one tick: GH_WORKFLOW always, GH_HOURLY on the hour's first tick (UTC minute < 10).
+export function tickWorkflows(env, when = new Date()) {
+  const out = workflows(env);
+  if (new Date(when).getUTCMinutes() < 10) {
+    for (const w of list(env.GH_HOURLY)) if (!out.includes(w)) out.push(w);
+  }
+  return out;
 }
 
 export async function dispatch(env, fetchImpl = fetch, workflow = workflows(env)[0]) {
@@ -37,11 +54,10 @@ export async function dispatch(env, fetchImpl = fetch, workflow = workflows(env)
 }
 
 // Every workflow is tried; the failures (if any) are thrown together afterwards.
-export async function dispatchAll(env, fetchImpl = fetch) {
-  const list = workflows(env);
-  if (!list.length) throw new Error("GH_WORKFLOW names no workflow");
+export async function dispatchAll(env, fetchImpl = fetch, names = workflows(env)) {
+  if (!names.length) throw new Error("GH_WORKFLOW names no workflow");
   const done = [], failed = [];
-  for (const workflow of list) {
+  for (const workflow of names) {
     try {
       await dispatch(env, fetchImpl, workflow);
       done.push(workflow);
@@ -58,7 +74,8 @@ export default {
     if (!env.GITHUB_TOKEN) {
       throw new Error("GITHUB_TOKEN secret is not set (Worker settings > Variables and Secrets)");
     }
-    const done = await dispatchAll(env);
+    const when = controller.scheduledTime ? new Date(controller.scheduledTime) : new Date();
+    const done = await dispatchAll(env, fetch, tickWorkflows(env, when));
     console.log(`dispatched ${done.join(", ")}@${env.GH_REF} (cron ${controller.cron})`);
   },
 };

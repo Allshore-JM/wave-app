@@ -1,7 +1,7 @@
 // node --test worker.test.js  (no network: fetch is stubbed)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import worker, { dispatch, dispatchAll, workflows } from "./worker.js";
+import worker, { dispatch, dispatchAll, tickWorkflows, workflows } from "./worker.js";
 
 const ENV = { GH_REPO: "Allshore-JM/wave-app", GH_WORKFLOW: "model-frames.yml", GH_REF: "Live-Buoy-Update", GITHUB_TOKEN: "t0k3n" };
 const BOTH = { ...ENV, GH_WORKFLOW: "model-frames.yml,model-points.yml" };
@@ -94,4 +94,24 @@ test("a fetch that THROWS for one workflow (a network error) never holds back th
   };
   await assert.rejects(dispatchAll(BOTH, g), /socket hang up/);
   assert.ok(calls[2].includes("model-frames.yml"));                 // the frames were dispatched first, and were
+});
+
+test("GH_HOURLY is added on the hour's first tick only, once, after the 10-minute list", async () => {
+  const env = { ...BOTH, GH_HOURLY: "model-sst.yml, model-points.yml" };
+  const at = (m) => new Date(Date.UTC(2026, 10, 5, 17, m));
+  assert.deepEqual(tickWorkflows(env, at(5)), ["model-frames.yml", "model-points.yml", "model-sst.yml"]);
+  assert.deepEqual(tickWorkflows(env, at(9)), ["model-frames.yml", "model-points.yml", "model-sst.yml"]);
+  for (const m of [10, 15, 25, 35, 45, 55]) assert.deepEqual(tickWorkflows(env, at(m)), ["model-frames.yml", "model-points.yml"]);
+  assert.deepEqual(tickWorkflows(BOTH, at(5)), ["model-frames.yml", "model-points.yml"]);   // none set: as before
+  const calls = [];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url) => { calls.push(url.split("/workflows/")[1]); return { status: 204, text: async () => "" }; };
+  try {
+    await worker.scheduled({ cron: "5,15 * * * *", scheduledTime: at(5).getTime() }, env);
+    await worker.scheduled({ cron: "5,15 * * * *", scheduledTime: at(15).getTime() }, env);
+  } finally {
+    globalThis.fetch = saved;
+  }
+  assert.deepEqual(calls, ["model-frames.yml/dispatches", "model-points.yml/dispatches", "model-sst.yml/dispatches",
+                           "model-frames.yml/dispatches", "model-points.yml/dispatches"]);
 });

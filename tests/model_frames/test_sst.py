@@ -791,4 +791,9 @@ def test_the_sst_workflow_is_pinned_hourly_separate_and_kept_alive():
     tests = open(os.path.join(wf, "model-frames-tests.yml"), encoding="utf-8").read()
     assert tests.count('".github/workflows/model-sst.yml"') == 2 and "h5py==" in tests
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
-    assert "model-sst.yml" not in cfg, "a daily product: the hourly cron suffices, the 10-minute trigger does not dispatch it"
+    import re
+    every_tick = re.search(r'"GH_WORKFLOW":\s*"([^"]+)"', cfg).group(1).split(",")
+    hourly = re.search(r'"GH_HOURLY":\s*"([^"]+)"', cfg).group(1).split(",")
+    # a daily product: the Worker dispatches it once an hour (GitHub fired its own hourly cron only every 6-9 h);
+    # never on every 10-minute tick (owner 2026-11-05: hourly is enough)
+    assert "model-sst.yml" not in every_tick and hourly == ["model-sst.yml"]

@@ -1201,7 +1201,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   `--dry-run`, `--local DIR`, `--day YYYYMMDD`, `--file PATH` (a local L4 file: the real-file check), `--force`,
   `--keep N`. Tests: `tests/model_frames/test_altgrid.py`.
 
-### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.5)
+### The satellite layer on the map (plan sections 81 and 82, the client; overlay asset 2.24.0)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown (off by default: on once `alt/v1` is
   live); `SARSWELL=1` (with it) adds the Heights | Swell switch to the layer's own entry (on once `sarswell/v1` is live).
@@ -1222,6 +1222,21 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   full credit and both DOIs). The hover on a dot: "6.2 ft · Sentinel-6A · 11:40 AM HST · model 5.4 ft (+0.8)" (the chunk's
   collocated GFS-Wave value; "model —" without one); on a swell point every partition ("Swell 1: 6.6 ft · 14 s · from 216°
   | Swell 2: … (Sentinel-1C, 6 h ago)"); nothing else is shown on this entry.
+- **The gridded map** (plan section 82; `ALT_GRID=1`, with `ALT_OVERLAY=1`): a "Gridded map" box in the Satellite waves
+  panel (off by default, remembered per tab as `satGrid`) draws the NEWEST step of the gridded job's day (`altgrid/v1`,
+  Copernicus Marine L4, 0.5 deg) UNDER the dots and the arrows alike, in the entry's own `ModelGridLayer` (modelPane,
+  z 250, under obsPane) as field `sat`: the wave-height colours and scale (`SAT_FDEF`, `satLut()`), the coast clip
+  (`CLIP_FIELDS.sat`; the product is blank near coasts anyway), no lake mask, no contours. `GridStore` (`gridStore(root)`):
+  the pointer (`no-cache`, a 15-s re-armed watchdog), the manifest (refused unless the grid is the model's half grid
+  and the field's range is `SAT_FDEF`'s), the newest frame through the frames' decoder (`{720, 361}`); a failed re-read
+  keeps the frame; a first failure cools down 60 s unless a viewer acts; re-read on the 12-minute satellite timer (a
+  newer production taken in place). The note beside the box: "CMEMS L4 · Nov 3, 1:00 PM EST (31 h ago)" (the page's
+  zone) / "loading…" / "unavailable"; past 48 h a warning line "The gridded map is 49 h old."; past 72 h the map comes
+  off ("hidden: 73 h old"; owner). The hover appends " · grid 8.1 ft" to a dot's or a swell point's text and, over
+  water with no reading under the cursor, shows "grid 8.1 ft · Nov 3, 1:00 PM EST"; the credit line adds
+  `doi:10.48670/moi-00180` while the box is on (the map credit's title always lists the three DOIs). The Swell
+  readings line names its window's end ("Readings: 24 h to 12:23 PM EST (7 h ago) · 2 satellites": the daily batch
+  runs up to 31 h behind; owner).
 - **No readings over the model** (owner, 2026-11-05): the "Satellite readings" box under Wave height (the height dots
   within 3 h of the frame, in the model's colours; G51 / G52 reviewed) was removed in asset 2.23.5: a 3-h window of
   tracks covered too few frames to help. The hover's "model" value is the chunk's collocated one.

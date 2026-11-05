@@ -528,6 +528,167 @@ function modelWorld(w, ov) {
   ov.frameIndex = 2;
   return frames;
 }
+// ------------------------------------------------------------------ the gridded map (plan section 82)
+const GRID_NEWEST = Date.parse('2026-11-03T18:00:00Z');
+function gridPointer(extra) {
+  return Object.assign({ format: 'altgrid-v1', day: '2026-11-03', run: '20261103', manifest: 'altgrid/v1/20261103/manifest-20261105T084700Z.json', complete: true,
+    newest_utc: '2026-11-03T18:00:00Z', production: '20261104T073010Z' }, extra || {});
+}
+function gridManifest(extra, prod) {
+  prod = prod || '20261104T073010Z';
+  return Object.assign({ format: 'altgrid-v1', day: '2026-11-03', run: '20261103', complete: true, encoding: 'u8-linear-v2',
+    grid: { cols: 720, rows: 361, lon0: -180, lat0: 90, dlon: 0.5, dlat: -0.5, registration: 'center', lon_periodic: true },
+    fields: { hs: { lo: 0, hi: 22.86, legend: [0, 18.288], units: 'm', interpolation: 'bilinear' } },
+    frames: [0, 6, 12, 18].map((h) => ({ step: h, valid_utc: '2026-11-03T' + String(h).padStart(2, '0') + ':00:00Z', file: 'altgrid/v1/20261103/' + prod + '/hs-' + String(h).padStart(2, '0') + '.png' })) }, extra || {});
+}
+const gridFrame = () => Promise.resolve({ q: new Uint8Array(720 * 361).fill(40), cols: 720, rows: 361 });
+const atAge = (h, fn) => { const now0 = Date.now; Date.now = () => GRID_NEWEST + h * 3.6e6; try { return fn(); } finally { Date.now = now0; } };
+
+test('GridStore: the pointer (no-cache), the manifest, the NEWEST step; every rejection; a failure cools down; a failed re-read keeps the frame; recheck notes a newer manifest', async () => {
+  const w = world(), st = new w.I.GridStore('https://x');
+  const decoded = []; st._decode = (url, sig, expect) => { decoded.push([url, expect.cols, expect.rows]); return gridFrame(); };
+  const p = st.load(true);
+  assert.deepEqual(w.pending(), ['https://x/altgrid/v1/latest.json']);
+  w.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5);
+  assert.deepEqual(w.pending(), ['https://x/altgrid/v1/20261103/manifest-20261105T084700Z.json']);
+  w.answer(/manifest-/, gridManifest()); assert.equal(await p, st);
+  assert.deepEqual(decoded, [['https://x/altgrid/v1/20261103/20261104T073010Z/hs-18.png', 720, 361]], 'the newest step, the half grid');
+  assert.equal(st.status, 'ok'); assert.equal(st.entry.step, 18); assert.equal(st.newestMs(), GRID_NEWEST); assert.equal(st.frame.rows, 361);
+  assert.ok(Math.abs(atAge(31, () => st.ageH()) - 31) < 1e-9);
+  // the pointer and manifest rules
+  const V = w.I.validGridPointer, M = w.I.validGridManifest, ptr = gridPointer();
+  assert.ok(V(ptr) && M(gridManifest(), ptr));
+  for (const bad of [{ format: 'sst-v1' }, { complete: false }, { run: '2026110' }, { manifest: 'sst/v1/x.json' }, { manifest: 'altgrid/v1/../x.json' }, { newest_utc: 'soon' }]) assert.equal(V(gridPointer(bad)), false, JSON.stringify(bad));
+  const g = gridManifest().grid, f = gridManifest().fields;
+  for (const bad of [{ run: '20261102' }, { encoding: 'u16' }, { grid: Object.assign({}, g, { rows: 359 }) }, { grid: Object.assign({}, g, { lat0: 89.5 }) },
+    { fields: { hs: Object.assign({}, f.hs, { hi: 15 }) } }, { frames: [] }, { frames: gridManifest().frames.concat([gridManifest().frames[0]]) },
+    { frames: gridManifest().frames.slice().reverse() }, { frames: [{ step: 0, valid_utc: '2026-11-03T00:00:00Z', file: 'sst/v1/a.png' }] }]) assert.equal(M(gridManifest(bad), ptr), false, JSON.stringify(Object.keys(bad)));
+  // a first failure: 'failed', a cooldown for automatic loads, a viewer's action tries at once
+  const s2 = new w.I.GridStore('https://y'); s2._decode = gridFrame;
+  const q2 = s2.load(false); w.answer(/y\/altgrid\/v1\/latest\.json$/, null, 503);
+  assert.equal(await q2, null); assert.equal(s2.status, 'failed');
+  const n = w.fetches.length;
+  assert.equal(await s2.load(false), null); assert.equal(w.fetches.length, n, 'within the cooldown: nothing asked');
+  s2.load(true); assert.equal(w.fetches.length, n + 1, 'forced: asked at once');
+  // recheck: the same manifest -> false; a newer one -> newer noted; the re-read whose manifest fails keeps the frame
+  const r1 = st.recheck(); w.answer(/x\/altgrid\/v1\/latest\.json$/, gridPointer()); assert.equal(await r1, false);
+  const r2 = st.recheck(); w.answer(/x\/altgrid\/v1\/latest\.json$/, gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T101000Z.json' })); assert.equal(await r2, true);
+  const frame0 = st.frame, q3 = st.load(false);
+  w.answer(/x\/altgrid\/v1\/latest\.json$/, gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T101000Z.json' })); await settle(5);
+  w.answer(/manifest-20261105T101000Z/, null, 404);
+  assert.equal(await q3, st); assert.equal(st.status, 'ok'); assert.equal(st.frame, frame0, 'a failed re-read keeps the step on the map');
+  // abortAll keeps the frame
+  st.newer = gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T120000Z.json' }); st.load(false); st.abortAll();
+  assert.equal(st.status, 'ok'); assert.equal(st.loadAbort, null); assert.equal(st.frame, frame0);
+});
+
+test('controller: the "Gridded map" box (off by default, per tab) draws the newest step in the entry\'s field layer under the readings; Heights | Swell keeps it; Off clears it, the store keeps it', async () => {
+  const w = world(), ov = ctl(w, { grid: true });
+  ov.grid._decode = gridFrame;
+  assert.equal(ov.satGrid, false);
+  ov.mount('sat');
+  w.answer(/alt\/v1\/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+  assert.equal(ov.last.state, 'ready');
+  assert.ok(ov.ui.gridBox && ov.ui.gridBox.checked === false && ov.ui.gridNote.textContent === '' && ov.ui.gridBox.getAttribute('aria-describedby') === 'ovGridNote');
+  assert.ok(allText(ov.opts.panel).indexOf('Gridded map') >= 0);
+  assert.equal(w.pending(/altgrid/).length, 0, 'off: nothing asked');
+  ov.setSatGrid(true);
+  assert.equal(w.saved.satGrid, true);
+  assert.equal(ov.ui.gridNote.textContent, 'loading…');
+  w.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5);
+  w.answer(/manifest-/, gridManifest());
+  assert.ok(await until(() => ov.layer.hasFrame()));
+  assert.equal(ov.layer.field, 'sat'); assert.equal(ov.layer.entry.step, 18); assert.equal(ov.layer._lut, w.I.satLut()); assert.equal(ov.layer.fdef, w.I.SAT_FDEF);
+  assert.equal(ov.layer.options.pane, 'modelPane', 'under the readings (obsPane)');
+  atAge(31, () => ov._gridLineSync());
+  assert.equal(atAge(31, () => ov._gridLineText()), 'CMEMS L4 · T18:00 HST (31 h ago)');
+  assert.ok(/doi:10\.48670\/moi-00180/.test(allText(ov.opts.panel)), 'the credit line names the gridded product');
+  assert.ok(/moi-00180/.test(w.I.SAT_ATTRIBUTION), 'the map credit\'s title too');
+  // the hover: a dot gets " · grid"; open water the grid alone; the field layer's value v is what the readout hands over
+  w.answer(wre('20261104T12'), chunkBytes('alt', [reading(0, { t: T0 + 1000 })], { window: '20261104T12' }));
+  assert.ok(await until(() => ov.sat.flat && ov.sat.flat.n === 1));
+  assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3, 2.5).split(' · grid ')[1], '8.2 ft');
+  assert.equal(ov._gridReadout(2.5), 'grid 8.2 ft · T18:00 HST');
+  assert.equal(ov._gridReadout(30), 'grid ≥ 98.4 ft · T18:00 HST');
+  // through the readout's own handler (the map's mousemove): over water with no reading under the cursor, the grid alone;
+  // with the box off, nothing (the entry shows nothing but readings)
+  const move = (lat, lng) => { for (const f of w.reg.map.mousemove || []) f({ originalEvent: {}, latlng: { lat, lng }, containerPoint: { x: 5, y: 5 } }); return ov.readout; };
+  const r = move(-40, 20);
+  assert.equal(r.hidden, false); assert.ok(/^grid [\d.]+ ft · T18:00 HST$/.test(r.textContent), r.textContent);
+  assert.ok(Math.abs(ov.layer.valueAt(-40, 20) - (39 / 254) * 22.86) < 1e-9, 'code 40 = (40 - 1) / 254 of the scale');
+  assert.equal(w.I.CLIP_FIELDS.sat, true, 'the gridded map is clipped to the coast like the model fields');
+  // Heights | Swell keeps the map
+  ov.setSatKind('swell');
+  w.answer(/sarswell\/v1\/latest\.json$/, pointer('swell', [chunkRec('swell', '20261104T12', 1)], { newest_utc: '2026-11-04T12:10:00Z' })); await settle(20);
+  assert.ok(ov.layer.hasFrame() && ov.layer.field === 'sat', 'the map stays under the arrows');
+  assert.ok(/^Readings: 24 h to T12:10 HST \(/.test(ov.ui.satLine.textContent), 'the swell line names the window\'s end: ' + ov.ui.satLine.textContent);
+  ov.setSatKind('heights'); await settle(5);
+  // Off: the layer clears, the store keeps its frame; On again asks nothing (fresh) and draws at once
+  ov.setSatGrid(false);
+  assert.equal(ov.layer.hasFrame(), false); assert.ok(ov.grid.frame); assert.equal(w.saved.satGrid, false);
+  assert.equal(ov._satReadout(0, { lat: 10, lng: -150 }, 3, 2.5).indexOf('grid'), -1, 'no grid value with the box off');
+  assert.equal(move(-40, 20).hidden, true, 'the box off: nothing over open water');
+  const lastOf = (el, cls) => { let hit = null; (function walk(n) { if ((n.className || '').indexOf(cls) >= 0) hit = n; (n.children || []).forEach(walk); })(el); return hit; };
+  assert.ok(!/moi-00180/.test(lastOf(ov.opts.panel, 'ov-sat-credit').textContent), 'the newest credit line drops the gridded DOI with the box off');
+  const n = w.fetches.length;
+  ov.setSatGrid(true); await settle(5);
+  assert.ok(ov.layer.hasFrame()); assert.equal(w.fetches.length, n, 'nothing asked again');
+  // another observation entry clears it (never under another label)
+  ov.mount('sst'); await settle(5);
+  assert.equal(ov.layer.hasFrame(), false);
+  ov.unmount();
+  // a saved box without the setting: off, no row
+  const w2 = world(); w2.saved = { field: 'sat', satGrid: true };
+  const ov2 = ctl(w2); assert.equal(ov2.satGrid, false); assert.equal(ov2.grid, null);
+  ov2.mount('sat'); w2.answer(/alt\/v1\/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+  assert.equal(ov2.ui.gridBox, undefined); assert.equal(w2.pending(/altgrid/).length, 0);
+  ov2.unmount();
+  // a saved box with the setting: on at the mount
+  const w3 = world(); w3.saved = { field: 'sat', satGrid: true };
+  const ov3 = ctl(w3, { grid: true }); ov3.grid._decode = gridFrame; assert.equal(ov3.satGrid, true);
+  ov3.mount('sat'); w3.answer(/alt\/v1\/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+  assert.deepEqual(w3.pending(/altgrid/), ['https://x/altgrid/v1/latest.json']);
+  ov3.unmount();
+  assert.equal(ov3.grid.status, 'idle', 'Off stops the load in progress');
+});
+
+test('controller: the gridded map\'s age: the note, a warning past 48 h, hidden past 72 h; the 12-min recheck adopts a newer production in place; a failure says unavailable', async () => {
+  const w = world(), ov = ctl(w, { grid: true });
+  ov.grid._decode = gridFrame;
+  w.saved = { satGrid: true };
+  const ovA = ctl(w, { grid: true }); ovA.grid._decode = gridFrame;
+  ovA.mount('sat');
+  w.answer(/alt\/v1\/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+  w.answer(/altgrid\/v1\/latest\.json$/, gridPointer()); await settle(5);
+  w.answer(/manifest-/, gridManifest());
+  assert.ok(await until(() => ovA.layer.hasFrame()));
+  atAge(49, () => { ovA._gridLineSync(); });
+  assert.equal(ovA._gridWarnShown, 'warn');
+  assert.ok(allText(ovA.opts.panel).indexOf('The gridded map is 49 h old.') >= 0, 'the warning line (rendered at 49 h)');
+  assert.ok(ovA.layer.hasFrame(), 'still drawn with the warning');
+  atAge(73, () => { ovA._gridLineSync(); });
+  assert.equal(ovA.layer.hasFrame(), false, 'past 72 h: hidden');
+  assert.equal(atAge(73, () => ovA._gridLineText()), 'hidden: 73 h old');
+  // a newer production comes in on the 12-min recheck: taken in place
+  atAge(20, () => { ovA._gridLineSync(); });
+  ovA._showGrid(ovA.grid); await settle(5);
+  assert.ok(ovA.layer.hasFrame());
+  ovA._gridRecheck();
+  w.answer(/altgrid\/v1\/latest\.json$/, gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T101000Z.json', production: '20261104T091000Z' })); await settle(5);
+  assert.equal(ovA.grid.newer.production, '20261104T091000Z');
+  w.answer(/altgrid\/v1\/latest\.json$/, gridPointer({ manifest: 'altgrid/v1/20261103/manifest-20261105T101000Z.json', production: '20261104T091000Z' })); await settle(5);
+  w.answer(/manifest-20261105T101000Z/, gridManifest({}, '20261104T091000Z'));
+  assert.ok(await until(() => ovA.layer.entry && /20261104T091000Z/.test(ovA.layer.entry.file)), 'the new production on the map');
+  ovA.unmount();
+  // a store that cannot load says unavailable
+  const w2 = world(); w2.saved = { satGrid: true };
+  const ov2 = ctl(w2, { grid: true });
+  ov2.mount('sat'); w2.answer(/alt\/v1\/latest\.json$/, pointer('alt', [chunkRec('alt', '20261104T12', 1)])); await settle(20);
+  w2.answer(/altgrid\/v1\/latest\.json$/, null, 503); await settle(10);
+  assert.equal(ov2.ui.gridNote.textContent, 'unavailable'); assert.equal(ov2.layer.hasFrame(), false);
+  ov2.unmount(); ov.unmount();
+});
+
 test('controller: the own entry on a page without the swell data shows no switch; mount(\'sat\') with the setting off fails with the error panel; the loading text', async () => {
   const w = world(), ov = ctl(w, { swell: false });
   ov.mount('sat');

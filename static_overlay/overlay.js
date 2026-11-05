@@ -168,7 +168,7 @@
   var SAT_STALE_H = 12, SWELL_STALE_H = 48;                // the jobs' own stale alarms (alt.py STALE_H, sarswell.py STALE_H)
   var SAT_FDEF = { lo: 0, hi: 22.86, legend: [0, 18.288], units: 'm', interpolation: 'bilinear' };   // = SCALES.hs: a dot is coloured as the field would draw that value
   var SAT_HEAD = 'Satellite waves (CMEMS, last 24 h)';
-  var SAT_CREDIT = 'Generated using E.U. Copernicus Marine Service Information: wave heights WAVE_GLO_PHY_SWH_L3_NRT_014_001 (doi:10.48670/moi-00179), Sentinel-1 swell WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002 (doi:10.48670/moi-00178); rendered by Allshore Surf';
+  var SAT_CREDIT = 'Generated using E.U. Copernicus Marine Service Information: wave heights WAVE_GLO_PHY_SWH_L3_NRT_014_001 (doi:10.48670/moi-00179), Sentinel-1 swell WAVE_GLO_PHY_SPC-FWK_L3_NRT_014_002 (doi:10.48670/moi-00178), gridded wave height WAVE_GLO_PHY_SWH_L4_NRT_014_003 (doi:10.48670/moi-00180); rendered by Allshore Surf';
   // <= 29 visible characters (the GFS rule): "Overlay: Copernicus Marine"; the title carries the full credit and the DOIs
   var SAT_ATTRIBUTION = 'Overlay: <a href="https://doi.org/10.48670/moi-00179" target="_blank" rel="noopener" title="' + SAT_CREDIT + '">Copernicus Marine</a>';
   var SAT_FADE = [1, 0.35];                                // a dot's alpha: the newest reading .. the window's far end
@@ -187,6 +187,14 @@
   var SAT_DTYPE_BYTES = { u1: 1, u2: 2, u4: 4, i4: 4 };
   var SAT_KEY = 'Hollow dots: within a grid cell of land (less reliable).';
   var SAT_TAP_MS = 4000;                                   // a tapped satellite mark's readout stays this long (G52 B-4)
+  // ---- the gridded satellite wave height (plan section 82) ----
+  // tools/model_frames/altgrid.py publishes the newest day of Copernicus Marine's level-4 gridded significant wave height
+  // (0.5 deg, 6-hourly; doi 10.48670/moi-00180) as PNG frames on the model's half grid under altgrid/v1/; the "Gridded
+  // map" box of the Satellite waves entry draws the NEWEST step under the dots / arrows, in the same colours (SAT_FDEF).
+  var GRID_PREFIX = 'altgrid/v1', GRID_FORMAT = 'altgrid-v1', GRID_DOI = '10.48670/moi-00180';
+  var GRID_WARN_H = 48, GRID_HIDE_H = 72;                  // the newest step older than this: a warning; older still: hidden (owner, section 82)
+  var GRID_EXPECT = { cols: 720, rows: 361 }, MAX_GRID_POINTER_BYTES = 64 * 1024, MAX_GRID_MANIFEST_BYTES = 64 * 1024;
+  var GRID_HALF = { cols: 720, rows: 361, lon0: -180, lat0: 90, dlon: 0.5, dlat: -0.5, registration: 'center', lon_periodic: true };   // = the model's half grid
   // The observations the panel can show (mode 'obs'): own keys only (G30-9).
   var OBS_DEFS = { sst: { label: 'sea surface temperature', attribution: SST_ATTRIBUTION }, sat: { label: 'satellite waves', attribution: SAT_ATTRIBUTION } };
   function hasObs(key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(OBS_DEFS, key); }
@@ -361,7 +369,7 @@
   // Tier 0 (~1 km, one file) serves tile zooms up to index.tier0.max_zoom; tier 1 (full resolution,
   // 5-degree cells) is fetched per cell in view for higher zooms, tier 0 standing in until it lands.
   // Wind is never clipped (owner decision: the full field over land).
-  var CLIP_FIELDS = { hs: true, tp: true, wind: false, sst: true };
+  var CLIP_FIELDS = { hs: true, tp: true, wind: false, sst: true, sat: true };   // sat: the gridded map of the Satellite waves entry (plan section 82)
   var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
@@ -1302,6 +1310,103 @@
     for (var i = p.chunks.length - 1; i >= 0; i--) { var c = p.chunks[i], u = Date.parse(c.newest_utc || c.t1); if (!isNaN(u)) return u; }
     return null;
   }
+  // ---- the gridded map's store (plan section 82): the pointer (no-cache), its manifest, the NEWEST step's frame through
+  // the frames' decoder. A failed re-read keeps the frame in hand; a first failure waits retryMs unless forced (a viewer's
+  // action); recheck() reads the pointer only and notes a newer manifest (load() then takes it in place).
+  function validGridPointer(p) {
+    return !!(p && p.format === GRID_FORMAT && p.complete === true && typeof p.run === 'string' && /^\d{8}$/.test(p.run) && sstKey(p.manifest) &&
+      p.manifest.indexOf(GRID_PREFIX + '/') === 0 && typeof p.newest_utc === 'string' && !isNaN(Date.parse(p.newest_utc)));
+  }
+  function validGridManifest(m, ptr) {
+    if (!m || m.format !== GRID_FORMAT || m.run !== ptr.run || m.complete !== true || m.encoding !== 'u8-linear-v2' || !m.grid || !m.fields || !m.fields.hs) return false;
+    for (var k in GRID_HALF) if (m.grid[k] !== GRID_HALF[k]) return false;
+    if (m.fields.hs.lo !== SAT_FDEF.lo || m.fields.hs.hi !== SAT_FDEF.hi) return false;   // another code space: refused, never mis-coloured
+    if (!Array.isArray(m.frames) || m.frames.length < 1 || m.frames.length > 4) return false;
+    var prev = -Infinity;
+    for (var i = 0; i < m.frames.length; i++) {
+      var fr = m.frames[i], t = fr ? Date.parse(fr.valid_utc) : NaN;
+      if (!fr || typeof fr.step !== 'number' || isNaN(t) || t <= prev || !sstKey(fr.file) || fr.file.indexOf(GRID_PREFIX + '/') !== 0) return false;
+      prev = t;
+    }
+    return true;
+  }
+  function GridStore(root) {
+    this.root = root; this.status = 'idle'; this.pointer = null; this.manifest = null; this.entry = null; this.frame = null; this.grid = null;
+    this.loading = null; this.loadAbort = null; this.failedAt = 0; this.loadedAt = 0; this.newer = null;
+  }
+  GridStore.prototype.timeoutMs = 15000;                   // a load step silent this long: failed
+  GridStore.prototype.retryMs = COAST_RETRY_MS;
+  GridStore.prototype.recheckMs = SAT_RECHECK_MS;
+  GridStore.prototype._decode = function (url, sig, expect, onProgress) { return decodeFrame(url, sig, expect, null, false, onProgress); };
+  GridStore.prototype._json = function (url, sig, noCache, maxBytes) {
+    return fetch(url, noCache ? { signal: sig, mode: 'cors', cache: 'no-cache' } : { signal: sig, mode: 'cors' }).then(function (r) {
+      if (!r.ok) throw new Error('gridded map ' + r.status);
+      if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > maxBytes) throw new Error('gridded map file too large');
+      return r.json();
+    });
+  };
+  GridStore.prototype._pointer = function (sig) { return this._json(this.root + '/' + GRID_PREFIX + '/latest.json', sig, true, MAX_GRID_POINTER_BYTES); };
+  // Resolves to the store when a frame is in hand, else null (never rejects).
+  GridStore.prototype.load = function (force) {
+    var self = this;
+    if (this.loading) return this.loading;
+    if (this.status === 'ok' && !this.newer && Date.now() - this.loadedAt < this.recheckMs) return Promise.resolve(this);
+    if (!force && this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
+    var was = this.status === 'ok' && this.frame ? this.pointer : null;
+    this.status = 'loading';
+    var ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null;
+    var kick = function () { clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, self.timeoutMs); };
+    kick();
+    this.loading = this._pointer(sig).then(function (ptr) {
+      kick();
+      if (!validGridPointer(ptr)) throw new Error('unsupported gridded map pointer');
+      if (was && was.manifest === ptr.manifest) return null;               // the step on the map is still the newest
+      return self._json(self.root + '/' + ptr.manifest, sig, false, MAX_GRID_MANIFEST_BYTES).then(function (m) {
+        kick();
+        if (!validGridManifest(m, ptr)) throw new Error('unsupported gridded map manifest');
+        var entry = m.frames[m.frames.length - 1];
+        return self._decode(self.root + '/' + entry.file, sig, GRID_EXPECT, kick).then(function (frame) {
+          validateGrid(m.grid, frame, SAT_FDEF);
+          return { ptr: ptr, m: m, entry: entry, frame: frame };
+        });
+      });
+    }).then(function (res) {
+      clearTimeout(watchdog);
+      if (self.loadAbort !== ctrl || sig.aborted) throw abortError();     // aborted or superseded: this load owns nothing any more
+      if (res) { self.pointer = res.ptr; self.manifest = res.m; self.entry = res.entry; self.frame = res.frame; self.grid = res.m.grid; }
+      self.newer = null; self.loadedAt = Date.now();
+      self.status = 'ok'; self.loading = null; self.loadAbort = null;
+      return self;
+    }).catch(function () {
+      clearTimeout(watchdog);
+      if (self.loadAbort === ctrl) {
+        self.loading = null; self.loadAbort = null;
+        if (was) { self.status = 'ok'; self.loadedAt = Date.now(); }       // a failed re-read keeps the step on the map
+        else { self.status = sig.aborted && !timedOut ? 'idle' : 'failed'; if (self.status === 'failed') self.failedAt = Date.now(); }
+      }
+      return was ? self : null;
+    });
+    return this.loading;
+  };
+  GridStore.prototype.recheck = function () {
+    var self = this;
+    if (this.status !== 'ok' || !this.pointer) return Promise.resolve(false);
+    return this._pointer(null).then(function (ptr) {
+      if (self.status === 'ok' && self.pointer && validGridPointer(ptr) && ptr.manifest !== self.pointer.manifest && ptr.run >= self.pointer.run) { self.newer = ptr; return true; }
+      return false;
+    }, function () { return false; });
+  };
+  GridStore.prototype.newestMs = function () { return this.entry ? Date.parse(this.entry.valid_utc) : null; };
+  GridStore.prototype.ageH = function (now) { var t = this.newestMs(); return t === null ? null : ((now === undefined ? Date.now() : now) - t) / 3.6e6; };
+  // Off / unmount: a load in progress stops; the frame in hand stays (the next On is instant, re-checked by load()).
+  GridStore.prototype.abortAll = function () {
+    if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; }
+    if (this.status === 'loading') { this.status = this.frame ? 'ok' : 'idle'; this.loading = null; }
+  };
+  var GRID_STORES = {};
+  function gridStore(root) { return GRID_STORES[root] || (GRID_STORES[root] = new GridStore(root)); }
+  var SAT_LUT = null;
+  function satLut() { return SAT_LUT || (SAT_LUT = buildLut('hs', SAT_FDEF.legend)); }
   var SAT_STORES = {};
   function satStore(root, kind) { var k = root + '|' + kind; return SAT_STORES[k] || (SAT_STORES[k] = new SatStore(root, kind)); }
   // The readings of one kind: the pointer (re-read every SAT_RECHECK_MS while attached: a newer one becomes `next` and is
@@ -4581,6 +4686,11 @@
     this.swell = opts.sat && opts.swell ? satStore(this.root, 'swell') : null;
     this.satLayer = null; this.satTimer = null;
     this.satKind = this.swell && s.satKind === 'swell' ? 'swell' : 'heights';
+    // opts.grid (plan section 82; the page's ALT_GRID setting): the "Gridded map" box of the Satellite waves entry
+    // (this.satGrid, per tab, off by default): the newest step of Copernicus Marine's level-4 gridded wave height drawn
+    // in the entry's field layer, under the dots / arrows
+    this.grid = opts.sat && opts.grid ? gridStore(this.root) : null;
+    this.satGrid = !!(this.grid && s.satGrid === true);
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = speedOf(s.speed);
     this.model = modelOf(s.model, this.models);
@@ -4820,6 +4930,7 @@
       if (!st) throw new Error(store.status === 'unsupported' ? 'satellite readings are not supported in this browser' : 'satellite readings cannot be loaded right now');
       self._attachSat(st, self.satKind === 'swell' ? 'arrows' : 'dots');
       self._syncSatOwnWindow();
+      self._syncGrid(true);                                  // the gridded map under the readings when its box is on (a viewer's pick: no cooldown)
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       self._attribute();
       self._syncLook();
@@ -4877,7 +4988,9 @@
   // own entry's window then follows the newest reading; the stale line follows the newest reading's age.
   Overlay.prototype._satRecheck = function () {
     var self = this, st = this.satLayer ? this.satLayer.store : null;
-    if (!st || (typeof document !== 'undefined' && document.hidden)) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    this._gridRecheck();                                     // the gridded map's pointer too, on the same timer (plan section 82)
+    if (!st) return;
     if (st.status !== 'ok') { this._satReload(st); return; }       // a failed read: tried again (load() paces it by its cooldown)
     st.recheck().then(function (changed) {
       if (!self.satLayer || self.satLayer.store !== st) return;
@@ -4918,6 +5031,94 @@
       if (self.mode === 'obs' && self.field === 'sat') { self._syncSatOwnWindow(); self._satLineSync(); }
     });
   };
+  // ---- the gridded map (plan section 82) ----
+  // Wanted: the box on, on the Satellite waves entry. The map is drawn in the entry's ModelGridLayer (modelPane, under the
+  // dots' obsPane) as field 'sat' (the coast clip; no lake mask, no contours), the newest step only.
+  Overlay.prototype._wantGrid = function () { return !!(this.grid && this.satGrid && this.mode === 'obs' && this.field === 'sat' && this.layer); };
+  Overlay.prototype._gridShown = function () { return !!(this.layer && this.layer.field === 'sat' && this.layer.hasFrame()); };
+  Overlay.prototype._gridState = function () {                // '' fresh / 'warn' past GRID_WARN_H / 'hide' past GRID_HIDE_H (owner)
+    var st = this.grid, h = st && this.satGrid ? st.ageH() : null;
+    return h === null ? '' : h > GRID_HIDE_H ? 'hide' : h > GRID_WARN_H ? 'warn' : '';
+  };
+  Overlay.prototype.setSatGrid = function (on) {
+    on = !!(on && this.grid);
+    if (on === this.satGrid) return;
+    this.satGrid = on; save({ satGrid: on });
+    if (this.ui && this.ui.gridBox && this.ui.gridBox.checked !== on) this.ui.gridBox.checked = on;
+    this._syncGrid(true);
+    if (this.last && this.last.state === 'ready' && this.mode === 'obs' && this.field === 'sat') this.render(this.last);   // the credit line, the warning
+  };
+  Overlay.prototype._syncGrid = function (force) {
+    var self = this, st = this.grid;
+    if (!this._wantGrid()) { this._clearGrid(); this._gridLineSync(); return; }
+    if (st.status === 'ok' && st.frame) this._showGrid(st);
+    this._gridLineSync();
+    st.load(force).then(function (ok) {
+      if (ok && self._wantGrid()) self._showGrid(ok);
+      self._gridLineSync();
+    });
+  };
+  // Only the gridded map is ever cleared here (never a model field's picture: the layer's field says whose it is).
+  Overlay.prototype._clearGrid = function () {
+    if (!this._gridShown()) return;
+    this.layer.clear();
+    if (this._attributed) this._attribute();
+  };
+  Overlay.prototype._showGrid = function (st) {
+    var self = this;
+    if (!this._wantGrid() || !st.frame) return;
+    if (this._gridState() === 'hide') { this._clearGrid(); return; }
+    if (this._gridShown() && this.layer.entry === st.entry) return;
+    var entry = st.entry, coastP = this.coast ? this.coast.load() : Promise.resolve(null);
+    this._coastFirst(coastP).then(function (coast) {                 // the clip waits for the coastline at most COAST_FIRST_MS (as SST)
+      if (!self._wantGrid() || self.grid.entry !== entry || self._gridState() === 'hide') return;
+      if (coast !== undefined && self.layer._coast !== (coast || null)) self.layer.setCoast(coast);
+      if (self.layer._src) self.layer.setSource(null, true);        // never SST's cells under this label
+      self.layer.setContours(null, true);
+      self.layer.setFrame(st.frame, st.grid, 'sat', SAT_FDEF, satLut(), entry);
+      self._syncLook();                                              // the field opacity (FIXED_OPACITY's default)
+      self._gridLineSync();
+      if (self._attributed) self._attribute();
+    });
+  };
+  // Every SAT_RECHECK_MS with the box on: a failed store is asked again (its cooldown paces it); a newer manifest is
+  // taken in place (the step on the map stays until the new one is decoded).
+  Overlay.prototype._gridRecheck = function () {
+    var self = this, st = this.grid;
+    if (!this._wantGrid()) return;
+    var adopt = function (ok) { if (ok && self._wantGrid()) self._showGrid(ok); self._gridLineSync(); };
+    if (st.status !== 'ok') { st.load(false).then(adopt); return; }
+    st.recheck().then(function (changed) { if (changed) st.load(false).then(adopt); else self._gridLineSync(); });
+  };
+  // The note beside the box, in place: "CMEMS L4 · Nov 3, 1:00 PM EST (31 h ago)" / "loading…" / "unavailable" /
+  // "hidden: 75 h old"; a change of state (fresh / warn / hide) re-renders the panel (the warning line) and a map past
+  // GRID_HIDE_H comes off.
+  Overlay.prototype._gridLineText = function () {
+    var st = this.grid;
+    if (!st || !this.satGrid) return '';
+    if (st.entry) {
+      var h = st.ageH(), ago = Math.max(0, Math.round(h)), when = st.entry.valid_utc;
+      if (h > GRID_HIDE_H) return 'hidden: ' + ago + ' h old';
+      return 'CMEMS L4 · ' + this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz) + ' (' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
+    }
+    return st.status === 'failed' ? 'unavailable' : 'loading…';
+  };
+  Overlay.prototype._gridLineSync = function () {
+    var ui = this.ui;
+    if (ui && ui.gridNote) { var t = this._gridLineText(); if (ui.gridNote.textContent !== t) ui.gridNote.textContent = t; }
+    var state = this._gridState();
+    if (state === 'hide') this._clearGrid();
+    if (this.mode === 'obs' && this.field === 'sat' && state !== (this._gridWarnShown || '') && this.last && this.last.state === 'ready') this.render(this.last);
+  };
+  Overlay.prototype._gridValueText = function (v) {
+    var u = unitOf('hs', this.opts.getUnit());
+    return (v >= SAT_FDEF.hi - 1e-9 ? '≥ ' : '') + u.f(v).toFixed(u.d) + ' ' + u.label;
+  };
+  // The hover over water with no reading under the cursor: the gridded map's value and its step's time.
+  Overlay.prototype._gridReadout = function (v) {
+    var when = this.grid.entry.valid_utc;
+    return 'grid ' + this._gridValueText(v) + ' · ' + this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
+  };
   // The own entry's readings line, in place: "Readings: last 24 h, newest 11:40 AM HST (2 h ago) · 7 satellites" ("loading
   // 3 of 8…" while chunks are on their way); the stale warning past the job's own limit re-renders the panel.
   Overlay.prototype._satLineText = function () {
@@ -4931,7 +5132,9 @@
     var sats = {}, f = st.flat, sl = win ? st.slice(win.t0, win.t1) : [0, 0], nsat = 0;
     if (f) for (var i = sl[0]; i < sl[1]; i++) { var m = f.missions[f.mission[i]], name = (m && m.short ? m.short : String(f.mission[i])).replace(/ OGDR$/, ''); if (!sats[name]) { sats[name] = true; nsat++; } }
     var when = new Date(newest).toISOString().replace(/\.\d+Z$/, 'Z'), clock = this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
-    var txt = 'Readings: last 24 h, newest ' + clock + ' (' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
+    var agoText = '(' + (ago < 1 ? 'under an hour' : ago + ' h') + ' ago)';
+    // the swell's daily batch runs up to 31 h behind the clock: its line names the window's end (owner, section 82)
+    var txt = st.kind === 'swell' ? 'Readings: 24 h to ' + clock + ' ' + agoText : 'Readings: last 24 h, newest ' + clock + ' ' + agoText;
     if (pend) txt += ' · loading ' + (need - pend) + ' of ' + need + '…' + (retrying ? ' (' + retrying + ' retrying)' : '');   // G52 B-6
     else if (nsat) txt += ' · ' + nsat + ' satellite' + (nsat === 1 ? '' : 's');
     if (!pend && missing) txt += ' · ' + (need - missing) + ' of ' + need + ' windows';                                          // G52 B-7: a chunk the bucket lacks
@@ -4952,7 +5155,13 @@
   // The hover on a reading (flat index j): a height dot gives the reading, its satellite, its time and the collocated model
   // value with the difference (frame mode: the model value from the drawn field under the cursor); a swell point every
   // partition. Units follow the site unit.
-  Overlay.prototype._satReadout = function (j, latlng, z) {
+  // gv: the gridded map's value under the cursor (plan section 82), appended while the map is drawn.
+  Overlay.prototype._satReadout = function (j, latlng, z, gv) {
+    var txt = this._satReadoutCore(j, latlng, z);
+    if (gv === null || gv === undefined || !this._wantGrid() || !this._gridShown()) return txt;
+    return txt + ' · grid ' + this._gridValueText(gv);
+  };
+  Overlay.prototype._satReadoutCore = function (j, latlng, z) {
     var st = this.satLayer.store, f = st.flat, u = unitOf('hs', this.opts.getUnit()), i;
     var when = new Date(f.t[j]).toISOString().replace(/\.\d+Z$/, 'Z'), clock = this.opts.fmtTime(when, this.opts.tz) + ' ' + this.opts.tzAbbr(when, this.opts.tz);
     var sat = f.missions[f.mission[j]] ? f.missions[f.mission[j]].short : '?';
@@ -5545,7 +5754,7 @@
   Overlay.prototype._checkRun = function () {
     var self = this, model = this.model, m = this.manifest;
     if (this.mode === 'obs') {
-      if (this.field === 'sat') { this._satLineSync(); return; }     // (the pointer's own re-read runs on satTimer)
+      if (this.field === 'sat') { this._satLineSync(); this._gridLineSync(); return; }     // (the pointers' own re-reads run on satTimer)
       if (this.sst) this.sst.recheck();
       var m = this.sst && this.sst.manifest, age = m ? sstAgeDays(m.day) : null;
       if (this.last && this.last.state === 'ready' && (age !== null && age > SST_STALE_DAYS) !== !!this._sstStale) this.render(this.last);   // G31-15
@@ -5838,6 +6047,7 @@
     if (this.sat) this.sat.abortAll();
     if (this.swell) this.swell.abortAll();
     if (this.sst) this.sst.abortAll();                     // the day's frame and manifest stay for the next On
+    if (this.grid) this.grid.abortAll();                   // the gridded map's frame stays too (plan section 82)
     if (this.lake) this.lake.abortAll();                   // the lake run stays for the next On
     if (this.lakeCoast) this.lakeCoast.abortAll();
     if (this.lakeOutCoast) this.lakeOutCoast.abortAll();
@@ -6213,10 +6423,13 @@
       var sat = self.satLayer;
       if (sat && sat.hasWindow()) {
         var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom()), hit = sat.hitAt(latlng.lat, latlng.lng, sz);
-        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz); satShown = true; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
+        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz, v); satShown = true; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
       }
       satShown = false;
-      if (self.mode === 'obs' && self.field === 'sat') { el.hidden = true; return; }
+      if (self.mode === 'obs' && self.field === 'sat') {     // the own entry: the gridded map's value over water (plan section 82), else nothing
+        if (v === null || v === undefined || !self._wantGrid() || !self._gridShown()) { el.hidden = true; return; }
+        el.textContent = self._gridReadout(v); el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return;
+      }
       if ((v === null || v === undefined) && layer && layer.fdef && layer.lakeAt(latlng.lat, latlng.lng, z)) {   // plan section 50 (owner): "no data" / "calm" (G33 B-2)
         el.textContent = self._lakeWord(latlng.lat, latlng.lng, z, function (w) {
           if (el.hidden || !last) return;
@@ -6903,7 +7116,7 @@
     var fold = function (keepToggle) {
       if (!keepToggle && btn.parentNode) head.removeChild(btn);
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
-      self.ui.collapsed = true; self.ui.satLine = null; self.ui.satSeg = null;
+      self.ui.collapsed = true; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
@@ -6928,6 +7141,7 @@
     var when = newest !== null ? new Date(newest).toISOString().replace(/\.\d+Z$/, 'Z') : null;
     var summary = 'Satellite · ' + (when ? 'newest ' + this.opts.fmtTime(when, this.opts.tz) : '…');
     this._satStaleShown = this._satStale(store);
+    this._gridWarnShown = this._gridState();
     this._obsShell(st, host, compact, focusCls, mapH, SAT_HEAD, summary, function (body) {
       if (self.swell) {
         var seg = mk('div', 'ov-row ov-seg'); seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Satellite readings shown');
@@ -6940,13 +7154,23 @@
         body.appendChild(seg); self.ui.satSeg = seg;
       }
       body.appendChild(buildLegend('hs', SAT_FDEF, unit));
+      // the "Gridded map" box (plan section 82): the note beside it says the step and its age, or the state
+      if (self.grid) {
+        var grow = mk('div', 'ov-row ov-satrow'), glab = mk('label', 'ov-sat-label'), gbox = mk('input', 'ov-sat-box'); gbox.type = 'checkbox'; gbox.checked = !!self.satGrid;
+        glab.appendChild(gbox); glab.appendChild(mk('span', null, 'Gridded map')); grow.appendChild(glab);
+        var gnote = mk('span', 'ov-sat-note', self._gridLineText()); gnote.id = 'ovGridNote'; grow.appendChild(gnote);
+        gbox.setAttribute('aria-describedby', 'ovGridNote');
+        gbox.addEventListener('change', function () { self.setSatGrid(!!gbox.checked); });
+        body.appendChild(grow); self.ui.gridBox = gbox; self.ui.gridNote = gnote;
+      }
       var line = mk('div', 'ov-meta ov-sat-line', self._satLineText()); body.appendChild(line); self.ui.satLine = line;
       if (self.satKind !== 'swell') body.appendChild(mk('div', 'ov-meta ov-sat-key', SAT_KEY));   // the hollow dots explained (G52 B-2)
-      body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00178' : '') + ').'));
+      body.appendChild(mk('div', 'ov-meta ov-sat-credit', 'Generated using E.U. Copernicus Marine Service Information (doi:10.48670/moi-00179' + (self.satKind === 'swell' ? ', doi:10.48670/moi-00178' : '') + (self.satGrid && self.grid ? ', doi:' + GRID_DOI : '') + ').'));
       if (self._satStaleShown) {
         var h = Math.round((Date.now() - newest) / 3.6e6);
         body.appendChild(mk('div', 'ov-warn', 'The newest satellite reading is ' + h + ' h old.'));
       }
+      if (self._gridWarnShown) body.appendChild(mk('div', 'ov-warn', 'The gridded map is ' + Math.round(self.grid.ageH()) + ' h old' + (self._gridWarnShown === 'hide' ? ': hidden.' : '.')));
     });
   };
   // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its
@@ -6965,7 +7189,7 @@
     sel.addEventListener('change', function () { var v = sel.value; if (v !== self.model) self.setModel(v); else sel.value = self.model; });
     return sel;
   };
-  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-details'];
+  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-sat-box', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -7086,7 +7310,9 @@
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,
-      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
+      SAT_COLUMNS: SAT_COLUMNS, SAT_MAGIC: SAT_MAGIC, SAT_FORMAT: SAT_FORMAT, SAT_KEY: SAT_KEY, SAT_TAP_MS: SAT_TAP_MS,
+      GridStore: GridStore, gridStore: gridStore, validGridPointer: validGridPointer, validGridManifest: validGridManifest, GRID_PREFIX: GRID_PREFIX, GRID_FORMAT: GRID_FORMAT,
+      GRID_DOI: GRID_DOI, GRID_WARN_H: GRID_WARN_H, GRID_HIDE_H: GRID_HIDE_H, GRID_EXPECT: GRID_EXPECT, GRID_HALF: GRID_HALF, satLut: satLut, SAT_FLAG_NEAR_LAND: SAT_FLAG_NEAR_LAND, SAT_FLAG_MODEL_EDGE: SAT_FLAG_MODEL_EDGE, SAT_EPOCH_MS: SAT_EPOCH_MS,
       SPEED_ANIMALS: SPEED_ANIMALS, animalOf: animalOf, speedOf: speedOf, assetUrl: assetUrl, speedSelector: speedSelector,
       ribbonFormatter: ribbonFormatter, localMidnightBefore: localMidnightBefore, ribbonScale: ribbonScale, ribbonLayout: ribbonLayout,
       RibbonState: RibbonState, RIBBON_MIN_TICK_GAP: RIBBON_MIN_TICK_GAP, RIBBON_TAP_PX: RIBBON_TAP_PX, RIBBON_AXIS_PX: RIBBON_AXIS_PX,

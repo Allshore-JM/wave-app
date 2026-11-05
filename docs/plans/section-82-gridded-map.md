@@ -196,3 +196,16 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   latitude placement, poles absent, the blank mask = the product's valid-and-unflagged mask exactly; a live local
   build against the bucket in 8 s (production 20261104T073010Z, newest step 18Z Nov 3). model_frames suite 502 pass.
   NEXT: step 2 (one fresh Fable reviewer on the job), then STOP for the job-only merge.
+- 2026-11-05: step 3 (the client, asset 2.24.0) built while the job's reviewer runs: `GridStore` / `gridStore` /
+  `validGridPointer` / `validGridManifest`, `satLut()`, `CLIP_FIELDS.sat`; the controller's `_wantGrid`, `setSatGrid`,
+  `_syncGrid`, `_showGrid` (the entry's ModelGridLayer, field 'sat', after the coast), `_clearGrid` (only the grid),
+  `_gridRecheck` (on the 12-min satellite timer), `_gridLineText` / `_gridLineSync` (the note, the 48-h warning, the
+  72-h hide), `_gridReadout` and the hover's " · grid" tail; the "Gridded map" row in `_renderSat`, the credit line's
+  third DOI, the title's; the Swell line "Readings: 24 h to …"; CSS rows restored; page flag `ALT_GRID`
+  (`_grid_overlay_enabled`, `var GRID`, `grid: GRID`), flag / bootstrap / golden-capture tests; README client section.
+  Tests: sat.test.js 14 (3 new: the store and its rules; the box, draw, hover through the readout handler, Swell,
+  Off, another entry, saved state; the ages, the recheck adopting a newer production, unavailable); the coast-build
+  Node list 1,073 pass (isobars.test.js cancelled by this container's 20-s file timeout, as before). Mutants 18 of 20
+  killed; the 2 survivors are behaviour-equivalent (the hover's box guard: the layer is already clear with the box
+  off; the SST-source reset: every observation mount already clears it). NEXT: the job reviewer's record, fixes, then
+  STOP for the job-only merge.

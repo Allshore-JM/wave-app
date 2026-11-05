@@ -1171,7 +1171,7 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   host drive both jobs end to end: the digests, the chunk round trip, the collocation against a hand-computed value, the
   pointer last and only on a change, prune, the stale alarms, the swell reader's refusals).
 
-### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.3)
+### The satellite layer on the map (plan section 81, the client; overlay asset 2.23.4)
 
 - **Settings**: `ALT_OVERLAY=1` adds "Satellite waves" to the overlay dropdown and the "Satellite readings" box under
   Wave height (both off by default: on once `alt/v1` is live); `SARSWELL=1` (with it) adds the Heights | Swell switch to
@@ -1221,7 +1221,8 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   carries the key "Hollow dots: within a grid cell of land (less reliable)."; the difference is that of the two numbers
   printed; the readings line counts spacecraft (Jason-3 and its OGDR feed once) and names a window retrying ("loading
   8 of 9… (1 retrying)") or one the bucket lacks ("· 8 of 9 windows"); on touch a plain tap on a dot or an arrow shows
-  its readout for 4 s (the field keeps its long press).
+  its readout for 4 s (the field keeps its long press). Asset 2.23.4: the readout's satellite flag is a closure variable,
+  not a DOM attribute (the lake and playback test worlds' fake elements have no `removeAttribute`: coast-build #584 / #585).
   The pointer is re-read every 12 min while attached: a newer one becomes `next` and is adopted only once the chunks the
   current window needs from it have landed (no empty picture between pointers); chunks it no longer names go. `idle()`
   (another field, the box off) stops the downloads and keeps the samples; `abortAll()` (Off) stops the pointer load too.

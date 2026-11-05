@@ -230,6 +230,12 @@ site, review, fixes)."**
   8cd6eba (tag `prod-pre-alt`, pushed as a branch too if the proxy still refuses tags), fast-forward `Live-Buoy-Update`
   to 1de5702, push; nothing shows on production until the owner sets `ALT_OVERLAY=1` / `SARSWELL=1` there, each with
   its own go-ahead.
+- 2026-11-05 00:50Z: coast-build #584 (feat/satellite @ bfae515) and #585 (test @ ce6afe2) FAILED: the fix round's
+  readout flag used `el.removeAttribute('data-sat')`, which the lake / playback test worlds' fake elements lack
+  (`TypeError: el.removeAttribute is not a function` in lake.test.js:697 and playback.test.js:3683 / 3721); sat.test.js's
+  sandbox has the attribute methods, so the satellite suite alone did not catch it. Fixed as a closure flag `satShown`
+  (asset 2.23.4); the whole coast-build list run locally before the push this time. The prepared merge 1de5702 is
+  superseded: rebuilt from the branch's tip at the go-ahead.
 
 
 ---

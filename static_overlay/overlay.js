@@ -6276,7 +6276,7 @@
   Overlay.prototype._bindReadout = function () {
     var self = this, map = this.map, el = mk('div', 'ov-readout'); el.hidden = true;
     map.getContainer().appendChild(el); this.readout = el;
-    var pressTimer = null, lastTouch = 0, last = null;
+    var pressTimer = null, lastTouch = 0, last = null, satShown = false;   // satShown: the readout shows a satellite mark (G52 B-4)
     function overControl(ev) { var t = ev && ev.target; return !!(t && t.closest && t.closest('.leaflet-control, .ov-sheet')); }
     function show(latlng, pt) {
       var layer = self.layer, v = null, z = 0;
@@ -6290,9 +6290,9 @@
       var sat = self.satLayer;
       if (sat && sat.hasWindow()) {
         var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom()), hit = sat.hitAt(latlng.lat, latlng.lng, sz);
-        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz); el.setAttribute('data-sat', '1'); el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
+        if (hit >= 0) { el.textContent = self._satReadout(hit, latlng, z || sz); satShown = true; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return; }
       }
-      el.removeAttribute('data-sat');
+      satShown = false;
       if (self.mode === 'obs' && self.field === 'sat') { el.hidden = true; return; }
       if ((v === null || v === undefined) && layer && layer.fdef && layer.lakeAt(latlng.lat, latlng.lng, z)) {   // plan section 50 (owner): "no data" / "calm" (G33 B-2)
         el.textContent = self._lakeWord(latlng.lat, latlng.lng, z, function (w) {
@@ -6338,7 +6338,7 @@
         var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom());
         if (sat.hitAt(ll.lat, ll.lng, sz) >= 0) { show(ll, pt); setTimeout(function () { el.hidden = true; }, SAT_TAP_MS); return; }
       }
-      setTimeout(function () { el.hidden = true; }, !el.hidden && el.getAttribute('data-sat') === '1' ? SAT_TAP_MS : 1500);
+      setTimeout(function () { el.hidden = true; }, !el.hidden && satShown ? SAT_TAP_MS : 1500);
     }
     c.addEventListener('touchstart', ts, { passive: true }); c.addEventListener('touchend', te, { passive: true }); c.addEventListener('touchmove', te, { passive: true });
     this._touch = [c, ts, te, function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } }];

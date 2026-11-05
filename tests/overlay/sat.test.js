@@ -671,6 +671,15 @@ test('controller: the gridded map\'s age: the note, a warning past 48 h, hidden 
   assert.equal(ovA._gridWarnShown, 'warn');
   assert.ok(allText(ovA.opts.panel).indexOf('The gridded map is 49 h old.') >= 0, 'the warning line (rendered at 49 h)');
   assert.ok(ovA.layer.hasFrame(), 'still drawn with the warning');
+  // G55 B-1: the warning's hour count follows the clock in place (no re-render while the state stays 'warn')
+  atAge(56, () => { ovA._gridLineSync(); });
+  assert.ok(allText(ovA.opts.panel).indexOf('The gridded map is 56 h old.') >= 0, 'the warning line kept current');
+  assert.equal(allText(ovA.opts.panel).indexOf('The gridded map is 49 h old.'), -1);
+  // G55 B-3: the warning sits right under its box, before the readings line and the credit
+  const panelText = allText(ovA.opts.panel), at = (t) => panelText.lastIndexOf(t);   // the panel host keeps earlier renders: judge the newest
+  assert.ok(ovA.ui.gridWarn, 'the warning element is kept for in-place updates');
+  assert.ok(at('Gridded map') >= 0 && at('Gridded map') < at('The gridded map is 56 h old.'), 'after the box');
+  assert.ok(at('The gridded map is 56 h old.') < at('Readings:') && at('The gridded map is 56 h old.') < at('Generated using'), 'before the readings line and the credit');
   atAge(73, () => { ovA._gridLineSync(); });
   assert.equal(ovA.layer.hasFrame(), false, 'past 72 h: hidden');
   assert.equal(atAge(73, () => ovA._gridLineText()), 'hidden: 73 h old');

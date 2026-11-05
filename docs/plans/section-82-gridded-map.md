@@ -248,3 +248,12 @@ job, client, test site, review, fixes)." — reviews via Fable subagents)
   - Production: 06a965f (section 81 client + the section 82 job; the gridded frames publishing on their crons);
     rollback points on the remote as branches `prod-pre-alt-job` (d973c76), `prod-pre-alt` (8cd6eba),
     `prod-pre-altgrid-job` (584a772). Flags on production: ALT_OVERLAY=1, SARSWELL=1 (ALT_GRID not set there).
+- 2026-11-05 (desktop, Opus 5.5): resumed. CI coast-build tests + client-tests green on 2171a7a; flag tests 17/17.
+  `test` @ 1814c99 = the 2.24.1 client files (live 04:40Z, served overlay.js = the commit). Reviewer B (Fable) on the
+  live test site: record `docs/reviews/gridded-G55-test-site.md`: 0 P0, 0 P1, 0 P2, 3 P3 (1,250 of 1,250 readouts =
+  an independent sample of the published frame; every drawn pixel the LUT colour of its value). Fix round (asset
+  2.24.2): B-1 the warning's hour count kept current in place; B-3 the warning moved right under the box (360-px
+  phones); B-2 the sheet's wording (a long press reads the grid on phones). sat.test.js 15/15, client-tests list
+  1,102/1,102, flag tests 17/17. NEXT: 2.24.2 on the test site, CI green, then STOP for the client merge
+  (`prod-pre-altgrid` @ production 06a965f + the owner's explicit go-ahead), then ALT_GRID=1 on production with its
+  own go-ahead.

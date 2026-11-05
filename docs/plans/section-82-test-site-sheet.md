@@ -27,8 +27,9 @@ wave-height colours. Off by default; the choice is remembered per tab.
 - Wave height, SST, Off: the field goes with the entry.
 
 ## Phone checks
-- The row "Gridded map" fits the panel, the note wraps under it; no horizontal scroll; a tap on open water shows the
-  grid value (long press for the field elsewhere on the map, as before).
+- The row "Gridded map" fits the panel, the note wraps under it; no horizontal scroll; a LONG PRESS on open water shows the
+  grid value (as for the model fields); a quick tap on a dot shows its reading with the grid's value after it.
+  Past 48 h the warning line sits right under the box (also on a 360-px phone).
 
 ## Checked by Claude (2026-11-05 03:5xZ, headless Chromium)
 All of the above on desktop 1280 x 800 and phone 375 x 812: the box, the draw under the dots and arrows, the note

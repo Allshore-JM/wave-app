@@ -5109,9 +5109,14 @@
   Overlay.prototype._gridLineSync = function (quiet) {
     var ui = this.ui;
     if (ui && ui.gridNote) { var t = this._gridLineText(); if (ui.gridNote.textContent !== t) ui.gridNote.textContent = t; }
+    if (ui && ui.gridWarn && this._gridWarnShown) { var w = this._gridWarnText(); if (ui.gridWarn.textContent !== w) ui.gridWarn.textContent = w; }
     var state = this._gridState();
     if (state === 'hide') this._clearGrid();
     if (!quiet && this.mode === 'obs' && this.field === 'sat' && state !== (this._gridWarnShown || '') && this.last && this.last.state === 'ready') this.render(this.last);
+  };
+  // The panel's warning line: "The gridded map is 52 h old." / "The gridded map is 75 h old: hidden."
+  Overlay.prototype._gridWarnText = function () {
+    return 'The gridded map is ' + Math.round(this.grid.ageH()) + ' h old' + (this._gridWarnShown === 'hide' ? ': hidden.' : '.');
   };
   Overlay.prototype._gridValueText = function (v) {
     var u = unitOf('hs', this.opts.getUnit());
@@ -7165,6 +7170,10 @@
         gbox.setAttribute('aria-describedby', 'ovGridNote');
         gbox.addEventListener('change', function () { self.setSatGrid(!!gbox.checked); });
         body.appendChild(grow); self.ui.gridBox = gbox; self.ui.gridNote = gnote;
+        // the age warning right under its box (G55 B-3: below the credit it fell out of a 360-px phone's details box);
+        // its hour count kept current in place by _gridLineSync (G55 B-1)
+        self.ui.gridWarn = null;
+        if (self._gridWarnShown) { var gw = mk('div', 'ov-warn ov-grid-warn', self._gridWarnText()); body.appendChild(gw); self.ui.gridWarn = gw; }
       }
       var line = mk('div', 'ov-meta ov-sat-line', self._satLineText()); body.appendChild(line); self.ui.satLine = line;
       if (self.satKind !== 'swell') body.appendChild(mk('div', 'ov-meta ov-sat-key', SAT_KEY));   // the hollow dots explained (G52 B-2)
@@ -7173,7 +7182,6 @@
         var h = Math.round((Date.now() - newest) / 3.6e6);
         body.appendChild(mk('div', 'ov-warn', 'The newest satellite reading is ' + h + ' h old.'));
       }
-      if (self._gridWarnShown) body.appendChild(mk('div', 'ov-warn', 'The gridded map is ' + Math.round(self.grid.ageH()) + ' h old' + (self._gridWarnShown === 'hide' ? ': hidden.' : '.')));
     });
   };
   // Keyboard focus through a render (G26 B-2, re-check RC-6): the part of the panel that had it, by its class; its

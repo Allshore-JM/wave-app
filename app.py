@@ -322,7 +322,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.24.3"           # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.25.0"           # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -355,6 +355,12 @@ def _sst_overlay_enabled() -> bool:
     published by tools/model_frames/sst.py under the frames bucket's sst/v1/). Off by default: the client ships first, the
     setting goes on once a day is live."""
     return os.environ.get("SST_OVERLAY", "0") == "1"
+
+
+def _radar_overlay_enabled() -> bool:
+    """RADAR_OVERLAY=1: the overlay dropdown offers "Radar" (plan section 85: NOAA MRMS and EUMETNET OPERA published by
+    tools/model_frames/radar.py under radar/v1/). Off by default."""
+    return os.environ.get("RADAR_OVERLAY", "0") == "1"
 
 
 def _sat_overlay_enabled() -> bool:
@@ -447,6 +453,35 @@ ECMWF_NOTICE = "\n".join([
     "availability, or for any loss or damage arising from their use. ECMWF does not endorse this product.",
     "",
 ])
+
+
+# The radar notice the map credit links ("Radar: MRMS · OPERA CC BY 4.0"; plan section 85): NOAA's data is public domain and NOAA asks
+# for attribution and that modified data not pass as the original; OPERA is CC BY 4.0 with EUMETNET's property rights.
+RADAR_NOTICE = "\n".join([
+    "Radar data in the Allshore Surf map (allshoresurf.com)",
+    "",
+    "United States, Alaska, Hawaii, Puerto Rico and the Caribbean, Guam:",
+    "NOAA National Severe Storms Laboratory and National Weather Service, Multi-Radar/Multi-Sensor System (MRMS), Seamless Hybrid",
+    "Scan Reflectivity, through the NOAA Open Data Dissemination Program on AWS. Public domain; NOAA is credited at its request.",
+    "This is not an official NOAA product and has not been reviewed by NOAA.",
+    "",
+    "Europe:",
+    "EUMETNET OPERA radar composite, maximum reflectivity over 10 minutes. Property rights: EUMETNET.",
+    "Licence: Creative Commons Attribution 4.0 International (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/",
+    "",
+    "Changes made by Allshore Surf to both: regridded to latitude and longitude, quantised to 0.5 dBZ, echoes below 5 dBZ removed,",
+    "thinned for coarser map zooms, coloured and rendered as a map layer. Radar shows echoes, not rain on the ground; values can be",
+    "wrong (sea clutter, beam blockage, snow or hail). No warranty: do not use this for safety decisions.",
+    "",
+])
+
+
+@app.route("/notice/radar")
+def radar_notice():
+    """The radar attribution notice (plain text)."""
+    resp = app.response_class(RADAR_NOTICE, mimetype="text/plain")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 @app.route("/notice/ecmwf")
@@ -4854,7 +4889,7 @@ def _overlay_context(selected_station, selected_tz, payload):
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
     return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
-            "overlay_sst": _sst_overlay_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
+            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

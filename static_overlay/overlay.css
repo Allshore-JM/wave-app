@@ -154,5 +154,16 @@
 .ov-satrow input { margin: 0; accent-color: #0f8f8c; }
 .ov-sat-note { color: #3f4d6e; font-size: 11px; }
 @media (pointer: coarse) { .ov-satrow input { width: 20px; height: 20px; } .ov-seg-btn { min-height: 28px; } }
+/* The radar's panel (plan section 85): play, slider and speed stay on the smallest sheets; the time and the loop length above the scale. */
+.ov-radar-row { width: 324px; max-width: 100%; align-items: center; }
+.ov-sheet .ov-radar-row { width: auto; }
+.ov-radar-row .ov-timeline { flex: 1 1 auto; min-width: 60px; width: auto; }
+.ov-radar-line { justify-content: space-between; gap: 6px; flex-wrap: nowrap; }
+.ov-radar-label { font-weight: 600; font-size: 12px; color: #1d2b4f; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-radar-loop { flex: 0 0 auto; }
+.ov-radar-words { position: relative; height: 13px; font-size: 10px; color: #3f4d6e; }
+.ov-radar-words span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.ov-radar-key { font-size: 10.5px; }
+@media (pointer: coarse) { .ov-radar-loop { min-height: 28px; } }
 /* the overlay's one live region (loading / error / unavailable frames): read out, not shown */
 .ov-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }

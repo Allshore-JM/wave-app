@@ -1322,6 +1322,31 @@ at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
 
+### The radar layer on the map (plan section 85, the client; overlay asset 2.25.0)
+
+`RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no
+run lines. It opens still on the newest frame and plays only on Play; the loop choice is 2 hours (a frame every 10 minutes), 6 (20), 12
+(30) or 24 (60), remembered for the tab, plus the newest frame whatever its minute. The speeds are the animals'. A light tint marks the
+water and land radar can see; nothing is drawn outside it.
+
+What is drawn is what the hover reads: one sampler for both, over the same pieces. A pixel belongs to the first region in the order
+Hawaii, Guam, US, Alaska, Caribbean, Europe whose newest whole-region frame covers it (by coverage, never by box: the US box's no-coverage
+strip does not hide the Caribbean). Inside that region: at tile zoom 9 and up the 100-a-degree cell, from 6 the 25-a-degree cell, below
+that the 10-a-degree frame. While playing, a cell takes a tier only once every step of the loop that lists it has landed, so no tile flips
+between tiers from frame to frame; paused, whatever has landed. A region missing a step keeps its last frame for at most two steps.
+
+The hover says "32 dBZ · moderate rain · 7:40 PM" (Europe: "10-min max to 7:40 PM"), "no echo" or "no radar coverage". dBZ in both unit
+systems; the rain words are rough: radar sees echoes, not rain on the ground.
+
+The downloads are the view's and nothing else: the newest coverage first, the shown frame, then the loop forward, at most 4 at once; a
+download the view no longer needs is dropped. Files are immutable, so a loop played twice costs nothing the second time. 32 MB of pictures at
+most; a stack that would not fit is not started and only the shown frame gets that tier. A file that answers 404 is tried again after a
+minute with the list read again (a slot can come back); a damaged file is given up on. The list is read just after the next expected
+publish, then every minute; a new slot joins the loop once what the view needs of it has landed, so the picture never goes blank for it.
+
+Credit: "Radar: MRMS · OPERA CC BY 4.0", linking `/notice/radar` (NOAA named at its request, OPERA's licence and EUMETNET's rights, what was
+changed).
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

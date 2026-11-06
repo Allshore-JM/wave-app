@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -19,7 +19,7 @@ function gatedScript(subs) {
   for (const k of Object.keys(subs)) src = src.split('{{ ' + k + '|tojson }}').join(JSON.stringify(subs[k]));
   return src;
 }
-const SRC = gatedScript(), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true }), SRC_SAT = gatedScript({ overlay_sat: true, overlay_swell: true, overlay_grid: true });
+const SRC = gatedScript(), SRC_RADAR = gatedScript({ overlay_radar: true }), SRC_SST = gatedScript({ overlay_sst: true }), SRC_GLWU = gatedScript({ overlay_glwu: true }), SRC_SAT = gatedScript({ overlay_sat: true, overlay_swell: true, overlay_grid: true });
 const KEY = 'allshore.overlay.v1';
 
 function page(opt) {
@@ -39,7 +39,7 @@ function page(opt) {
     for (;;) { timers.sort((x, y) => x.at - y.at); const t = timers[0]; if (!t || t.at > end) break; timers.shift(); now = t.at; t.fn(); }
     now = end;
   }
-  const OPTS = opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : opt.sat ? ['', 'hs', 'tp', 'wind', 'sat'] : ['', 'hs', 'tp', 'wind'];
+  const OPTS = opt.radar ? ['', 'hs', 'tp', 'wind', 'radar'] : opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : opt.sat ? ['', 'hs', 'tp', 'wind', 'sat'] : ['', 'hs', 'tp', 'wind'];
   const sel = { _v: '', _ls: [], get value() { return this._v; }, set value(v) { v = String(v); this._v = OPTS.includes(v) ? v : ''; },
     addEventListener(ev, fn) { this._ls.push(fn); }, userPick(v) { this.value = v; this._ls.forEach((f) => f({})); } };
   const panel = { textContent: '' }, unit = { _ls: [], addEventListener(ev, fn) { this._ls.push(fn); } };
@@ -84,7 +84,7 @@ function page(opt) {
   const map = { addControl: (c) => c.onAdd() };
   if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
   if (opt.zoom) { map.zoomControl = { tag: 'zoom' }; map.removed = []; map.removeControl = (c) => map.removed.push(c); }
-  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : opt.sat ? SRC_SAT : SRC)(
+  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.radar ? SRC_RADAR : opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : opt.sat ? SRC_SAT : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
     log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId, win: window,
@@ -277,6 +277,22 @@ test('section 43: the page hands the offered models to the module (MODEL_OVERLAY
   p.sel.userPick('hs'); await settle();
   assert.deepEqual(p.overlays[0].opts.models, ['gfswave']);
   assert.ok(SRC.indexOf('var MODELS = ["gfswave"];') >= 0 && SRC.indexOf('models: MODELS') >= 0);
+});
+
+test('section 85: "Radar" is offered only with RADAR_OVERLAY (RADAR); a saved radar without it starts Off; the module is told', async () => {
+  assert.ok(SRC.indexOf('var RADAR = false;') >= 0 && SRC_RADAR.indexOf('var RADAR = true;') >= 0 && SRC.indexOf('radar: RADAR') >= 0);
+  const off = page({ complete: true }), on = page({ complete: true, radar: true });
+  assert.ok(off.boxes.length && off.boxes[0].innerHTML.indexOf('value="radar"') < 0);
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="radar">Radar</option></select>') >= 0);
+  const p1 = page({ init: { field: 'radar' }, radar: true });
+  assert.equal(p1.sel.value, 'radar');
+  await loadedAndIdle(p1);
+  assert.deepEqual(p1.overlays[0].mounts, [['radar', true]]);
+  assert.equal(p1.overlays[0].opts.radar, true);
+  const p2 = page({ init: { field: 'radar' } });
+  assert.equal(p2.sel.value, '');
+  await loadedAndIdle(p2);
+  assert.equal(p2.overlays.length, 0);
 });
 
 test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SST); a saved sst without it starts Off; the module is told', async () => {

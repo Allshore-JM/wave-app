@@ -60,6 +60,7 @@ if __name__ == "__main__":
     os.environ.pop("ALT_OVERLAY", None)                                     # the satellite waves (section 81)
     os.environ.pop("SARSWELL", None)
     os.environ.pop("ALT_GRID", None)
+    os.environ.pop("RADAR_OVERLAY", None)                                   # the radar layer (section 85)
     os.environ.pop("GLWU_OVERLAY", None)                                    # the Great Lakes waves (section 50)
     os.environ.pop("COAST_BASE", None)                                      # the map tools' explicit coast address
     os.environ.pop("GEO_BASE", None)                                        # the geo Worker (section 46): the golden has GEO ""

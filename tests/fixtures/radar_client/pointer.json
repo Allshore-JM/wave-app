@@ -1,0 +1,190 @@
+{
+"credit": "Radar: NOAA Multi-Radar/Multi-Sensor System (MRMS) via AWS Open Data; EUMETNET OPERA composite, CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/), property rights EUMETNET; both modified: regridded, quantised, thinned and rendered by Allshore Surf",
+"floor_dbz": 5.0,
+"format": "radar-v1",
+"gone": [],
+"max_code": 142,
+"newest": {
+"mrms": "202611060350",
+"opera": "202611060350"
+},
+"published_utc": "2026-11-06T03:56:29Z",
+"regions": {
+"alaska": {
+"box": [
+50,
+-176,
+72,
+-126
+],
+"name": "Alaska",
+"src": "mrms"
+},
+"carib": {
+"box": [
+10,
+-90,
+25,
+-60
+],
+"name": "Puerto Rico and the Caribbean",
+"src": "mrms"
+},
+"conus": {
+"box": [
+20,
+-130,
+55,
+-60
+],
+"name": "US",
+"src": "mrms"
+},
+"europe": {
+"box": [
+31,
+-40,
+75,
+58
+],
+"name": "Europe",
+"src": "opera"
+},
+"guam": {
+"box": [
+9,
+140,
+18,
+150
+],
+"name": "Guam",
+"src": "mrms"
+},
+"hawaii": {
+"box": [
+15,
+-164,
+26,
+-151
+],
+"name": "Hawaii",
+"src": "mrms"
+}
+},
+"slots": [
+{
+"r": {
+"alaska": {
+"o": 4,
+"t1": "b1",
+"t2": "000c70f3"
+},
+"carib": {
+"o": 4,
+"t1": "a",
+"t2": "00c03"
+},
+"conus": {
+"o": 4,
+"t1": "ef",
+"t2": "00000d00c702f300ff1cff181"
+},
+"europe": {
+"o": 0,
+"t1": "6cd3",
+"t2": "0080006c000a7200cf100cf100c610c1e1083e7000c7"
+},
+"guam": {
+"o": 4
+},
+"hawaii": {
+"o": 4,
+"t1": "a",
+"t2": "41"
+}
+},
+"t": "202611060330"
+},
+{
+"r": {
+"alaska": {
+"o": 4,
+"t1": "b1",
+"t2": "000c70f3"
+},
+"carib": {
+"o": 4,
+"t1": "a",
+"t2": "00c03"
+},
+"conus": {
+"o": 4,
+"t1": "ef",
+"t2": "00000d00c702f300ff3cff181"
+},
+"europe": {
+"o": 0,
+"t1": "6cd3",
+"t2": "0080006c000a7200cf100cf100c710c1e1083c5000c7"
+},
+"guam": {
+"o": 4
+},
+"hawaii": {
+"o": 4,
+"t1": "a",
+"t2": "41"
+}
+},
+"t": "202611060340"
+},
+{
+"r": {
+"alaska": {
+"o": 4,
+"t1": "b1",
+"t2": "000c70f3"
+},
+"carib": {
+"o": 4,
+"t1": "a",
+"t2": "00c03"
+},
+"conus": {
+"o": 4,
+"t1": "ef",
+"t2": "00000d00c702f300ff1cff181"
+},
+"europe": {
+"o": 0,
+"t1": "6cd3",
+"t2": "0080006c000ef200cf100cf100c700c1e1083c7000c7"
+},
+"guam": {
+"o": 4
+},
+"hawaii": {
+"o": 4,
+"t1": "a",
+"t2": "41"
+}
+},
+"t": "202611060350"
+}
+],
+"started": "2026-11-06T03:36:34Z",
+"step_dbz": 0.5,
+"tiers": {
+"t0": {
+"ppd": 10
+},
+"t1": {
+"cell": 20,
+"ppd": 25
+},
+"t2": {
+"cell": 5,
+"ppd": 100
+}
+}
+}

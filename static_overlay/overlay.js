@@ -66,6 +66,17 @@
     wind: [[0,'#6271b7'],[0.0648,'#3961a0'],[0.1296,'#4a94a9'],[0.1944,'#4d8d7b'],[0.2592,'#53a553'],[0.324,'#359f35'],
            [0.3888,'#a79d51'],[0.4536,'#9f7f3a'],[0.5184,'#a16c5c'],[0.5832,'#813a4e'],[0.6804,'#af5088'],[0.81,'#754a93'],[1,'#d9c2d9']]
   };
+  // The radar's colours over the legend's 5-65 dBZ, and the tint over the area radar sees: two candidates each for the owner's pick
+  // on real frames (?ovradar=a|b, ?ovtint=0.06..0.2; plan section 85, step 4).
+  var RADAR_PALETTES = {
+    a: [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
+        [0.583, '#e5bc00'], [0.667, '#fd9500'], [0.75, '#fd0000'], [0.833, '#d40000'], [0.917, '#bc0000'], [1, '#f800fd']],
+    b: [[0, '#a8e6cf'], [0.167, '#5ecf8a'], [0.333, '#2ea44f'], [0.417, '#9ccc3c'], [0.5, '#f4d13d'], [0.583, '#f59e2c'], [0.667, '#ea5b24'],
+        [0.75, '#d3212d'], [0.833, '#a8123f'], [0.917, '#c026d3'], [1, '#f5d0fe']]
+  };
+  RAMPS.radar = RADAR_PALETTES[/[?&]ovradar=b(&|$)/.test(pageQuery()) ? 'b' : 'a'];
+  var RADAR_TINT_A = (function () { var m = /[?&]ovtint=(0?\.[0-9]+)(&|$)/.exec(pageQuery()), v = m ? Number(m[1]) : 0.08; return Math.round(255 * Math.min(0.3, v)); })();
+  var RADAR_TINT = [255, 255, 255, RADAR_TINT_A], RADAR_ALPHA = [0.5, 0.88];   // alpha at the 5-dBZ floor and from 25 dBZ up
   // Under the wind overlay the site's satellite imagery (earth tones) gives way to a neutral relief map
   // with a flat light sea; the field is multiplied into it (the sea shows the colour itself, land the
   // colour shaded by the terrain) and the coastlines are drawn into the wind tiles. The imagery stays for
@@ -115,7 +126,8 @@
     'hs|US': [0, 3, 6, 10, 15, 20], 'hs|Metric': [0, 1, 2, 3, 4, 6],
     'tp|US': [4, 8, 12, 16], 'tp|Metric': [4, 8, 12, 16],
     'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75],
-    'sst|US': [40, 50, 60, 70, 80], 'sst|Metric': [0, 5, 10, 15, 20, 25]
+    'sst|US': [40, 50, 60, 70, 80], 'sst|Metric': [0, 5, 10, 15, 20, 25],
+    'radar|US': [10, 20, 30, 40, 50], 'radar|Metric': [10, 20, 30, 40, 50]
   };
   // ---- sea surface temperature (plan section 44) ----
   // An OBSERVATION beside the model fields: the newest NASA MUR day, published by tools/model_frames/sst.py as a tiered
@@ -195,8 +207,24 @@
   var GRID_WARN_H = 48, GRID_HIDE_H = 72;                  // the newest step older than this: a warning; older still: hidden (owner, section 82)
   var GRID_EXPECT = { cols: 720, rows: 361 }, MAX_GRID_POINTER_BYTES = 64 * 1024, MAX_GRID_MANIFEST_BYTES = 64 * 1024;
   var GRID_HALF = { cols: 720, rows: 361, lon0: -180, lat0: 90, dlon: 0.5, dlat: -0.5, registration: 'center', lon_periodic: true };   // = the model's half grid
+  // ---- the radar layer's constants (plan section 85): the job's format (tools/model_frames/radar.py) and the owner's loops ----
+  var RADAR_PREFIX = 'radar/v1', RADAR_FORMAT = 'radar-v1', RADAR_FLOOR = 5, RADAR_STEP = 0.5, RADAR_MAX_CODE = 142;
+  var RADAR_PPD = { t0: 10, t1: 25, t2: 100 }, RADAR_CELL = { t1: 20, t2: 5 };
+  var RADAR_LOOPS = { 2: 10, 6: 20, 12: 30, 24: 60 }, RADAR_LOOP_HOURS = [2, 6, 12, 24], RADAR_DEFAULT_LOOP = 2;   // hours -> minutes between frames (owner, 2026-11-06)
+  var RADAR_ORDER = ['hawaii', 'guam', 'conus', 'alaska', 'carib', 'europe'];   // who draws a pixel two regions cover
+  var RADAR_T1_ZOOM = 6, RADAR_T2_ZOOM = 9;                 // tile zoom from which t1 / t2 are wanted
+  var RADAR_HOLD_STEPS = 2;                                 // a region missing a step holds its previous frame this many steps, then shows none
+  var RADAR_MAX_BYTES = 32 * 1024 * 1024, RADAR_INFLIGHT = 4, RADAR_POINTER_BYTES = 256 * 1024;
+  var RADAR_STALL_MS = 15000, RADAR_RETRY_MS = 60000, RADAR_PUBLISH_MS = 10 * 60 * 1000, RADAR_UI_MS = 30000;
+  var RADAR_STEP_WAIT_MS = 1000, RADAR_END_HOLD_MS = 1000, RADAR_WARN_MIN = 30;
+  var RADAR_FDEF = { lo: 5, hi: 75, legend: [5, 65] };
+  var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
+  var RADAR_HEAD = 'Radar: NOAA MRMS, EUMETNET OPERA';
+  var RADAR_KEY = 'Tinted: the area radar can see. Nothing is shown where there is no radar.';
+  // The credit's visible text is 29 characters (the map's rule): the licences and the "modified" are in the notice it opens.
+  var RADAR_ATTRIBUTION = 'Radar: <a href="/notice/radar" target="_blank" rel="noopener" title="NOAA MRMS and EUMETNET OPERA, modified by Allshore Surf">MRMS · OPERA CC BY 4.0</a>';
   // The observations the panel can show (mode 'obs'): own keys only (G30-9).
-  var OBS_DEFS = { sst: { label: 'sea surface temperature', attribution: SST_ATTRIBUTION }, sat: { label: 'satellite waves', attribution: SAT_ATTRIBUTION } };
+  var OBS_DEFS = { sst: { label: 'sea surface temperature', attribution: SST_ATTRIBUTION }, sat: { label: 'satellite waves', attribution: SAT_ATTRIBUTION }, radar: { label: 'radar', attribution: RADAR_ATTRIBUTION } };
   function hasObs(key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(OBS_DEFS, key); }
 
   // The tab's saved state; anything but a plain object (a corrupted or foreign value) counts as empty,
@@ -260,6 +288,7 @@
   function unitOf(field, unit) {
     if (field === 'hs') return unit === 'Metric' ? { label: 'm', f: function (v) { return v; }, d: 1 } : { label: 'ft', f: function (v) { return v * 3.28084; }, d: 1 };
     if (field === 'tp') return { label: 's', f: function (v) { return v; }, d: 1 };
+    if (field === 'radar') return { label: 'dBZ', f: function (v) { return v; }, inv: function (v) { return v; }, d: 0 };
     if (field === 'sst') {                                 // an affine unit: scale / offset / inv beside f (ticks, contours)
       if (unit === 'Metric') return { label: '°C', f: function (v) { return v; }, inv: function (v) { return v; }, scale: 1, offset: 0, d: 1 };
       return { label: '°F', f: function (v) { return v * 1.8 + 32; }, inv: function (v) { return (v - 32) / 1.8; }, scale: 1.8, offset: 32, d: 1 };
@@ -3028,6 +3057,740 @@
     }
   });
 
+  // ---- the radar layer (plan section 85) ----
+  // tools/model_frames/radar.py publishes NOAA MRMS and EUMETNET OPERA under radar/v1/ every 10 minutes: per slot and region
+  // one whole-region picture (t0, 10 pixels a degree, codes 0 = no coverage, 1 = covered no echo, >= 2 = echo) and only the
+  // cells holding echo at 25 (t1) and 100 (t2) pixels a degree, listed as hex bitsets in the pointer. It is its own data path
+  // beside the model's: a RadarStore for the files, a RadarLayer for the tiles, a RadarPlayer for the loop. The model
+  // scheduler, its caches and its play state are not used and not touched.
+  function radarSlotMs(t) { return Date.UTC(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6, 8), +t.slice(8, 10), +t.slice(10, 12)); }
+  function radarDbz(code) { return RADAR_FLOOR + (code - 2) * RADAR_STEP; }
+  function radarRainWord(dbz) {
+    return dbz < 20 ? 'very light rain' : dbz < 30 ? 'light rain' : dbz < 40 ? 'moderate rain' : dbz < 50 ? 'heavy rain' : dbz < 60 ? 'very heavy rain' : 'intense rain, possible hail';
+  }
+  function radarLoopOf(v) { return RADAR_LOOP_HOURS.indexOf(v) >= 0 ? v : RADAR_DEFAULT_LOOP; }
+  // The job's cell_table: south to north, then west to east; a cell is named by its south-west corner.
+  function radarCellTable(box, cell) {
+    var out = [], index = Object.create(null);
+    for (var lat = Math.floor(box[0] / cell) * cell; lat < box[2]; lat += cell) {
+      for (var lon = Math.floor(box[1] / cell) * cell; lon < box[3]; lon += cell) {
+        var name = lat + '_' + lon;
+        index[name] = out.length; out.push({ name: name, lat0: lat, lon0: lon });
+      }
+    }
+    return { cells: out, index: index };
+  }
+  // Bit i of the job's bitset: hex, four bits a character, least significant first, trailing zeros off.
+  function radarBit(hex, i) {
+    var ch = hex.charCodeAt(i >> 2);
+    if (ch !== ch) return false;
+    var v = ch <= 57 ? ch - 48 : ch - 87;
+    return (v >> (i & 3) & 1) === 1;
+  }
+  function validRadarPointer(p) {
+    if (!p || typeof p !== 'object' || Array.isArray(p) || p.format !== RADAR_FORMAT) return false;
+    if (p.floor_dbz !== RADAR_FLOOR || p.step_dbz !== RADAR_STEP || p.max_code !== RADAR_MAX_CODE) return false;
+    var t = p.tiers;
+    if (!t || !t.t0 || t.t0.ppd !== RADAR_PPD.t0 || !t.t1 || t.t1.ppd !== RADAR_PPD.t1 || t.t1.cell !== RADAR_CELL.t1 || !t.t2 || t.t2.ppd !== RADAR_PPD.t2 || t.t2.cell !== RADAR_CELL.t2) return false;
+    if (!p.regions || typeof p.regions !== 'object' || Array.isArray(p.regions) || !Array.isArray(p.slots) || p.slots.length > 400) return false;
+    var names = Object.keys(p.regions);
+    if (!names.length || names.length > 32) return false;
+    for (var i = 0; i < names.length; i++) {
+      var r = p.regions[names[i]], b = r && r.box;
+      if (!/^[a-z]{2,12}$/.test(names[i]) || !Array.isArray(b) || b.length !== 4) return false;
+      for (var k = 0; k < 4; k++) if (b[k] !== Math.round(b[k])) return false;
+      if (!(b[0] < b[2] && b[1] < b[3] && b[0] >= -90 && b[2] <= 90 && b[1] >= -180 && b[3] <= 180)) return false;
+      if (typeof r.name !== 'string') return false;
+    }
+    var last = '';
+    for (var s = 0; s < p.slots.length; s++) {
+      var rec = p.slots[s];
+      if (!rec || typeof rec.t !== 'string' || !/^\d{12}$/.test(rec.t) || rec.t <= last || !rec.r || typeof rec.r !== 'object' || Array.isArray(rec.r)) return false;
+      last = rec.t;
+      for (var nm in rec.r) {
+        var e = rec.r[nm];
+        if (!Object.prototype.hasOwnProperty.call(p.regions, nm) || !e || typeof e !== 'object' || e.o !== Math.round(e.o) || e.o < 0 || e.o > 59) return false;
+        if ((e.t1 !== undefined && !/^[0-9a-f]{0,2048}$/.test(e.t1)) || (e.t2 !== undefined && !/^[0-9a-f]{0,2048}$/.test(e.t2))) return false;
+      }
+    }
+    return true;
+  }
+  // The loop's frames, oldest first: slots of the last `hours` on the loop's clock marks (:00 / :20 / :40; :00 / :30; :00), plus the
+  // newest frame whatever its minute. A slot holding no frame yet (`r` empty) is no frame. upTo: the newest slot joined so far.
+  function radarLoopFrames(slots, hours, upTo) {
+    var every = RADAR_LOOPS[radarLoopOf(hours)], list = [], i;
+    for (i = 0; i < slots.length; i++) if (!upTo || slots[i].t <= upTo) list.push(slots[i]);
+    if (!list.length) return [];
+    var newest = list[list.length - 1], min = radarSlotMs(newest.t) - radarLoopOf(hours) * 3600000, out = [];
+    for (i = 0; i < list.length; i++) {
+      var ms = radarSlotMs(list[i].t);
+      if (ms >= min && (list[i] === newest || Math.round(ms / 60000) % every === 0)) out.push(list[i]);
+    }
+    return out;
+  }
+  // What the map shows, for planning: unwrapped longitudes brought to one world copy.
+  function radarViewOf(map, layer) {
+    var z = layer && typeof layer._tileZoom === 'number' ? layer._tileZoom : (map && map.getZoom ? Math.round(map.getZoom()) : 0);
+    if (!map || typeof map.getBounds !== 'function') return { whole: true, s: -90, n: 90, w: -180, e: 180, z: z };
+    var b = map.getBounds(), w = b.getWest(), e = b.getEast(), wide = e - w, s = b.getSouth(), n = b.getNorth(), mx = wide * 0.05, my = (n - s) * 0.05;
+    if (wide + 2 * mx >= 360) return { whole: true, s: s - my, n: n + my, w: -180, e: 180, z: z };
+    var w0 = ((w - mx + 180) % 360 + 360) % 360 - 180;
+    return { whole: false, s: s - my, n: n + my, w: w0, e: w0 + wide + 2 * mx, z: z };
+  }
+  function radarHits(v, s, w, n, e) {
+    if (s >= v.n || n <= v.s) return false;
+    if (v.whole) return true;
+    return (w < v.e && e > v.w) || (w < v.e - 360 && e > v.w - 360) || (w < v.e + 360 && e > v.w + 360);
+  }
+  function radarWantTier(z) { return z >= RADAR_T2_ZOOM ? 2 : z >= RADAR_T1_ZOOM ? 1 : 0; }
+  function radarPic(frame) {
+    var q = frame.q, cols = frame.cols, rows = frame.rows, re = new Uint8Array(rows);
+    for (var r = 0, i = 0; r < rows; r++) {
+      for (var end = i + cols; i < end; i++) if (q[i] >= 2) { re[r] = 1; i = end; break; }
+    }
+    return { q: q, cols: cols, rows: rows, re: re, bytes: q.length };
+  }
+  var RADAR_STORES = {};
+  function radarStore(root) { return RADAR_STORES[root] || (RADAR_STORES[root] = new RadarStore(root)); }
+  // The pointer and the files. Files are keyed by slot and never change, so everything survives a new slot; a 404 means the
+  // pointer is older than the bucket (a slot retired): the pointer is read again, the file is tried again later, never given up
+  // for good. At most RADAR_INFLIGHT downloads; an LRU by decoded bytes that never drops what the current plan names.
+  function RadarStore(root) {
+    this.root = root; this.url = root + '/' + RADAR_PREFIX;
+    this.pointer = null; this.status = 'idle'; this.loading = null; this.readAt = 0; this.failedAt = 0; this.reading = null;
+    this.frames = []; this.order = []; this.tables = Object.create(null); this.index = Object.create(null);
+    this.pics = new Map(); this.bytes = 0; this.inflight = Object.create(null); this.fails = Object.create(null);
+    this.queue = []; this.planSet = Object.create(null); this.loop = []; this.stack = { t1: false, t2: false };
+    this.cov = Object.create(null); this.covRev = 0; this.rev = 0; this._memo = null; this._memoRev = -1;
+    this.active = false; this.hidden = false; this.timer = null; this.retryTimer = null;
+    this.onLanding = null; this.onPointer = null;
+  }
+  RadarStore.prototype.stallMs = RADAR_STALL_MS;
+  RadarStore.prototype.retryMs = RADAR_RETRY_MS;
+  RadarStore.prototype.pointerMs = 60000;
+  RadarStore.prototype.maxBytes = RADAR_MAX_BYTES;
+  RadarStore.prototype._json = SstStore.prototype._json;
+  // One read of the pointer, under a watchdog; never rejects: true when a valid pointer came.
+  RadarStore.prototype._read = function () {
+    var self = this;
+    if (this.reading) return this.reading;
+    var ctrl = new AbortController(), dog = setTimeout(function () { ctrl.abort(); }, this.stallMs);
+    var p = this.reading = this._json(this.url + '/latest.json', ctrl.signal, true, RADAR_POINTER_BYTES).then(function (ptr) {
+      if (!validRadarPointer(ptr)) throw new Error('unsupported radar pointer');
+      self._take(ptr);
+      return true;
+    }).catch(function () { return false; }).then(function (ok) { clearTimeout(dog); if (self.reading === p) self.reading = null; return ok; });
+    return p;
+  };
+  RadarStore.prototype._take = function (ptr) {
+    var changed = !this.pointer || ptr.published_utc !== this.pointer.published_utc || ptr.slots.length !== this.pointer.slots.length;
+    this.pointer = ptr; this.readAt = Date.now();
+    var names = Object.keys(ptr.regions), order = [], i;
+    for (i = 0; i < RADAR_ORDER.length; i++) if (names.indexOf(RADAR_ORDER[i]) >= 0) order.push(RADAR_ORDER[i]);
+    for (i = 0; i < names.length; i++) if (order.indexOf(names[i]) < 0) order.push(names[i]);
+    this.order = order;
+    this.frames = ptr.slots.filter(function (s) { for (var k in s.r) return true; return false; });   // `r: {}` is no frame (G56a P3-7)
+    this.index = Object.create(null);
+    for (i = 0; i < this.frames.length; i++) this.index[this.frames[i].t] = this.frames[i];
+    if (changed && this.onPointer) this.onPointer();
+  };
+  // Resolves to the store with a pointer, or null when none can be read (never rejects). force: a viewer's pick or Retry.
+  RadarStore.prototype.load = function (force) {
+    var self = this;
+    if (this.loading) return this.loading;
+    if (this.pointer && Date.now() - this.readAt < this.pointerMs) { this.status = 'ok'; return Promise.resolve(this); }
+    if (!force && this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
+    if (!this.pointer) this.status = 'loading';
+    var had = !!this.pointer;
+    this.loading = this._read().then(function (ok) {
+      self.loading = null;
+      if (ok || had) { self.status = 'ok'; return self; }
+      self.status = 'failed'; self.failedAt = Date.now();
+      return null;
+    });
+    return this.loading;
+  };
+  // While shown: the pointer is read again just after the next publish is due (the last publish + 10 min), every minute once overdue.
+  RadarStore.prototype.start = function () { this.active = true; this.hidden = false; this._arm(); };
+  RadarStore.prototype._arm = function () {
+    var self = this;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (!this.active || this.hidden) return;
+    var pub = this.pointer ? Date.parse(this.pointer.published_utc) : NaN, now = Date.now();
+    var wait = pub === pub ? pub + RADAR_PUBLISH_MS + 20000 - now : 0;
+    this.timer = setTimeout(function () {
+      self.timer = null;
+      self._read().then(function () { self._arm(); });
+    }, Math.max(wait, this.pointerMs));
+  };
+  RadarStore.prototype.hide = function () { this.hidden = true; if (this.timer) { clearTimeout(this.timer); this.timer = null; } };
+  RadarStore.prototype.show = function () {
+    var self = this;
+    this.hidden = false;
+    if (!this.active) return;
+    if (Date.now() - this.readAt >= this.pointerMs) this._read().then(function () { self._arm(); }); else this._arm();
+  };
+  RadarStore.prototype._table = function (region, tier) {
+    var k = region + '|' + tier;
+    return this.tables[k] || (this.tables[k] = radarCellTable(this.pointer.regions[region].box, RADAR_CELL[tier]));
+  };
+  RadarStore.prototype.listed = function (rec, region, tier, name) {
+    var e = rec.r[region], hex = e && e[tier];
+    if (!hex) return false;
+    var i = this._table(region, tier).index[name];
+    return i !== undefined && radarBit(hex, i);
+  };
+  RadarStore.prototype.key = function (slot, region, tier, name) { return slot + '/' + region + '/' + tier + (name ? '/' + name : ''); };
+  RadarStore.prototype.done = function (key) {
+    if (this.pics.has(key)) return true;
+    var f = this.fails[key];
+    return !!(f && (f.final || Date.now() - f.at < this.retryMs));
+  };
+  RadarStore.prototype.newestOf = function (region) {
+    for (var i = this.frames.length - 1; i >= 0; i--) if (this.frames[i].r[region]) return this.frames[i];
+    return null;
+  };
+  RadarStore.prototype.regionsIn = function (view) {
+    var out = [], regions = this.pointer ? this.pointer.regions : {};
+    for (var i = 0; i < this.order.length; i++) {
+      var b = regions[this.order[i]].box;
+      if (radarHits(view, b[0], b[1], b[2], b[3])) out.push(this.order[i]);
+    }
+    return out;
+  };
+  // The region's frame for step i of the loop: its own, else the one before it, at most RADAR_HOLD_STEPS back; else none.
+  RadarStore.prototype.resolve = function (region, i) {
+    for (var j = i; j >= 0 && j >= i - RADAR_HOLD_STEPS; j--) {
+      var rec = this.loop[j];
+      if (rec && rec.r[region] && this.pics.has(this.key(rec.t, region, 't0'))) return rec;
+    }
+    return null;
+  };
+  // A tier of a cell is drawn in playback only once every step of the loop that lists it has landed (or given up for now), so no
+  // tile flips between tiers from frame to frame.
+  RadarStore.prototype.stackReady = function (region, tier, name) {
+    if (!this.stack[tier]) return false;
+    if (this._memoRev !== this.rev) { this._memo = Object.create(null); this._memoRev = this.rev; }
+    var k = region + '|' + tier + '|' + name, got = this._memo[k];
+    if (got !== undefined) return got;
+    var ok = true;
+    for (var i = 0; i < this.loop.length; i++) {
+      if (this.listed(this.loop[i], region, tier, name) && !this.done(this.key(this.loop[i].t, region, tier, name))) { ok = false; break; }
+    }
+    this._memo[k] = ok;
+    return ok;
+  };
+  // Everything the view needs of this frame has landed or been given up for now.
+  RadarStore.prototype.frameReady = function (rec, view, deep) {
+    var regs = this.regionsIn(view), want = radarWantTier(view.z), self = this;
+    for (var i = 0; i < regs.length; i++) {
+      var region = regs[i];
+      if (!rec.r[region]) continue;
+      if (!this.done(this.key(rec.t, region, 't0'))) return false;
+      if (!deep) continue;
+      for (var t = 1; t <= want; t++) {
+        var tier = 't' + t, cells = this._cellsIn(region, tier, view);
+        for (var c = 0; c < cells.length; c++) {
+          if (self.listed(rec, region, tier, cells[c].name) && !self.done(self.key(rec.t, region, tier, cells[c].name))) return false;
+        }
+      }
+    }
+    return true;
+  };
+  RadarStore.prototype._cellsIn = function (region, tier, view) {
+    var cells = this._table(region, tier).cells, size = RADAR_CELL[tier], out = [];
+    for (var i = 0; i < cells.length; i++) if (radarHits(view, cells[i].lat0, cells[i].lon0, cells[i].lat0 + size, cells[i].lon0 + size)) out.push(cells[i]);
+    return out;
+  };
+  // The downloads the view asks for, most urgent first: the coverage (newest t0), the shown frame, a slot about to join, the loop's
+  // t0, then its t1 and t2 while the whole stack fits the budget (a stack that does not fit is never started: only the shown frame
+  // gets that tier). Downloads outside the plan are dropped.
+  RadarStore.prototype.plan = function (view, loop, shown, extra) {
+    if (!this.pointer) return;
+    var self = this, regs = this.regionsIn(view), want = radarWantTier(view.z), items = [], seen = Object.create(null), i, r;
+    this.loop = loop; this.rev++;
+    function add(rec, region, tier, cell) {
+      var key = self.key(rec.t, region, tier, cell ? cell.name : null);
+      if (seen[key]) return;
+      seen[key] = true;
+      var b = self.pointer.regions[region].box;
+      var expect = tier === 't0' ? { cols: (b[3] - b[1]) * RADAR_PPD.t0, rows: (b[2] - b[0]) * RADAR_PPD.t0 } : { cols: RADAR_CELL[tier] * RADAR_PPD[tier] + 2, rows: RADAR_CELL[tier] * RADAR_PPD[tier] + 2 };
+      items.push({ key: key, slot: rec.t, region: region, tier: tier, expect: expect, size: expect.cols * expect.rows });
+    }
+    function addCells(rec, region, tier) {
+      var cells = self._cellsIn(region, tier, view);
+      for (var c = 0; c < cells.length; c++) if (self.listed(rec, region, tier, cells[c].name)) add(rec, region, tier, cells[c]);
+    }
+    function front(rec) {
+      if (!rec) return;
+      for (var q = 0; q < regs.length; q++) {
+        if (!rec.r[regs[q]]) continue;
+        add(rec, regs[q], 't0');
+        if (want >= 1) addCells(rec, regs[q], 't1');
+        if (want >= 2) addCells(rec, regs[q], 't2');
+      }
+    }
+    for (r = 0; r < regs.length; r++) { var nw = this.newestOf(regs[r]); if (nw) add(nw, regs[r], 't0'); }
+    front(loop[shown]);
+    front(extra);
+    var n = loop.length;
+    for (i = 0; i < n; i++) {
+      var rec = loop[(shown + i) % n];
+      for (r = 0; r < regs.length; r++) if (rec.r[regs[r]]) add(rec, regs[r], 't0');
+    }
+    // what the stacks would hold: each tier wanted only while the running total fits the cap
+    var sum = 0; for (i = 0; i < items.length; i++) sum += items[i].size;
+    function stackSize(tier) {
+      var total = 0, cellSize = (RADAR_CELL[tier] * RADAR_PPD[tier] + 2) * (RADAR_CELL[tier] * RADAR_PPD[tier] + 2);
+      for (var f = 0; f < n; f++) for (var q = 0; q < regs.length; q++) {
+        if (!loop[f].r[regs[q]]) continue;
+        var cells = self._cellsIn(regs[q], tier, view);
+        for (var c = 0; c < cells.length; c++) if (self.listed(loop[f], regs[q], tier, cells[c].name)) total += cellSize;
+      }
+      return total;
+    }
+    var s1 = want >= 1 ? stackSize('t1') : 0, s2 = want >= 2 ? stackSize('t2') : 0;
+    this.stack = { t1: want >= 1 && sum + s1 <= this.maxBytes, t2: want >= 2 && sum + s1 + s2 <= this.maxBytes };
+    if (this.stack.t1) for (i = 0; i < n; i++) { var a = loop[(shown + i) % n]; for (r = 0; r < regs.length; r++) if (a.r[regs[r]]) addCells(a, regs[r], 't1'); }
+    if (this.stack.t2) for (i = 0; i < n; i++) { var b2 = loop[(shown + i) % n]; for (r = 0; r < regs.length; r++) if (b2.r[regs[r]]) addCells(b2, regs[r], 't2'); }
+    this.queue = items; this.planSet = seen;
+    for (var k in this.inflight) if (!seen[k]) this._drop(k);
+    this._evict();
+    this._pump();
+  };
+  RadarStore.prototype._drop = function (key) {
+    var rec = this.inflight[key];
+    if (!rec) return;
+    delete this.inflight[key];
+    clearTimeout(rec.dog); rec.ctrl.abort();
+  };
+  RadarStore.prototype._pump = function () {
+    var self = this, n = 0, now = Date.now(), soonest = null, k;
+    for (k in this.inflight) n++;
+    for (var i = 0; i < this.queue.length; i++) {
+      var it = this.queue[i];
+      if (this.pics.has(it.key) || this.inflight[it.key]) continue;
+      var f = this.fails[it.key];
+      if (f && f.final) continue;
+      if (f && now - f.at < this.retryMs) { var due = f.at + this.retryMs; if (soonest === null || due < soonest) soonest = due; continue; }
+      if (n >= RADAR_INFLIGHT) break;
+      this._start(it); n++;
+    }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    if (soonest !== null && this.active) this.retryTimer = setTimeout(function () { self.retryTimer = null; self._pump(); }, Math.max(100, soonest - now));
+  };
+  RadarStore.prototype._start = function (it) {
+    var self = this, ctrl = new AbortController(), rec = { ctrl: ctrl, dog: null };
+    var kick = function () { clearTimeout(rec.dog); rec.dog = setTimeout(function () { ctrl.abort(); }, self.stallMs); };   // no byte for this long: given up for now
+    this.inflight[it.key] = rec;
+    kick();
+    decodeFrame(this.url + '/' + it.key + '.png', ctrl.signal, it.expect, null, true, kick).then(function (frame) {
+      clearTimeout(rec.dog);
+      if (self.inflight[it.key] !== rec) return;
+      delete self.inflight[it.key];
+      self._land(it, radarPic(frame));
+    }, function (err) {
+      clearTimeout(rec.dog);
+      if (self.inflight[it.key] !== rec) return;
+      delete self.inflight[it.key];
+      var msg = String(err && err.message || err);
+      self.fails[it.key] = { at: Date.now(), final: /decode/.test(msg) };
+      if (/ 40[34]$/.test(msg) && Date.now() - self.readAt >= self.pointerMs) self._read().then(function () { if (self.active) self._arm(); });
+      self.rev++;
+      if (self.onLanding) self.onLanding(it, false);
+      self._pump();
+    });
+  };
+  RadarStore.prototype._land = function (it, pic) {
+    this.pics.set(it.key, pic); this.bytes += pic.bytes; delete this.fails[it.key]; this.rev++;
+    if (it.tier === 't0') {
+      var had = this.cov[it.region];
+      if (!had || it.slot >= had.slot) { this.cov[it.region] = { slot: it.slot, pic: pic }; this.covRev++; }
+    }
+    this._evict();
+    if (this.onLanding) this.onLanding(it, true);
+    this._pump();
+  };
+  RadarStore.prototype._evict = function () {
+    if (this.bytes <= this.maxBytes) return;
+    var self = this, gone = [];
+    this.pics.forEach(function (pic, key) {
+      if (self.bytes <= self.maxBytes || self.planSet[key]) return;
+      self.bytes -= pic.bytes; gone.push(key);
+    });
+    gone.forEach(function (key) { self.pics.delete(key); });
+  };
+  // Stops everything; the pointer stays, the pictures stay until release().
+  RadarStore.prototype.stop = function () {
+    this.active = false;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    for (var k in this.inflight) this._drop(k);
+    this.queue = []; this.planSet = Object.create(null); this.onLanding = null; this.onPointer = null;
+  };
+  // Leaving the layer: nothing of the pictures stays in memory (the browser's cache has the files).
+  RadarStore.prototype.release = function () {
+    this.stop();
+    this.pics.clear(); this.bytes = 0; this.fails = Object.create(null); this.cov = Object.create(null); this.covRev++; this.loop = []; this.rev++;
+  };
+  // The tile's latitudes and longitudes at pixel centres, kept with the tile.
+  function radarTileGeom(el, coords) {
+    if (el._rLat) return el;
+    var b = tileBox(coords), n = TILE * b.n, lat = new Float64Array(TILE), lon = new Float64Array(TILE);
+    for (var i = 0; i < TILE; i++) {
+      lat[i] = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (coords.y * TILE + i + 0.5) / n)) * 180 / Math.PI;
+      lon[i] = (b.xw * TILE + i + 0.5) / n * 360 - 180;
+    }
+    el._rLat = lat; el._rLon = lon;
+    return el;
+  }
+  // The rectangle of tile pixels whose centres lie in the cell (lat0 <= lat < lat0 + cell, lon0 <= lon < lon0 + cell), or null.
+  function radarCellRect(el, lat0, lon0, cell) {
+    var y0 = -1, y1 = -1, x0 = -1, x1 = -1, i;
+    for (i = 0; i < TILE; i++) if (el._rLat[i] >= lat0 && el._rLat[i] < lat0 + cell) { if (y0 < 0) y0 = i; y1 = i + 1; }
+    for (i = 0; i < TILE; i++) if (el._rLon[i] >= lon0 && el._rLon[i] < lon0 + cell) { if (x0 < 0) x0 = i; x1 = i + 1; }
+    return y0 < 0 || x0 < 0 ? null : { y0: y0, y1: y1, x0: x0, x1: x1 };
+  }
+  // THE sampler (tiles and readout alike): fractional codes of the pieces into out[y * 256 + x], bilinear over the echo nodes
+  // present (fewer than a quarter of the weight present = none); only pixels the piece's region owns. A row whose two node rows
+  // hold no echo is skipped at once, so a dry frame costs next to nothing. -> how many pixels hold echo.
+  function radarSample(pieces, el, own, x0, x1, y0, y1, out) {
+    var count = 0, lats = el._rLat, lons = el._rLon;
+    for (var p = 0; p < pieces.length; p++) {
+      var pc = pieces[p], pic = pc.pic, q = pic.q, cols = pic.cols, rows = pic.rows, re = pic.re, who = pc.own, ppd = pc.ppd;
+      var ys = Math.max(pc.y0, y0), ye = Math.min(pc.y1, y1), xs = Math.max(pc.x0, x0), xe = Math.min(pc.x1, x1);
+      for (var y = ys; y < ye; y++) {
+        var fy = (pc.top - lats[y]) * ppd + pc.ay, r0 = Math.floor(fy), wy = fy - r0, r1 = r0 + 1;
+        var has0 = r0 >= 0 && r0 < rows && re[r0] === 1, has1 = r1 >= 0 && r1 < rows && re[r1] === 1;
+        if (!has0 && !has1) continue;
+        var b0 = r0 * cols, b1 = r1 * cols;
+        for (var x = xs; x < xe; x++) {
+          var i = y * TILE + x;
+          if (own[i] !== who) continue;
+          var fx = (lons[x] - pc.left) * ppd + pc.ax, c0 = Math.floor(fx), wx = fx - c0, c1 = c0 + 1, w = 0, acc = 0, v, f;
+          var ok0 = c0 >= 0 && c0 < cols, ok1 = c1 >= 0 && c1 < cols;
+          if (has0) {
+            if (ok0 && (v = q[b0 + c0]) >= 2) { f = (1 - wx) * (1 - wy); w += f; acc += f * v; }
+            if (ok1 && (v = q[b0 + c1]) >= 2) { f = wx * (1 - wy); w += f; acc += f * v; }
+          }
+          if (has1) {
+            if (ok0 && (v = q[b1 + c0]) >= 2) { f = (1 - wx) * wy; w += f; acc += f * v; }
+            if (ok1 && (v = q[b1 + c1]) >= 2) { f = wx * wy; w += f; acc += f * v; }
+          }
+          if (w < 0.25) continue;
+          out[i] = acc / w; count++;
+        }
+      }
+    }
+    return count;
+  }
+  // RGBA per half code: colour by the legend's position, alpha rising from thin drizzle to solid rain.
+  function radarLut() {
+    var n = RADAR_MAX_CODE * 2 + 2, out = new Uint8ClampedArray(n * 4), rgb = [0, 0, 0], leg = RADAR_FDEF.legend;
+    for (var i = 4; i < n; i++) {
+      var dbz = radarDbz(i / 2), t = Math.max(0, Math.min(1, (dbz - leg[0]) / (leg[1] - leg[0])));
+      rampAt(RAMPS.radar, t, rgb, 0);
+      out[i * 4] = rgb[0]; out[i * 4 + 1] = rgb[1]; out[i * 4 + 2] = rgb[2];
+      out[i * 4 + 3] = 255 * Math.min(RADAR_ALPHA[1], RADAR_ALPHA[0] + (dbz - RADAR_FLOOR) / 20 * (RADAR_ALPHA[1] - RADAR_ALPHA[0]));
+    }
+    return out;
+  }
+  var RadarLayer = L.GridLayer.extend({
+    initialize: function () {
+      L.GridLayer.prototype.initialize.call(this, { pane: 'obsPane', tileSize: TILE, updateWhenZooming: false, updateWhenIdle: true, keepBuffer: 1, className: 'ov-radar-tiles' });
+      this.store = null; this.idx = -1; this.playing = false; this._gen = 0; this._staleQ = null;
+      this._lut = radarLut(); this._code = new Float32Array(TILE * TILE); this._img = null;
+    },
+    setStore: function (store) { this.store = store || null; this.idx = -1; this._redraw(); },
+    // The loop's step on the map; split: the tiles in view now, the buffer in idle time.
+    setStep: function (i, playing, split) { this.idx = i; this.playing = !!playing; this._redraw(!!split); },
+    _redraw: SatLayer.prototype._redraw,
+    _drawStale: SatLayer.prototype._drawStale,
+    _queueStale: ModelGridLayer.prototype._queueStale,
+    _cancelStale: ModelGridLayer.prototype._cancelStale,
+    onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
+    createTile: function (coords, done) {
+      var el = document.createElement('canvas'); el.width = TILE; el.height = TILE;
+      this._draw(el, coords);
+      setTimeout(function () { done(null, el); }, 0);
+      return el;
+    },
+    // Which region owns each pixel: the first in the priority order whose newest t0 covers it (never by box: the US box's no-coverage
+    // strip must not hide the Caribbean's data). Kept with the tile until the coverage changes.
+    _owners: function (el) {
+      var st = this.store;
+      if (el._rOwn && el._rOwnRev === st.covRev) return el._rOwn;
+      var own = el._rOwn || (el._rOwn = new Uint8Array(TILE * TILE)), any = false, lats = el._rLat, lons = el._rLon, has = {};
+      own.fill(0);
+      for (var ri = 0; ri < st.order.length; ri++) {
+        var name = st.order[ri], cov = st.cov[name];
+        if (!cov) continue;
+        var b = st.pointer.regions[name].box, q = cov.pic.q, cols = cov.pic.cols, rows = cov.pic.rows, s = b[0], w = b[1], n = b[2], e = b[3], ppd = RADAR_PPD.t0;
+        for (var y = 0; y < TILE; y++) {
+          var lat = lats[y];
+          if (lat < s || lat >= n) continue;
+          var r = Math.floor((n - lat) * ppd);
+          if (r < 0 || r >= rows) continue;
+          for (var x = 0; x < TILE; x++) {
+            var i = y * TILE + x;
+            if (own[i]) continue;
+            var lon = lons[x];
+            if (lon < w || lon >= e) continue;
+            var c = Math.floor((lon - w) * ppd);
+            if (c >= 0 && c < cols && q[r * cols + c] !== 0) { own[i] = ri + 1; any = true; has[ri + 1] = true; }
+          }
+        }
+      }
+      el._rOwnRev = st.covRev; el._rAny = any; el._rHas = has;
+      return own;
+    },
+    // A tier's picture of a cell at this frame, when it may be drawn now (paused: landed; playing: its whole stack is in).
+    _usable: function (rec, region, tier, cell) {
+      var st = this.store;
+      if (!st.listed(rec, region, tier, cell)) return null;
+      if (this.playing && !st.stackReady(region, tier, cell)) return null;
+      return st.pics.get(st.key(rec.t, region, tier, cell)) || null;
+    },
+    // The pieces of this tile at this step: rectangles of tile pixels, each with the finest picture that may be drawn there.
+    _pieces: function (el, coords, own) {
+      var st = this.store, out = [], want = radarWantTier(coords.z), rects = el._rRects || (el._rRects = Object.create(null));
+      function rectOf(lat0, lon0, cell) {
+        var k = lat0 + '_' + lon0 + '_' + cell;
+        if (rects[k] === undefined) rects[k] = radarCellRect(el, lat0, lon0, cell);
+        return rects[k];
+      }
+      function piece(rec, who, region, tier, pic, rect, lat0, lon0) {
+        var b = st.pointer.regions[region].box, t0 = tier === 't0', ppd = RADAR_PPD[tier];
+        out.push({ rec: rec, region: region, own: who, pic: pic, ppd: ppd, x0: rect.x0, x1: rect.x1, y0: rect.y0, y1: rect.y1,
+          top: t0 ? b[2] : lat0 + RADAR_CELL[tier], ay: t0 ? -0.5 : 0.5, left: t0 ? b[1] : lon0, ax: t0 ? -0.5 : 0.5 });
+      }
+      for (var ri = 0; ri < st.order.length; ri++) {
+        var region = st.order[ri], who = ri + 1;
+        if (!el._rHas[who]) continue;
+        var rec = st.resolve(region, this.idx);
+        if (!rec) continue;
+        var t0 = st.pics.get(st.key(rec.t, region, 't0')), whole = { x0: 0, x1: TILE, y0: 0, y1: TILE };
+        if (!t0) continue;
+        if (want === 0) { piece(rec, who, region, 't0', t0, whole); continue; }
+        var cell = want === 2 ? RADAR_CELL.t2 : RADAR_CELL.t1, names = el._rCells || (el._rCells = cellsForTile(coords, cell, 0));
+        for (var n = 0; n < names.length; n++) {
+          var cut = names[n].split('_'), lat0 = +cut[0], lon0 = +cut[1], rect = rectOf(lat0, lon0, cell);
+          if (!rect) continue;
+          var pic = null, tier = 't0', plat = lat0, plon = lon0;
+          if (want === 2) pic = this._usable(rec, region, 't2', names[n]);
+          if (pic) tier = 't2';
+          else {
+            plat = Math.floor(lat0 / RADAR_CELL.t1) * RADAR_CELL.t1; plon = Math.floor(lon0 / RADAR_CELL.t1) * RADAR_CELL.t1;
+            pic = this._usable(rec, region, 't1', plat + '_' + plon);
+            if (pic) tier = 't1';
+          }
+          piece(rec, who, region, tier, pic || t0, rect, plat, plon);
+        }
+      }
+      return out;
+    },
+    _draw: function (el, coords) {
+      el._ovGen = this._gen;
+      var st = this.store, ctx;
+      if (!st || !st.pointer || this.idx < 0) {
+        if (el._rShown) { ctx = el.getContext('2d'); ctx.clearRect(0, 0, TILE, TILE); el._rShown = false; }
+        el._rPieces = null;
+        return;
+      }
+      radarTileGeom(el, coords);
+      var own = this._owners(el);
+      if (!el._rAny) {                                       // nothing here is covered: nothing is drawn
+        if (el._rShown) { ctx = el.getContext('2d'); ctx.clearRect(0, 0, TILE, TILE); el._rShown = false; }
+        el._rPieces = null; el._rEcho = false; el._rCov = st.covRev;
+        return;
+      }
+      var pieces = this._pieces(el, coords, own), code = this._code;
+      code.fill(0);
+      var echo = radarSample(pieces, el, own, 0, TILE, 0, TILE, code);
+      el._rPieces = pieces;
+      if (!echo && !el._rEcho && el._rCov === st.covRev && el._rShown) return;   // dry stays dry: the tint on the canvas is right
+      ctx = el.getContext('2d');
+      var img = this._img || (this._img = ctx.createImageData(TILE, TILE)), d = img.data, lut = this._lut, tr = RADAR_TINT[0], tg = RADAR_TINT[1], tb = RADAR_TINT[2], ta = RADAR_TINT[3];
+      for (var i = 0, k = 0; i < TILE * TILE; i++, k += 4) {
+        var c = code[i];
+        if (c > 0) { var j = Math.round(c * 2) * 4; d[k] = lut[j]; d[k + 1] = lut[j + 1]; d[k + 2] = lut[j + 2]; d[k + 3] = lut[j + 3]; }
+        else if (own[i]) { d[k] = tr; d[k + 1] = tg; d[k + 2] = tb; d[k + 3] = ta; }
+        else d[k + 3] = 0;
+      }
+      ctx.putImageData(img, 0, 0);
+      el._rEcho = echo > 0; el._rCov = st.covRev; el._rShown = true;
+    },
+    // What the drawn pixel under (lat, lng) shows: the same pieces and sampler as the tile. {kind: 'none'} no coverage,
+    // {kind: 'dry'} covered no echo, {kind: 'echo', code, dbz}; with the region and its frame; null without a drawn tile.
+    readoutAt: function (lat, lng, z) {
+      var p = pixelOf(lat, lng, z), t = this._tiles[p.x + ':' + p.y + ':' + p.z], el = t && t.el;
+      if (!el || !el._rOwn) return null;
+      var i = p.py * TILE + p.px, who = el._rOwn[i];
+      if (!who) return { kind: 'none' };
+      var region = this.store.order[who - 1], rec = null, pcs = el._rPieces || [];
+      for (var n = 0; n < pcs.length; n++) if (pcs[n].own === who && p.px >= pcs[n].x0 && p.px < pcs[n].x1 && p.py >= pcs[n].y0 && p.py < pcs[n].y1) { rec = pcs[n].rec; break; }
+      if (!rec) return { kind: 'dry', region: region, rec: null };
+      this._code[i] = 0;
+      if (!radarSample(pcs, el, el._rOwn, p.px, p.px + 1, p.py, p.py + 1, this._code)) return { kind: 'dry', region: region, rec: rec };
+      var c = this._code[i];
+      return { kind: 'echo', code: c, dbz: radarDbz(Math.round(c * 2) / 2), region: region, rec: rec };
+    }
+  });
+  // The loop: opens paused on the newest frame, never plays by itself; its own play state, cadence and paint gate, none of them the
+  // model's. A new slot joins once what the view needs of it has landed (the picture never goes blank for it).
+  function RadarPlayer(ov, store, layer) {
+    this.ov = ov; this.store = store; this.layer = layer;
+    this.loopH = radarLoopOf(saved().radarLoop);
+    this.frames = []; this.idx = 0; this.playing = false; this.wasPlaying = false; this.timer = null; this.gen = 0; this.due = 0;
+    this.joined = null; this.pending = null; this.waitFrom = 0; this.uiTimer = null; this.drawQ = null; this._paint = null;
+  }
+  RadarPlayer.prototype.view = function () { return radarViewOf(this.ov.map, this.layer); };
+  RadarPlayer.prototype.start = function () {
+    var self = this;
+    this.store.onPointer = function () { self._onPointer(); };
+    this.store.onLanding = function (it) { self._onLanding(it); };
+    var all = this.store.frames;
+    this.joined = all.length ? all[all.length - 1].t : null;
+    this._frames(true);
+    this._plan();
+    this.layer.setStep(this.frames.length ? this.idx : -1, false, false);
+    this.store.start();
+    this.uiTimer = setInterval(function () { self.ov._radarUI(); }, RADAR_UI_MS);
+  };
+  RadarPlayer.prototype.stop = function () {
+    this.pause();
+    if (this.uiTimer) { clearInterval(this.uiTimer); this.uiTimer = null; }
+    if (this.drawQ !== null) { this._cancelFrame(this.drawQ); this.drawQ = null; }
+    this.store.stop();
+  };
+  RadarPlayer.prototype._cancelFrame = function (h) { if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(h); clearTimeout(h); };
+  // The frames of the loop up to the joined slot; the shown slot stays shown (a retired one: the next), the newest stays newest.
+  RadarPlayer.prototype._frames = function (toNewest) {
+    var cur = this.frames[this.idx], wasNewest = this.idx === this.frames.length - 1;
+    this.frames = radarLoopFrames(this.store.frames, this.loopH, this.joined);
+    var n = this.frames.length, i = n - 1;
+    if (!toNewest && cur && !(wasNewest && !this.playing)) {
+      for (i = 0; i < n && this.frames[i].t < cur.t; i++) { /* the first at or after the shown slot */ }
+      if (i >= n) i = n - 1;
+    }
+    this.idx = Math.max(0, i);
+  };
+  RadarPlayer.prototype._plan = function () { this.store.plan(this.view(), this.frames, this.idx, this.pending); };
+  RadarPlayer.prototype.viewChanged = function () { this._plan(); this._tryJoin(); this.ov._radarUI(); };
+  RadarPlayer.prototype._onPointer = function () {
+    var all = this.store.frames, newest = all.length ? all[all.length - 1] : null;
+    if (newest && (!this.joined || newest.t > this.joined)) this.pending = newest;
+    else if (!newest) this.pending = null;
+    if (this.joined && !this.store.index[this.joined]) this.joined = newest ? newest.t : null;   // the joined slot left the pointer
+    var before = this.frames[this.idx];
+    this._frames(false);
+    this._plan();
+    if (!this._tryJoin() && before !== this.frames[this.idx]) this._show();
+    this.ov._radarUI();
+  };
+  RadarPlayer.prototype._tryJoin = function () {
+    var p = this.pending;
+    if (!p || !this.store.frameReady(p, this.view(), true)) return false;
+    this.joined = p.t; this.pending = null;
+    var keepOld = this.frames[this.idx];
+    this._frames(false);
+    this._plan();
+    if (this.frames[this.idx] !== keepOld) this._show();
+    this.ov._radarUI();
+    return true;
+  };
+  RadarPlayer.prototype._show = function () { this.layer.setStep(this.frames.length ? this.idx : -1, this.playing, true); if (this.ov.readout) this.ov.readout.hidden = true; };
+  RadarPlayer.prototype._onLanding = function (it) {
+    var self = this;
+    this._tryJoin();
+    var cur = this.frames[this.idx];
+    if (!cur) return;
+    var near = false;
+    for (var j = this.idx; j >= 0 && j >= this.idx - RADAR_HOLD_STEPS; j--) if (this.frames[j] && this.frames[j].t === it.slot) near = true;
+    if (!near && this.store.cov[it.region] && this.store.cov[it.region].slot !== it.slot) return;
+    if (!near && !this.store.cov[it.region]) return;
+    if (this.drawQ !== null) return;
+    var run = function () { self.drawQ = null; if (self.layer.store) self.layer._redraw(true); self.ov._radarUI(); };
+    this.drawQ = typeof requestAnimationFrame === 'function' ? requestAnimationFrame(run) : setTimeout(run, 16);
+  };
+  RadarPlayer.prototype.play = function (resume) {
+    if (this.playing || this.frames.length < 2) return;
+    this.playing = true; this.gen++; this.due = Date.now(); this.waitFrom = 0;
+    if (!resume && this.idx === this.frames.length - 1) this.idx = 0;     // Play from the newest frame starts the loop at its start
+    this._show();
+    this._next(this.gen);
+    this.ov._radarUI();
+  };
+  RadarPlayer.prototype.pause = function () {
+    this.playing = false; this.gen++;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (this._paint) { this._paint(); this._paint = null; }
+    if (this.layer && this.layer.store) { this.layer.playing = false; }
+  };
+  RadarPlayer.prototype.toggle = function () { if (this.playing) { this.pause(); this.layer._redraw(true); } else this.play(); this.ov._radarUI(); };
+  RadarPlayer.prototype.speedChanged = function () { this.due = Date.now(); };
+  RadarPlayer.prototype._interval = function () {
+    var iv = 1000 / (BASE_FPS * speedOf(this.ov.speed));
+    return this.idx === this.frames.length - 1 ? iv + RADAR_END_HOLD_MS : iv;
+  };
+  // The next step after the browser has rendered this one (a paint gate of its own: at most PAINT_FALLBACK_MS), on a drift-free clock.
+  RadarPlayer.prototype._next = function (gen) {
+    var self = this;
+    this.due = Math.max(this.due + this._interval(), Date.now());
+    var go = function () {
+      if (gen !== self.gen) return;
+      self.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, Math.max(0, self.due - Date.now()));
+    };
+    if (typeof requestAnimationFrame !== 'function') { go(); return; }
+    var fired = false, once = function () {
+      if (fired) return;
+      fired = true; self._paint = null;
+      clearTimeout(fallback); if (raf !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf);
+      setTimeout(go, 0);
+    };
+    var fallback = setTimeout(once, PAINT_FALLBACK_MS), raf = requestAnimationFrame(once);
+    this._paint = function () { fired = true; clearTimeout(fallback); if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf); };
+  };
+  RadarPlayer.prototype._tick = function (gen) {
+    var self = this;
+    if (gen !== this.gen || !this.playing) return;
+    var n = this.frames.length;
+    if (n < 2) { this.pause(); this.ov._radarUI(); return; }
+    var next = (this.idx + 1) % n;
+    if (!this.store.frameReady(this.frames[next], this.view(), false)) {   // its pictures are on the way: a short wait, then on with what there is
+      if (!this.waitFrom) this.waitFrom = Date.now();
+      if (Date.now() - this.waitFrom < RADAR_STEP_WAIT_MS) { this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, 60); return; }
+    }
+    this.waitFrom = 0; this.idx = next;
+    this._show();
+    this.ov._radarUI();
+    this._next(gen);
+  };
+  // The slider: a viewer's choice stops the loop and shows that frame, with the view's files for it first.
+  RadarPlayer.prototype.scrub = function (i) {
+    if (!this.frames[i]) return;
+    var was = this.playing;
+    if (was) this.pause();
+    this.idx = i; this.layer.playing = false;
+    this._show();
+    this._plan();
+    this.ov._radarUI();
+  };
+  RadarPlayer.prototype.setLoop = function (h) {
+    h = radarLoopOf(h);
+    if (h === this.loopH) return;
+    this.loopH = h; save({ radarLoop: h });
+    this._frames(false);
+    this._plan();
+    this._show();
+    this.ov._radarUI();
+  };
+  RadarPlayer.prototype.visibility = function (hidden) {
+    if (hidden) { this.wasPlaying = this.playing; if (this.playing) this.pause(); this.store.hide(); return; }
+    this.store.show();
+    if (this.wasPlaying) { this.wasPlaying = false; this.play(true); }
+  };
+
   // ---- playback helpers (pure; tested in Node) ----
   var SPEEDS = [1, 2, 4], BASE_FPS = 2;                      // 1x = 2 frames/s (owner default); 0.5x dropped (owner, 2026-10-07)
   // The speed selector shows animals, never numbers (plan section 37): the speeds live in the tooltips and accessible names.
@@ -4693,6 +5456,8 @@
     // in the entry's field layer, under the dots / arrows
     this.grid = opts.sat && opts.grid ? gridStore(this.root) : null;
     this.satGrid = !!(this.grid && s.satGrid === true);
+    // opts.radar (plan section 85; the page's RADAR_OVERLAY setting): its own store, layer and player while the Radar entry is shown
+    this.radar = opts.radar ? radarStore(this.root) : null; this.radarLayer = null; this.radarPlayer = null;
     this.relief = null; this._base = 'imagery'; this._reliefFailed = 0;   // opts.baseLayer: the page's imagery (the wind swaps it)
     this.speed = speedOf(s.speed);
     this.model = modelOf(s.model, this.models);
@@ -4892,6 +5657,7 @@
       this._bindDocument();
     } else this.layer.clear();                               // never another field's picture under this label
     if (was === 'sst' && kind !== 'sst' && this.sst) this.sst.release();   // leaving SST for another observation releases its cells (G31-9)
+    this._detachRadar();                                     // its loop, layer and pictures go (the Radar entry makes them anew)
     if (kind !== 'sat') this._detachSat();                   // the satellite layer serves its own entry alone (the other observation entry drops it)
     else if (this.satLayer) this.satLayer.setWindow(null);  // ... and its window goes with the picture (its own follows the load)
     this._ensureFlow();                                      // no direction field: the particles go
@@ -4901,9 +5667,9 @@
     this._unattribute();
     this._syncLook();                                        // the imagery (the wind's relief goes)
     var def = OBS_DEFS[kind];
-    if (!(kind === 'sst' ? this.sst : this.sat)) { this._fail(sig, new Error(def.label + ' is not offered')); return; }
+    if (!(kind === 'sst' ? this.sst : kind === 'radar' ? this.radar : this.sat)) { this._fail(sig, new Error(def.label + ' is not offered')); return; }
     this.render({ state: 'loading' });
-    (kind === 'sst' ? this._loadSst(sig) : this._loadSat(sig)).catch(function (err) { self._fail(sig, err); });
+    (kind === 'sst' ? this._loadSst(sig) : kind === 'radar' ? this._loadRadar(sig) : this._loadSat(sig)).catch(function (err) { self._fail(sig, err); });
   };
   Overlay.prototype._loadSst = function (sig) {
     var self = this, coastP = this.coast ? this.coast.load() : Promise.resolve(null);
@@ -4945,7 +5711,121 @@
     if (this.layer) this.layer.clear();                      // (clear() also detaches the source)
     if (this.sst) this.sst.release();                        // the cells go; the day stays (owner, G31-9)
     this._detachSat();                                       // the own entry's layer goes
+    this._detachRadar();
     this._unattribute();
+  };
+  // ---- the radar layer (plan section 85) ----
+  Overlay.prototype._loadRadar = function (sig) {
+    var self = this;
+    return this.radar.load(true).then(function (st) {
+      if (sig.aborted || self.field !== 'radar' || self.mode !== 'obs' || !self.layer) throw abortError();
+      if (!st) throw new Error('radar cannot be loaded right now');
+      self._attachRadar(st);
+      self._attribute();
+      self._syncLook();
+      self.render({ state: 'ready' });
+    });
+  };
+  Overlay.prototype._attachRadar = function (store) {
+    if (!this.map.getPane('obsPane')) { var pane = this.map.createPane('obsPane'); pane.style.zIndex = 260; pane.style.pointerEvents = 'none'; }
+    this._detachRadar();
+    this.radarLayer = new RadarLayer().addTo(this.map);
+    this.radarLayer.setStore(store);
+    this.radarPlayer = new RadarPlayer(this, store, this.radarLayer);
+    this.radarPlayer.start();
+  };
+  Overlay.prototype._detachRadar = function () {
+    if (this.radarPlayer) { this.radarPlayer.stop(); this.radarPlayer = null; }
+    if (this.radar) this.radar.release();
+    if (this.radarLayer) { this.radarLayer.store = null; this.map.removeLayer(this.radarLayer); this.radarLayer = null; }
+  };
+  Overlay.prototype._radarView = function () { if (this.radarPlayer) this.radarPlayer.viewChanged(); };
+  Overlay.prototype._radarClock = function (ms) {
+    var iso = new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z'), abbr = this.opts.tzAbbr(iso, this.opts.tz), st = ribbonFormatter(this.opts.tz).stamp(ms);
+    return { day: st.weekday, clock: st.clock, zone: abbr ? ' ' + abbr : '' };
+  };
+  // "Thu 7:40 PM HST · 10 min ago": the shown frame's time and age.
+  Overlay.prototype._radarLabel = function () {
+    var p = this.radarPlayer, fr = p && p.frames[p.idx];
+    if (!fr) return 'no radar frames yet';
+    var ms = radarSlotMs(fr.t), c = this._radarClock(ms), mins = Math.round((Date.now() - ms) / 60000);
+    var ago = mins < 1 ? 'now' : mins < 60 ? mins + ' min ago' : Math.floor(mins / 60) + ' h' + (mins % 60 ? ' ' + (mins % 60) + ' min' : '') + ' ago';
+    return (c.day ? c.day + ' ' : '') + c.clock + c.zone + ' · ' + ago;
+  };
+  // The notes under the scale, for the regions in view: a region's newest frame past RADAR_WARN_MIN; a region showing an earlier frame.
+  Overlay.prototype._radarNote = function () {
+    var p = this.radarPlayer, st = this.radar;
+    if (!p || !st || !st.pointer) return '';
+    var out = [], regs = st.regionsIn(p.view()), fr = p.frames[p.idx], now = Date.now();
+    for (var i = 0; i < regs.length; i++) {
+      var nw = st.newestOf(regs[i]), name = st.pointer.regions[regs[i]].name;
+      if (nw && (now - radarSlotMs(nw.t)) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + Math.round((now - radarSlotMs(nw.t)) / 60000) + ' min old.');
+      else if (fr) {
+        var rec = st.resolve(regs[i], p.idx);
+        if (rec && rec !== fr) out.push(name + ' shows ' + this._radarClock(radarSlotMs(rec.t)).clock + '.');
+      }
+    }
+    return out.join(' ');
+  };
+  // "32 dBZ · moderate rain · 7:44 PM"; Europe's frame is a 10-minute maximum ending at the slot.
+  Overlay.prototype._radarReadout = function (r) {
+    if (!r) return null;
+    if (r.kind === 'none') return 'no radar coverage';
+    if (r.kind === 'dry' || !r.rec) return 'no echo';
+    var st = this.radar, e = r.rec.r[r.region], ms = radarSlotMs(r.rec.t) + (e ? e.o : 0) * 60000, c = this._radarClock(ms).clock;
+    var opera = st.pointer.regions[r.region].src === 'opera';
+    return Math.round(r.dbz) + ' dBZ · ' + radarRainWord(r.dbz) + ' · ' + (opera ? '10-min max to ' : '') + c;
+  };
+  // The player's parts of the panel, in place (a new frame must not rebuild the panel: menus and focus stay).
+  Overlay.prototype._radarUI = function () {
+    var ui = this.ui, p = this.radarPlayer;
+    if (!ui || !ui.radar || !p) return;
+    var playing = p.playing, label = this._radarLabel(), n = p.frames.length;
+    if (ui.play) {
+      ui.play.textContent = playing ? '❚❚' : '▶'; ui.play.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+      ui.play.disabled = n < 2;
+    }
+    if (ui.host && ui.host.classList) ui.host.classList.toggle('ov-playing', !!playing);
+    if (ui.slider) {
+      ui.slider.max = String(Math.max(0, n - 1)); ui.slider.value = String(p.idx); ui.slider.disabled = n < 2;
+      ui.slider.setAttribute('aria-valuetext', label);
+    }
+    if (ui.speedSel) ui.speedSel.sync();
+    if (ui.radarLine) ui.radarLine.textContent = label;
+    if (ui.collapsed && ui.title) ui.title.textContent = 'Radar · ' + label;
+    if (ui.radarLoop) ui.radarLoop.value = String(p.loopH);
+    if (ui.radarNote) { var note = this._radarNote(); ui.radarNote.textContent = note; ui.radarNote.hidden = !note; }
+  };
+  // The radar's panel: head = the sources; the transport (play, slider, speed) stays on the smallest sheets; details = the frame's
+  // time, the loop length, the scale with its rain words, the notes; folded: "Radar · Thu 7:40 PM HST · 10 min ago".
+  Overlay.prototype._renderRadar = function (st, host, compact, focusCls, mapH) {
+    var self = this, p = this.radarPlayer, unit = this.opts.getUnit();
+    this._obsShell(st, host, compact, focusCls, mapH, RADAR_HEAD, 'Radar · ' + this._radarLabel(), function (body) {
+      var row = mk('div', 'ov-row ov-radar-line'), line = mk('span', 'ov-radar-label', self._radarLabel());
+      var sel = mk('select', 'ov-radar-loop'); sel.setAttribute('aria-label', 'Loop length'); sel.setAttribute('autocomplete', 'off');
+      RADAR_LOOP_HOURS.forEach(function (h) { var o = mk('option', null, h + ' h'); o.value = String(h); sel.appendChild(o); });
+      sel.value = String(p ? p.loopH : RADAR_DEFAULT_LOOP);
+      sel.addEventListener('change', function () { if (self.radarPlayer) self.radarPlayer.setLoop(+sel.value); });
+      row.appendChild(line); row.appendChild(sel); body.appendChild(row);
+      self.ui.radarLine = line; self.ui.radarLoop = sel;
+      body.appendChild(buildLegend('radar', RADAR_FDEF, unit));
+      var words = mk('div', 'ov-radar-words');
+      RADAR_WORDS.forEach(function (w) {
+        var s = mk('span', null, w[1]); s.style.left = (legendPos('radar', RADAR_FDEF.legend, w[0]) * 100).toFixed(2) + '%'; words.appendChild(s);
+      });
+      body.appendChild(words);
+      body.appendChild(mk('div', 'ov-meta ov-radar-key', RADAR_KEY));
+      var note = mk('div', 'ov-warn'); note.hidden = true; body.appendChild(note); self.ui.radarNote = note;
+    }, function (h, ui) {
+      var row = mk('div', 'ov-row ov-transport ov-radar-row');
+      var play = button('ov-play', '▶', 'Play', function () { if (self.radarPlayer) self.radarPlayer.toggle(); });
+      var slider = mk('input', 'ov-timeline'); slider.type = 'range'; slider.min = '0'; slider.step = '1'; slider.setAttribute('aria-label', 'Radar frame');
+      slider.addEventListener('input', function () { if (self.radarPlayer) self.radarPlayer.scrub(+slider.value); });
+      var speed = speedSelector(self, compact);
+      row.appendChild(play); row.appendChild(slider); row.appendChild(speed.root); h.appendChild(row);
+      ui.radar = true; ui.play = play; ui.slider = slider; ui.speedSel = speed;
+    });
+    this._radarUI();
   };
   // ---- the satellite readings (plan section 81) ----
   // The store the own entry shows: the swell's when chosen and offered, else the heights'.
@@ -5600,6 +6480,7 @@
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
     if (this.lake) lines.push('lake: ' + this.lake.status + ' ' + (this.lake.manifest ? this.lake.manifest.run : '-') + (this.lake.next ? ' next ' + this.lake.next.m.run : '') + (this._lakeNear === false ? ' (off the view)' : '') + ', drawn ' + (this.layer && this.layer._lake ? this.layer._lake.entry.step : '-') + ', cache ' + this.lcache.size() + '/' + this.ldcache.size());
+    if (this.radarPlayer) { var rs = this.radar; lines.push('radar: step ' + this.radarPlayer.idx + '/' + this.radarPlayer.frames.length + (this.radarPlayer.playing ? ' playing' : '') + ', loop ' + this.radarPlayer.loopH + ' h, ' + (rs.bytes / 1048576).toFixed(1) + ' MB, stack ' + (rs.stack.t1 ? 't1' : '-') + (rs.stack.t2 ? '+t2' : '')); }
     if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
     if (f) for (k in f) lines.push('flow.' + k + ': ' + f[k]); else lines.push('flow: none');
     return lines.join('\n');
@@ -5681,6 +6562,7 @@
       this._unattribute();
     }
     if (this.mode === 'obs' && this.field === 'sat') this._detachSat();   // the own entry failed: no dots under the error panel
+    if (this.mode === 'obs' && this.field === 'radar') this._detachRadar();
     if (this.iso && (this.frameIndex === null || !this.layer || !this.layer.hasFrame())) this.iso.clearData();   // no picture, no lines (G32)
     if (this.layer && !this.layer.hasFrame()) this._syncLook();
     this.pause();
@@ -5762,6 +6644,7 @@
   Overlay.prototype._checkRun = function () {
     var self = this, model = this.model, m = this.manifest;
     if (this.mode === 'obs') {
+      if (this.field === 'radar') return;                    // (its pointer has its own timer)
       if (this.field === 'sat') { this._satLineSync(); this._gridLineSync(); return; }     // (the pointers' own re-reads run on satTimer)
       if (this.sst) this.sst.recheck();
       var m = this.sst && this.sst.manifest, age = m ? sstAgeDays(m.day) : null;
@@ -5914,6 +6797,7 @@
   Overlay.prototype.setSpeed = function (v) {
     if (SPEEDS.indexOf(v) < 0) return;
     this.speed = v; save({ speed: v });
+    if (this.mode === 'obs') { if (this.radarPlayer) this.radarPlayer.speedChanged(); return; }   // never the model's ring under an observation
     this._prefetch();                                        // the ring follows the speed at once (while playing)
     this._syncRate();
     this._syncUI();
@@ -5925,6 +6809,7 @@
     this._onVis = function () {
       if (document.hidden) { self.wasPlaying = self.playing; if (self.playing) self.pause(); else self._persist(); }
       else if (self.wasPlaying) { self.wasPlaying = false; self.play(); }
+      if (self.radarPlayer) self.radarPlayer.visibility(!!document.hidden);
       if (self.flow) { if (document.hidden) self.flow.suspend(); else self.flow.resume(true); }   // shown: rebuilt (the map may have moved)
     };
     this._onHide = function () { self._persist(); };
@@ -5975,10 +6860,10 @@
   Overlay.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
   Overlay.prototype._bindMap = function () {
     var self = this;
-    this._on('zoomend', function () { self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); });
-    this._on('moveend', function () { self._syncLakeGate(); });
+    this._on('zoomend', function () { self._radarView(); self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); });
+    this._on('moveend', function () { self._syncLakeGate(); self._radarView(); });
     this._on('viewreset', function () { self._syncLakeGate(); });
-    this._on('move', function () { if (self.layer) self.layer._drawStale(true); if (self.satLayer) self.satLayer._drawStale(true); });   // a buffer tile a frame behind comes into view
+    this._on('move', function () { if (self.layer) self.layer._drawStale(true); if (self.satLayer) self.satLayer._drawStale(true); if (self.radarLayer) self.radarLayer._drawStale(true); });   // a buffer tile a frame behind comes into view
     this._on('resize', function () { self._onSize(); });
     // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'
     // event does not fire on a window resize or a rotation: the window and the container are watched as well (as the
@@ -6052,6 +6937,7 @@
     this._pendingRestore = null; this._pendingFocus = null; this._carry = null; this._switchT = null;
     if (this.layer) { if (this.layer._src) this.layer.setSource(null, true); this.map.removeLayer(this.layer); this.layer = null; }
     this._detachSat();                                     // the satellite layer goes; the stores keep their samples (an On is instant)
+    this._detachRadar();                                   // the radar's pictures go with it (no radar request after Off)
     if (this.sat) this.sat.abortAll();
     if (this.swell) this.swell.abortAll();
     if (this.sst) this.sst.abortAll();                     // the day's frame and manifest stay for the next On
@@ -6426,6 +7312,11 @@
         v = layer.readoutAt(latlng.lat, latlng.lng, z);            // the drawn pixel (its centre, its land mask), not the raw cursor point
       }
       last = { latlng: latlng, pt: pt };
+      if (self.mode === 'obs' && self.field === 'radar') {   // the pixel drawn under the cursor (plan section 85)
+        var rl = self.radarLayer, rz = rl ? (typeof rl._tileZoom === 'number' ? rl._tileZoom : Math.round(map.getZoom())) : 0, rt = rl ? self._radarReadout(rl.readoutAt(latlng.lat, latlng.lng, rz)) : null;
+        if (!rt) { el.hidden = true; return; }
+        el.textContent = rt; el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false; return;
+      }
       // a satellite reading under the cursor comes first (plan section 81): the top-most DRAWN one within its radius; on the
       // layer's own entry nothing else is shown
       var sat = self.satLayer;
@@ -7092,6 +7983,7 @@
   // fold rules as the frames' panel: open when the room allows, the viewer's fold kept, one line without a toggle when
   // nothing more would fit.
   Overlay.prototype._renderObs = function (st, host, compact, focusCls, mapH) {
+    if (this.field === 'radar') return this._renderRadar(st, host, compact, focusCls, mapH);
     if (this.field === 'sat') return this._renderSat(st, host, compact, focusCls, mapH);
     var self = this, m = this.sst && this.sst.manifest, unit = this.opts.getUnit();
     var dayText = m ? sstDayText(m.day) : '…', summary = 'SST · ' + dayText;
@@ -7108,7 +8000,7 @@
   // The observations' panel shell (sea surface temperature, the satellite readings): head = the toggle and the source's
   // line (folded: the summary); details = whatever `fill(body)` appends; the same fold rules as the frames' panel: open
   // when the room allows, the viewer's fold kept, one line without a toggle when nothing more would fit.
-  Overlay.prototype._obsShell = function (st, host, compact, focusCls, mapH, headText, summary, fill) {
+  Overlay.prototype._obsShell = function (st, host, compact, focusCls, mapH, headText, summary, fill, transport) {
     var self = this, cap = Math.floor(mapH * 0.4);
     var collapsed = this.collapsed !== undefined ? !!this.collapsed : false;
     var head = mk('div', 'ov-row ov-head');
@@ -7121,10 +8013,11 @@
     head.appendChild(title);
     host.appendChild(head);
     this.ui = { host: host, title: title, obs: true, collapsed: collapsed, compact: compact };
+    if (transport) transport(host, this.ui);                 // the radar's play, slider and speed: never folded away (plan section 85)
     var fold = function (keepToggle) {
       if (!keepToggle && btn.parentNode) head.removeChild(btn);
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
-      self.ui.collapsed = true; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
+      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
@@ -7202,7 +8095,7 @@
     sel.addEventListener('change', function () { var v = sel.value; if (v !== self.model) self.setModel(v); else sel.value = self.model; });
     return sel;
   };
-  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-sat-box', 'ov-details'];
+  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-radar-loop', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-sat-box', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -7320,6 +8213,9 @@
       SatStore: SatStore, satStore: satStore, SatIndex: SatIndex, SatLayer: SatLayer, decodeSatChunk: decodeSatChunk, validSatPointer: validSatPointer, satNewestMs: satNewestMs,
       inflateBytes: inflateBytes, satSplitColumns: satSplitColumns, satColumnsEqual: satColumnsEqual, satStride: satStride, satSegmentsOk: satSegmentsOk, satLowerBound: satLowerBound,
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
+      radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
+      radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
+      radarSlotMs: radarSlotMs, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, RADAR_HEAD: RADAR_HEAD, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,

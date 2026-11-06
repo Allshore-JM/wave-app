@@ -723,6 +723,8 @@ test('the panel and the hover say what is known: loading, no picture for the tim
   assert.ok(st.cov.hawaii, 'coverage in');
   p.scrub(p.frames.length - 1);
   assert.ok(/no picture for/.test(ov._radarNote()), ov._radarNote());
+  { const f = p.frames[p.idx]; f.r.hawaii.o = 4;                                       // the file's own time, as the label says it
+    assert.ok(ov._radarNote().indexOf('no picture for ' + ov._radarClock(w.I.radarSlotMs(f.t) + 240000).clock) >= 0, ov._radarNote()); f.r.hawaii.o = 0; }
   for (const k of Object.keys(layer._tiles)) delete layer._tiles[k];                  // the tile drawn afresh, as the landing's redraw does
   tileAt(layer, box[2] - 3, box[1] + 3, z);
   assert.equal(layer.readoutAt(box[2] - 3, box[1] + 3, z).kind, 'nopic', 'covered, but no picture for this time: not "no echo"');
@@ -940,6 +942,93 @@ test('a slot joining while paused mid-loop: the map draws the frame the label na
   st._take(again);
   assert.equal(steps.length, 0, 'no redraw');
   assert.equal(ov.readout.hidden, false, 'the hover stays');
+  p.stop();
+});
+test('a paused viewer: a pointer that moves the shown frame and joins a slot at once keeps the label and the map on one frame', async () => {
+  const w = world();
+  const doc = pointerDoc('2026-11-06T12:10:00Z', 146, ['hawaii']);
+  doc.slots = doc.slots.filter((s) => s.t !== '202611060800');                         // a hole on the 60-min grid
+  const { p, st, layer } = playerWith(w, doc, 24);
+  p.start();
+  p.scrub(p.frames.findIndex((f) => f.t === '202611061000'));
+  const next = pointerDoc('2026-11-06T12:20:00Z', 147, ['hawaii']);                    // the hole filled; the new slot has no Hawaii yet: it joins at once
+  delete next.slots[next.slots.length - 1].r.hawaii; next.slots[next.slots.length - 1].r.conus = { o: 4 };
+  st._take(next);
+  await settle(4);
+  assert.equal(p.frames[p.idx].t, '202611061000', 'the viewer keeps the frame');
+  assert.equal(layer.idx, p.idx, 'the map draws the frame the label names');
+  p.stop();
+});
+test('Play looks at the plan again first; a viewer\'s pause plans for the frame on the map; a hidden tab\'s pause does not', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), { p, st, layer } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); landAll(st, p.frames);
+  let planned = 0, idxAt = null; const plan = st.plan;
+  st.plan = function (view, frames, idx) { planned++; idxAt = idx; return plan.apply(this, arguments); };
+  st.stacksReady = () => planned > 0;                                                  // ready only once the plan was looked at again
+  p.scrub(5); planned = 0;
+  p.play();
+  assert.equal(p.holdFrom, 0, 'the fresh plan decides the hold'); assert.ok(planned > 0);
+  t.mock.timers.tick(2000); await settle(1);
+  const on = p.idx; assert.ok(on > 5, 'playing');
+  planned = 0;
+  p.toggle();
+  assert.equal(p.playing, false); assert.equal(planned, 1, 'the pause plans'); assert.equal(idxAt, on, 'for the frame on the map');
+  assert.equal(layer.playing, false);
+  p.play(); planned = 0;
+  p.visibility(true);
+  assert.equal(p.playing, false); assert.equal(planned, 0, 'a hidden tab plans nothing');
+  planned = 0; p.visibility(false);
+  assert.equal(p.playing, true); assert.equal(planned, 0, 'a resume keeps the plan it had');
+  p.stop();
+});
+test('another loop length while playing holds like Play; paused, or with the files in, it does not', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), { p, st, layer } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 145));
+  p.start(); landAll(st, st.frames);
+  let ready = true; st.stacksReady = () => ready;
+  p.scrub(5); p.play(); t.mock.timers.tick(600); await settle(1);
+  ready = false; const at = p.idx;
+  p.setLoop(6);
+  assert.ok(p.holdFrom > 0, 'holding'); assert.equal(layer.playing, false, 'drawn by what has landed');
+  const shown = p.idx;
+  for (let i = 0; i < 25; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.equal(p.idx, shown, 'no step during the hold');
+  ready = true; for (let i = 0; i < 25; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.equal(p.holdFrom, 0); assert.ok(p.idx !== shown, 'on with the loop'); assert.equal(layer.playing, true);
+  assert.ok(at >= 0);
+  p.setLoop(12); assert.equal(p.holdFrom, 0, 'the files are in: no hold');
+  p.pause(); ready = false; p.setLoop(24); assert.equal(p.holdFrom, 0, 'paused: no hold');
+  p.stop();
+});
+test('a read stopped and asked again starts afresh: Retry during the recovery\'s read does not get the aborted one', async () => {
+  const w = world(), st = new w.I.RadarStore('https://x');
+  const first = st.load(true);
+  assert.equal(w.pending(/latest\.json$/).length, 1);
+  st.stop();
+  const second = st.load(true);
+  assert.notEqual(second, first, 'its own read'); assert.equal(w.pending(/latest\.json$/).length, 1, 'the first was aborted, the second asks');
+  const gotFirst = await first;
+  assert.equal(gotFirst, null, 'the stopped read found nothing');
+  assert.notEqual(st.status, 'failed', 'and does not decide for the new one'); assert.ok(st.loading, 'nor clear it');
+  w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2));
+  assert.equal(await second, st); assert.equal(st.status, 'ok'); assert.equal(st.loading, null);
+  st.stop();
+});
+test('a hidden tab asks for no pictures: no retry, no new file; shown again it goes on', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), { p, st } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); await settle(1);
+  while (w.fail(/\.png$/)) await settle(1);                                            // every file refused
+  assert.ok(st.retryTimer, 'a retry is due');
+  const asked = w.fetches.length;
+  st.hide();
+  assert.equal(st.retryTimer, null, 'the retry is cancelled');
+  t.mock.timers.tick(180000); await settle(2);
+  st._pump();
+  assert.equal(w.fetches.filter((u) => /\.png$/.test(u)).length, w.fetches.slice(0, asked).filter((u) => /\.png$/.test(u)).length, 'nothing asked while hidden');
+  st.show(); await settle(1);
+  assert.ok(w.pending(/\.png$/).length > 0, 'shown again, it asks');
   p.stop();
 });
 test('a pending slot the pointer withdraws is forgotten', async () => {

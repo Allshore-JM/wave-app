@@ -5752,7 +5752,8 @@
     if (!p || !st || !st.pointer) return '';
     var out = [], regs = st.regionsIn(p.view()), fr = p.frames[p.idx], now = Date.now();
     for (var i = 0; i < regs.length; i++) {
-      var nw = st.newestOf(regs[i]), name = st.pointer.regions[regs[i]].name;
+      var nw = st.newestOf(regs[i]), name = st.pointer.regions[regs[i]].name, bad = nw && !st.cov[regs[i]] ? st.fails[st.key(nw.t, regs[i], 't0')] : null;
+      if (bad) { out.push(name + (bad.final ? ': the radar pictures cannot be read.' : ': the radar pictures are not answering. Trying again.')); continue; }
       if (nw && (now - radarSlotMs(nw.t)) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + Math.round((now - radarSlotMs(nw.t)) / 60000) + ' min old.');
       else if (fr) {
         var rec = st.resolve(regs[i], p.idx);

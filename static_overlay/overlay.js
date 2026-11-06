@@ -7514,9 +7514,10 @@
       menu.appendChild(o); options.push(o);
     });
     function selectedIndex() { for (var i = 0; i < SPEED_ANIMALS.length; i++) if (SPEED_ANIMALS[i].speed === ov.speed) return i; return 0; }
+    var shownSrc = null;
     function sync() {
       var a = animalOf(ov.speed), src = assetUrl(ov.opts, a.file);
-      if (img.src !== src) img.src = src;
+      if (shownSrc !== src) { shownSrc = src; img.src = src; }     // (img.src reads back absolute: comparing it would ask again every step)
       btn.setAttribute('data-animal', a.name.toLowerCase());
       btn.setAttribute('aria-label', 'Speed: ' + a.name + ', ' + a.speed + '\u00d7 speed'); btn.title = a.title;
       options.forEach(function (o, i) { o.setAttribute('aria-selected', SPEED_ANIMALS[i].speed === a.speed ? 'true' : 'false'); });

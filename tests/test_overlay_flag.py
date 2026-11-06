@@ -38,6 +38,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("SARSWELL", raising=False)
     monkeypatch.delenv("ALT_GRID", raising=False)
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
+    monkeypatch.delenv("RADAR_OVERLAY", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.delenv("PLACES_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
@@ -92,6 +93,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert 'var MODELS = ["gfswave"];' in body and "models: MODELS" in body              # section 43: the offered models
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
         assert "var SAT = false;" in body and "var SWELL = false;" in body and "sat: SAT, swell: SWELL" in body and 'value="sat">Satellite waves' in body   # section 81
+        assert "var RADAR = false;" in body and "radar: RADAR" in body and 'value="radar">Radar' in body    # section 85: offered only with RADAR_OVERLAY=1
         assert "var GRID = false;" in body and "sat: SAT, swell: SWELL, grid: GRID" in body                            # section 82
         assert "var GLWU = false;" in body and "glwu: GLWU" in body and "return { model: 'GLWU' }" in body   # section 50: the Great Lakes under GFS (GLWU_OVERLAY=1)
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
@@ -281,6 +283,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_asset_version|tojson }}", json.dumps(A.OVERLAY_ASSET_VERSION))
                    .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
                    .replace("{{ overlay_sst|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_radar|tojson }}", json.dumps(False))
                    .replace("{{ overlay_sat|tojson }}", json.dumps(False))
                    .replace("{{ overlay_swell|tojson }}", json.dumps(False))
                    .replace("{{ overlay_grid|tojson }}", json.dumps(False))
@@ -362,6 +365,37 @@ def test_glwu_overlay_env_and_the_page(monkeypatch):
     monkeypatch.setenv("GLWU_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
         assert "var GLWU" not in rec["body"], name
+
+
+def test_radar_overlay_env_and_the_page(monkeypatch):
+    """RADAR_OVERLAY (section 85): "1" offers "Radar" (the page's RADAR, handed to the module); the flag-on page differs from the
+    default only in that line; the flag-off page never carries it."""
+    _on(monkeypatch)
+    monkeypatch.setenv("RADAR_OVERLAY", "1")
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("RADAR_OVERLAY")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var RADAR = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var RADAR = true;", "var RADAR = false;") == off[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("RADAR_OVERLAY", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var RADAR" not in rec["body"] and 'value="radar"' not in rec["body"], name
+
+
+def test_the_radar_notice_the_credit_links():
+    """The radar credit is short (the map's corner: 29 visible characters), so what the terms ask for is in the notice it links:
+    NOAA named at its request and not an official product; OPERA's CC BY 4.0 with its link and EUMETNET's rights; what was changed."""
+    r = A.app.test_client().get("/notice/radar")
+    assert r.status_code == 200 and r.mimetype == "text/plain" and r.headers["Cache-Control"] == "public, max-age=86400"
+    body = r.get_data(as_text=True)
+    for need in ("NOAA", "Multi-Radar/Multi-Sensor", "not an official NOAA product", "EUMETNET OPERA", "Property rights: EUMETNET",
+                 "Creative Commons Attribution 4.0", "https://creativecommons.org/licenses/by/4.0/", "Changes made by Allshore Surf",
+                 "No warranty"):
+        assert need in body, need
+    js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
+    assert 'href="/notice/radar"' in js, "the credit's link opens this notice"
 
 
 def test_sat_overlay_env_and_the_page(monkeypatch):

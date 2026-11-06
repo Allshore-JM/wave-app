@@ -322,7 +322,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.25.4"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.25.5"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -469,7 +469,7 @@ RADAR_NOTICE = "\n".join([
     "EUMETNET OPERA radar composite, maximum reflectivity over 10 minutes. Property rights: EUMETNET.",
     "Licence: Creative Commons Attribution 4.0 International (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/",
     "",
-    "Changes made by Allshore Surf to both: regridded to latitude and longitude, quantised to 0.5 dBZ, echoes below 5 dBZ removed,",
+    "Modified by Allshore Surf, both: regridded to latitude and longitude, quantised to 0.5 dBZ, echoes below 5 dBZ removed,",
     "thinned for coarser map zooms, coloured and rendered as a map layer. Radar shows echoes, not rain on the ground; values can be",
     "wrong (sea clutter, beam blockage, snow or hail). No warranty: do not use this for safety decisions.",
     "",

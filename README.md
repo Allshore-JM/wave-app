@@ -1322,7 +1322,7 @@ at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
 
-### The radar layer on the map (plan section 85, the client; overlay asset 2.25.4)
+### The radar layer on the map (plan section 85, the client; overlay asset 2.25.5)
 
 `RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no
 run lines. It opens still on the newest frame and plays only on Play; the loop choice is 2 hours (a frame every 10 minutes), 6 (20), 12
@@ -1343,7 +1343,9 @@ download the view no longer needs is dropped. Files are immutable, so a loop pla
 most (32 MB on screens under 768 px wide), counting what cells really hold: a cell keeps only the box round its rain (rain fills about 2 % of a 20-degree cell and sits in about a
 quarter of it), and a cell not yet landed counts as the mean of those that have. A stack that would not fit is not started, heavier rain than expected
 stops it, and only the shown frame gets that tier. Playback never waits for a finer tier: it plays on the coarser one until a whole loop of the finer is in. A file that answers 404 is tried again after a
-minute with the list read again (a slot can come back); a damaged file is given up on. The list is read just after the next expected
+minute with the list read again (a slot can come back); a damaged file after five minutes. Play waits up to 3 s for the view's stacks, so the
+picture does not drop a tier as the loop starts, and a step waits up to 5 s for its whole-region frame rather than draw an empty map. A refused list is asked again
+once a minute while the error shows. The list is read just after the next expected
 publish, then every minute; a new slot joins the loop once what the view needs of it has landed, so the picture never goes blank for it.
 A region whose pictures do not answer says so in the panel: an empty map must not read as a dry one.
 

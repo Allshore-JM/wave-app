@@ -838,6 +838,10 @@ def test_the_workflow():
     assert "ubuntu-24.04" in wf
 
 
+def test_the_temporary_dry_run_is_gone():
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "radar-dryrun.yml"))
+
+
 def test_the_trigger_keepalive_and_tests_paths():
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
     assert "model-radar.yml" in re.search(r'"GH_WORKFLOW":\s*"([^"]+)"', cfg).group(1).split(",")

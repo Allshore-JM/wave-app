@@ -5862,10 +5862,11 @@
       var nw = st.newestOf(regs[i]), name = st.pointer.regions[regs[i]].name, nk = nw ? st.key(nw.t, regs[i], 't0') : null, bad = nk && !st.pics.has(nk) ? st.fails[nk] : null;
       if (bad) { out.push(name + (bad.final ? ': the radar pictures cannot be read.' : ': the radar pictures are not answering. Trying again.')); continue; }
       if (nw && !st.cov[regs[i]]) { loading = true; continue; }
-      if (nw && (now - radarSlotMs(nw.t)) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + radarAge(Math.round((now - radarSlotMs(nw.t)) / 60000)) + ' old.');
+      var real = function (r, reg) { return radarSlotMs(r.t) + ((r.r[reg] && r.r[reg].o) || 0) * 60000; };   // the file's own time, as the label and the hover say it
+      if (nw && (now - real(nw, regs[i])) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + radarAge(Math.round((now - real(nw, regs[i])) / 60000)) + ' old.');
       else if (fr) {
         var rec = st.resolve(regs[i], p.idx);
-        if (rec && rec !== fr) out.push(name + ' shows ' + this._radarClock(radarSlotMs(rec.t)).clock + '.');
+        if (rec && rec !== fr) out.push(name + ' shows ' + this._radarClock(real(rec, regs[i])).clock + '.');
         else if (!rec) out.push(name + ': no picture for ' + this._radarClock(radarSlotMs(fr.t)).clock + '.');
       }
     }

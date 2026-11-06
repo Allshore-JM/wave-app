@@ -15,8 +15,8 @@ A coarser pixel takes the k-th strongest fine pixel under it (k = COARSE_K), so 
 11 km; it counts as covered when any fine pixel is. A cell named "<lat0>_<lon0>" (its south-west corner) covers lat0 <= lat <
 lat0 + cell, lon0 <= lon < lon0 + cell, in a picture of n + 2 pixels a side (a one-pixel apron from the neighbouring cells, so a
 point in the cell finds its bilinear neighbours in the cell's own picture): row r is centred at lat0 + cell + 0.5/ppd - r/ppd,
-column c at lon0 - 0.5/ppd + c/ppd. Only cells holding enough echo are written (T1_MIN, T2_MIN pixels at MIN_DBZ or more): most
-of the map is dry, and a sparse t2 cell is left to t1.
+column c at lon0 - 0.5/ppd + c/ppd. Only cells holding echo are written (T1_MIN, T2_MIN pixels at MIN_DBZ or more): most of the
+map is dry. A threshold above one made light showers flip between tiers from frame to frame in a playing loop (owner, 2026-11-06).
 
 Layout (immutable but the pointer):
   radar/v1/<slot>/<region>/t0.png, t1/<lat0>_<lon0>.png, t2/<lat0>_<lon0>.png
@@ -64,7 +64,7 @@ MAX_DBZ = 75.0
 MAX_CODE = 2 + int(round((MAX_DBZ - FLOOR_DBZ) / STEP_DBZ))     # 142
 MIN_DBZ = 10.0                          # the echo a cell must hold to be written
 MIN_CODE = 2 + int(round((MIN_DBZ - FLOOR_DBZ) / STEP_DBZ))
-T1_MIN, T2_MIN = 6, 40                  # pixels at MIN_DBZ or more (tuned on real frames: plan section 85, step 1)
+T1_MIN, T2_MIN = 1, 1                   # pixels at MIN_DBZ or more (measured: ~10 more files a slot than 6 and 40, 5 KB)
 PPD_T0, PPD_T1, PPD_T2 = 10, 25, 100
 CELL_T1, CELL_T2 = 20, 5
 COARSE_K = {PPD_T1: 2, PPD_T0: 3}       # the k-th strongest fine pixel under a coarse pixel

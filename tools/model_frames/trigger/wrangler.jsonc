@@ -15,7 +15,7 @@
   },
   "vars": {
     "GH_REPO": "Allshore-JM/wave-app",
-    "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml",
+    "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml",
     "GH_REF": "Live-Buoy-Update",
     // dispatched on the :05 tick only (once an hour): the daily SST day needs no 10-minute polling (worker.js)
     "GH_HOURLY": "model-sst.yml"

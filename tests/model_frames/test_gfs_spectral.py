@@ -551,7 +551,7 @@ def test_workflow_trigger_keepalive_and_tests_paths():
     assert tests.count('".github/workflows/model-gfsspec.yml"') == 2
     cfg = open(os.path.join(ROOT, "tools", "model_frames", "trigger", "wrangler.jsonc"), encoding="utf-8").read()
     assert ('"GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,'
-            'model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml"' in cfg)
+            'model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml"' in cfg)
     assert P.GFSSPEC_PREFIX == "gfswave/spectral/v1" and G.PREFIX == P.GFSSPEC_PREFIX
     assert G.BUILD_BUDGET_S == 25 * 60 and G.KEEP == 4 and G.SRC.stale_fail_h == 18
 

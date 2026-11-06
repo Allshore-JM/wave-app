@@ -11,3 +11,5 @@ tools/wind/*.bin binary
 tests/fixtures/keyed/** -text
 # The GFS spectra members (plan sections 53 and 77): the readers see NOAA's bytes.
 tests/fixtures/gfswinds/** -text
+# The radar fixtures (plan section 85): a real MRMS file, byte for byte.
+tests/fixtures/radar/** -text

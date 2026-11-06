@@ -1,0 +1,66 @@
+# Publishes the newest precipitation radar over the US, Hawaii, Puerto Rico / the Caribbean, Guam and Europe to R2 under radar/v1/
+# (plan section 85): NOAA MRMS SeamlessHSR (AWS Open Data) and EUMETNET OPERA maximum reflectivity (CC BY 4.0). A frame every
+# 10 minutes, kept 24 h, so the job runs on every tick of the trigger Worker and always has work; it takes about 1-2 minutes. A
+# source that does not answer is a summary line, not a failed run; mail comes only for a source silent for 6 h or a changed file layout.
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-radar
+on:
+  schedule:
+    - cron: "2,32 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      slots:
+        description: "at most this many slots per source (blank = every one missing)"
+        default: ""
+concurrency:
+  group: model-radar
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: radar
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+            h5py=3.14.0
+          cache-environment: true
+          # a fixed address for the micromamba binary: without it the action asks GitHub for the newest release and
+          # checks it with one request that is never retried (8 failed runs, 2026-10-29 .. 11-05). To move to a newer
+          # micromamba, change the version in every publisher at once (tests/model_frames/test_ci_robust.py).
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Record environment
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|numpy|pillow|boto3|h5py|hdf5|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish the radar frames
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          SLOTS: ${{ github.event.inputs.slots }}
+        run: |
+          if [ -n "$SLOTS" ] && ! [[ "$SLOTS" =~ ^[0-9]+$ ]]; then echo "bad slots input"; exit 2; fi
+          ARGS=()
+          [ -n "$SLOTS" ] && ARGS+=(--slots "$SLOTS")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/radar.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          exit "$rc"

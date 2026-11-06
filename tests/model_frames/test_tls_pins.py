@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import tls_check  # noqa: E402
 
 WF = os.path.join(ROOT, ".github", "workflows")
-PUBLISHERS = ("frames", "ecmwf", "points", "sst", "glwu", "gfswinds", "gfsspec", "nwps")
+PUBLISHERS = ("frames", "ecmwf", "points", "sst", "glwu", "gfswinds", "gfsspec", "nwps", "radar")
 PIN = "2026.10.23"
 
 

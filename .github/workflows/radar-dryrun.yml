@@ -1,0 +1,38 @@
+# TEMPORARY (plan section 85, step 1): the radar job on the runner, nothing stored; removed before the merge (a test pins that it is gone).
+name: radar-dryrun
+on:
+  push:
+    branches: ["feat/radar"]
+    paths: [".github/workflows/radar-dryrun.yml", "tools/model_frames/radar.py", "tools/model_frames/mrms.py", "tools/model_frames/opera.py"]
+concurrency:
+  group: radar-dryrun
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: radar
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+            h5py=3.14.0
+          cache-environment: true
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Three slots, nothing stored
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail
+          /usr/bin/time -v -o time.txt python tools/model_frames/radar.py --local out --slots 3 | tail -30 | tee run.txt
+          cut -c1-150 run.txt | tail -8 | while IFS= read -r line; do echo "::notice::$line"; done
+          grep -E "Maximum resident|Elapsed" time.txt | while IFS= read -r line; do echo "::notice::$line"; done
+          echo "::notice::objects $(find out -type f | wc -l), bytes $(du -sb out | cut -f1), cores $(nproc)"

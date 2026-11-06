@@ -39,7 +39,7 @@ COMPROMISED = (
 REAL = (
     "www.ndbc.noaa.gov", "nomads.ncep.noaa.gov", "noaa-gfs-bdp-pds.s3.amazonaws.com", "api.weather.gov",
     "api.tidesandcurrents.noaa.gov", "aviationweather.gov", "madis-data.ncep.noaa.gov", "coastwatch.pfeg.noaa.gov",
-    "data.ecmwf.int", "ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "s3.waw3-1.cloudferro.com",
+    "data.ecmwf.int", "ecmwf-forecasts.s3.eu-central-1.amazonaws.com", "s3.waw3-1.cloudferro.com", "noaa-mrms-pds.s3.amazonaws.com",
     "www.pacioos.hawaii.edu", "thredds.aodn.org.au", "erddap.cdip.ucsd.edu", "erddap.marine.ie",
     "wavenet-api.cefas.co.uk", "opendata-download-ocobs.smhi.se", "ddapi20-waterwebservices.rijkswaterstaat.nl",
     "apps.des.qld.gov.au", "auswaves.org", "models.allshoresurf.com", "allshoresurf.com",

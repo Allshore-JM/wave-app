@@ -1276,6 +1276,47 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
   draw order / hollow dots / alpha / empty-tile rule / split draw / hitAt, the controller's own entry, switch and hover
   texts); `bootstrap.test.js` and `tests/test_overlay_flag.py` cover the page's settings.
 
+### Radar frames (plan section 85, the job)
+
+`tools/model_frames/radar.py` (with `mrms.py` and `opera.py`, workflow `model-radar.yml`, dispatched by the trigger Worker's
+10-minute tick) publishes the newest precipitation radar under `radar/v1/` on the frames host: a frame every 10 minutes, kept 24 h.
+
+| Region | Source | Grid | Frame |
+|---|---|---|---|
+| conus, alaska, carib, hawaii, guam | NOAA MRMS SeamlessHSR (AWS Open Data, GRIB2) | 0.01 deg (Hawaii, Guam 0.005 deg, pooled to 0.01) | the file at slot + 4 min, else + 2, + 0: an instant |
+| europe | EUMETNET OPERA maximum reflectivity (object storage, ODIM HDF5, CC BY 4.0) | 1 km Lambert azimuthal equal-area, regridded by the nearest source pixel | the label at the slot: the maximum over the 10 minutes ending there |
+
+A slot is a nominal time, `YYYYMMDDHHMM`. Every tier sits on one lattice of 1/ppd-degree pixels from a whole-degree box, row 0 at the
+north edge. Codes u8: 0 = no radar coverage, 1 = covered, no echo (below 5 dBZ), code >= 2: dBZ = 5 + (code - 2) x 0.5.
+
+| Tier | Pixels a degree | Unit | Written |
+|---|---|---|---|
+| t0 | 10 | the whole region | always; the client's tint and "no coverage" always come from here |
+| t1 | 25 | 20-degree cells | with at least 6 pixels of 10 dBZ or more; echo only |
+| t2 | 100 | 5-degree cells | with at least 40 such pixels; echo only |
+
+A coarser pixel takes the k-th strongest fine pixel under it (k = 2 for t1, 3 for t0), so a storm core stays and one stray pixel cannot
+paint 11 km; it counts as covered when any fine pixel is. A cell is named by its south-west corner and carries a one-pixel apron
+(n + 2 pixels a side): row r is centred at `lat0 + cell + 0.5/ppd - r/ppd`, column c at `lon0 - 0.5/ppd + c/ppd`.
+
+    radar/v1/<slot>/<region>/t0.png, t1/<lat0>_<lon0>.png, t2/<lat0>_<lon0>.png     immutable
+    radar/v1/latest.json     max-age 60, written after each slot's frames: {slots: [{t, r: {region: {o, t1, t2}}, x}], gone, newest, ...}
+    radar/v1/stale-alarm.json
+
+`o` is the region's offset in minutes, `t1` / `t2` hex bitsets over the fixed cell tables (`radar.cell_table`, four bits a character,
+least significant first), `x` the failed tries of a file never published (after 3 on a slot over an hour old, a gap). A tick tries the
+last 3 slots, then fills older gaps newest first while its budget lasts (so a 24-hour loop fills in a few hours after a start or an
+outage, never all in one tick). A slot past 24 h leaves the pointer for `gone`, and its objects go an hour later, per slot.
+
+Failure mail stays rare: a source that does not answer is a summary line and exit 0; a source with nothing newer than 6 h, or a file
+of a changed layout, is one alarm per 12 h (exit 1), and the other source still publishes. Run by hand:
+
+    python -I tools/model_frames/radar.py --local out --slots 3     # write under a folder
+    python -I tools/model_frames/radar.py --dry-run --slots 1       # fetch and encode, store nothing
+
+Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
+named, with "modified", in the job's `credit` and on the page.
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

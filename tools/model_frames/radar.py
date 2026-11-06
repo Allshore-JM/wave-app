@@ -3,7 +3,8 @@
 
 Sources: NOAA MRMS SeamlessHSR (mrms.py) and EUMETNET OPERA maximum reflectivity (opera.py). A slot is a nominal 10-minute time
 ("YYYYMMDDHHMM"). Europe's frame is the OPERA label at the slot (a MAX over the 10 minutes ending there); each MRMS frame is the
-file at slot + 4 minutes (else + 2, + 0), which exists by :x4:56, the Worker's tick being :x5. Each region's entry says its offset.
+file at slot + 4 minutes (else + 2, + 0): it is out by about :x5:36, the Worker's tick is :x5, and no slot is taken before slot + 4:30, so
+a run on time and a run late pick the same file nearly always. Each region's entry says its offset.
 
 Every tier sits on one lattice: pixels of 1/ppd degree from whole-degree region boxes, row 0 at the box's north edge. Codes u8:
 0 = no radar coverage, 1 = covered, no echo (below FLOOR_DBZ), code >= 2: dBZ = FLOOR_DBZ + (code - 2) * STEP_DBZ, up to MAX_CODE.
@@ -19,14 +20,18 @@ of the map is dry, and a sparse t2 cell is left to t1.
 
 Layout (immutable but the pointer):
   radar/v1/<slot>/<region>/t0.png, t1/<lat0>_<lon0>.png, t2/<lat0>_<lon0>.png
-  radar/v1/latest.json  max-age 60, written after each source's turn. Cell lists are hex bitsets over regions' fixed cell tables
-  (cell_table; four bits a character, least significant first).
+  radar/v1/latest.json  max-age 60, written after each slot's frames, only when something changed. Cell lists are hex bitsets over
+  regions' fixed cell tables (cell_table; four bits a character, least significant first). A slot record can hold no frames yet
+  (`r` empty, `x` counting a file's failed tries): the client must not count it as a frame.
   radar/v1/stale-alarm.json
 
 Failure mail stays rare (plan section 83): a source that times out or errors is a summary line and exit 0, asked again next tick. A
-source with nothing newer than SOURCE_STALE_H, or a file of a changed layout, is one alarm per STALE_ALARM_EVERY_H (exit 1), and the
-other source still publishes. An older slot left unfilled (after an outage, or a new prefix) is filled newest first while the
-tick's backfill budget lasts. A file NOAA or EUMETNET never publishes is asked MAX_TRIES times, then left a gap.
+region with nothing newer than SOURCE_STALE_H, a region whose files keep failing to read (a changed layout) with nothing newer than
+FORMAT_ALARM_MIN, or old slots that cannot be deleted, are one alarm per 12 hours (exit 1), and every other region still publishes.
+A condition no tick can cure and no alarm can record (a pointer that is not this job's, a bucket refusing writes) fails the run only
+around 00:00 and 12:00 UTC. An older slot left unfilled (after an outage, or a new prefix) is filled newest first while the
+tick's backfill budget lasts. A file NOAA or EUMETNET never publishes, or a damaged one with newer good frames after it, is asked
+MAX_TRIES times, then left a gap.
 Exit codes: 0 published / nothing new / a quiet outage; 1 an alarm; 2 bad arguments or a pointer that is not this job's.
 """
 import argparse
@@ -36,6 +41,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -67,13 +73,22 @@ KEEP_SLOTS = 145                        # 24 h of 10-minute frames (+ the newest
 GRACE_MIN = 60                          # a slot that left the pointer stays this long for open tabs, then goes
 LOOKBACK = 3                            # slots always tried on a tick
 BACKFILL_S = 150                        # older slots are started only this long into a tick
-DEADLINE_S = 300                        # nothing new is started past this (the workflow's timeout: 9 min)
+DEADLINE_S = 300                        # no slot, region or delete is started past this
+HARD_S = 420                            # an upload still going stops here (the workflow's timeout: 12 min)
 MAX_TRIES = 3                           # a file answering 404 on a slot older than an hour: then a gap
-SOURCE_STALE_H = 6                      # a source with nothing newer than this: one alarm
-STALE_ALARM_EVERY_H = 12
+SOURCE_STALE_H = 6                      # a region with nothing newer than this: one alarm
+FORMAT_ALARM_MIN = 30                   # a region's files failing to read with nothing newer than this: one alarm
+BAD_PER_TICK = 2                        # bad files of one region before the tick leaves that region alone
+PRUNE_PER_TICK = 6                      # old slots deleted at most per tick (one retires a tick; the rest is a backlog)
+GONE_ALARM_H = 6                        # old slots still undeleted this long after retiring: one alarm
 MRMS_OFFSETS = (4, 2, 0)                # minutes after the slot
+MRMS_READY_S = 270                      # no MRMS frame is taken for a slot before slot + 4:30 (a run on a punctual cron would pick + 2)
 UPLOAD_WORKERS = 8
-FETCH_TIMEOUT_S = 45
+FETCH_TIMEOUT_S = 45                    # per socket read
+FETCH_MAX_S = 120                       # a whole file
+READ_CHUNK = 256 * 1024
+UA = "allshoresurf.com radar (https://allshoresurf.com)"
+R2_CONNECT_S, R2_READ_S, R2_ATTEMPTS = 10, 30, 2      # the bucket answers in time or waits for the next tick: a tick is 10 minutes
 CREDIT = ("Radar: NOAA Multi-Radar/Multi-Sensor System (MRMS) via AWS Open Data; EUMETNET OPERA composite, CC BY 4.0 "
           "(https://creativecommons.org/licenses/by/4.0/), property rights EUMETNET; both modified: regridded, quantised, thinned "
           "and rendered by Allshore Surf")
@@ -236,19 +251,43 @@ def tiers_of(t2_codes, region):
 
 
 # ---------------------------------------------------------------- sources
+def _get(url, headers=None, timeout=60):
+    req = urllib.request.Request(url, headers=dict({"User-Agent": UA}, **(headers or {})))
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _read_whole(url, get, max_bytes):
+    """Read to the end within FETCH_MAX_S; a body shorter than its Content-Length is a dropped connection, not a damaged file
+    (http.client returns what it has on a clean close, without an error)."""
+    began = time.monotonic()
+    parts, size = [], 0
+    with get(url, timeout=FETCH_TIMEOUT_S) as r:
+        headers = getattr(r, "headers", None)
+        want = headers.get("Content-Length") if headers is not None else None
+        while True:
+            chunk = r.read(READ_CHUNK)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > max_bytes:
+                raise ValueError(f"{url}: more than {max_bytes} bytes")
+            if time.monotonic() - began > FETCH_MAX_S:
+                raise TimeoutError(f"{url}: not finished in {FETCH_MAX_S} s")
+            parts.append(chunk)
+    if want is not None and str(want).isdigit() and size != int(want):
+        raise ConnectionError(f"{url}: {size} of {want} bytes")
+    return b"".join(parts)
+
+
 def fetch(url, get, max_bytes):
-    """The whole body. 404 / 403 = Missing (S3 answers 403 for a key absent from a bucket that does not list); other answers and
-    time-outs = Down."""
+    """The whole body. 404 = Missing (both buckets answer 404 for an absent key); other answers, time-outs and dropped connections
+    = Down: a refusal or an outage must never count as "never published"."""
     last = None
     for attempt in range(2):
         try:
-            with get(url, timeout=FETCH_TIMEOUT_S) as r:
-                body = r.read(max_bytes + 1)
-            if len(body) > max_bytes:
-                raise ValueError(f"{url}: more than {max_bytes} bytes")
-            return body
+            return _read_whole(url, get, max_bytes)
         except urllib.error.HTTPError as exc:
-            if exc.code in (403, 404):
+            if exc.code == 404:
                 raise Missing(f"HTTP {exc.code}") from None
             last = exc
         except ValueError:
@@ -258,6 +297,16 @@ def fetch(url, get, max_bytes):
         if attempt == 0:
             time.sleep(2)
     raise Down(f"{last.__class__.__name__}: {P.redact(str(last))}")
+
+
+def _reading(what, fn):
+    """Whatever a file does to a reader is a damaged or changed file (ValueError): zlib, Pillow and h5py each have their own errors."""
+    try:
+        return fn()
+    except ValueError:
+        raise
+    except Exception as exc:                                           # noqa: BLE001
+        raise ValueError(f"{what}: {exc.__class__.__name__}: {exc}") from None
 
 
 def mrms_lattice(region, msg):
@@ -283,7 +332,7 @@ def mrms_frame(region, slot_dt, now, get):
             body = fetch(mrms.url_of(domain, when), get, mrms.MAX_GZ_BYTES)
         except Missing:
             continue
-        return mrms_lattice(region, mrms.read(mrms.gunzip(body))), off
+        return _reading(domain, lambda: mrms_lattice(region, mrms.read(mrms.gunzip(body)))), off
     raise Missing(f"no {domain} file for {slot_name(slot_dt)}")
 
 
@@ -323,18 +372,21 @@ def opera_frame(slot_dt, get):
         path = os.path.join(tmp, "f.h5")
         with open(path, "wb") as fh:
             fh.write(body)
-        data = opera.read(path)
+        data = _reading("OPERA", lambda: opera.read(path))
     if data["time"] != slot_name(slot_dt):
         raise ValueError(f"the file labelled {slot_name(slot_dt)} says {data['time']}")
-    return opera_lattice(data["values"]), 0, data["radars"]
+    return _reading("OPERA", lambda: opera_lattice(data["values"])), 0, data["radars"]
 
 
 # ---------------------------------------------------------------- publishing
-def store_region(store, slot, region, lattice, offset):
-    """Every object of one region and slot -> its pointer entry, with sizes for the summary."""
+def store_region(store, slot, region, lattice, offset, stop=None):
+    """Every object of one region and slot -> its pointer entry, with sizes for the summary. Past `stop` the rest is left (Down: the
+    pointer never named them, and the next tick writes them again)."""
     objects, flags, _t0 = tiers_of(lattice, region)
 
     def put(item):
+        if stop is not None and stop():
+            raise Down("the bucket is too slow for this tick")
         (tier, lat0, lon0), arr = item
         key = t0_key(slot, region) if tier == "t0" else cell_key(slot, region, tier, lat0, lon0)
         png = E.to_png(arr)
@@ -361,6 +413,16 @@ def empty_pointer():
             "regions": regions_block(), "slots": [], "gone": [], "newest": {}, "credit": CREDIT}
 
 
+def newest_of(pointer):
+    """{region: its newest slot in the pointer}."""
+    out = {}
+    for s in pointer["slots"]:
+        for region in s["r"]:
+            if s["t"] > out.get(region, ""):
+                out[region] = s["t"]
+    return out
+
+
 def write_pointer(store, pointer, now):
     pointer["slots"].sort(key=lambda x: x["t"])
     pointer["published_utc"] = A.utc(now)
@@ -375,6 +437,8 @@ def plan(pointer, now, source, keep=KEEP_SLOTS):
     out = []
     for i in range(keep):
         dt = newest - timedelta(minutes=SLOT_MINUTES * i)
+        if source == "mrms" and (now - dt).total_seconds() < MRMS_READY_S:
+            continue
         name = slot_name(dt)
         rec = have.get(name, {})
         todo = [r for r in regions_of(source) if r not in rec.get("r", {}) and rec.get("x", {}).get(r, 0) < MAX_TRIES]
@@ -402,19 +466,22 @@ def retire_old(pointer, now, keep=KEEP_SLOTS):
     return bool(old)
 
 
-def prune_gone(store, pointer, now):
-    """Delete the slots whose grace is over (per slot: a whole-prefix listing would cost hundreds of list calls a day). A failure
-    leaves them in `gone` for the next tick. -> whether `gone` changed."""
-    left, changed = [], False
+def prune_gone(store, pointer, now, over=None):
+    """Delete the slots whose grace is over (per slot: a whole-prefix listing would cost hundreds of list calls a day), at most
+    PRUNE_PER_TICK and none past `over`. A failure leaves them in `gone` and ends the deleting for this tick. -> whether `gone`
+    changed."""
+    left, changed, tries = [], False, 0
     for g in pointer["gone"]:
-        try:
-            due = (now - A.parse_iso(g["at"])).total_seconds() >= GRACE_MIN * 60
-            if due:
-                store.delete_prefix(f"{PREFIX}/{g['t']}/")
-                changed = True
-                continue
-        except Exception as exc:                                       # noqa: BLE001
-            A._summary(f"WARNING: radar prune of {g.get('t')} failed ({exc.__class__.__name__}: {P.redact(str(exc), store.bucket)})")
+        if tries < PRUNE_PER_TICK and not (over is not None and over()):
+            try:
+                if (now - A.parse_iso(g["at"])).total_seconds() >= GRACE_MIN * 60:
+                    tries += 1
+                    store.delete_prefix(f"{PREFIX}/{g['t']}/")
+                    changed = True
+                    continue
+            except Exception as exc:                                   # noqa: BLE001
+                A._summary(f"WARNING: radar prune of {g['t']} failed ({exc.__class__.__name__}: {P.redact(str(exc), store.bucket)})")
+                tries = PRUNE_PER_TICK
         left.append(g)
     pointer["gone"] = left
     return changed
@@ -429,25 +496,53 @@ class _Alarm:
         return f"{PREFIX}/stale-alarm.json"
 
 
+def rated(rc, now):
+    """A condition no tick can cure and no alarm can record: a failed run (so a mail) only around 00:00 and 12:00 UTC."""
+    return rc if now.hour % 12 == 0 and now.minute < 10 else 0
+
+
 def alarm(store, line, now, kind):
-    return A.alarm_once(store, _Alarm, line, now=now, kind=kind)
+    """1 or None as alt.alarm_once; a bucket that cannot record it is a rated failure, never an uncaught error on every tick."""
+    try:
+        return A.alarm_once(store, _Alarm, line, now=now, kind=kind)
+    except Exception as exc:                                           # noqa: BLE001
+        A._summary(f"{line} (not recorded: {exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))})")
+        return rated(1, now) or None
 
 
-def source_alarms(store, pointer, now):
-    """One alarm per source with nothing newer than SOURCE_STALE_H."""
+def _quiet_since(pointer, region, newest):
+    """The newest frame of `region` (or, with none, when the job first ran) as (label, datetime)."""
+    t = newest.get(region)
+    if t:
+        return t, parse_slot(t)
+    return "none", A.parse_iso(pointer["started"])
+
+
+def state_alarms(store, pointer, now, sources):
+    """One alarm per region with nothing newer than SOURCE_STALE_H; one when old slots cannot be deleted."""
     rc = 0
-    for src in SOURCES:
-        t = pointer["newest"].get(src)
-        age_h = (now - parse_slot(t)).total_seconds() / 3600 if t else float("inf")
-        if age_h > SOURCE_STALE_H:
-            rc = alarm(store, f"STALE: radar source {src}: newest frame {t or 'none'} ({age_h:.1f} h old)", now, f"source_{src}") or rc
+    newest = newest_of(pointer)
+    for src in sources:
+        for region in regions_of(src):
+            label, since = _quiet_since(pointer, region, newest)
+            age_h = (now - since).total_seconds() / 3600
+            if age_h > SOURCE_STALE_H:
+                rc = alarm(store, f"STALE: radar region {region}: newest frame {label} ({age_h:.1f} h old)", now, f"region_{region}") or rc
+    if pointer["gone"]:
+        age_h = (now - A.parse_iso(pointer["gone"][0]["at"])).total_seconds() / 3600
+        if age_h > GONE_ALARM_H:
+            rc = alarm(store, f"radar: {len(pointer['gone'])} old slots cannot be deleted, the oldest retired {age_h:.1f} h ago", now, "prune") or rc
     return rc
 
 
 # ---------------------------------------------------------------- one tick
 def run_source(source, store, pointer, now, clock, started, get, log, budget, keep=KEEP_SLOTS, max_slots=None):
-    """Fill `source`'s missing frames, newest first, within the time budgets. -> (frames done, per-tier stats, alarm line or None)."""
-    done, stats, format_line, down = 0, {"t0": [0, 0], "t1": [0, 0], "t2": [0, 0]}, None, False
+    """Fill `source`'s missing frames, newest first, within the time budgets. A file that cannot be read costs its own region
+    at most BAD_PER_TICK tries this tick and nothing else. -> (frames done, per-tier stats, {region: alarm line})."""
+    done, stats, down, out_of_time = 0, {"t0": [0, 0], "t1": [0, 0], "t2": [0, 0]}, False, False
+    newest = newest_of(pointer)
+    bad, bad_lines = {}, {}
+    stop = lambda: clock() - started > HARD_S                          # noqa: E731
     for i, (name, dt, todo) in enumerate(plan(pointer, now, source, keep=keep)):
         if max_slots is not None and i >= max_slots:
             break
@@ -458,13 +553,19 @@ def run_source(source, store, pointer, now, clock, started, get, log, budget, ke
             break
         dirty = False
         for region in todo:
+            if bad.get(region, 0) >= BAD_PER_TICK:
+                continue
+            if clock() - started > DEADLINE_S:
+                log(f"{source}: time budget used, {name} {region} and older left for later ticks")
+                out_of_time = True
+                break
             try:
                 if source == "mrms":
                     lattice, offset = mrms_frame(region, dt, now, get)
                 else:
                     lattice, offset, radars = opera_frame(dt, get)
                     log(f"{name} {region}: {radars} radars")
-                entry, st = store_region(store, name, region, lattice, offset)
+                entry, st = store_region(store, name, region, lattice, offset, stop=stop)
             except Missing as exc:
                 log(f"{name} {region}: not published ({exc})")
                 if dt < slot_of(now) - timedelta(hours=1):             # a recent slot is simply not out yet
@@ -477,9 +578,14 @@ def run_source(source, store, pointer, now, clock, started, get, log, budget, ke
                 down = True
                 break
             except ValueError as exc:
-                format_line = f"radar: {source} {region} {name}: the file's layout has changed: {P.redact(str(exc))}"
-                log(format_line)
-                break
+                bad[region] = bad.get(region, 0) + 1
+                bad_lines[region] = f"radar: {source} {region} {name}: the file cannot be read (a damaged file or a changed layout): {P.redact(str(exc))}"
+                log(bad_lines[region])
+                if name < newest.get(region, ""):                      # newer frames of the region read well: this one object is bad
+                    x = slot_record(pointer, name).setdefault("x", {})
+                    x[region] = x.get(region, 0) + 1
+                    dirty = True
+                continue
             rec = slot_record(pointer, name)
             rec["r"][region] = entry
             dirty = True
@@ -489,12 +595,20 @@ def run_source(source, store, pointer, now, clock, started, get, log, budget, ke
                 stats[t][1] += b
             if name > pointer["newest"].get(source, ""):
                 pointer["newest"][source] = name
+            if name > newest.get(region, ""):
+                newest[region] = name
             log(f"{name} {region}: +{offset} min, cells t1 {st['t1'][0]} t2 {st['t2'][0]}, {sum(b for _n, b in st.values()) // 1024} KB")
         if dirty:
             write_pointer(store, pointer, now)                         # each slot's frames go live as they finish
-        if down or format_line:
+        if down or out_of_time:
             break
-    return done, stats, format_line
+    # a layout alarm only when the region has gone quiet: one damaged file among good ones is a line in the log and, soon, a gap
+    alarms = {}
+    for region, line in bad_lines.items():
+        _label, since = _quiet_since(pointer, region, newest)
+        if (now - since).total_seconds() > FORMAT_ALARM_MIN * 60:
+            alarms[region] = line
+    return done, stats, alarms
 
 
 class LocalStore:
@@ -543,11 +657,26 @@ class NullStore(LocalStore):
 
 
 def good_pointer(p):
-    return isinstance(p, dict) and p.get("format") == FORMAT and isinstance(p.get("slots"), list) \
-        and isinstance(p.get("gone"), list) and isinstance(p.get("newest"), dict)
+    """The fields this job reads, down to their types: a pointer this job did not write stops it rather than break it each tick."""
+    try:
+        return p["format"] == FORMAT and isinstance(p["newest"], dict) \
+            and all(isinstance(v, str) and parse_slot(v) for v in p["newest"].values()) \
+            and all(isinstance(s["t"], str) and parse_slot(s["t"]) and isinstance(s["r"], dict) and isinstance(s.get("x", {}), dict)
+                    for s in p["slots"]) \
+            and all(isinstance(g["t"], str) and parse_slot(g["t"]) and A.parse_iso(g["at"]) for g in p["gone"]) \
+            and (p.get("started") is None or bool(A.parse_iso(p["started"])))
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return False
 
 
-def main(argv=None, get=A._get, store=None, now=None, clock=time.monotonic):
+def _store_from_env():
+    env = os.environ
+    client = P.r2_client(env["R2_ACCOUNT_ID"], env["R2_ACCESS_KEY_ID"], env["R2_SECRET_ACCESS_KEY"], max_attempts=R2_ATTEMPTS,
+                         connect_timeout=R2_CONNECT_S, read_timeout=R2_READ_S)
+    return P.Store(client, env["R2_BUCKET"])
+
+
+def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="fetch and encode; store nothing, read no pointer")
     ap.add_argument("--local", default=None, help="write under this folder instead of the bucket")
@@ -561,13 +690,13 @@ def main(argv=None, get=A._get, store=None, now=None, clock=time.monotonic):
     now = now or datetime.now(timezone.utc)
     live = not a.dry_run and a.local is None
     if store is None:
-        store = NullStore() if a.dry_run else LocalStore(a.local) if a.local else A._store_from_env()
+        store = NullStore() if a.dry_run else LocalStore(a.local) if a.local else _store_from_env()
     started = clock()
     try:
         pointer = store.get_json(f"{PREFIX}/latest.json")
     except ValueError as exc:
         print(f"the pointer cannot be read ({exc}): refusing to touch it")
-        return 2
+        return rated(2, now)
     except Exception as exc:                                           # noqa: BLE001
         A._summary(f"radar: the bucket did not answer ({exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))})")
         return 0
@@ -575,32 +704,38 @@ def main(argv=None, get=A._get, store=None, now=None, clock=time.monotonic):
         pointer = empty_pointer()
     elif not good_pointer(pointer):
         print("the pointer is not a radar-v1 pointer: refusing to touch it")
-        return 2
-    pointer.update(regions=regions_block(), credit=CREDIT)
+        return rated(2, now)
     rc = 0
     lines = []
-    retired = retire_old(pointer, now)
 
     def log(line):
         print(line)
 
     try:
+        first = "started" not in pointer                               # the alarms' clock: a region never seen is silent since then
+        pointer.setdefault("started", A.utc(now))
+        pointer.update(regions=regions_block(), credit=CREDIT)
+        retired = retire_old(pointer, now)
         for src in sources:
             # each source gets its own budget from the same start: MRMS's backfill cannot starve Europe's newest frame
-            done, stats, format_line = run_source(src, store, pointer, now, clock, started, get, log,
+            done, stats, alarms = run_source(src, store, pointer, now, clock, started, get, log,
                                                   BACKFILL_S if src == sources[-1] else BACKFILL_S / 2, max_slots=a.slots)
             lines.append(f"{src}: {done} frames, t0 {stats['t0'][1] // 1024} KB, t1 {stats['t1'][0]} cells {stats['t1'][1] // 1024} KB, "
                          f"t2 {stats['t2'][0]} cells {stats['t2'][1] // 1024} KB")
-            if format_line:
-                rc = alarm(store, format_line, now, "format") or rc
-        if prune_gone(store, pointer, now) or retired:
+            for region, line in alarms.items():
+                rc = alarm(store, line, now, f"format_{region}") or rc
+        if prune_gone(store, pointer, now, over=lambda: clock() - started > DEADLINE_S) or retired or first:
             write_pointer(store, pointer, now)
     except Exception as exc:                                           # noqa: BLE001   the bucket went away mid-tick
         A._summary(f"radar: stopped on {exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))}; the next tick goes on")
     A._summary("### radar: " + "; ".join(lines) + f"; {clock() - started:.0f} s, newest {pointer['newest']}"
                + (" (dry run)" if a.dry_run else ""))
-    if live and a.slots is None:
-        rc = source_alarms(store, pointer, now) or rc
+    if live and a.slots is None and "started" in pointer:
+        try:
+            rc = state_alarms(store, pointer, now, sources) or rc
+        except Exception as exc:                                       # noqa: BLE001
+            A._summary(f"radar: the alarms could not be judged ({exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))})")
+            rc = rated(1, now) or rc
     return rc
 
 

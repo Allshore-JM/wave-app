@@ -67,7 +67,8 @@ def _text(v):
 
 def read(path):
     """An OPERA DBZH file -> {values: float32 (4400, 3800) dBZ, NaN = no radar, -inf = radar without an echo; time: the label
-    'YYYYMMDDHHMM' from the top group; radars: count}. A file of any other layout is a ValueError."""
+    'YYYYMMDDHHMM' from the top group; radars: count}. A file of any other layout is a ValueError (and radar.py treats whatever
+    else a damaged file makes h5py or numpy raise the same way)."""
     import h5py
     try:
         f = h5py.File(path, "r")
@@ -115,5 +116,5 @@ def check_corners(where):
             x, y = forward(float(where[f"{name}_lat"]), float(where[f"{name}_lon"]))
         except KeyError:
             raise ValueError(f"corner {name} is missing") from None
-        if abs(float(x) - ex) > CORNER_TOL_M or abs(float(y) - ey) > CORNER_TOL_M:
+        if not (abs(float(x) - ex) <= CORNER_TOL_M and abs(float(y) - ey) <= CORNER_TOL_M):       # a NaN corner fails too
             raise ValueError(f"corner {name} projects to ({float(x):.0f}, {float(y):.0f}), not ({ex:.0f}, {ey:.0f})")

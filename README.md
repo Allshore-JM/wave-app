@@ -1308,8 +1308,13 @@ least significant first), `x` the failed tries of a file never published (after 
 last 3 slots, then fills older gaps newest first while its budget lasts (so a 24-hour loop fills in a few hours after a start or an
 outage, never all in one tick). A slot past 24 h leaves the pointer for `gone`, and its objects go an hour later, per slot.
 
-Failure mail stays rare: a source that does not answer is a summary line and exit 0; a source with nothing newer than 6 h, or a file
-of a changed layout, is one alarm per 12 h (exit 1), and the other source still publishes. Run by hand:
+Failure mail stays rare. A source that does not answer (a time-out, a refusal, a cut body) is a summary line and exit 0, asked again
+next tick; only a 404 counts as "not published". A file a reader cannot make sense of costs its own region at most two tries a tick and
+nothing else: the other regions, older slots and the other source go on. One alarm per 12 h (exit 1), per region, when a region has no
+frame newer than 6 h, or none newer than 30 minutes while its files fail to read; one when old slots stay undeleted for 6 h. One damaged
+file among good ones is a line in the log, and after 3 tries a gap. What no tick can cure and no alarm can record (a bucket refusing
+writes, a pointer that is not this job's) fails the run only around 00:00 and 12:00 UTC. The time limits: no new slot, region or delete past 5 minutes, uploads stop at 7, the workflow
+at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read, 2 attempts. Run by hand:
 
     python -I tools/model_frames/radar.py --local out --slots 3     # write under a folder
     python -I tools/model_frames/radar.py --dry-run --slots 1       # fetch and encode, store nothing

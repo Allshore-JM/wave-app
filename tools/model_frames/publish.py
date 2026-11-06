@@ -262,12 +262,13 @@ def record_failure(store, run, message, prefix=PREFIX):
     return prev
 
 
-def r2_client(account_id, access_key, secret_key):
+def r2_client(account_id, access_key, secret_key, max_attempts=5, **timeouts):
+    """`timeouts`: botocore's connect_timeout / read_timeout for a job with a short tick (the radar job); botocore's 60 s by default."""
     import boto3
     from botocore.config import Config
     return boto3.client(
         "s3", endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
         aws_access_key_id=access_key, aws_secret_access_key=secret_key, region_name="auto",
-        config=Config(retries={"max_attempts": 5, "mode": "standard"},
+        config=Config(retries={"max_attempts": max_attempts, "mode": "standard"},
                       request_checksum_calculation="when_required",
-                      response_checksum_validation="when_required"))
+                      response_checksum_validation="when_required", **timeouts))

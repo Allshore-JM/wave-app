@@ -2,7 +2,7 @@
 
 AWS Open Data bucket noaa-mrms-pds, anonymous:
   {DOMAIN}/SeamlessHSR_00.00/{YYYYMMDD}/MRMS_SeamlessHSR_00.00_{YYYYMMDD-HHMMSS}.grib2.gz
-one file every 2 minutes on the even minute in every domain, 33-56 s later (checked 2026-11-05/06). Each is one GRIB2 message:
+one file every 2 minutes on the even minute in every domain, 13-96 s later (CONUS the latest, median 59 s; checked 2026-11-06). Each is one GRIB2 message:
 discipline 209 (NSSL's local table), category 8, number 8; grid template 0, north to south, longitudes 0..360; PNG packing
 (data representation template 41), 16 bits, no bitmap. Values: -999 = no radar coverage, -99 = no echo, else dBZ (down to about
 -27). The reader is pure Python + Pillow because the job's environment (the SST job's: h5py, pillow, numpy) has no eccodes; a
@@ -101,7 +101,7 @@ def read(raw):
             if im.size != (ni, nj):
                 raise ValueError(f"picture {im.size} for grid {ni} x {nj}")
             x = np.array(im, dtype=np.uint16)
-    except (OSError, SyntaxError) as exc:                              # Pillow's words for a damaged picture
+    except (OSError, SyntaxError, Image.DecompressionBombError) as exc:    # Pillow's words for a damaged picture
         raise ValueError(f"the PNG cannot be read: {exc}") from None
     return {"ni": ni, "nj": nj, "lat1": lat1 / 1e6, "lon1": _lon(lon1 / 1e6), "lat2": lat2 / 1e6, "lon2": _lon(lon2 / 1e6),
             "di": di / 1e6, "dj": dj / 1e6, "ref": float(ref), "binary_scale": bscale, "decimal_scale": dscale, "x": x}

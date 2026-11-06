@@ -1,5 +1,6 @@
 """The radar job (plan section 85): readers, tiers, geometry, pointer, failure rules. Nothing reaches the network."""
 import gzip
+import inspect
 import io
 import json
 import os
@@ -7,6 +8,7 @@ import re
 import struct
 import sys
 import urllib.error
+import zlib
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -32,7 +34,7 @@ def png16(x):
     return buf.getvalue()
 
 
-def grib(values, lat1, lon1, step, ident=(209, 8, 8), template=0, packing=41, scan=0, bitmap=255, bits=16):
+def grib(values, lat1, lon1, step, ident=(209, 8, 8), template=0, packing=41, scan=0, bitmap=255, bits=16, scales=(0, 1)):
     """A one-field GRIB2 message as MRMS writes it, from dBZ (one decimal)."""
     nj, ni = values.shape
     x = np.round((values * 10) + 9990).astype(np.int64)
@@ -52,7 +54,7 @@ def grib(values, lat1, lon1, step, ident=(209, 8, 8), template=0, packing=41, sc
     s5[5:9] = struct.pack(">I", nj * ni)
     s5[9:11] = struct.pack(">H", packing)
     s5[11:15] = struct.pack(">f", -9990.0)
-    s5[15:19] = struct.pack(">hh", 0, 1)
+    s5[15:19] = struct.pack(">HH", *scales)
     s5[19] = bits
     s6 = struct.pack(">IBB", 6, 6, bitmap)
     pic = png16(x)
@@ -82,8 +84,9 @@ class FakeStore:
 
 
 class Answer:
-    def __init__(self, body):
-        self.body = body
+    def __init__(self, body, length=None):
+        self.stream = io.BytesIO(body)
+        self.headers = {} if length is None else {"Content-Length": str(length)}
 
     def __enter__(self):
         return self
@@ -92,19 +95,21 @@ class Answer:
         return False
 
     def read(self, n=-1):
-        return self.body if n < 0 else self.body[:n]
+        return self.stream.read(n)
 
 
 class Web:
-    """urls -> bytes; anything else 404; a set of url parts that time out."""
+    """urls -> bytes; anything else 404; url parts that time out; url parts answering a file that is not GRIB."""
 
-    def __init__(self, files=None, down=()):
-        self.files, self.down, self.asked = dict(files or {}), tuple(down), []
+    def __init__(self, files=None, down=(), bad=()):
+        self.files, self.down, self.bad, self.asked = dict(files or {}), tuple(down), tuple(bad), []
 
     def __call__(self, url, headers=None, timeout=60):
         self.asked.append(url)
         if any(d in url for d in self.down):
             raise TimeoutError("timed out")
+        if any(d in url for d in self.bad):
+            return Answer(gzip.compress(b"not grib"))
         if url in self.files:
             return Answer(self.files[url])
         raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
@@ -380,7 +385,7 @@ def test_outside_the_grid_is_minus_one():
     assert opera.source_index(np.float64(55.0), np.array([100.0]))[0] == -1
 
 
-def write_h5(path, data=None, proj=None, shape=None, quantity=b"DBZH", corner_shift=0.0, drop=None, xsize=3800):
+def write_h5(path, data=None, proj=None, shape=None, quantity=b"DBZH", corner_shift=0.0, drop=None, xsize=3800, gain=1.0, offset=0.0):
     import h5py
     shape = shape or (opera.ROWS, opera.COLS)
     data = np.full(shape, -9999000.0) if data is None else data
@@ -399,7 +404,7 @@ def write_h5(path, data=None, proj=None, shape=None, quantity=b"DBZH", corner_sh
         d.create_group("what").attrs["quantity"] = quantity
         g = d.create_group("data1")
         q = g.create_group("what")
-        q.attrs["gain"], q.attrs["offset"] = 1.0, 0.0
+        q.attrs["gain"], q.attrs["offset"] = gain, offset
         q.attrs["nodata"], q.attrs["undetect"] = -9999000.0, -8888000.0
         q.attrs["quantity"] = quantity
         g.create_dataset("data", data=data, compression="gzip", compression_opts=1)
@@ -425,7 +430,8 @@ def test_the_reader_keeps_no_radar_and_no_echo_apart(tmp_path):
 
 
 @pytest.mark.parametrize("kw", [
-    {"proj": b"+proj=stere +lat_0=90"}, {"shape": (3800, 4400)}, {"quantity": b"RATE"}, {"corner_shift": 0.2}, {"drop": "corner"},
+    {"proj": b"+proj=stere +lat_0=90"}, {"shape": (3800, 4400)}, {"quantity": b"RATE"}, {"corner_shift": 0.2}, {"corner_shift": 0.03},
+    {"corner_shift": float("nan")}, {"drop": "corner"},
     {"drop": "dataset1/data1/what"}, {"drop": "where"}, {"xsize": 3900},
 ])
 def test_a_file_of_another_layout_is_refused(tmp_path, kw):
@@ -536,10 +542,9 @@ class Refuses:
 
 def test_fetch_tells_missing_from_down_and_caps_the_body(monkeypatch):
     monkeypatch.setattr(R.time, "sleep", lambda s: None)
-    for code in (403, 404):
-        with pytest.raises(R.Missing):
-            R.fetch("https://x/y", Refuses(code), 100)
-    for code in (500, 503):
+    with pytest.raises(R.Missing):
+        R.fetch("https://x/y", Refuses(404), 100)
+    for code in (403, 500, 503):                                       # a refusal is an outage, never "not published"
         with pytest.raises(R.Down):
             R.fetch("https://x/y", Refuses(code), 100)
     with pytest.raises(ValueError):
@@ -610,15 +615,22 @@ def test_a_source_that_is_down_is_quiet_and_the_other_publishes(small, monkeypat
 
 
 def test_a_changed_layout_alarms_once_and_the_other_source_publishes(small, monkeypatch):
-    slot = R.slot_of(NOW)
-    name = R.slot_name(slot)
-    e1_frame(monkeypatch, {name})
-    store = FakeStore()
-    web = Web({mrms.url_of("D1", slot + timedelta(minutes=4)): gzip.compress(b"not grib")})
-    assert tick(store, web, args=("--sources", "mrms,opera", "--slots", "1")) == 1
-    assert store.get_json("radar/v1/latest.json")["newest"] == {"opera": name}
-    assert tick(store, web, args=("--sources", "mrms,opera", "--slots", "1")) == 0         # the same alarm within 12 h: quiet
-    assert tick(store, web, now=NOW + timedelta(hours=13), args=("--sources", "mrms,opera", "--slots", "1")) in (0, 1)
+    def opera_at(now):
+        e1_frame(monkeypatch, {R.slot_name(R.slot_of(now))})
+
+    store, web = FakeStore(), Web(bad=("/D1/",))
+    opera_at(NOW)
+    assert tick(store, web) == 0                                       # the job has just started: nothing has been quiet for long
+    assert store.get_json("radar/v1/latest.json")["newest"] == {"opera": R.slot_name(R.slot_of(NOW))}
+    later = NOW + timedelta(minutes=31)
+    opera_at(later)
+    assert tick(store, web, now=later) == 1                            # no frame of the region for over half an hour
+    assert "last_format_r1_alarm_utc" in store.get_json("radar/v1/stale-alarm.json")
+    opera_at(later + timedelta(minutes=10))
+    assert tick(store, web, now=later + timedelta(minutes=10)) == 0    # the same alarm within 12 h: quiet
+    opera_at(later + timedelta(hours=13))
+    assert tick(store, web, now=later + timedelta(hours=13)) == 1
+    assert not any("r1" in s.get("x", {}) for s in store.get_json("radar/v1/latest.json")["slots"])    # a changed layout burns no slot
 
 
 def test_a_source_stale_for_six_hours_alarms_once_per_twelve(small, monkeypatch):
@@ -634,7 +646,7 @@ def test_a_source_stale_for_six_hours_alarms_once_per_twelve(small, monkeypatch)
     e1_frame(monkeypatch, {R.slot_name(R.slot_of(later))})
     web = Web({}, down=("noaa-mrms-pds",))
     assert tick(store, web, now=later) == 1
-    assert "last_source_mrms_alarm_utc" in store.get_json("radar/v1/stale-alarm.json")
+    assert "last_region_r1_alarm_utc" in store.get_json("radar/v1/stale-alarm.json")
     e1_frame(monkeypatch, {R.slot_name(R.slot_of(later + timedelta(minutes=10)))})
     assert tick(store, web, now=later + timedelta(minutes=10)) == 0
 
@@ -832,7 +844,7 @@ def _wf(name):
 def test_the_workflow():
     wf = _wf("model-radar.yml")
     assert "group: model-radar" in wf and "cancel-in-progress: false" in wf
-    assert "timeout-minutes: 9" in wf
+    assert "timeout-minutes: 12" in wf
     assert "h5py=3.14.0" in wf and "pillow=12.3.0" in wf and "numpy=2.4.6" in wf and "eccodes" not in wf.replace("# ", "")
     assert "tools/model_frames/radar.py" in wf
     assert "ubuntu-24.04" in wf
@@ -847,3 +859,745 @@ def test_the_trigger_keepalive_and_tests_paths():
     assert "model-radar.yml" in re.search(r'"GH_WORKFLOW":\s*"([^"]+)"', cfg).group(1).split(",")
     assert "gh workflow enable model-radar.yml" in _wf("model-frames-keepalive.yml")
     assert _wf("model-frames-tests.yml").count('".github/workflows/model-radar.yml"') == 2
+
+
+# ---------------------------------------------------------------- G56a: what a file can do to a reader
+BAD_GZ = b"\x1f\x8b\x08\x00" + bytes(6) + b"\xff" * 64                 # a gzip header, then a deflate stream zlib refuses
+NOT_GRIB = gzip.compress(b"not grib")
+
+
+@pytest.fixture
+def two(monkeypatch):
+    """Two regions of one source and Europe: a break in one can be seen not to touch the others."""
+    monkeypatch.setattr(R, "REGIONS", {"r1": ("One", "mrms", "D1", 20, -160, 22, -156, 1),
+                                       "r2": ("Two", "mrms", "D2", 20, -150, 22, -146, 1),
+                                       "e1": ("Eur", "opera", None, 50, 0, 52, 4, 1)})
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+
+
+def r2_file(when, value=30.0):
+    v = np.full((200, 400), -99.0)
+    v[10:60, 10:60] = value
+    return {mrms.url_of("D2", when): gzip.compress(grib(v, 21.995, -149.995, 0.01))}
+
+
+def minutes(n):
+    return timedelta(minutes=n)
+
+
+def slot_rec(store, name):
+    recs = [x for x in store.get_json("radar/v1/latest.json")["slots"] if x["t"] == name]
+    return recs[0] if recs else None
+
+
+def test_a_bad_deflate_stream_is_a_damaged_file(small):
+    slot = R.slot_of(NOW)
+    with pytest.raises(ValueError):
+        R.mrms_frame("r1", slot, NOW, Web({mrms.url_of("D1", slot + minutes(4)): BAD_GZ}))
+
+
+def test_a_png_claiming_a_huge_size_is_a_damaged_file(small):
+    slot = R.slot_of(NOW)
+    raw = bytearray(grib(np.full((4, 6), -99.0), 25.0, -160.0, 0.01))
+    i = raw.index(b"IHDR")
+    raw[i + 4:i + 12] = struct.pack(">II", 30000, 30000)
+    raw[i + 17:i + 21] = struct.pack(">I", zlib.crc32(bytes(raw[i:i + 17])))
+    with pytest.raises(ValueError):
+        mrms.read(bytes(raw))
+    with pytest.raises(ValueError):
+        R.mrms_frame("r1", slot, NOW, Web({mrms.url_of("D1", slot + minutes(4)): gzip.compress(bytes(raw))}))
+
+
+@pytest.mark.parametrize("exc", [zlib.error("bad"), OSError("x"), TypeError("x"), AttributeError("x"), MemoryError("x"), KeyError("x")])
+def test_any_reader_error_is_a_damaged_file(small, monkeypatch, exc):
+    def boom(_):
+        raise exc
+    slot = R.slot_of(NOW)
+    monkeypatch.setattr(mrms, "read", boom)
+    with pytest.raises(ValueError):
+        R.mrms_frame("r1", slot, NOW, Web({mrms.url_of("D1", slot + minutes(4)): gzip.compress(b"x")}))
+    monkeypatch.setattr(opera, "read", boom)
+    with pytest.raises(ValueError):
+        R.opera_frame(slot, Web({opera.url_of(slot): b"x"}))
+
+
+def hostile_h5(path, kind):
+    import h5py
+    write_h5(path)
+    if kind == "damaged":
+        with open(path, "rb") as fh:
+            b = bytearray(fh.read())
+        for i in range(len(b) // 2, len(b) * 9 // 10, 16):
+            b[i] ^= 0xFF
+        with open(path, "wb") as fh:
+            fh.write(b)
+        return
+    with h5py.File(path, "a") as f:
+        g = f["dataset1/data1"]
+        if kind == "group":
+            del g["data"]
+            g.create_group("data")
+        elif kind == "strings":
+            del g["data"]
+            g.create_dataset("data", data=np.zeros((opera.ROWS, opera.COLS), dtype="S1"), compression="gzip", compression_opts=1)
+        elif kind == "array_attr":
+            f["where"].attrs["xsize"] = np.array([3800, 3800])
+        elif kind == "array_gain":
+            g["what"].attrs["gain"] = np.array([1.0, 1.0])
+
+
+@pytest.mark.parametrize("kind", ["damaged", "group", "strings", "array_attr", "array_gain"])
+def test_a_hostile_hdf5_file_is_a_damaged_file(small, tmp_path, kind):
+    p = tmp_path / "f.h5"
+    hostile_h5(str(p), kind)
+    slot = datetime(2026, 11, 6, 0, 50, tzinfo=timezone.utc)           # the label write_h5 gives
+    with pytest.raises(ValueError):
+        R.opera_frame(slot, Web({opera.url_of(slot): p.read_bytes()}))
+
+
+def test_a_damaged_file_costs_nothing_else(two, monkeypatch):
+    slot = R.slot_of(NOW)
+    name = R.slot_name(slot)
+    e1_frame(monkeypatch, {name})
+    store = FakeStore()
+    web = Web({mrms.url_of("D1", slot + minutes(4)): BAD_GZ, **r2_file(slot + minutes(4))})
+    assert tick(store, web) == 0
+    assert sorted(slot_rec(store, name)["r"]) == ["e1", "r2"]
+    assert store.get_json("radar/v1/latest.json")["newest"]["opera"] == name
+
+
+def test_a_changed_layout_in_one_region_leaves_the_others_and_the_older_slots(two, monkeypatch):
+    slot, older = R.slot_of(NOW), R.slot_of(NOW) - minutes(10)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    web = Web({**r2_file(slot + minutes(4)), **r2_file(older + minutes(4))}, bad=("/D1/",))
+    assert tick(store, web) == 0                                       # the job is minutes old: too soon to mail
+    for name in (R.slot_name(slot), R.slot_name(older)):
+        assert list(slot_rec(store, name)["r"]) == ["r2"]
+    assert len([u for u in web.asked if "/D1/" in u]) == R.BAD_PER_TICK
+
+
+def test_one_damaged_old_file_becomes_a_gap_without_a_mail(small, monkeypatch):
+    slot, older = R.slot_of(NOW), R.slot_of(NOW) - minutes(10)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    bad_url = mrms.url_of("D1", older + minutes(4))
+    files = {**r1_file(slot + minutes(4)), bad_url: BAD_GZ}
+    for _ in range(R.MAX_TRIES):
+        assert R.main(["--sources", "mrms"], get=Web(files), store=store, now=NOW) == 0
+    assert slot_rec(store, R.slot_name(older))["x"]["r1"] == R.MAX_TRIES
+    web = Web(files)
+    assert R.main(["--sources", "mrms"], get=web, store=store, now=NOW) == 0
+    assert bad_url not in web.asked
+    assert (store.get_json("radar/v1/stale-alarm.json") or {}) == {}
+
+
+@pytest.mark.parametrize("age,rc", [(20, 0), (30, 1)])
+def test_a_changed_layout_burns_no_slot_and_mails_when_the_region_goes_quiet(small, monkeypatch, age, rc):
+    slot = R.slot_of(NOW)                                              # 12:00; the frame held is `age` + 6 minutes old
+    lines = []
+    monkeypatch.setattr(R.A, "_summary", lines.append)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    p = R.empty_pointer()
+    p["started"] = "2026-11-06T00:00:00Z"
+    p["slots"] = [{"t": R.slot_name(slot - minutes(age)), "r": {"r1": {"o": 4}}}]
+    store.put("radar/v1/latest.json", json.dumps(p).encode(), "application/json", "x")
+    assert R.main(["--sources", "mrms"], get=Web(bad=("/D1/",)), store=store, now=NOW) == rc
+    assert not any(s.get("x") for s in store.get_json("radar/v1/latest.json")["slots"])
+    if rc:
+        assert "last_format_r1_alarm_utc" in store.get_json("radar/v1/stale-alarm.json")
+        assert any("r1" in line and "cannot be read" in line for line in lines)
+
+
+def test_two_regions_breaking_each_get_their_own_mail(two, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    p = R.empty_pointer()
+    p["started"] = "2026-11-06T00:00:00Z"
+    store.put("radar/v1/latest.json", json.dumps(p).encode(), "application/json", "x")
+    assert R.main(["--sources", "mrms"], get=Web(bad=("/D1/", "/D2/")), store=store, now=NOW) == 1
+    rec = store.get_json("radar/v1/stale-alarm.json")
+    assert "last_format_r1_alarm_utc" in rec and "last_format_r2_alarm_utc" in rec
+
+
+# ---------------------------------------------------------------- G56a: the wire
+class Recording:
+    def __init__(self, answer):
+        self.answer, self.timeouts, self.urls = answer, [], []
+
+    def __call__(self, url, headers=None, timeout=60):
+        self.urls.append(url)
+        self.timeouts.append(timeout)
+        return self.answer()
+
+
+def test_a_body_shorter_than_its_length_is_a_dropped_connection(monkeypatch):
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+    get = Recording(lambda: Answer(b"x" * 50, length=100))
+    with pytest.raises(R.Down):
+        R.fetch("https://x/y", get, 1000)
+    assert len(get.urls) == 2                                          # asked once more first
+    assert R.fetch("https://x/y", Recording(lambda: Answer(b"x" * 100, length=100)), 1000) == b"x" * 100
+    assert R.fetch("https://x/y", Recording(lambda: Answer(b"x" * 100)), 1000) == b"x" * 100
+
+
+def test_a_cut_body_is_no_format_alarm(small, monkeypatch):
+    slot = R.slot_of(NOW)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    body = list(r1_file(slot + minutes(4)).values())[0]
+
+    def get(url, headers=None, timeout=60):
+        if "noaa-mrms-pds" in url:
+            return Answer(body[:len(body) // 2], length=len(body))
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    p = R.empty_pointer()
+    p["started"] = "2026-11-06T11:00:00Z"                              # an hour ago: long enough for a format alarm, not for a stale one
+    store.put("radar/v1/latest.json", json.dumps(p).encode(), "application/json", "x")
+    assert R.main(["--sources", "mrms"], get=get, store=store, now=NOW) == 0
+    assert store.get_json("radar/v1/stale-alarm.json") is None
+
+
+def test_every_read_has_its_timeout_and_a_whole_file_its_limit(monkeypatch):
+    monkeypatch.setattr(R.time, "sleep", lambda s: None)
+    get = Recording(lambda: Answer(b"x"))
+    R.fetch("https://x/y", get, 10)
+    assert get.timeouts == [R.FETCH_TIMEOUT_S] and R.FETCH_TIMEOUT_S == 45 and R.FETCH_MAX_S == 120
+    monkeypatch.setattr(R, "FETCH_MAX_S", -1)                          # a drip outruns the limit: the source is down, the file not bad
+    with pytest.raises(R.Down):
+        R.fetch("https://x/y", Recording(lambda: Answer(b"x" * 10)), 100)
+
+
+def test_an_endless_body_is_cut_at_the_cap():
+    class Endless:
+        reads = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n=-1):
+            Endless.reads += 1
+            assert 0 < n <= R.READ_CHUNK                               # a read never asks for the whole body
+            return b"x" * n
+
+    with pytest.raises(ValueError):
+        R.fetch("https://x/y", lambda url, headers=None, timeout=60: Endless(), R.READ_CHUNK * 3)
+    assert Endless.reads == 4
+
+
+def test_a_refused_file_never_counts_as_a_gap(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    for _ in range(5):
+        assert R.main(["--sources", "mrms"], get=Refuses(403), store=store, now=NOW) == 0
+    p = store.get_json("radar/v1/latest.json")
+    assert p is not None and not any(s.get("x") for s in p["slots"])
+
+
+def test_the_job_names_itself_and_uses_its_own_get(monkeypatch):
+    seen = {}
+
+    def urlopen(req, timeout=None):
+        seen["ua"], seen["timeout"] = req.get_header("User-agent"), timeout
+        return Answer(b"")
+
+    monkeypatch.setattr(R.urllib.request, "urlopen", urlopen)
+    R._get("https://x/y", timeout=7)
+    assert "radar" in seen["ua"] and "@" not in seen["ua"] and seen["timeout"] == 7
+    assert inspect.signature(R.main).parameters["get"].default is R._get
+
+
+def test_the_job_gives_the_bucket_short_limits(monkeypatch):
+    got = {}
+    monkeypatch.setattr(R.P, "r2_client", lambda *a, **k: got.update(k) or object())
+    monkeypatch.setattr(R.P, "Store", lambda client, bucket: ("store", bucket))
+    for name in ("R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(name, "x")
+    monkeypatch.setenv("R2_BUCKET", "b")
+    assert R._store_from_env() == ("store", "b")
+    assert got == {"max_attempts": 2, "connect_timeout": 10, "read_timeout": 30}
+
+
+def test_the_other_jobs_keep_their_client():
+    pytest.importorskip("boto3")
+    cfg = R.P.r2_client("a", "b", "c").meta.config
+    assert cfg.connect_timeout == 60 and cfg.read_timeout == 60        # botocore's own, as before
+    assert cfg.retries["total_max_attempts"] == 6                      # 5 retries
+    short = R.P.r2_client("a", "b", "c", max_attempts=2, connect_timeout=10, read_timeout=30).meta.config
+    assert short.connect_timeout == 10 and short.read_timeout == 30
+
+
+# ---------------------------------------------------------------- G56a: time
+def test_an_upload_past_the_hard_limit_stops(small):
+    arr = np.ones((200, 400), np.uint8)
+    store = FakeStore()
+    with pytest.raises(R.Down):
+        R.store_region(store, "202611061200", "r1", arr, 4, stop=lambda: True)
+    assert store.objects == {}
+    assert R.HARD_S == 420 and R.DEADLINE_S == 300 and R.HARD_S + 300 <= 12 * 60
+
+
+def test_the_deadline_stops_the_next_region_inside_a_slot(two, monkeypatch):
+    slot = R.slot_of(NOW)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    t = {"v": 0.0}
+    files = {**r1_file(slot + minutes(4)), **r2_file(slot + minutes(4))}
+    asked = []
+
+    def get(url, headers=None, timeout=60):
+        asked.append(url)
+        t["v"] = R.DEADLINE_S + 1                                      # the first region's download used the time up
+        if url in files:
+            return Answer(files[url])
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+    R.main(["--sources", "mrms"], get=get, store=store, now=NOW, clock=lambda: t["v"])
+    assert not [u for u in asked if "/D2/" in u]
+    assert list(slot_rec(store, R.slot_name(slot))["r"]) == ["r1"]
+
+
+def test_mrms_waits_for_the_slots_settled_file(small):
+    slot = R.slot_of(NOW)
+    name = R.slot_name(slot)
+    p = R.empty_pointer()
+    assert name not in [x[0] for x in R.plan(p, slot + timedelta(seconds=R.MRMS_READY_S - 1), "mrms")]
+    assert name in [x[0] for x in R.plan(p, slot + timedelta(seconds=R.MRMS_READY_S), "mrms")]
+    assert name in [x[0] for x in R.plan(p, slot + timedelta(seconds=1), "opera")]
+    assert R.MRMS_READY_S == 270 and R.MRMS_OFFSETS == (4, 2, 0)
+
+
+def test_the_window_is_a_day_and_a_frame(small):
+    assert R.KEEP_SLOTS == 145
+    assert len(R.plan(R.empty_pointer(), NOW, "opera")) == 145
+    assert len(R.plan(R.empty_pointer(), NOW, "mrms")) == 145
+    assert len(R.plan(R.empty_pointer(), R.slot_of(NOW) + minutes(2), "mrms")) == 144
+
+
+# ---------------------------------------------------------------- G56a: alarms and a bucket that refuses
+class NoWrites(FakeStore):
+    def put(self, key, body, content_type, cache_control):
+        raise ConnectionError("read only")
+
+
+def old_pointer(**kw):
+    p = R.empty_pointer()
+    p["started"] = "2026-11-05T00:00:00Z"
+    p.update(kw)
+    return json.dumps(p).encode()
+
+
+@pytest.mark.parametrize("hour,minute,rc", [(0, 0, 1), (0, 9, 1), (0, 10, 0), (12, 5, 1), (11, 59, 0), (13, 6, 0)])
+def test_the_rated_failure(hour, minute, rc):
+    assert R.rated(1, datetime(2026, 11, 6, hour, minute, tzinfo=timezone.utc)) == rc
+
+
+def test_a_bucket_refusing_writes_fails_a_run_only_twice_a_day(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = NoWrites()
+    store.objects["radar/v1/latest.json"] = old_pointer()
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW) == 1                    # 12:06
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+    assert R.main([], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+
+
+def test_only_the_alarm_record_failing_is_rated_too(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+
+    class NoRecord(FakeStore):
+        def put(self, key, body, content_type, cache_control):
+            if key.endswith("stale-alarm.json"):
+                raise ConnectionError("no")
+            super().put(key, body, content_type, cache_control)
+
+    store = NoRecord()
+    store.objects["radar/v1/latest.json"] = old_pointer()
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW) == 1
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+
+
+def test_a_corrupt_alarm_record_is_rated_not_uncaught(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    store.objects["radar/v1/latest.json"] = old_pointer()
+    store.objects["radar/v1/stale-alarm.json"] = b"{not json"
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW) == 1
+
+
+def test_state_alarms_that_break_are_rated(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    monkeypatch.setattr(R, "state_alarms", lambda *a: (_ for _ in ()).throw(RuntimeError("no")))
+    store = FakeStore()
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW) == 1
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+
+
+def test_a_foreign_pointer_mails_only_twice_a_day(small):
+    store = FakeStore()
+    store.objects["radar/v1/latest.json"] = b'{"format": "other"}'
+    assert R.main([], get=Web(), store=store, now=NOW) == 2
+    assert R.main([], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+    store.objects["radar/v1/latest.json"] = b"{not json"
+    assert R.main([], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 0
+    assert R.main(["--slots", "0"], get=Web(), store=store, now=NOW + timedelta(hours=1)) == 2    # bad arguments always
+
+
+@pytest.mark.parametrize("change", [
+    {"slots": [{"r": {}}]}, {"slots": [{"t": "garbage", "r": {}}]}, {"slots": [{"t": 202611060000, "r": {}}]},
+    {"slots": [{"t": "202611060000", "r": []}]}, {"slots": [{"t": "202611060000", "r": {}, "x": 3}]}, {"slots": [7]},
+    {"newest": {"mrms": "x"}}, {"newest": {"mrms": 5}}, {"newest": []},
+    {"gone": [{"t": "202611060000"}]}, {"gone": [{"t": "202611060000", "at": "soon"}]}, {"gone": [{"at": "2026-11-06T00:00:00Z"}]},
+    {"gone": "x"}, {"started": "soon"},
+])
+def test_a_damaged_pointer_is_not_ours(change):
+    p = R.empty_pointer()
+    p.update(change)
+    assert not R.good_pointer(p)
+
+
+def test_a_sound_pointer_is_ours():
+    p = R.empty_pointer()
+    assert R.good_pointer(p)
+    p.update(started="2026-11-06T00:00:00Z", newest={"mrms": "202611060000"}, gone=[{"t": "202611060000", "at": "2026-11-06T00:00:00Z"}],
+             slots=[{"t": "202611060000", "r": {}, "x": {"r1": 1}}])
+    assert R.good_pointer(p)
+
+
+def test_a_first_tick_never_mails_and_starts_the_clock(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    web = Web(down=("noaa-mrms-pds",))
+    assert R.main(["--sources", "mrms"], get=web, store=store, now=NOW) == 0
+    p = store.get_json("radar/v1/latest.json")
+    assert p["started"] == "2026-11-06T12:06:00Z"
+    assert R.main(["--sources", "mrms"], get=web, store=store, now=NOW + timedelta(hours=6)) == 0
+    assert store.get_json("radar/v1/latest.json")["started"] == "2026-11-06T12:06:00Z"
+    assert R.main(["--sources", "mrms"], get=web, store=store, now=NOW + timedelta(hours=6, minutes=6)) == 1
+    assert "last_region_r1_alarm_utc" in store.get_json("radar/v1/stale-alarm.json")
+
+
+def test_a_region_going_silent_mails_though_its_source_goes_on(two, monkeypatch):
+    start = R.slot_of(NOW)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    assert R.main(["--sources", "mrms"], get=Web({**r1_file(start + minutes(4)), **r2_file(start + minutes(4))}), store=store, now=NOW) == 0
+    later = NOW + timedelta(hours=7)
+    # only r2 keeps publishing
+    assert R.main(["--sources", "mrms"], get=Web(r2_file(R.slot_of(later) + minutes(4))), store=store, now=later) == 1
+    rec = store.get_json("radar/v1/stale-alarm.json")
+    assert "last_region_r1_alarm_utc" in rec and "last_region_r2_alarm_utc" not in rec
+
+
+def test_the_stale_line_is_exact(two, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    name = R.slot_name(R.slot_of(NOW))
+    p = R.empty_pointer()
+    p.update(started="2026-11-06T00:00:00Z", slots=[{"t": name, "r": {"r1": {"o": 4}, "r2": {"o": 4}}}])
+    store.put("radar/v1/latest.json", json.dumps(p).encode(), "application/json", "x")
+    web = Web(down=("noaa-mrms-pds",))
+    assert R.main(["--sources", "mrms"], get=web, store=store, now=R.slot_of(NOW) + timedelta(hours=R.SOURCE_STALE_H)) == 0
+    assert R.main(["--sources", "mrms"], get=web, store=store, now=R.slot_of(NOW) + timedelta(hours=6.1)) == 1
+    assert R.SOURCE_STALE_H == 6 and R.FORMAT_ALARM_MIN == 30
+
+
+# ---------------------------------------------------------------- G56a: deleting
+class Deletes(FakeStore):
+    def __init__(self, fail=False):
+        super().__init__()
+        self.deleted, self.fail = [], fail
+
+    def delete_prefix(self, prefix):
+        self.deleted.append(prefix)
+        if self.fail:
+            raise ConnectionError("no")
+
+
+def gone_list(n, at="2026-11-06T00:00:00Z"):
+    base = datetime(2026, 11, 5, tzinfo=timezone.utc)
+    return [{"t": R.slot_name(base + minutes(10 * i)), "at": at} for i in range(n)]
+
+
+def test_a_backlog_is_deleted_a_few_slots_a_tick():
+    store = Deletes()
+    p = R.empty_pointer()
+    p["gone"] = gone_list(20)
+    assert R.prune_gone(store, p, NOW) is True
+    assert len(store.deleted) == R.PRUNE_PER_TICK == 6 and len(p["gone"]) == 14
+    assert all(d.startswith("radar/v1/") and d.endswith("/") for d in store.deleted)   # the slash: never another slot's prefix
+
+
+def test_a_failed_delete_ends_the_deleting_for_the_tick():
+    store = Deletes(fail=True)
+    p = R.empty_pointer()
+    p["gone"] = gone_list(5)
+    assert R.prune_gone(store, p, NOW) is False
+    assert len(store.deleted) == 1 and len(p["gone"]) == 5
+
+
+def test_no_delete_past_the_time_limit():
+    store = Deletes()
+    p = R.empty_pointer()
+    p["gone"] = gone_list(5)
+    assert R.prune_gone(store, p, NOW, over=lambda: True) is False
+    assert store.deleted == [] and len(p["gone"]) == 5
+
+
+def test_a_slot_inside_its_grace_does_not_use_a_turn():
+    store = Deletes()
+    p = R.empty_pointer()
+    p["gone"] = gone_list(8, at=R.A.utc(NOW)) + gone_list(3)
+    R.prune_gone(store, p, NOW)
+    assert len(store.deleted) == 3 and len(p["gone"]) == 8
+
+
+@pytest.mark.parametrize("hours,rc", [(5, 0), (7, 1)])
+def test_slots_that_cannot_be_deleted_mail_at_six_hours(small, monkeypatch, hours, rc):
+    e1_frame(monkeypatch, set())
+    store = Deletes(fail=True)
+    now = NOW + timedelta(hours=1)
+    p = R.empty_pointer()
+    p.update(started=R.A.utc(now - minutes(5)), gone=gone_list(1, at=R.A.utc(now - timedelta(hours=hours))))
+    store.objects["radar/v1/latest.json"] = json.dumps(p).encode()
+    assert R.main(["--sources", "mrms"], get=Web(), store=store, now=now) == rc
+    if rc:
+        assert "last_prune_alarm_utc" in store.get_json("radar/v1/stale-alarm.json")
+        assert R.main(["--sources", "mrms"], get=Web(), store=store, now=now + minutes(10)) == 0
+
+
+# ---------------------------------------------------------------- G56a: pins for what the first suite did not read
+def test_the_coverage_threshold_and_a_hot_pixel_over_no_coverage():
+    assert R.code_table(np.array([-100.0, -899.5, -900.5, -1000.0])).tolist() == [1, 1, 0, 0]
+    a = np.zeros((10, 10), np.uint8)
+    a[3, 3] = 100
+    assert R.pool_kth(a, 10, 3)[0, 0] == 1                             # covered: one stray pixel over nothing else is not "no radar"
+    assert R.pool_kth(a, 10, 1)[0, 0] == 100
+
+
+@pytest.mark.parametrize("field,value", [("di", 0.02), ("dj", 0.02), ("lon1", -159.9), ("nj", 100), ("ni", 100)])
+def test_a_grid_of_another_spacing_is_refused(small, field, value):
+    msg = mrms.read(grib(np.full((200, 400), -99.0), 21.995, -159.995, 0.01))
+    msg[field] = value
+    with pytest.raises(ValueError):
+        R.mrms_lattice("r1", msg)
+
+
+def test_slots_are_stored_in_order(small, monkeypatch):
+    slot = R.slot_of(NOW)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    web = Web({**r1_file(slot + minutes(4)), **r1_file(slot - minutes(6))})
+    tick(store, web, args=("--sources", "mrms", "--slots", "2"))
+    names = [x["t"] for x in store.get_json("radar/v1/latest.json")["slots"]]
+    assert len(names) == 2 and names == sorted(names)
+
+
+def test_the_credit_says_whose_and_what_was_done():
+    for word in ("NOAA", "MRMS", "EUMETNET", "OPERA", "CC BY 4.0", "property rights EUMETNET", "modified", "https://creativecommons.org/licenses/by/4.0/"):
+        assert word in R.CREDIT
+    assert R.empty_pointer()["credit"] == R.CREDIT
+
+
+def test_the_cell_thresholds_are_exact(small):
+    def tiers(arr):
+        return [o[0][0] for o in R.tiers_of(arr, "r1")[0]]
+
+    for n, want in ((R.T2_MIN - 1, 0), (R.T2_MIN, 1)):
+        arr = np.ones((200, 400), np.uint8)
+        arr[0, :n] = R.MIN_CODE
+        assert tiers(arr).count("t2") == want
+    arr = np.ones((200, 400), np.uint8)
+    arr[0, :R.T2_MIN] = R.MIN_CODE - 1
+    assert tiers(arr).count("t2") == 0                                 # below 10 dBZ it is echo, but not echo enough
+    for blocks, want in ((R.T1_MIN - 1, 0), (R.T1_MIN, 1)):            # each t1 pixel needs two fine pixels in its 4 x 4 block
+        arr = np.ones((200, 400), np.uint8)
+        for i in range(blocks):
+            arr[0, 4 * i:4 * i + 2] = R.MIN_CODE
+        assert tiers(arr).count("t1") == want
+    assert (R.T1_MIN, R.T2_MIN, R.MIN_DBZ) == (6, 40, 10.0)
+
+
+def test_the_lattice_equals_the_projection_everywhere(small, monkeypatch):
+    monkeypatch.setattr(R, "_OPERA_MAP", {})
+    rows, cols = np.indices((opera.ROWS, opera.COLS))
+    vals = (5.0 + ((rows * 7 + cols * 13) % 140) * 0.5).astype(np.float32)   # every source pixel names itself: half a pixel off shows
+    lat = R.opera_lattice(vals)
+    lons, lats = np.meshgrid((np.arange(400) + 0.5) / 100, 52 - (np.arange(200) + 0.5) / 100)
+    x, y = opera.forward(lats, lons)
+    want = R.code_table(vals[np.floor(-y / 1000).astype(int), np.floor(x / 1000).astype(int)])
+    assert (lat == want).all()
+
+
+def test_the_east_edge_of_the_grid():
+    lo, hi = 30.0, 70.0
+    for _ in range(50):
+        mid = (lo + hi) / 2
+        if float(opera.forward(55.0, mid)[0]) < opera.COLS * opera.PIXEL_M:
+            lo = mid
+        else:
+            hi = mid
+    inside = int(opera.source_index(np.float64(55.0), np.array([lo - 1e-4]))[0])
+    assert inside % opera.COLS == opera.COLS - 1
+    assert int(opera.source_index(np.float64(55.0), np.array([hi + 1e-4]))[0]) == -1   # never the next row's first column
+
+
+def test_the_gzip_limits(monkeypatch):
+    with pytest.raises(ValueError):
+        monkeypatch.setattr(mrms, "MAX_RAW_BYTES", 100)
+        mrms.gunzip(gzip.compress(b"x" * 1000))
+    monkeypatch.undo()
+    with pytest.raises(ValueError):
+        monkeypatch.setattr(mrms, "MAX_GZ_BYTES", 5)
+        mrms.gunzip(gzip.compress(b"x" * 1000))
+    monkeypatch.undo()
+    asked = []
+
+    class Fake:
+        def __init__(self, fileobj):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n=-1):
+            asked.append(n)
+            return b"x"
+
+    monkeypatch.setattr(mrms.gzip, "GzipFile", Fake)
+    mrms.gunzip(b"anything")
+    assert asked == [mrms.MAX_RAW_BYTES + 1]                           # a bomb stops at the limit
+
+
+def walk_to(raw, number):
+    p = 16
+    while True:
+        n, num = struct.unpack(">IB", raw[p:p + 5])
+        if num == number:
+            return p, n
+        p += n
+
+
+def test_a_lying_section_length_is_refused():
+    raw = bytearray(grib(np.full((4, 6), -99.0), 25.0, -160.0, 0.01))
+    p, _n = walk_to(raw, 3)
+    for lie in (4, len(raw) * 2):
+        bad = bytearray(raw)
+        bad[p:p + 4] = struct.pack(">I", lie)
+        with pytest.raises(ValueError):
+            mrms.read(bytes(bad))
+    p, n = walk_to(raw, 7)                                             # the last section reaching one byte into the end marker
+    bad = bytearray(raw)
+    bad[p:p + 4] = struct.pack(">I", n + 1)
+    with pytest.raises(ValueError):
+        mrms.read(bytes(bad))
+
+
+def test_a_file_of_two_fields_is_refused():
+    raw = grib(np.full((4, 6), -99.0), 25.0, -160.0, 0.01)
+    p, n = walk_to(raw, 7)
+    two_fields = bytearray(raw[:-4] + raw[p:p + n] + b"7777")
+    two_fields[8:16] = struct.pack(">Q", len(two_fields))
+    with pytest.raises(ValueError):
+        mrms.read(bytes(two_fields))
+
+
+def test_a_picture_of_another_size_is_refused():
+    raw = bytearray(grib(np.full((4, 6), -99.0), 25.0, -160.0, 0.01))
+    p, _n = walk_to(raw, 3)
+    raw[p + 30:p + 38] = struct.pack(">II", 7, 4)
+    with pytest.raises(ValueError):
+        mrms.read(bytes(raw))
+
+
+@pytest.mark.parametrize("scales,x,want", [
+    ((0, 1), 3, -998.7), ((1, 1), 3, -998.4), ((0x8001, 1), 3, -998.85), ((0, 0), 3, -9987.0), ((0, 0x8001), 3, -99870.0),
+])
+def test_the_scales_are_read_as_grib_writes_them(scales, x, want):
+    msg = mrms.read(grib(np.full((4, 6), -99.0), 25.0, -160.0, 0.01, scales=scales))
+    assert msg["binary_scale"] == (-1 if scales[0] == 0x8001 else scales[0])
+    assert abs(float(mrms.value_table(msg)[x]) - want) < 0.01
+
+
+def test_opera_gain_and_offset_are_applied(tmp_path):
+    a = np.full((opera.ROWS, opera.COLS), -9999000.0)
+    a[5, 5] = 10.0
+    p = str(tmp_path / "f.h5")
+    write_h5(p, a, gain=2.0, offset=1.0)
+    assert opera.read(p)["values"][5, 5] == 21.0
+
+
+def test_an_upload_outliving_the_hard_limit_stops_the_source_for_the_tick(two, monkeypatch):
+    slot = R.slot_of(NOW)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    t = {"v": 0.0}
+    files = {**r1_file(slot + minutes(4)), **r2_file(slot + minutes(4))}
+
+    def get(url, headers=None, timeout=60):
+        t["v"] = R.HARD_S + 1
+        return Answer(files[url])
+
+    R.main(["--sources", "mrms"], get=get, store=store, now=NOW, clock=lambda: t["v"])
+    assert not [k for k in store.objects if k.endswith(".png")]
+
+
+def test_the_frame_just_published_keeps_the_regions_clock(small, monkeypatch):
+    slot, older = R.slot_of(NOW), R.slot_of(NOW) - minutes(10)
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    p = R.empty_pointer()
+    p["started"] = "2026-11-06T10:00:00Z"                              # two hours ago: a bad file would mail if the region looked quiet
+    store.put("radar/v1/latest.json", json.dumps(p).encode(), "application/json", "x")
+    files = {**r1_file(slot + minutes(4)), mrms.url_of("D1", older + minutes(4)): BAD_GZ}
+    assert R.main(["--sources", "mrms"], get=Web(files), store=store, now=NOW) == 0
+    assert slot_rec(store, R.slot_name(older))["x"]["r1"] == 1
+
+
+def test_two_regions_stale_each_get_their_own_mail(two, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    store.objects["radar/v1/latest.json"] = old_pointer()
+    assert R.main(["--sources", "mrms"], get=Web(down=("noaa-mrms-pds",)), store=store, now=NOW) == 1
+    rec = store.get_json("radar/v1/stale-alarm.json")
+    assert "last_region_r1_alarm_utc" in rec and "last_region_r2_alarm_utc" in rec
+
+
+def test_a_tick_past_the_deadline_deletes_nothing(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = Deletes()
+    p = R.empty_pointer()
+    p.update(started="2026-11-06T11:00:00Z", gone=gone_list(2))
+    store.objects["radar/v1/latest.json"] = json.dumps(p).encode()
+    t = iter([0.0])
+    R.main(["--sources", "mrms"], get=Web(), store=store, now=NOW, clock=lambda: next(t, R.DEADLINE_S + 1.0))
+    assert store.deleted == []
+
+
+def test_a_retired_slot_reaches_the_pointer_on_a_tick_with_nothing_else_to_write(small, monkeypatch):
+    e1_frame(monkeypatch, set())
+    store = FakeStore()
+    old = R.slot_name(R.slot_of(NOW) - timedelta(minutes=10 * R.KEEP_SLOTS))
+    p = R.empty_pointer()
+    p.update(started="2026-11-06T11:00:00Z", slots=[{"t": old, "r": {"r1": {"o": 4}}}])
+    store.put("radar/v1/latest.json", json.dumps(p).encode(), "application/json", "x")
+    assert R.main(["--sources", "mrms", "--slots", "1"], get=Web(), store=store, now=NOW) == 0
+    assert [g["t"] for g in store.get_json("radar/v1/latest.json")["gone"]] == [old]
+
+
+def test_a_local_build_never_alarms_on_an_old_pointer(small, monkeypatch, tmp_path):
+    e1_frame(monkeypatch, set())
+    target = tmp_path / "radar" / "v1" / "latest.json"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(old_pointer())
+    assert R.main(["--local", str(tmp_path), "--sources", "mrms", "--slots", "1"], get=Web(), now=NOW) == 0
+    assert R.main(["--local", str(tmp_path), "--sources", "mrms"], get=Web(), now=NOW) == 0
+    assert not (tmp_path / "radar" / "v1" / "stale-alarm.json").exists()

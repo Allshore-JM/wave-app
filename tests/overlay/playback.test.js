@@ -3672,7 +3672,7 @@ test('G33 re-check P3-5: the lakes credit needs lake water in the view, not the 
 function readoutOn(w, o) {
   const cont = { clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} }, appendChild() {}, addEventListener() {}, removeEventListener() {} };
   w.map.getContainer = () => cont;
-  const ce = w.doc.createElement; w.doc.createElement = (t) => { const e = ce(t); e.style = {}; e.remove = () => {}; return e; };
+  const ce = w.doc.createElement; w.doc.createElement = (t) => { const e = ce(t); e.style = {}; e.classList = { toggle() {} }; e.remove = () => {}; return e; };
   w.orig._bindReadout.call(o);
   const fn = (ev) => o._listeners.filter((l) => l[0] === ev).map((l) => l[1]).pop();
   return { move: (lat, lng) => fn('mousemove')({ latlng: { lat, lng }, containerPoint: { x: 400, y: 300 }, originalEvent: { pointerType: 'mouse', target: null } }), out: () => fn('mouseout')({}) };

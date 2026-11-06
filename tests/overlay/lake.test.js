@@ -705,7 +705,7 @@ test('the credit names the lakes while a lake frame is drawn under the model and
   assert.match(I.LAKE_ATTRIBUTION, /NDFD winds/); assert.match(I.LAKE_ATTRIBUTION, /Not an official NWS product/);
   // the readout: the real _bindReadout on a fake map; the layer answers per point
   const made = [], handlers = {};
-  const mkEl = () => { const e = { hidden: false, style: {}, textContent: '', className: '', remove() {} }; made.push(e); return e; };
+  const mkEl = () => { const e = { hidden: false, style: {}, textContent: '', className: '', classList: { toggle() {} }, remove() {} }; made.push(e); return e; };
   const hadDoc = global.document; global.document = { createElement: mkEl };
   try {
     const container = { appendChild() {}, addEventListener() {}, removeEventListener() {} };

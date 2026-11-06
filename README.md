@@ -1322,12 +1322,12 @@ at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
 
-### The radar layer on the map (plan section 85, the client; overlay asset 2.25.0)
+### The radar layer on the map (plan section 85, the client; overlay asset 2.25.1)
 
 `RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no
 run lines. It opens still on the newest frame and plays only on Play; the loop choice is 2 hours (a frame every 10 minutes), 6 (20), 12
-(30) or 24 (60), remembered for the tab, plus the newest frame whatever its minute. The speeds are the animals'. A light tint marks the
-water and land radar can see; nothing is drawn outside it.
+(30) or 24 (60), remembered for the tab, plus the newest frame whatever its minute. The speeds are the animals'. Echoes use the familiar radar colours; a
+light tint (16 % white) marks the water and land radar can see; nothing is drawn outside it.
 
 What is drawn is what the hover reads: one sampler for both, over the same pieces. A pixel belongs to the first region in the order
 Hawaii, Guam, US, Alaska, Caribbean, Europe whose newest whole-region frame covers it (by coverage, never by box: the US box's no-coverage

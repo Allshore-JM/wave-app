@@ -66,17 +66,11 @@
     wind: [[0,'#6271b7'],[0.0648,'#3961a0'],[0.1296,'#4a94a9'],[0.1944,'#4d8d7b'],[0.2592,'#53a553'],[0.324,'#359f35'],
            [0.3888,'#a79d51'],[0.4536,'#9f7f3a'],[0.5184,'#a16c5c'],[0.5832,'#813a4e'],[0.6804,'#af5088'],[0.81,'#754a93'],[1,'#d9c2d9']]
   };
-  // The radar's colours over the legend's 5-65 dBZ, and the tint over the area radar sees: two candidates each for the owner's pick
-  // on real frames (?ovradar=a|b, ?ovtint=0.06..0.2; plan section 85, step 4).
-  var RADAR_PALETTES = {
-    a: [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
-        [0.583, '#e5bc00'], [0.667, '#fd9500'], [0.75, '#fd0000'], [0.833, '#d40000'], [0.917, '#bc0000'], [1, '#f800fd']],
-    b: [[0, '#a8e6cf'], [0.167, '#5ecf8a'], [0.333, '#2ea44f'], [0.417, '#9ccc3c'], [0.5, '#f4d13d'], [0.583, '#f59e2c'], [0.667, '#ea5b24'],
-        [0.75, '#d3212d'], [0.833, '#a8123f'], [0.917, '#c026d3'], [1, '#f5d0fe']]
-  };
-  RAMPS.radar = RADAR_PALETTES[/[?&]ovradar=b(&|$)/.test(pageQuery()) ? 'b' : 'a'];
-  var RADAR_TINT_A = (function () { var m = /[?&]ovtint=(0?\.[0-9]+)(&|$)/.exec(pageQuery()), v = m ? Number(m[1]) : 0.08; return Math.round(255 * Math.min(0.3, v)); })();
-  var RADAR_TINT = [255, 255, 255, RADAR_TINT_A], RADAR_ALPHA = [0.5, 0.88];   // alpha at the 5-dBZ floor and from 25 dBZ up
+  // The radar's colours over the legend's 5-65 dBZ (the familiar radar scale) and the tint over the area radar sees, 16 % white
+  // (the owner's pick on real frames, plan section 85).
+  RAMPS.radar = [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
+                 [0.583, '#e5bc00'], [0.667, '#fd9500'], [0.75, '#fd0000'], [0.833, '#d40000'], [0.917, '#bc0000'], [1, '#f800fd']];
+  var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.5, 0.88];   // alpha at the 5-dBZ floor and from 25 dBZ up
   // Under the wind overlay the site's satellite imagery (earth tones) gives way to a neutral relief map
   // with a flat light sea; the field is multiplied into it (the sea shows the colour itself, land the
   // colour shaded by the terrain) and the coastlines are drawn into the wind tiles. The imagery stays for

@@ -312,6 +312,8 @@ test('the tint: over the covered area only, the same on every step; echo over it
   st.loop = st.frames;
   const layer = layerWith(w, st, 1, false), [x, y, z] = [0, 7, 4], el = tile(layer, x, y, z);
   const tint = w.I.RADAR_TINT, img = el.lastImg;
+  assert.equal(tint[3], 41, "the owner's pick: 16 % white");
+  assert.equal(tint[0] + tint[1] + tint[2], 765);
   assert.ok(img, 'covered: drawn');
   let tinted = 0, clear = 0;
   for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) {

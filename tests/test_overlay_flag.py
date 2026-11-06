@@ -384,6 +384,14 @@ def test_radar_overlay_env_and_the_page(monkeypatch):
         assert "var RADAR" not in rec["body"] and 'value="radar"' not in rec["body"], name
 
 
+def test_the_radar_look_is_one_look():
+    """The candidates shown to the owner are gone: no query changes the palette or the tint (section 85, step 4)."""
+    js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
+    for gone in ("ovradar", "ovtint", "RADAR_PALETTES", "RADAR_TINT_A"):
+        assert gone not in js, gone
+    assert "RADAR_TINT = [255, 255, 255, 41]" in js
+
+
 def test_the_radar_notice_the_credit_links():
     """The radar credit is short (the map's corner: 29 visible characters), so what the terms ask for is in the notice it links:
     NOAA named at its request and not an official product; OPERA's CC BY 4.0 with its link and EUMETNET's rights; what was changed."""

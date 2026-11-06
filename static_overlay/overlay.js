@@ -3239,7 +3239,8 @@
     if (!force && this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     if (!this.pointer) this.status = 'loading';
     var had = !!this.pointer;
-    this.loading = this._read().then(function (ok) {
+    var p = this.loading = this._read().then(function (ok) {
+      if (self.loading !== p) return ok || had ? self : null;   // stopped and asked again meanwhile: that read decides
       self.loading = null;
       if (ok || had) { self.status = 'ok'; return self; }
       self.status = 'failed'; self.failedAt = Date.now();
@@ -3260,12 +3261,17 @@
       self._read().then(function () { self._arm(); });
     }, Math.max(wait, this.pointerMs));
   };
-  RadarStore.prototype.hide = function () { this.hidden = true; if (this.timer) { clearTimeout(this.timer); this.timer = null; } };
+  RadarStore.prototype.hide = function () {
+    this.hidden = true;
+    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+  };
   RadarStore.prototype.show = function () {
     var self = this;
     this.hidden = false;
     if (!this.active) return;
     if (Date.now() - this.readAt >= this.pointerMs) this._read().then(function () { self._arm(); }); else this._arm();
+    this._pump();
   };
   RadarStore.prototype._table = function (region, tier) {
     var k = region + '|' + tier;
@@ -3430,6 +3436,7 @@
     clearTimeout(rec.dog); rec.ctrl.abort();
   };
   RadarStore.prototype._pump = function () {
+    if (this.hidden) return;                                  // show() starts it again
     var self = this, n = 0, now = Date.now(), soonest = null, k;
     for (k in this.inflight) n++;
     for (var i = 0; i < this.queue.length; i++) {
@@ -3492,6 +3499,7 @@
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
     if (this.reading && this.readCtrl) this.readCtrl.abort();
+    this.reading = null; this.loading = null;                 // the next load reads afresh, not this aborted read
     for (var k in this.inflight) this._drop(k);
     this.queue = []; this.planSet = Object.create(null); this.onLanding = null; this.onPointer = null;
   };
@@ -3755,14 +3763,14 @@
     var before = this._stepKey();
     this._frames(false);
     this._plan();
-    if (!this._tryJoin() && before !== this._stepKey()) this._show();
+    if (!this._tryJoin(before) && before !== this._stepKey()) this._show();
     this.ov._radarUI();
   };
-  RadarPlayer.prototype._tryJoin = function () {
+  RadarPlayer.prototype._tryJoin = function (prevKey) {
     var p = this.pending;
     if (!p || !this.store.frameReady(p, this.view(), true)) return false;
     this.joined = p.t; this.pending = null;
-    var before = this._stepKey();
+    var before = prevKey || this._stepKey();
     this._frames(false);
     this._plan();
     if (before !== this._stepKey()) this._show();
@@ -3786,6 +3794,7 @@
   RadarPlayer.prototype.play = function (resume) {
     if (this.playing || this.frames.length < 2) return;
     this.playing = true; this.gen++; this.due = Date.now(); this.waitFrom = 0;
+    if (!resume) this._plan();                                // what fits is known better now than at the first plan
     this.holdFrom = resume || this.store.stacksReady(this.view()) ? 0 : Date.now();   // the frame on the map stays, at its tier, while the stacks come in
     if (!resume && this.idx === this.frames.length - 1) {                 // Play from the newest frame starts the loop at its start
       if (this.holdFrom) this.fromStart = true; else this.idx = 0;        // after the hold: frame 0's fine files may not be in yet
@@ -3800,7 +3809,7 @@
     if (this._paint) { this._paint(); this._paint = null; }
     if (this.layer && this.layer.store) { this.layer.playing = false; }
   };
-  RadarPlayer.prototype.toggle = function () { if (this.playing) { this.pause(); this.layer._redraw(true); } else this.play(); this.ov._radarUI(); };
+  RadarPlayer.prototype.toggle = function () { if (this.playing) { this.pause(); this._plan(); this.layer._redraw(true); } else this.play(); this.ov._radarUI(); };
   RadarPlayer.prototype.speedChanged = function () { this.due = Date.now(); };
   RadarPlayer.prototype._interval = function () {
     var iv = 1000 / (BASE_FPS * speedOf(this.ov.speed));
@@ -3864,6 +3873,7 @@
     this.loopH = h; save({ radarLoop: h });
     this._frames(false);
     this._plan();
+    if (this.playing && !this.store.stacksReady(this.view())) this.holdFrom = Date.now();
     this._show();
     this.ov._radarUI();
   };
@@ -5867,7 +5877,7 @@
       else if (fr) {
         var rec = st.resolve(regs[i], p.idx);
         if (rec && rec !== fr) out.push(name + ' shows ' + this._radarClock(real(rec, regs[i])).clock + '.');
-        else if (!rec) out.push(name + ': no picture for ' + this._radarClock(radarSlotMs(fr.t)).clock + '.');
+        else if (!rec) out.push(name + ': no picture for ' + this._radarClock(real(fr, regs[i])).clock + '.');
       }
     }
     if (loading) out.unshift('Loading the radar pictures.');

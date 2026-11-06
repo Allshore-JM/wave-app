@@ -85,3 +85,60 @@ Heap vs Off 7.8 MB: radar 21-39 MB (47-51 at long loops), wave height at shark 6
 - At Hawaii's opening zoom 5 of 40 cell pieces flip tier up to 12 times in a loop: a t2 cell listed on some steps and not others draws t1 on the others (near T2_MIN 40). US z6.5: 0.
 - The sideways phone's sheet keeps play, slider and speed, but has no loop select or legend.
 - Italy, Austria and Greece read "no radar coverage" (OPERA holds no data from them).
+
+## The owner's two requests during G56: sharper when zoomed out, playback kept
+
+Owner: "improve the resolution at wider zoom extents", "but assure normal playback and performance is maintained". Built in 2.25.4: t1 from tile zoom 4 and t2 from 7 (were 6 and 9); `radarPic` keeps only a box round the rain, so the sharper tiers fit the memory; store cap 48 MB (32 MB under 768 px). Timed with the frames cold (gap p50/p90 ms, 0 skips): Europe z7 2-h 128/134 -> 127/135; US z7 126/135 -> 128/133; US z5 24-h 126/137 -> 124/132; Hawaii z8.8 24-h 130/137 -> 124/133.
+
+## G56: two fresh reviewers on 2.25.3
+
+A (code, Node on the real module, on Fable): 0 P0, 1 P1, 2 P2, 9 P3. B (test site, trusted input): 0 P0, 2 P1, 4 P2, 7 P3. Records: scratch `g56/a/g56-a-report.md`, `g56/b/g56-b-report.md`.
+
+| # | Finding | Outcome |
+|---|---|---|
+| A-1 / B-1 (P1) | Paused mid-loop, a new slot arrives: the map shows the next frame under the old label | Fixed 2.25.4: the player keeps the shown time across a join |
+| B-2 / A-2 (P1 / P2) | A step with no picture looks dry and reads "no echo", no note | Fixed: "no radar picture for this time" + the panel note |
+| A-3 (P2) | A pointer time far ahead of the clock made the re-read a hot loop | Fixed: re-read delay bounded |
+| B-3 (P2) | Phone long-press readout ran off the right edge | Fixed 2.25.5 (clamped, flips left; x 30/100/190/340 inside 375 px) |
+| B-4 (P2) | While pictures load nothing says so; hover said "no radar coverage" | Fixed: "Loading the radar pictures.", hover "radar pictures not in yet" |
+| B-5 (P2) | Hawaii's rain 2-4.6 times too large at tile zooms below t2 | Fixed by the new tier zooms + the job's T1_MIN / T2_MIN |
+| B-6 (P2) | Play just after a view lands: fine picture drops to t0 for seconds | Fixed in two steps: 2.25.5 hold, 2.25.6 the newest frame stays through the hold (below) |
+| B-7 (P3) | Refused pointer: no recovery in an open tab | Fixed 2.25.5: quiet re-ask each minute (recovered in 60.3 s) |
+| B-8 (P3) | Damaged file final until the layer is left | Fixed: retried after 5 min |
+| B-9, B-10 (P3) | Label vs readout time; "1307 min"; word vs rounded number | Fixed (label from the file's time; hours; word from the rounded dBZ; the note too in 2.25.7) |
+| B-11, B-12, B-13 (P3) | Notice wording; sideways scale clipped; 28-px loop select | Fixed ("Modified by Allshore Surf"; folds when the scale cannot fit; 36 px) |
+| A-4 / K1 (P3) | Tier flips in light showers, in the data | Owner: "write them all": job change T1_MIN, T2_MIN = 1, 1 on `job/radar-tmin` |
+| A-5 .. A-10, A-12 (P3) | Pointer watchdog after Off; change-test field; box change; area bound; redraw on every pointer; withdrawn pending slot; FIFO comment | Fixed in 06d6160 |
+| A-11 (P3) | Europe z7 long loops stay t1: past the memory budget | Recorded, owner told |
+| Not changed | "rain" said over snow (owner awareness) | Recorded |
+
+K1 measured on real frames, 3 slots: t2 cells per slot at need 40 / 10 / 1 = 105 / 112 / 114.7, +5.4 KB a slot; t2 writes 0.45 -> 0.50 M a month; t1 at 6 / 1 = 24 / 25.
+
+## Re-check of the fixes on 2.25.5-2.25.7 (B's own scripts)
+
+Found while re-checking:
+- **R-1 (2.25.6).** `play()` moved to frame 0 before the hold, so the hold kept the tier rule on a frame holding only t0: Europe on 4G still went 10 -> 25 -> 100 ppd. Now the newest frame stays on the map until the stacks are in (3 s at most), then the loop starts at frame 0. Europe 4G stays 100 ppd throughout; Europe 1080p 100 ppd. Mutants 6/6.
+- **R-2 (2.25.7).** The note counted from the slot, the label from the file: "43 min ago" beside "47 min old". Both count from the file's own time.
+
+Held on 2.25.6 / 2.25.7, trusted input:
+- Refused pointer: "Overlay unavailable" + Retry, recovers alone in 60.3 s. Slow pointer 10 s fine; 20 s the error panel with Retry. Unknown format and an HTML body: the error, no crash.
+- Stale slots 2 / 4 / 12 / 60 / 130: notes in hours from 60 min. Frames gone from the bucket: the region's note, hover "radar pictures not in yet", recovered in 56 s once the pointer told the truth.
+- A region's files refused: note, hover, playing goes on, recovered in 55.5 s. Newest 3 refused: "no radar picture for this time" there, steps back draw. A truncated t0: "cannot be read", other frames draw. Mid-loop gaps: "Hawaii shows 5:40 AM." then its own frames.
+- Play at once on slow files: waits 3 s on the frame shown ("Loading the radar pictures."), then frame 0 with pictures (before: 10 steps with nothing drawn).
+- Slot join paused at 2 h and 24 h: the label = the picture, hover = the label, a key steps one back.
+- Markup in a region name shows as text. Credit opens above the phone sheet, links reachable; the notice page opens; the map does not move under the slider.
+
+Timing on the served 2.25.7 (shark, cold frames, gap p50/p90 ms once loaded, 0 skips):
+| View | Gaps | Long tasks | Store |
+|---|---|---|---|
+| 1920x1080 Hawaii z8.8 2 h | 128/133 | 0 ms/s | 3 MB |
+| 1920x1080 US z7 2 h | 126/134 | 0 | 40.2 MB |
+| 1920x1080 Europe z7 2 h | 129/135 | 0 | 32.1 MB |
+| 1920x1080 US z5 24 h | 125/133 | 55 | 46.3 MB |
+| 1920x1080 Hawaii z8.8 24 h | 125/135 | 99 | 5.4 MB |
+| Phone Hawaii z8.7 2 h | 128/134 | 0 | 1 MB |
+| Phone Europe z5 2 h | 130/133 | 0 | 13.9 MB |
+
+While loading, in rain, the first 8 s show 28 steps instead of 43: the hold and the short step wait, by design. Tier flips remain at 3-44 cells until `job/radar-tmin` is live and the old slots age out (24 h).
+
+Not checked: Guam in rain, rain crossing a seam, echoes above 48 dBZ (none on the nights tested), a real iPhone or a real slow link.

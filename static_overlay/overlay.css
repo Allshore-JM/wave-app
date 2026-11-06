@@ -39,6 +39,7 @@
 .ov-details { overflow-y: auto; padding-right: 2px; }
 .ov-readout { position: absolute; z-index: 700; pointer-events: none; background: rgba(0,0,0,0.75); color: #fff;
   font: 12px system-ui, sans-serif; padding: 2px 6px; border-radius: 4px; transform: translate(12px, -28px); white-space: nowrap; }
+.ov-readout.ov-readout-left { transform: translate(calc(-100% - 12px), -28px); }
 .ov-toggle, .ov-btn { font-size: 12px; border: 1px solid #0f8f8c; background: #fff; color: #0f8f8c; border-radius: 8px; line-height: 1.2;
   padding: 1px 6px; cursor: pointer; }
 .ov-btn { min-width: 26px; min-height: 22px; }

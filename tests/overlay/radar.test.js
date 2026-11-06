@@ -15,7 +15,9 @@ function pixelCentre(x, y, z, px, py) {
   const n = 256 * Math.pow(2, z), wx = ((x % Math.pow(2, z)) + Math.pow(2, z)) % Math.pow(2, z);
   return { lat: Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (y * 256 + py + 0.5) / n)) * 180 / Math.PI, lon: (wx * 256 + px + 0.5) / n * 360 - 180 };
 }
-function bilinear(pic, fy, fx) {
+function bilinear(pic, fyFile, fxFile) {
+  // The arguments are file positions (the job's geometry); a cropped picture starts at its r0, c0.
+  const fy = fyFile - (pic.r0 || 0), fx = fxFile - (pic.c0 || 0);
   const r0 = Math.floor(fy), c0 = Math.floor(fx), wy = fy - r0, wx = fx - c0;
   let w = 0, acc = 0;
   for (const [r, c, f] of [[r0, c0, (1 - wx) * (1 - wy)], [r0, c0 + 1, wx * (1 - wy)], [r0 + 1, c0, (1 - wx) * wy], [r0 + 1, c0 + 1, wx * wy]]) {
@@ -28,7 +30,7 @@ function bilinear(pic, fy, fx) {
 // One store with one pointer, and a helper to land pictures without the network.
 function storeWith(w, doc) {
   const st = new w.I.RadarStore(ROOT); st._take(doc);
-  st.landed = (slot, region, tier, name, fr) => st._land({ key: st.key(slot, region, tier, name), slot, region, tier }, w.I.radarPic(fr));
+  st.landed = (slot, region, tier, name, fr) => st._land({ key: st.key(slot, region, tier, name), slot, region, tier }, w.I.radarPic(fr, tier !== 't0'));
   return st;
 }
 function layerWith(w, st, idx, playing) {
@@ -112,7 +114,7 @@ test('radarViewOf: longitudes to one copy with a small margin, the whole world p
   assert.equal(I.radarHits(dl, 5, -179, 10, -170), true, 'a cell past 180 from the view that spans it');
   assert.equal(I.radarHits(dl, 5, 140, 10, 150), false);
   assert.equal(I.radarHits(dl, 30, 175, 40, 178), false, 'above the view');
-  assert.deepEqual([5.99, 6, 8.99, 9, 12].map(I.radarWantTier), [0, 1, 1, 2, 2]);
+  assert.deepEqual([3.99, 4, 6.99, 7, 12].map(I.radarWantTier), [0, 1, 1, 2, 2], 'about one screen pixel per picture node');
 });
 test('the colour table: nothing below the floor, thin drizzle, solid rain; the words', () => {
   const lut = I.radarLut();
@@ -142,8 +144,11 @@ test('the store reads real frames: the client\'s decoder = a plain PNG reader, e
     await until(() => w.answer(new RegExp(u.replace(/[-/]/g, '\\$&') + '$'), fixtureBytes('hawaii_' + tier + '_' + nm + '.png')));
     await until(() => st.pics.has(st.key(EXPECT.slot, 'hawaii', tier, nm)));
     const pic = st.pics.get(st.key(EXPECT.slot, 'hawaii', tier, nm));
-    assert.deepEqual([pic.cols, pic.rows], [502, 502]);
-    for (const [r, c, v] of EXPECT[tier].echo) assert.equal(pic.q[r * 502 + c], v, tier + ' ' + r + ',' + c);
+    // A cell keeps the box round its rain: every sampled echo pixel lies inside it, and the box is inside the file's 502 x 502.
+    assert.ok(pic.r0 >= 0 && pic.c0 >= 0 && pic.r0 + pic.rows <= 502 && pic.c0 + pic.cols <= 502, tier + ' box inside the file');
+    assert.equal(pic.q.length, pic.cols * pic.rows);
+    assert.ok(pic.bytes < 502 * 502, tier + ' really cropped: ' + pic.cols + ' x ' + pic.rows);
+    for (const [r, c, v] of EXPECT[tier].echo) assert.equal(pic.q[(r - pic.r0) * pic.cols + (c - pic.c0)], v, tier + ' ' + r + ',' + c);
   }
   st.stop();
 });
@@ -227,6 +232,62 @@ test('the budget: a stack that does not fit is not started; the cap never evicts
 });
 
 // ------------------------------------------------------------------ the sampler and the readout
+test('a cell keeps only the box round its rain: the same pixels, a fraction of the memory', () => {
+  const side = 502, rain = new Set();
+  for (let r = 120; r < 180; r++) for (let c = 300; c < 390; c++) if ((r + c) % 3) rain.add(r * side + c);
+  const q = new Uint8Array(side * side); rain.forEach((i) => { q[i] = 40 + (i % 50); });
+  q[121 * side + 301] = 1;                                   // a code 1 beside the rain is no echo, and is not what makes the box
+  const fr = { q, cols: side, rows: side };
+  const full = I.radarPic(fr), box = I.radarPic(fr, true);
+  assert.deepEqual([full.r0, full.c0, full.cols, full.rows, full.bytes], [0, 0, side, side, side * side], 'not cropped unless asked: t0 holds the coverage');
+  assert.deepEqual([box.r0, box.c0, box.cols, box.rows, box.bytes], [120, 300, 90, 60, 90 * 60]);
+  assert.equal(box.q[0 * 90 + 1], q[120 * side + 301], 'the first row'); assert.equal(box.q[59 * 90 + 89], q[179 * side + 389], 'the last corner');
+  assert.equal(box.re.length, 60); assert.ok(box.re.every((v) => v === 1));
+  const dry = I.radarPic({ q: new Uint8Array(side * side), cols: side, rows: side }, true);
+  assert.deepEqual([dry.cols, dry.rows, dry.bytes], [0, 0, 0], 'a cell with nothing in it holds nothing');
+  // Every pixel of a tile over the cell, through the one sampler, full against cropped, at the box's edges too.
+  const tile = 256, cases = [{ z: 7, x: 8, y: 54 }, { z: 9, x: 34, y: 217 }, { z: 11, x: 137, y: 871 }];
+  for (const c of cases) {
+    const lats = new Float64Array(tile), lons = new Float64Array(tile), N = tile * 2 ** c.z;
+    for (let i = 0; i < tile; i++) {
+      lats[i] = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * (c.y * tile + i + 0.5) / N)) * 180 / Math.PI;
+      lons[i] = (c.x * tile + i + 0.5) / N * 360 - 180;
+    }
+    const own = new Uint8Array(tile * tile).fill(1), a = new Float64Array(tile * tile), b = new Float64Array(tile * tile);
+    const lat0 = Math.floor(lats[128] / 5) * 5, lon0 = Math.floor(lons[128] / 5) * 5;
+    const piece = (pic) => ({ pic, own: 1, ppd: 100, x0: 0, x1: tile, y0: 0, y1: tile, top: lat0 + 5, ay: 0.5, left: lon0, ax: 0.5 });
+    const na = I.radarSample([piece(full)], { _rLat: lats, _rLon: lons }, own, 0, tile, 0, tile, a);
+    const nb = I.radarSample([piece(box)], { _rLat: lats, _rLon: lons }, own, 0, tile, 0, tile, b);
+    assert.equal(nb, na, 'z' + c.z + ' pixels with echo');
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) assert.fail('z' + c.z + ' pixel ' + i + ': ' + a[i] + ' vs ' + b[i]);
+  }
+});
+test('the budget counts what cells really hold; heavier rain than the estimate gives way, never the cap', () => {
+  const w = world();
+  const doc = pointerDoc('2026-11-06T12:00:00Z', 13, ['hawaii'], () => ({ t1: 'f', t2: 'ffffffff' })), st = storeWith(w, doc);
+  st.active = true; st._pump = () => {};
+  const view = { whole: false, s: 18, n: 23, w: -161, e: -155, z: 10 };
+  st.plan(view, st.frames, 12, null);
+  const side = 502, before = st._cellBytes(st.key(st.frames[0].t, 'hawaii', 't2', '20_-160'), 't2');
+  assert.equal(before, side * side * 0.5, 'nothing landed: half a cell');
+  const fill = (n) => ({ q: new Uint8Array(side * side).map((_, i) => (i % side < n ? 40 : 0)), cols: side, rows: side });
+  st.landed(st.frames[0].t, 'hawaii', 't2', '20_-160', fill(10));
+  assert.equal(st._cellBytes(st.key(st.frames[0].t, 'hawaii', 't2', '20_-160'), 't2'), 10 * side, 'landed: its real size');
+  assert.equal(st._cellBytes(st.key(st.frames[1].t, 'hawaii', 't2', '20_-160'), 't2'), 10 * side, 'not landed: the mean of what has');
+  // A small cap and full cells: the stack was on, a landing puts the store over, the stack goes off and what it held is let go.
+  const s2 = storeWith(w, doc); s2.active = true; s2._pump = () => {}; s2.maxBytes = 1.2 * 1024 * 1024;
+  s2.tierSeen.t2 = { n: 1, bytes: 1000 }; s2.tierSeen.t1 = { n: 1, bytes: 1000 };
+  s2.plan(view, s2.frames, 12, null);
+  assert.equal(s2.stack.t2, true, 'small cells fit');
+  const names = s2._cellsIn('hawaii', 't2', view).map((c) => c.name);
+  for (let f = 0; f < 13 && s2.stack.t2; f++) for (const n of names) s2.landed(s2.frames[f].t, 'hawaii', 't2', n, fill(side));
+  assert.equal(s2.stack.t2, false, 'full cells: the t2 stack gives way');
+  assert.ok(s2.queue.every((q) => q.tier !== 't2' || q.slot === s2.frames[12].t), 'only the shown frame still asks for t2');
+  const shown = s2.frames[12].t;
+  let extra = 0; s2.pics.forEach((p, k) => { if (k.includes('/t2/') && !k.startsWith(shown)) extra += p.bytes; });
+  assert.ok(s2.bytes <= s2.maxBytes + names.length * side * side, 'bounded: ' + s2.bytes + ', other frames hold ' + extra);
+  s2.release(); assert.equal(s2.lastPlan, null);
+});
 test('tile = readout = the job\'s geometry, on real frames at every tier', async () => {
   const w = world(), st = new w.I.RadarStore(ROOT); st._take(POINTER);
   const rec = st.index[EXPECT.slot];
@@ -243,7 +304,7 @@ test('tile = readout = the job\'s geometry, on real frames at every tier', async
   const t1 = await land('t1', EXPECT.t1.name, 'hawaii_t1_' + EXPECT.t1.name + '.png');
   const layer = layerWith(w, st, 0, false);
   const box = POINTER.regions.hawaii.box;
-  // t0 at tile zoom 4: an echo node's pixel, against the reference
+  // t0 at tile zoom 3: an echo node's pixel, against the reference
   const check = (z, lat, lon, pic, fyFx) => {
     const size = 256 * Math.pow(2, z), wx = (lon + 180) / 360 * size, sinL = Math.sin(lat * Math.PI / 180), wy = (0.5 - Math.log((1 + sinL) / (1 - sinL)) / (4 * Math.PI)) * size;
     const x = Math.floor(wx / 256), y = Math.floor(wy / 256), px = Math.floor(wx) - x * 256, py = Math.floor(wy) - y * 256;
@@ -260,7 +321,7 @@ test('tile = readout = the job\'s geometry, on real frames at every tier', async
   let checked = 0;
   for (const [r, c] of EXPECT.t0.hawaii.echo) {
     const lat = box[2] - (r + 0.5) / 10, lon = box[1] + (c + 0.5) / 10;
-    if (check(4, lat, lon, t0, (la, lo) => [(box[2] - la) * 10 - 0.5, (lo - box[1]) * 10 - 0.5])) checked++;
+    if (check(3, lat, lon, t0, (la, lo) => [(box[2] - la) * 10 - 0.5, (lo - box[1]) * 10 - 0.5])) checked++;
   }
   assert.ok(checked >= 20, 't0 pixels checked ' + checked);
   // t2 at tile zoom 12
@@ -276,12 +337,12 @@ test('tile = readout = the job\'s geometry, on real frames at every tier', async
     }
   }
   assert.ok(checked >= 20, 't2 pixels checked ' + checked);
-  // t1 at tile zoom 7
+  // t1 at tile zoom 6
   const nm1 = EXPECT.t1.name.split('_').map(Number); checked = 0;
   for (const [r, c] of EXPECT.t1.echo) {
     const lat = nm1[0] + 20 + 0.5 / 25 - r / 25, lon = nm1[1] - 0.5 / 25 + c / 25;
     if (lat < box[0] || lat >= box[2] || lon < nm1[1] || lon >= nm1[1] + 20) continue;
-    if (check(7, lat, lon, t1, (la, lo) => [(nm1[0] + 20 - la) * 25 + 0.5, (lo - nm1[1]) * 25 + 0.5])) checked++;
+    if (check(6, lat, lon, t1, (la, lo) => [(nm1[0] + 20 - la) * 25 + 0.5, (lo - nm1[1]) * 25 + 0.5])) checked++;
   }
   assert.ok(checked >= 10, 't1 pixels checked ' + checked);
   st.stop();
@@ -635,9 +696,215 @@ test('a region whose pictures do not answer says so; the note goes when they lan
   assert.ok(/hawaii.*not answering\. Trying again\./.test(ov._radarNote()), ov._radarNote());
   st.fails[key] = { at: Date.now(), final: true };
   assert.ok(/hawaii.*cannot be read\./.test(ov._radarNote()), ov._radarNote());
-  st.cov.hawaii = { slot: nw.t, pic: { q: new Uint8Array(1), cols: 1, rows: 1 } };   // the coverage is in hand: the map is right, no note
+  st.fails[key] = { at: Date.now(), final: false };
+  st.cov.hawaii = { slot: nw.t, pic: { q: new Uint8Array(1), cols: 1, rows: 1 } };   // an older picture is in hand: the newest still does not answer
+  assert.ok(/hawaii.*not answering/.test(ov._radarNote()), ov._radarNote());
+  st.pics.set(key, { q: new Uint8Array(1), cols: 1, rows: 1, bytes: 1 });             // it landed
   assert.ok(!/not answering|cannot be read/.test(ov._radarNote()), ov._radarNote());
   ov.unmount();
+});
+test('the panel and the hover say what is known: loading, no picture for the time shown', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, pointerDoc(new Date(Date.now() - Date.now() % 600000 - 600000).toISOString().replace('.000Z', 'Z'), 8)); await settle();
+  const st = ov.radar, layer = ov.radarLayer, p = ov.radarPlayer, box = BOXES.hawaii;
+  assert.ok(/^Loading the radar pictures\.$/.test(ov._radarNote()), ov._radarNote());
+  const z = 4, pre = tileAt(layer, box[2] - 3, box[1] + 3, z);
+  assert.ok(pre);
+  assert.equal(layer.readoutAt(box[2] - 3, box[1] + 3, z).kind, 'unknown', 'nothing is known yet here');
+  assert.equal(ov._radarReadout({ kind: 'unknown' }), 'radar pictures not in yet');
+  assert.equal(st.coverageDue(box[2] - 3, box[1] + 3), true);
+  assert.equal(st.coverageDue(box[2] - 3, box[1] + 3 + 360), true, 'a world copy');
+  assert.equal(st.coverageDue(0, 0), false, 'outside every box');
+  const fr = st.frames, older = fr[0];
+  st._land({ key: st.key(older.t, 'hawaii', 't0'), slot: older.t, region: 'hawaii', tier: 't0' }, w.I.radarPic(t0Of('hawaii', () => 1)));   // only the oldest frame's picture: the newest has none within the hold
+  assert.ok(st.cov.hawaii, 'coverage in');
+  p.scrub(p.frames.length - 1);
+  assert.ok(/no picture for/.test(ov._radarNote()), ov._radarNote());
+  for (const k of Object.keys(layer._tiles)) delete layer._tiles[k];                  // the tile drawn afresh, as the landing's redraw does
+  tileAt(layer, box[2] - 3, box[1] + 3, z);
+  assert.equal(layer.readoutAt(box[2] - 3, box[1] + 3, z).kind, 'nopic', 'covered, but no picture for this time: not "no echo"');
+  assert.equal(ov._radarReadout({ kind: 'nopic', region: 'hawaii', rec: null }), 'no radar picture for this time');
+  ov.unmount();
+});
+test('the readout stays on the map: past the right edge it goes to the left of the cursor', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2)); await settle();
+  const mv = w.reg.map.mousemove[w.reg.map.mousemove.length - 1], el = ov.readout, box = BOXES.hawaii;
+  tileAt(ov.radarLayer, 21, -158, Math.round(w.map.getZoom()));
+  el.offsetWidth = 280;
+  mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 100, y: 100 }, originalEvent: {} });
+  assert.equal(el.classList.contains('ov-readout-left'), false);
+  mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 1000, y: 100 }, originalEvent: {} });
+  assert.equal(el.classList.contains('ov-readout-left'), true, '1000 + 12 + 280 is past 1200');
+  mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 900, y: 100 }, originalEvent: {} });
+  assert.equal(el.classList.contains('ov-readout-left'), false, '900 + 12 + 280 fits');
+  ov.unmount();
+});
+test('a slot joining while paused mid-loop: the map draws the frame the label names; a pointer that moves nothing keeps the hover', async (t) => {
+  const w = world(), { p, st, layer, ov } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); landAll(st, st.frames); await settle(2);
+  p.scrub(5);
+  const shown = p.frames[5].t;
+  assert.equal(layer.idx, 5);
+  st._take(pointerDoc('2026-11-06T12:10:00Z', 14));
+  st.landed('202611061210', 'hawaii', 't0', null, t0Of('hawaii', () => 1));
+  assert.equal(p.pending, null, 'joined');
+  assert.equal(p.frames[p.idx].t, shown, 'the viewer keeps the frame');
+  assert.equal(layer.idx, p.idx, 'the layer follows the index');
+  assert.equal(st.loop[layer.idx].t, shown, 'and draws that frame');
+  // the job publishes again with nothing new for this view: the step did not move, the hover stays, the tiles are not redrawn
+  const el = tile(layer, 3, 28, 6); layer._tiles['3:28:6'] = { el, coords: { x: 3, y: 28, z: 6 } };
+  ov.readout = { hidden: false };
+  const steps = []; const orig = layer.setStep; layer.setStep = function () { steps.push(arguments); return orig.apply(this, arguments); };
+  const again = pointerDoc('2026-11-06T12:10:00Z', 14); again.published_utc = '2026-11-06T12:19:30Z';
+  st._take(again);
+  assert.equal(steps.length, 0, 'no redraw');
+  assert.equal(ov.readout.hidden, false, 'the hover stays');
+  p.stop();
+});
+test('a pending slot the pointer withdraws is forgotten', async () => {
+  const w = world(), { p, st } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); landAll(st, st.frames);
+  st._take(pointerDoc('2026-11-06T12:10:00Z', 14));
+  assert.equal(p.pending.t, '202611061210');
+  const back = pointerDoc('2026-11-06T12:00:00Z', 13); back.published_utc = '2026-11-06T12:20:00Z';
+  st._take(back);
+  assert.equal(p.pending, null);
+  assert.equal(st.queue.filter((q) => q.slot === '202611061210').length, 0);
+  p.stop();
+});
+test('the pointer: its stamp must be a time, a far-future stamp never spins, a new newest slot counts whatever the stamp, Off stops a read', async () => {
+  const w = world(), I = w.I, good = pointerDoc('2026-11-06T12:00:00Z', 2);
+  assert.equal(I.validRadarPointer(good), true);
+  for (const bad of [undefined, 5, 'soon']) { const d = clone(good); d.published_utc = bad; assert.equal(I.validRadarPointer(d), false, String(bad)); }
+  const big = clone(good); big.regions.hawaii.box = [-60, -170, 60, -100]; assert.equal(I.validRadarPointer(big), false, 'one region of 8,400 sq deg');
+  const many = clone(good); for (const nm of ['aa', 'bb', 'cc', 'dd', 'ee']) many.regions[nm] = { name: nm, src: 'mrms', box: [0, 0, 50, 90] }; assert.equal(I.validRadarPointer(many), false, 'the sum');
+  // far future: the wait stays at two publishes; no timer the browser would run at once
+  const delays = []; const realST = w.g.setTimeout;
+  const st = new I.RadarStore('https://x'); st._take(pointerDoc('2026-11-06T12:00:00Z', 2));
+  st.pointer.published_utc = new Date(Date.now() + 30 * 86400000).toISOString();
+  const nodeST = global.setTimeout; global.setTimeout = (f, ms) => { delays.push(ms); return nodeST(f, 0x7ffffff); };
+  try { st.active = true; st._arm(); } finally { global.setTimeout = nodeST; }
+  assert.ok(delays.length && delays[delays.length - 1] <= 20 * 60000, 'waited ' + delays[delays.length - 1]);
+  st.stop();
+  // a new newest slot with the same stamp and length
+  const s2 = new I.RadarStore('https://x'); let fired = 0; s2.onPointer = () => { fired++; };
+  const a = pointerDoc('2026-11-06T12:00:00Z', 5), b = pointerDoc('2026-11-06T12:10:00Z', 5); b.published_utc = a.published_utc;
+  s2._take(a); const f1 = fired; s2._take(b);
+  assert.equal(fired, f1 + 1, 'announced');
+  // Off during a read
+  const s3 = new I.RadarStore('https://x'); const rd = s3._read();
+  assert.equal(w.pending(/latest/).length, 1);
+  s3.stop();
+  assert.equal(w.held.filter((h) => /latest/.test(h.url)).every((h) => h.done), true, 'aborted at once, not by the 15-s stall timer');
+  assert.equal(await rd, false);
+});
+test('a picture that lands repaints the tiles in view', async () => {
+  const w = world(), { p, st, layer } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 3));
+  p.start();
+  const x = 8, y = 54, z = 7, el = tile(layer, x, y, z);          // Hawaii's own tile: nothing landed, nothing drawn
+  assert.equal(el.lastImg === undefined || el.lastImg === null, true, 'nothing yet');
+  const nw = p.frames[p.idx];
+  st._land({ key: st.key(nw.t, 'hawaii', 't0'), slot: nw.t, region: 'hawaii', tier: 't0' }, w.I.radarPic(t0Of('hawaii', () => 62)));
+  await new Promise((r) => setTimeout(r, 40));
+  assert.ok(el.lastImg, 'painted without a step or a move');
+  assert.ok(el.lastImg.some((v, i) => i % 4 === 3 && v > 100), 'with its echo');
+  p.stop();
+});
+test('the coverage mask: a pixel takes the coarse node it falls in, not the nearest one', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 1), st = storeWith(w, doc), rec = st.frames[0], box = BOXES.hawaii;
+  st.landed(rec.t, 'hawaii', 't0', null, t0Of('hawaii', (r) => (r >= 50 ? 1 : 0)));    // covered from row 50 down: south of 21.0 N
+  st.loop = [rec];
+  const layer = layerWith(w, st, 0, false), z = 8;
+  tileAt(layer, 21.03, -158, z); tileAt(layer, 20.97, -158, z);
+  assert.equal(layer.readoutAt(21.03, -158, z).kind, 'none', 'row 49, 0.03 deg north of the edge');
+  assert.equal(layer.readoutAt(20.97, -158, z).kind, 'dry', 'row 50, 0.03 deg south of it');
+  assert.equal(box[2] - 5, 21, 'the fixture: row 50 starts at 21 N');
+});
+test('a cell without its t2 draws the 20-degree t1 cell that holds it, not a t1 named by its own corner', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 1, ['hawaii'], () => ({ t1: 'f' })), st = storeWith(w, doc), rec = st.frames[0];
+  st.landed(rec.t, 'hawaii', 't0', null, t0Of('hawaii', () => 1));
+  st.landed(rec.t, 'hawaii', 't1', '0_-160', frame(502, 502, (r, c) => (r >= 100 && r < 400 && c >= 100 && c < 400 ? 60 : 0)));
+  st.loop = [rec];
+  const layer = layerWith(w, st, 0, false), el = tileAt(layer, 17, -153, 10);           // t2 is wanted at this zoom; cell 15_-155 has none
+  assert.ok(el._rPieces && el._rPieces.length, 'drawn');
+  assert.ok(el._rPieces.every((q) => q.ppd === 25), 'the t1 picture, not t0: ' + el._rPieces.map((q) => q.ppd));
+});
+test('a failed file counts as done only for its cooldown; a final one for good', () => {
+  const w = world(), st = new w.I.RadarStore(ROOT); st._take(pointerDoc('2026-11-06T12:00:00Z', 1));
+  st.fails.a = { at: Date.now(), final: false }; st.fails.b = { at: Date.now() - st.retryMs - 1, final: false }; st.fails.c = { at: 0, final: true };
+  assert.equal(st.done('a'), true, 'cooling down');
+  assert.equal(st.done('b'), false, 'to be asked again');
+  assert.equal(st.done('c'), true, 'final');
+  assert.equal(st.done('d'), false, 'never asked');
+});
+test('the t1 stack is refused like the t2 stack when it does not fit', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 13, ['hawaii'], () => ({ t1: 'f' })), st = new w.I.RadarStore(ROOT); st._take(doc);
+  st.active = true; st._pump = () => {};
+  const view = { whole: false, s: 16, n: 25, w: -163, e: -152, z: 5 };
+  st.plan(view, st.frames, 12, null);
+  assert.equal(st.stack.t1, true, 'fits the cap');
+  st.maxBytes = 2 * 1024 * 1024;
+  st.plan(view, st.frames, 12, null);
+  assert.equal(st.stack.t1, false, 'over a small cap');
+});
+test('the pointer is not read more often than its floor, even long overdue', () => {
+  const w = world(), st = new w.I.RadarStore(ROOT); st._take(pointerDoc('2020-01-01T00:00:00Z', 1));
+  const delays = [], nodeST = global.setTimeout;
+  global.setTimeout = (f, ms) => { delays.push(ms); return nodeST(f, 0x7ffffff); };
+  try { st.active = true; st._arm(); } finally { global.setTimeout = nodeST; }
+  assert.equal(delays[delays.length - 1], st.pointerMs);
+  st.stop();
+});
+test('a hidden tab playing the newest frame comes back on the newest frame, not the loop\'s start', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), { p, st } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); landAll(st, p.frames); p.play();
+  p.idx = p.frames.length - 1;
+  p.visibility(true); p.visibility(false);
+  assert.equal(p.playing, true); assert.equal(p.idx, p.frames.length - 1);
+  p.stop();
+});
+test('a region\'s age is said past 30 minutes, not before', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  const slot = (m) => new Date((Date.now() - m * 60000) - (Date.now() - m * 60000) % 600000).toISOString().replace('.000Z', 'Z');
+  w.answer(/latest\.json$/, pointerDoc(slot(50), 2)); await settle();
+  const st = ov.radar, nw = st.newestOf('hawaii'), pic = () => w.I.radarPic(t0Of('hawaii', () => 1));
+  st._land({ key: st.key(nw.t, 'hawaii', 't0'), slot: nw.t, region: 'hawaii', tier: 't0' }, pic());
+  assert.ok(/newest frame is \d+ min old/.test(ov._radarNote()), ov._radarNote());
+  const real = Date.now, t = w.I.radarSlotMs(nw.t);
+  Date.now = () => t + 29 * 60000;
+  try { assert.ok(!/min old/.test(ov._radarNote()), ov._radarNote()); } finally { Date.now = real; }
+  Date.now = () => t + 31 * 60000;
+  try { assert.ok(/min old/.test(ov._radarNote()), ov._radarNote()); } finally { Date.now = real; }
+  ov.unmount();
+});
+test('the store\'s cap follows the screen: 48 MB, 32 MB under 768 px', async () => {
+  for (const [width, cap] of [[1200, 48], [768, 48], [767, 32], [375, 32]]) {
+    const w = world(), ov = ctl(w);
+    w.map.getContainer().clientWidth = width;
+    ov.mount('radar');
+    w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2)); await settle();
+    assert.equal(ov.radar.maxBytes, cap * 1024 * 1024, width + ' px');
+    ov.unmount();
+  }
+});
+test('a region whose box moves starts over: tables, coverage and pictures', () => {
+  const w = world(), a = pointerDoc('2026-11-06T12:00:00Z', 2, ['hawaii', 'guam']), st = storeWith(w, a), rec = st.frames[1];
+  st.landed(rec.t, 'hawaii', 't0', null, t0Of('hawaii', () => 1));
+  st.landed(rec.t, 'guam', 't0', null, t0Of('guam', () => 1));
+  st._table('hawaii', 't2'); st._table('guam', 't2');
+  const before = st.bytes, rev = st.covRev;
+  const b = clone(a); b.published_utc = '2026-11-06T12:09:30Z'; b.regions.hawaii.box = [15, -164, 26, -150];
+  st._take(b);
+  assert.equal(st.pics.has(st.key(rec.t, 'hawaii', 't0')), false);
+  assert.equal(st.pics.has(st.key(rec.t, 'guam', 't0')), true, 'the other region stays');
+  assert.equal(st.cov.hawaii, undefined); assert.ok(st.cov.guam);
+  assert.ok(st.bytes < before); assert.ok(st.covRev > rev);
+  assert.equal(st.tables['hawaii|t2'], undefined); assert.ok(st.tables['guam|t2']);
 });
 test('the readout and the label', async () => {
   const w = world(), ov = ctl(w);

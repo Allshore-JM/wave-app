@@ -182,3 +182,16 @@ The reviewer could not check a real iPhone, iPad or Safari, a real slow link, a 
 - **Europe z4, 24-h, on 1080p plays at 10 per degree.** The stack estimate is cautious near the cap (a later plan finds it would fit at 45.4 MB). At zoom 4 a 10-per-degree node is about one screen pixel, so this was accepted, with A-11 (Europe z7 long loops stay at the middle tier).
 - The rain word is used over snow too.
 - Tier flips last until `job/radar-tmin` is live and the old slots age out (24 h).
+
+## The job-only merge of the tier rule (2026-11-06 17:51 UTC)
+
+The owner's "Write them all": the job writes a sharp picture for any cell with rain at 10 dBZ or more (`T1_MIN, T2_MIN = 1, 1`).
+Tag `prod-pre-radar-tmin` @ 952a029; `Live-Buoy-Update` fast-forwarded to 8d4a640 (two files: the job and its tests).
+
+- The three page probes are byte-identical to the pre-merge capture.
+- `model-frames-tests` is green on 8d4a640, and every publisher's ticks since are green.
+- Three new frames (17:50, 18:00, 18:10 UTC) hold 151-156 objects; the frames before them hold 141-146 (t2 111-117 -> 121-125, t1 unchanged). That is about 10 more files a frame, the estimate held, and about 0.65 M writes a month at this rain.
+- The 18:00 frame mirrored from the bucket (151 objects, every pointer key answered) and read back against NOAA's and OPERA's files with eccodes + pyproj: 0 mismatches in 12,000 t0, 1,440 t1 and 7,260 t2 samples.
+- The rule, on that frame, from NOAA's files directly: Hawaii 3, Guam 4, Caribbean 5, Alaska 10 and CONUS 42 cells with rain at 10 dBZ or more all have a picture, and no cell has a picture without rain. Europe's cells were covered only by the read-back above, not by this count.
+
+Old frames keep their old sparse lists until they age out (24 h), so tier flips can still show in long loops until then.

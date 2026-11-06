@@ -190,7 +190,7 @@ Tag `prod-pre-radar-tmin` @ 952a029; `Live-Buoy-Update` fast-forwarded to 8d4a64
 
 - The three page probes are byte-identical to the pre-merge capture.
 - `model-frames-tests` is green on 8d4a640, and every publisher's ticks since are green.
-- Three new frames (17:50, 18:00, 18:10 UTC) hold 151-156 objects; the frames before them hold 141-146 (t2 111-117 -> 121-125, t1 unchanged). That is about 10 more files a frame, the estimate held, and about 0.65 M writes a month at this rain.
+- Three new frames (17:50, 18:00, 18:10 UTC) hold 151-156 objects; the 12 frames before them hold 141-148 (t2 111-117 -> 121-125, t1 unchanged). That is about 10 more files a frame, the estimate held, and about 0.65 M writes a month at this rain.
 - The 18:00 frame mirrored from the bucket (151 objects, every pointer key answered) and read back against NOAA's and OPERA's files with eccodes + pyproj: 0 mismatches in 12,000 t0, 1,440 t1 and 7,260 t2 samples.
 - The rule, on that frame, from NOAA's files directly: Hawaii 3, Guam 4, Caribbean 5, Alaska 10 and CONUS 42 cells with rain at 10 dBZ or more all have a picture, and no cell has a picture without rain. Europe's cells were covered only by the read-back above, not by this count.
 

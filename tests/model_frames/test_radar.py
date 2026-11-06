@@ -312,12 +312,13 @@ def test_a_stray_pixel_stays_out_of_the_coarse_tiers_and_two_paint_t1(small):
     assert R.tiers_of(arr, "r1")[2][0, 0] == 40
 
 
-def test_only_cells_holding_enough_echo_are_written(small):
-    arr = np.ones((200, 400), np.uint8)
-    arr[:6, :6] = 40                                                   # 36 pixels: under T2_MIN, enough for t1 after pooling? see below
+def test_only_cells_holding_echo_are_written(small):
+    arr = np.ones((200, 400), np.uint8)                                # covered, dry: the whole-region frame alone
     objects, flags, _t0 = R.tiers_of(arr, "r1")
-    tiers = [o[0][0] for o in objects]
-    assert tiers.count("t0") == 1 and tiers.count("t2") == 0 and "t2" not in {k for k, v in flags.items() if v}
+    assert [o[0][0] for o in objects] == ["t0"]
+    arr[0, 0] = 40                                                     # one fine pixel: its t2; t1 asks for two in a block
+    tiers = [o[0][0] for o in R.tiers_of(arr, "r1")[0]]
+    assert tiers.count("t2") == 1 and tiers.count("t1") == 0
     arr[:20, :20] = 40
     objects, flags, _t0 = R.tiers_of(arr, "r1")
     assert [o[0][0] for o in objects].count("t2") == 1 and flags["t2"]
@@ -1420,7 +1421,7 @@ def test_the_cell_thresholds_are_exact(small):
         for i in range(blocks):
             arr[0, 4 * i:4 * i + 2] = R.MIN_CODE
         assert tiers(arr).count("t1") == want
-    assert (R.T1_MIN, R.T2_MIN, R.MIN_DBZ) == (6, 40, 10.0)
+    assert (R.T1_MIN, R.T2_MIN, R.MIN_DBZ) == (1, 1, 10.0)             # the owner's call: no tier flips in light showers
 
 
 def test_the_lattice_equals_the_projection_everywhere(small, monkeypatch):

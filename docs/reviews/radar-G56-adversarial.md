@@ -195,3 +195,24 @@ Tag `prod-pre-radar-tmin` @ 952a029; `Live-Buoy-Update` fast-forwarded to 8d4a64
 - The rule, on that frame, from NOAA's files directly: Hawaii 3, Guam 4, Caribbean 5, Alaska 10 and CONUS 42 cells with rain at 10 dBZ or more all have a picture, and no cell has a picture without rain. Europe's cells were covered only by the read-back above, not by this count.
 
 Old frames keep their old sparse lists until they age out (24 h), so tier flips can still show in long loops until then.
+
+## Live on production (2026-11-06)
+
+**Site merge** (the owner's "proceed"): tag `prod-pre-radar` @ 8d4a640; `Live-Buoy-Update` fast-forwarded to 312da88 (overlay 2.25.8), served from 18:24:35 UTC, 7 polls, 0 failed.
+- With the flag unset, the three page probes differ from the pre-merge capture only by the version line, `var RADAR = false`, the option line, `FIELDS.radar` and the `create` options, all inside the gated block.
+- `overlay.js` and `overlay.css` = the commit, immutable + nosniff; the old 2.24.3 URL answers 404; `/notice/radar` 200.
+- `model-frames-tests` and `coast-build` green.
+- Headless Chrome, desktop only (the phone half hit the script's time limit; the phone was checked with the flag on, below): no Radar option, 0 radar requests, a saved Radar choice starts Off, wave play, wind, SST, satellite and Off all work.
+
+**The flag** (the owner: "use my browser to turn on render flag when needed"): `RADAR_OVERLAY=1` added to the production service in the owner's Chrome (other variables untouched, values not read), "Save, rebuild, and deploy". The page offered Radar from 18:34:37 UTC, 8 polls, 0 failed; the pages differ from the flag-off capture only by `var RADAR = true`.
+
+Checked on allshoresurf.com, headless Chrome with trusted clicks, desktop 1280x800 and phone 375x812:
+- The option is in the menu; Radar opens paused on the newest frame (13 of 13); 39 radar requests, 0 model frames; no sideways scroll.
+- Play: frames 0-12 at about 2 a second, a pause on the newest, then the loop again (30 samples over 12 s, the same on both sizes).
+- Hover text: "27 dBZ · light rain · 8:04 AM", "no echo", and "no radar coverage" in the open ocean.
+- Back to wave height and on to Off work; a reload keeps Radar, paused on the newest; 0 radar requests after Off.
+- The credit "Radar: MRMS · OPERA CC BY 4.0"; no console problems.
+
+Rollback: unset `RADAR_OVERLAY`, or re-push `prod-pre-radar` (site) / `prod-pre-radar-tmin` (the tier rule) / `prod-pre-radar-job` (the job).
+
+Not checked, as stated in the re-check section above: a real iPhone, iPad or Safari, a real slow link, Guam in rain, rain crossing a seam, echoes above 48 dBZ.

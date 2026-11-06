@@ -399,7 +399,7 @@ def test_the_radar_notice_the_credit_links():
     assert r.status_code == 200 and r.mimetype == "text/plain" and r.headers["Cache-Control"] == "public, max-age=86400"
     body = r.get_data(as_text=True)
     for need in ("NOAA", "Multi-Radar/Multi-Sensor", "not an official NOAA product", "EUMETNET OPERA", "Property rights: EUMETNET",
-                 "Creative Commons Attribution 4.0", "https://creativecommons.org/licenses/by/4.0/", "Changes made by Allshore Surf",
+                 "Creative Commons Attribution 4.0", "https://creativecommons.org/licenses/by/4.0/", "Modified by Allshore Surf",
                  "No warranty"):
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()

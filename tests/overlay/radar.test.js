@@ -890,6 +890,10 @@ test('the label says the time of the newest file in view; ages in hours past an 
     assert.ok(/ 1 h 30 min ago$/.test(ov._radarLabel()), ov._radarLabel());
     for (const k of reg) ov.radar.cov[k] = { slot: fr.t, pic: {} };
     assert.ok(/the newest frame is 1 h 30 min old\./.test(ov._radarNote()), ov._radarNote());
+    fr.r.hawaii.o = 4;                                       // the note counts from the file's own time, as the label does
+    assert.ok(/ 1 h 26 min ago$/.test(ov._radarLabel()), ov._radarLabel());
+    assert.ok(/the newest frame is 1 h 26 min old\./.test(ov._radarNote()), ov._radarNote());
+    fr.r.hawaii.o = 0;
     Date.now = real;
     p.holdFrom = Date.now();
     assert.ok(/^Loading the loop\./.test(ov._radarNote()), ov._radarNote());
@@ -1050,7 +1054,7 @@ test('a region\'s age is said past 30 minutes, not before', async () => {
   const st = ov.radar, nw = st.newestOf('hawaii'), pic = () => w.I.radarPic(t0Of('hawaii', () => 1));
   st._land({ key: st.key(nw.t, 'hawaii', 't0'), slot: nw.t, region: 'hawaii', tier: 't0' }, pic());
   assert.ok(/newest frame is \d+ min old/.test(ov._radarNote()), ov._radarNote());
-  const real = Date.now, t = w.I.radarSlotMs(nw.t);
+  const real = Date.now, t = w.I.radarSlotMs(nw.t) + nw.r.hawaii.o * 60000;   // from the file's own time
   Date.now = () => t + 29 * 60000;
   try { assert.ok(!/min old/.test(ov._radarNote()), ov._radarNote()); } finally { Date.now = real; }
   Date.now = () => t + 31 * 60000;

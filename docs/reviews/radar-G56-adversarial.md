@@ -48,3 +48,40 @@ Author's addition during the fix round: `mrms.read` also treats Pillow's `Decomp
 - Mutants: 55 of the fix round, all killed (4 first survived and were pinned: the delete limit in `main`, the bomb at the reader, a retired slot on a quiet tick, a local build's alarms). The reviewer's set: 52 of the 59 still apply, 51 killed after one more pin; 1 survivor equivalent (`raw <= nodata`: values below it already read as no coverage); 7 no longer match (their code was replaced; the fix-round set covers it). The author's first set: 38 of 39 applicable killed; 1 equivalent (the slot-level deadline, now also checked before each region).
 
 For the job-only merge: writes ~135-138 objects a slot on a quiet night (~580k a month beside ~800k today, so ~1.4 M: ~$1.7 a month); the ceiling 410 a slot (1.77 M a month, ~$7).
+
+## Step 4: the client on the test site
+
+Test site `test` @ 4c86460, overlay asset 2.25.3, RADAR_OVERLAY=1; served overlay.js = the repo's by sha. Headless Chrome with the GPU, own profile, trusted mouse, touch and keys; desktop 1280x800 and 1920x1080, phone 375x812 and sideways. Owner's pick from the sheet: palette A (classic radar colours), tint 16 %.
+
+### Held
+- Opens paused on the newest frame (index 12 of 13), no sideways scroll, console clean, at every size.
+- Pace on the desktop: snail 500/514 ms, fish 250/265, shark 129/135, 0 skips. Real pan and zoom while playing keep playing. Phone shark 127/135. Long tasks 0-3 ms/s.
+- Loops 2 / 6 / 12 / 24 h = 13 / 19 / 25 / 25 frames, an independent list; gaps 10 / 20 / 30 / 60 min plus one 10-min step to the newest frame; reload opens paused on the newest, the loop kept.
+- Hover = the drawn pixel: 15,600 samples over 13 views incl. world copies, 0 bad. Trusted hover texts "no radar coverage", "no echo", "29 dBZ · light rain · 7:24 PM".
+- Readout against the published PNG by the browser's own decode: 3,558 + 499 echo samples at t0, t1 and t2 in ten views, 0 wrong. (One first "bad" sample was the check's own: at a region overlap the pixel belongs to the other region; `readoutAt` names the owner. Checked by owner afterwards; the 15 samples of that kind were left out.)
+- Life: no model frame while on radar; back on wave height at its own time; hidden tab pauses and stops the pointer timer; Off leaves nothing (0 radar requests in 70 s); reload restores radar.
+- Failure: a refused pointer gives "Overlay unavailable" with Retry within 0.8-5.8 s, the map alive; Retry works at once (309-328 ms); a new slot joins while playing; refused files say "Hawaii: the radar pictures are not answering. Trying again." and clear when they land.
+- Sideways phone: a tap on Play works (the one earlier failure was the check's own: its long press had opened a forecast window over the button).
+- Suites at b6e1951: pytest 2,473 passed + 1 skipped, Node 1,138.
+
+### Found and fixed during it
+| # | Finding | Outcome |
+|---|---|---|
+| V4-1 | Refused files left a healthy-looking panel over an empty map: a dry map and a failed one looked alike | Fixed in 2.25.2: the panel names the region and says the pictures are not answering |
+| V4-2 | The speed picture's `src` was set on every step of every layer (`img.src` reads back absolute): a request per step with the cache off, an ordinary cache hit otherwise | Fixed in 2.25.3: `shownSrc`; 0 requests in 10 s of shark on test and production with the normal cache |
+
+### Costs (browser cache off, the night of 2026-11-05 UTC)
+| View | First picture | Whole 2-h loop | Store |
+|---|---|---|---|
+| Oahu, opening zoom | 1.5 s, 13 files, 0.02 MB | 51 files, 0.08 MB | 9.1 MB |
+| US rain z6.5 | 1.9 s, 34 files, 0.27 MB | 53 files, 0.38 MB | 10.6 MB |
+| US rain z9.5 | 2.6 s, 13 files, 0.15 MB | 66 files, 0.98 MB | 13.8 MB |
+| Europe rain z5 | 1.3 s, 9 files, 0.14 MB | 14 files, 0.23 MB | 5.3 MB |
+| Europe rain z9 | 1.6 s, 18 files, 0.35 MB | 53 files, 1.38 MB | 14.7 MB |
+
+Heap vs Off 7.8 MB: radar 21-39 MB (47-51 at long loops), wave height at shark 62-82 MB. Store 20-27 MB in US rain; the 32-MB cap holds. R2 writes over the last 24 h: mean 138 objects a slot, max 149 = 0.60 M a month.
+
+### On record for the reviewers and the owner
+- At Hawaii's opening zoom 5 of 40 cell pieces flip tier up to 12 times in a loop: a t2 cell listed on some steps and not others draws t1 on the others (near T2_MIN 40). US z6.5: 0.
+- The sideways phone's sheet keeps play, slider and speed, but has no loop select or legend.
+- Italy, Austria and Greece read "no radar coverage" (OPERA holds no data from them).

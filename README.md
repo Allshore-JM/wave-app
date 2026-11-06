@@ -1322,7 +1322,7 @@ at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
 
-### The radar layer on the map (plan section 85, the client; overlay asset 2.25.5)
+### The radar layer on the map (plan section 85, the client; overlay asset 2.25.6)
 
 `RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no
 run lines. It opens still on the newest frame and plays only on Play; the loop choice is 2 hours (a frame every 10 minutes), 6 (20), 12

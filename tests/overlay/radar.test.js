@@ -780,6 +780,37 @@ test('Play keeps the picture\'s tier while the stacks come in, for 3 s at most; 
   p.play(true); assert.equal(p.holdFrom, 0, 'a tab shown again plays on');
   p.stop();
 });
+test('Play from the newest frame: the newest stays on the map through the hold, then the loop starts at its first frame', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), { p, st, layer } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); landAll(st, p.frames);
+  const last = p.frames.length - 1;
+  let ready = false; st.stacksReady = () => ready;
+  assert.equal(p.idx, last);
+  p.play();
+  assert.ok(p.holdFrom > 0); assert.equal(p.idx, last, 'not to frame 0 yet: its fine files are not in');
+  assert.equal(layer.idx, last, 'the map keeps the frame it shows'); assert.equal(layer.playing, false);
+  for (let i = 0; i < 25; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.equal(p.idx, last, 'still the newest while the stacks come in');
+  ready = true;
+  t.mock.timers.tick(60); await settle(1);
+  assert.equal(p.idx, 0, 'the hold is over: the loop starts at its first frame'); assert.equal(p.fromStart, false);
+  assert.equal(layer.idx, 0); assert.equal(layer.playing, true);
+  for (let i = 0; i < 25; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.ok(p.idx >= 1, 'and it plays on from there');
+  p.pause();
+  // a pause during the hold: back on the frame it was showing, and the next Play starts over from there
+  p.scrub(last); ready = false; p.play(); assert.equal(p.fromStart, true); p.pause();
+  assert.equal(p.fromStart, false); assert.equal(p.idx, last);
+  // past the 3 s limit it starts at frame 0 all the same
+  p.play();
+  for (let i = 0; i < 55; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.ok(p.idx < last, 'on with the loop after 3 s'); assert.equal(p.fromStart, false);
+  p.pause();
+  // nothing to wait for: straight to frame 0, as ever
+  ready = true; p.scrub(last); p.play(); assert.equal(p.idx, 0); assert.equal(p.holdFrom, 0); assert.equal(p.fromStart, false);
+  p.stop();
+});
 test('stacksReady: every wanted stack of the view has landed or been given up; a stack not wanted does not count', () => {
   const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 3, ['hawaii'], () => ({ t1: 'f' })), st = storeWith(w, doc);
   st.active = true; st._pump = () => {};

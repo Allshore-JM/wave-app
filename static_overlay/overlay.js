@@ -3710,7 +3710,7 @@
     this.ov = ov; this.store = store; this.layer = layer;
     this.loopH = radarLoopOf(saved().radarLoop);
     this.frames = []; this.idx = 0; this.playing = false; this.wasPlaying = false; this.timer = null; this.gen = 0; this.due = 0;
-    this.joined = null; this.pending = null; this.waitFrom = 0; this.uiTimer = null; this.drawQ = null; this._paint = null; this.holdFrom = 0;
+    this.joined = null; this.pending = null; this.waitFrom = 0; this.uiTimer = null; this.drawQ = null; this._paint = null; this.holdFrom = 0; this.fromStart = false;
   }
   RadarPlayer.prototype.view = function () { return radarViewOf(this.ov.map, this.layer); };
   RadarPlayer.prototype.start = function () {
@@ -3786,14 +3786,16 @@
   RadarPlayer.prototype.play = function (resume) {
     if (this.playing || this.frames.length < 2) return;
     this.playing = true; this.gen++; this.due = Date.now(); this.waitFrom = 0;
-    this.holdFrom = resume || this.store.stacksReady(this.view()) ? 0 : Date.now();   // the picture keeps its tier while the stacks come in
-    if (!resume && this.idx === this.frames.length - 1) this.idx = 0;     // Play from the newest frame starts the loop at its start
+    this.holdFrom = resume || this.store.stacksReady(this.view()) ? 0 : Date.now();   // the frame on the map stays, at its tier, while the stacks come in
+    if (!resume && this.idx === this.frames.length - 1) {                 // Play from the newest frame starts the loop at its start
+      if (this.holdFrom) this.fromStart = true; else this.idx = 0;        // after the hold: frame 0's fine files may not be in yet
+    }
     this._show();
     this._next(this.gen);
     this.ov._radarUI();
   };
   RadarPlayer.prototype.pause = function () {
-    this.playing = false; this.gen++; this.holdFrom = 0;
+    this.playing = false; this.gen++; this.holdFrom = 0; this.fromStart = false;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this._paint) { this._paint(); this._paint = null; }
     if (this.layer && this.layer.store) { this.layer.playing = false; }
@@ -3830,6 +3832,11 @@
     if (this.holdFrom) {
       if (Date.now() - this.holdFrom < RADAR_PLAY_HOLD_MS && !this.store.stacksReady(this.view())) { this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, 60); return; }
       this.holdFrom = 0;
+      if (this.fromStart) {                                               // the hold is over: now to the loop's start
+        this.fromStart = false; this.idx = 0;
+        this._show(); this.ov._radarUI(); this._next(gen);
+        return;
+      }
     }
     var next = (this.idx + 1) % n;
     if (!this.store.frameReady(this.frames[next], this.view(), false)) {   // its pictures are on the way: a short wait, then on with what there is

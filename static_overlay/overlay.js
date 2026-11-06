@@ -210,10 +210,11 @@
   var RADAR_FILL = 0.5;                                     // a t1 / t2 cell's share of its full size before any has landed (kept: the box round its rain)
   var RADAR_HOLD_STEPS = 2;                                 // a region missing a step holds its previous frame this many steps, then shows none
   var RADAR_MAX_BYTES = 48 * 1024 * 1024, RADAR_MAX_BYTES_SMALL = 32 * 1024 * 1024, RADAR_SMALL_PX = 768, RADAR_INFLIGHT = 4, RADAR_POINTER_BYTES = 256 * 1024;
-  var READOUT_DX = 12, READOUT_NEAR_EDGE = 360;   // px: the readout's offset from the cursor (the CSS's), and how near the right edge it is measured
+  var READOUT_DX = 12, READOUT_DY = 28, READOUT_PAD = 4, READOUT_NEAR_EDGE = 360;   // px: the readout's offset from the cursor (the CSS's), and how near the right edge it is measured
   var RADAR_REGION_AREA = 6000, RADAR_TOTAL_AREA = 20000;    // square degrees (today's largest region: Europe 4,312; all six 8,545)
   var RADAR_STALL_MS = 15000, RADAR_RETRY_MS = 60000, RADAR_PUBLISH_MS = 10 * 60 * 1000, RADAR_UI_MS = 30000;
-  var RADAR_STEP_WAIT_MS = 1000, RADAR_END_HOLD_MS = 1000, RADAR_WARN_MIN = 30;
+  var RADAR_STEP_WAIT_MS = 5000, RADAR_END_HOLD_MS = 1000, RADAR_WARN_MIN = 30;
+  var RADAR_PLAY_HOLD_MS = 3000, RADAR_RECOVER_MS = 60000, RADAR_DAMAGED_RETRY_MS = 5 * 60000;   // Play's wait for the view's stacks; a refused pointer asked again; a damaged file asked again
   var RADAR_FDEF = { lo: 5, hi: 75, legend: [5, 65] };
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
   var RADAR_HEAD = 'Radar: NOAA MRMS, EUMETNET OPERA';
@@ -3062,6 +3063,7 @@
   // scheduler, its caches and its play state are not used and not touched.
   function radarSlotMs(t) { return Date.UTC(+t.slice(0, 4), +t.slice(4, 6) - 1, +t.slice(6, 8), +t.slice(8, 10), +t.slice(10, 12)); }
   function radarDbz(code) { return RADAR_FLOOR + (code - 2) * RADAR_STEP; }
+  function radarAge(mins) { return mins < 60 ? mins + ' min' : Math.floor(mins / 60) + ' h' + (mins % 60 ? ' ' + (mins % 60) + ' min' : ''); }
   function radarRainWord(dbz) {
     return dbz < 20 ? 'very light rain' : dbz < 30 ? 'light rain' : dbz < 40 ? 'moderate rain' : dbz < 50 ? 'heavy rain' : dbz < 60 ? 'very heavy rain' : 'intense rain, possible hail';
   }
@@ -3276,10 +3278,11 @@
     return i !== undefined && radarBit(hex, i);
   };
   RadarStore.prototype.key = function (slot, region, tier, name) { return slot + '/' + region + '/' + tier + (name ? '/' + name : ''); };
+  RadarStore.prototype._failWait = function (f) { return f.final ? RADAR_DAMAGED_RETRY_MS : this.retryMs; };
   RadarStore.prototype.done = function (key) {
     if (this.pics.has(key)) return true;
     var f = this.fails[key];
-    return !!(f && (f.final || Date.now() - f.at < this.retryMs));
+    return !!(f && Date.now() - f.at < this._failWait(f));
   };
   RadarStore.prototype.newestOf = function (region) {
     for (var i = this.frames.length - 1; i >= 0; i--) if (this.frames[i].r[region]) return this.frames[i];
@@ -3323,6 +3326,16 @@
     }
     this._memo[k] = ok;
     return ok;
+  };
+  // Every stack the view wants is in (or given up for now): Play can start without the picture dropping to a coarser tier.
+  RadarStore.prototype.stacksReady = function (view) {
+    var regs = this.regionsIn(view), tiers = ['t1', 't2'];
+    for (var i = 0; i < regs.length; i++) for (var t = 0; t < 2; t++) {
+      if (!this.stack[tiers[t]]) continue;
+      var cells = this._cellsIn(regs[i], tiers[t], view);
+      for (var c = 0; c < cells.length; c++) if (!this.stackReady(regs[i], tiers[t], cells[c].name)) return false;
+    }
+    return true;
   };
   // Everything the view needs of this frame has landed or been given up for now.
   RadarStore.prototype.frameReady = function (rec, view, deep) {
@@ -3423,8 +3436,7 @@
       var it = this.queue[i];
       if (this.pics.has(it.key) || this.inflight[it.key]) continue;
       var f = this.fails[it.key];
-      if (f && f.final) continue;
-      if (f && now - f.at < this.retryMs) { var due = f.at + this.retryMs; if (soonest === null || due < soonest) soonest = due; continue; }
+      if (f && now - f.at < this._failWait(f)) { var due = f.at + this._failWait(f); if (soonest === null || due < soonest) soonest = due; continue; }
       if (n >= RADAR_INFLIGHT) break;
       this._start(it); n++;
     }
@@ -3698,7 +3710,7 @@
     this.ov = ov; this.store = store; this.layer = layer;
     this.loopH = radarLoopOf(saved().radarLoop);
     this.frames = []; this.idx = 0; this.playing = false; this.wasPlaying = false; this.timer = null; this.gen = 0; this.due = 0;
-    this.joined = null; this.pending = null; this.waitFrom = 0; this.uiTimer = null; this.drawQ = null; this._paint = null;
+    this.joined = null; this.pending = null; this.waitFrom = 0; this.uiTimer = null; this.drawQ = null; this._paint = null; this.holdFrom = 0;
   }
   RadarPlayer.prototype.view = function () { return radarViewOf(this.ov.map, this.layer); };
   RadarPlayer.prototype.start = function () {
@@ -3757,7 +3769,7 @@
     this.ov._radarUI();
     return true;
   };
-  RadarPlayer.prototype._show = function () { this.layer.setStep(this.frames.length ? this.idx : -1, this.playing, true); if (this.ov.readout) this.ov.readout.hidden = true; };
+  RadarPlayer.prototype._show = function () { this.layer.setStep(this.frames.length ? this.idx : -1, this.playing && !this.holdFrom, true); if (this.ov.readout) this.ov.readout.hidden = true; };
   RadarPlayer.prototype._onLanding = function (it) {
     var self = this;
     this._tryJoin();
@@ -3774,13 +3786,14 @@
   RadarPlayer.prototype.play = function (resume) {
     if (this.playing || this.frames.length < 2) return;
     this.playing = true; this.gen++; this.due = Date.now(); this.waitFrom = 0;
+    this.holdFrom = resume || this.store.stacksReady(this.view()) ? 0 : Date.now();   // the picture keeps its tier while the stacks come in
     if (!resume && this.idx === this.frames.length - 1) this.idx = 0;     // Play from the newest frame starts the loop at its start
     this._show();
     this._next(this.gen);
     this.ov._radarUI();
   };
   RadarPlayer.prototype.pause = function () {
-    this.playing = false; this.gen++;
+    this.playing = false; this.gen++; this.holdFrom = 0;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     if (this._paint) { this._paint(); this._paint = null; }
     if (this.layer && this.layer.store) { this.layer.playing = false; }
@@ -3814,6 +3827,10 @@
     if (gen !== this.gen || !this.playing) return;
     var n = this.frames.length;
     if (n < 2) { this.pause(); this.ov._radarUI(); return; }
+    if (this.holdFrom) {
+      if (Date.now() - this.holdFrom < RADAR_PLAY_HOLD_MS && !this.store.stacksReady(this.view())) { this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, 60); return; }
+      this.holdFrom = 0;
+    }
     var next = (this.idx + 1) % n;
     if (!this.store.frameReady(this.frames[next], this.view(), false)) {   // its pictures are on the way: a short wait, then on with what there is
       if (!this.waitFrom) this.waitFrom = Date.now();
@@ -5784,7 +5801,22 @@
       self.render({ state: 'ready' });
     });
   };
+  // The error panel asks again by itself while it shows, once a minute, quietly: a tab left open recovers.
+  Overlay.prototype._radarRecover = function () {
+    var self = this;
+    clearTimeout(this.radarRecoverTimer);
+    this.radarRecoverTimer = setTimeout(function () {
+      self.radarRecoverTimer = null;
+      if (self.field !== 'radar' || self.mode !== 'obs' || self.radarPlayer) return;
+      if (typeof document !== 'undefined' && document.hidden) { self._radarRecover(); return; }
+      self.radar.load(true).then(function (st) {
+        if (self.field !== 'radar' || self.mode !== 'obs' || self.radarPlayer) return;
+        if (st) self._retry(); else self._radarRecover();
+      });
+    }, RADAR_RECOVER_MS);
+  };
   Overlay.prototype._attachRadar = function (store) {
+    clearTimeout(this.radarRecoverTimer); this.radarRecoverTimer = null;
     if (!this.map.getPane('obsPane')) { var pane = this.map.createPane('obsPane'); pane.style.zIndex = 260; pane.style.pointerEvents = 'none'; }
     this._detachRadar();
     store.maxBytes = this.map.getContainer().clientWidth < RADAR_SMALL_PX ? RADAR_MAX_BYTES_SMALL : RADAR_MAX_BYTES;   // a small screen needs fewer cells
@@ -5794,6 +5826,7 @@
     this.radarPlayer.start();
   };
   Overlay.prototype._detachRadar = function () {
+    clearTimeout(this.radarRecoverTimer); this.radarRecoverTimer = null;
     if (this.radarPlayer) { this.radarPlayer.stop(); this.radarPlayer = null; }
     if (this.radar) this.radar.release();
     if (this.radarLayer) { this.radarLayer.store = null; this.map.removeLayer(this.radarLayer); this.radarLayer = null; }
@@ -5807,9 +5840,11 @@
   Overlay.prototype._radarLabel = function () {
     var p = this.radarPlayer, fr = p && p.frames[p.idx];
     if (!fr) return 'no radar frames yet';
-    var ms = radarSlotMs(fr.t), c = this._radarClock(ms), mins = Math.round((Date.now() - ms) / 60000);
-    var ago = mins < 1 ? 'now' : mins < 60 ? mins + ' min ago' : Math.floor(mins / 60) + ' h' + (mins % 60 ? ' ' + (mins % 60) + ' min' : '') + ' ago';
-    return (c.day ? c.day + ' ' : '') + c.clock + c.zone + ' · ' + ago;
+    var ms = radarSlotMs(fr.t), st = this.radar, regs = st && st.pointer ? st.regionsIn(p.view()) : [], real = null;
+    for (var i = 0; i < regs.length; i++) { var e = fr.r[regs[i]]; if (e && (real === null || e.o > real)) real = e.o; }   // the newest file in view: what the hover says
+    if (real !== null) ms += real * 60000;
+    var c = this._radarClock(ms), mins = Math.round((Date.now() - ms) / 60000);
+    return (c.day ? c.day + ' ' : '') + c.clock + c.zone + ' · ' + (mins < 1 ? 'now' : radarAge(mins) + ' ago');
   };
   // The notes under the scale, for the regions in view: a region's newest frame past RADAR_WARN_MIN; a region showing an earlier frame.
   Overlay.prototype._radarNote = function () {
@@ -5820,7 +5855,7 @@
       var nw = st.newestOf(regs[i]), name = st.pointer.regions[regs[i]].name, nk = nw ? st.key(nw.t, regs[i], 't0') : null, bad = nk && !st.pics.has(nk) ? st.fails[nk] : null;
       if (bad) { out.push(name + (bad.final ? ': the radar pictures cannot be read.' : ': the radar pictures are not answering. Trying again.')); continue; }
       if (nw && !st.cov[regs[i]]) { loading = true; continue; }
-      if (nw && (now - radarSlotMs(nw.t)) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + Math.round((now - radarSlotMs(nw.t)) / 60000) + ' min old.');
+      if (nw && (now - radarSlotMs(nw.t)) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + radarAge(Math.round((now - radarSlotMs(nw.t)) / 60000)) + ' old.');
       else if (fr) {
         var rec = st.resolve(regs[i], p.idx);
         if (rec && rec !== fr) out.push(name + ' shows ' + this._radarClock(radarSlotMs(rec.t)).clock + '.');
@@ -5828,6 +5863,7 @@
       }
     }
     if (loading) out.unshift('Loading the radar pictures.');
+    else if (p.holdFrom) out.unshift('Loading the loop.');
     return out.join(' ');
   };
   // "32 dBZ · moderate rain · 7:44 PM"; Europe's frame is a 10-minute maximum ending at the slot.
@@ -5839,7 +5875,7 @@
     if (r.kind === 'dry' || !r.rec) return 'no echo';
     var st = this.radar, e = r.rec.r[r.region], ms = radarSlotMs(r.rec.t) + (e ? e.o : 0) * 60000, c = this._radarClock(ms).clock;
     var opera = st.pointer.regions[r.region].src === 'opera';
-    return Math.round(r.dbz) + ' dBZ · ' + radarRainWord(r.dbz) + ' · ' + (opera ? '10-min max to ' : '') + c;
+    return Math.round(r.dbz) + ' dBZ · ' + radarRainWord(Math.round(r.dbz)) + ' · ' + (opera ? '10-min max to ' : '') + c;
   };
   // The player's parts of the panel, in place (a new frame must not rebuild the panel: menus and focus stay).
   Overlay.prototype._radarUI = function () {
@@ -6627,7 +6663,7 @@
       this._unattribute();
     }
     if (this.mode === 'obs' && this.field === 'sat') this._detachSat();   // the own entry failed: no dots under the error panel
-    if (this.mode === 'obs' && this.field === 'radar') this._detachRadar();
+    if (this.mode === 'obs' && this.field === 'radar') { this._detachRadar(); this._radarRecover(); }
     if (this.iso && (this.frameIndex === null || !this.layer || !this.layer.hasFrame())) this.iso.clearData();   // no picture, no lines (G32)
     if (this.layer && !this.layer.hasFrame()) this._syncLook();
     this.pause();
@@ -7371,9 +7407,16 @@
     var pressTimer = null, lastTouch = 0, last = null, satShown = false;   // satShown: the readout shows a satellite mark (G52 B-4)
     function overControl(ev) { var t = ev && ev.target; return !!(t && t.closest && t.closest('.leaflet-control, .ov-sheet')); }
     function place(pt) {
-      el.style.left = pt.x + 'px'; el.style.top = pt.y + 'px'; el.hidden = false;
-      var W = map.getContainer().clientWidth, left = false;
-      if (pt.x > W - READOUT_NEAR_EDGE) left = pt.x + READOUT_DX + el.offsetWidth > W;   // measured only near the edge: a hover costs no layout elsewhere
+      el.hidden = false;
+      var W = map.getContainer().clientWidth, left = false, x = pt.x;
+      if (pt.x > W - READOUT_NEAR_EDGE) {                    // measured only near the edge: a hover costs no layout elsewhere
+        var w = el.offsetWidth;
+        if (pt.x + READOUT_DX + w > W - READOUT_PAD) {
+          if (pt.x - READOUT_DX - w >= READOUT_PAD) left = true;   // the other side of the pointer
+          else x = Math.max(READOUT_PAD - READOUT_DX, W - READOUT_PAD - w - READOUT_DX);   // neither side has room: as far over as it fits
+        }
+      }
+      el.style.left = x + 'px'; el.style.top = Math.max(pt.y, READOUT_DY + READOUT_PAD) + 'px';
       el.classList.toggle('ov-readout-left', left);
     }
     function show(latlng, pt) {
@@ -8100,7 +8143,8 @@
     var ctl = compact ? host : (host.closest && host.closest('.ov-ctl')) || host, ctlTop = compact ? 0 : this._ctlTop(ctl);
     var spare = function () { return compact ? cap - host.offsetHeight - 2 : mapH - self._stackHeight() - 10 - ctlTop - ctl.offsetHeight - 8; };
     var room = compact ? cap - (host.offsetHeight - body.offsetHeight) - 2 : Math.min(cap, spare() + body.offsetHeight);
-    if (room < 40 || collapsed) { host.removeChild(wrap); fold(room >= 40); }   // the toggle only when opening would show the details
+    var cut = compact && this.field === 'radar' && body.scrollHeight > room;   // the radar's scale whole or not at all, and then no toggle that opens nothing
+    if (room < 40 || collapsed || cut) { host.removeChild(wrap); fold(room >= 40 && !cut); }   // the toggle only when opening would show the details
     else body.style.maxHeight = room + 'px';
     this._layoutSheet();
     this._refocus(focusCls);
@@ -8287,7 +8331,7 @@
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
-      radarSlotMs: radarSlotMs, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, RADAR_HEAD: RADAR_HEAD, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
+      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, RADAR_HEAD: RADAR_HEAD, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,

@@ -484,7 +484,7 @@ test('Play from the newest starts the loop; every frame in turn on a drift-free 
   assert.equal(p.idx, held); assert.equal(p.playing, false);
   p.stop();
 });
-test('a step whose pictures are missing waits a second at most, then moves on', async (t) => {
+test('a step whose pictures are missing waits five seconds at most, then moves on', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
   const w = world(), { p, st } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
   p.start();
@@ -492,7 +492,9 @@ test('a step whose pictures are missing waits a second at most, then moves on', 
   p.play();
   t.mock.timers.tick(500); await settle(1);
   assert.equal(p.idx, 0, 'frame 1 not here: wait');
-  for (let i = 0; i < 18; i++) { t.mock.timers.tick(60); await settle(1); }
+  for (let i = 0; i < 70; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.equal(p.idx, 0, 'still waiting after four seconds: no empty map');
+  for (let i = 0; i < 25; i++) { t.mock.timers.tick(60); await settle(1); }
   assert.ok(p.idx >= 1, 'moved on past the wait');
   p.stop();
 });
@@ -740,7 +742,148 @@ test('the readout stays on the map: past the right edge it goes to the left of t
   assert.equal(el.classList.contains('ov-readout-left'), true, '1000 + 12 + 280 is past 1200');
   mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 900, y: 100 }, originalEvent: {} });
   assert.equal(el.classList.contains('ov-readout-left'), false, '900 + 12 + 280 fits');
+  // a phone: neither side has room, so as far over as it fits; the top edge holds it on the map
+  w.map.getContainer().clientWidth = 360; el.offsetWidth = 265;
+  mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 190, y: 100 }, originalEvent: {} });
+  assert.equal(el.classList.contains('ov-readout-left'), false);
+  assert.equal(el.style.left, '79px', 'box 91..356 inside the 360-px map (the CSS adds 12)');
+  assert.equal(el.style.top, '100px');
+  mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 340, y: 5 }, originalEvent: {} });
+  assert.equal(el.classList.contains('ov-readout-left'), true, 'room on the left');
+  assert.equal(el.style.left, '340px');
+  assert.equal(el.style.top, '32px', 'the CSS lifts it 28 px: kept 4 px inside');
+  el.offsetWidth = 400;
+  mv({ latlng: { lat: 21, lng: -158 }, containerPoint: { x: 200, y: 100 }, originalEvent: {} });
+  assert.equal(el.style.left, '-8px', 'wider than the map: its start stays on the map');
   ov.unmount();
+});
+test('Play keeps the picture\'s tier while the stacks come in, for 3 s at most; a pause ends it, a resume does not hold', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), { p, st, layer } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
+  p.start(); landAll(st, p.frames);
+  let ready = false; st.stacksReady = () => ready;
+  p.scrub(5); p.play();
+  assert.ok(p.holdFrom > 0, 'holding'); assert.equal(p.playing, true); assert.equal(layer.playing, false, 'drawn by the paused rule: what has landed');
+  for (let i = 0; i < 25; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.equal(p.idx, 5, 'no step while the stacks come in');
+  ready = true;
+  for (let i = 0; i < 12; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.ok(p.idx > 5, 'the stacks are in: it plays'); assert.equal(p.holdFrom, 0); assert.equal(layer.playing, true);
+  p.pause(); assert.equal(p.holdFrom, 0);
+  ready = false; p.scrub(5); p.play();
+  for (let i = 0; i < 45; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.equal(p.idx, 5, 'still holding at 2.7 s');
+  for (let i = 0; i < 20; i++) { t.mock.timers.tick(60); await settle(1); }
+  assert.ok(p.idx > 5, 'past 3 s it plays anyway'); assert.equal(p.holdFrom, 0); assert.equal(layer.playing, true);
+  p.pause(); p.scrub(5); p.play(); assert.ok(p.holdFrom > 0); p.pause();
+  assert.equal(p.holdFrom, 0, 'a pause ends the hold');
+  p.play(true); assert.equal(p.holdFrom, 0, 'a tab shown again plays on');
+  p.stop();
+});
+test('stacksReady: every wanted stack of the view has landed or been given up; a stack not wanted does not count', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 3, ['hawaii'], () => ({ t1: 'f' })), st = storeWith(w, doc);
+  st.active = true; st._pump = () => {};
+  const view = { whole: false, s: 16, n: 25, w: -163, e: -152, z: 5 };
+  st.plan(view, st.frames, 2, null);
+  assert.equal(st.stack.t1, true);
+  assert.equal(st.stacksReady(view), false, 'nothing landed');
+  const cells = st._cellsIn('hawaii', 't1', view);
+  assert.ok(cells.length > 1);
+  const lastCell = cells[cells.length - 1];
+  for (const rec of st.frames) for (const c of cells.slice(0, -1)) st.landed(rec.t, 'hawaii', 't1', c.name, frame(502, 502, () => 60));
+  assert.equal(st.stacksReady(view), false, 'one cell short');
+  for (const rec of st.frames) st.fails[st.key(rec.t, 'hawaii', 't1', lastCell.name)] = { at: Date.now(), final: false };
+  st.rev++;
+  assert.equal(st.stacksReady(view), true, 'landed or given up for now');
+  for (const rec of st.frames) delete st.fails[st.key(rec.t, 'hawaii', 't1', lastCell.name)];
+  st.rev++;
+  assert.equal(st.stacksReady(view), false);
+  st.stack.t1 = false; st.rev++;
+  assert.equal(st.stacksReady(view), true, 'too big to want');
+});
+test('a refused pointer: the error panel asks again each minute by itself and recovers; hidden it waits; Off stops it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.parse('2026-11-06T12:08:00Z') });
+  const w = world(), ov = ctl(w), doc = pointerDoc('2026-11-06T12:00:00Z', 2);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, null, 503); await settle(3);
+  assert.equal(ov.radarPlayer, null);
+  const asked = () => w.fetches.filter((u) => /latest\.json$/.test(u)).length, one = asked();
+  t.mock.timers.tick(59000); await settle(2);
+  assert.equal(asked(), one, 'not before the minute');
+  w.g.document.hidden = true;
+  t.mock.timers.tick(1000); await settle(2);
+  assert.equal(asked(), one, 'a hidden tab does not ask');
+  w.g.document.hidden = false;
+  t.mock.timers.tick(60000); await settle(2);
+  assert.equal(asked(), one + 1, 'asked again');
+  w.answer(/latest\.json$/, null, 503); await settle(3);
+  assert.equal(ov.radarPlayer, null, 'refused again: still the error');
+  t.mock.timers.tick(60000); await settle(2);
+  assert.equal(asked(), one + 2, 'and again a minute later');
+  w.answer(/latest\.json$/, doc); await settle(3);
+  w.answer(/latest\.json$/, doc); await settle(3);
+  assert.ok(ov.radarPlayer, 'recovered without a click');
+  assert.equal(ov.radarRecoverTimer, null);
+  ov.unmount();
+  const w2 = world(), ov2 = ctl(w2), asked2 = () => w2.fetches.filter((u) => /latest\.json$/.test(u)).length;   // (one store per root: a new world)
+  ov2.mount('radar');
+  w2.answer(/latest\.json$/, null, 503); await settle(3);
+  const two = asked2();
+  assert.ok(ov2.radarRecoverTimer, 'armed while the error shows');
+  ov2.unmount();
+  assert.equal(ov2.radarRecoverTimer, null, 'Off clears it');
+  t.mock.timers.tick(120000); await settle(2);
+  assert.equal(asked2(), two, 'Off: nothing more');
+});
+test('the label says the time of the newest file in view; ages in hours past an hour; the rain word follows the number shown', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  const real = Date.now, t0 = Date.parse('2026-11-06T12:04:00Z');
+  w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2)); await settle();
+  const p = ov.radarPlayer, fr = p.frames[p.idx], reg = ov.radar.regionsIn(p.view());
+  assert.ok(reg.indexOf('hawaii') >= 0, 'the fixture view holds Hawaii');
+  for (const k of reg) if (fr.r[k]) fr.r[k].o = 0;
+  fr.r.hawaii.o = 4;
+  const c = ov._radarClock(Date.parse('2026-11-06T12:04:00Z')), c0 = ov._radarClock(Date.parse('2026-11-06T12:00:00Z'));
+  try {
+    Date.now = () => t0 + 10 * 60000;
+    assert.ok(ov._radarLabel().indexOf(c.clock) >= 0, ov._radarLabel());
+    assert.ok(/ 10 min ago$/.test(ov._radarLabel()), 'the age from that file: ' + ov._radarLabel());
+    const regionsIn = ov.radar.regionsIn;
+    fr.r.guam = { o: 1 }; ov.radar.regionsIn = () => ['hawaii', 'guam'];
+    assert.ok(ov._radarLabel().indexOf(c.clock) >= 0, 'two regions in view: the newer file, ' + ov._radarLabel());
+    ov.radar.regionsIn = regionsIn; delete fr.r.guam;
+    fr.r.hawaii.o = 0;
+    assert.ok(ov._radarLabel().indexOf(c0.clock) >= 0, ov._radarLabel());
+    Date.now = () => Date.parse('2026-11-06T13:30:00Z');
+    assert.ok(/ 1 h 30 min ago$/.test(ov._radarLabel()), ov._radarLabel());
+    for (const k of reg) ov.radar.cov[k] = { slot: fr.t, pic: {} };
+    assert.ok(/the newest frame is 1 h 30 min old\./.test(ov._radarNote()), ov._radarNote());
+    Date.now = real;
+    p.holdFrom = Date.now();
+    assert.ok(/^Loading the loop\./.test(ov._radarNote()), ov._radarNote());
+    p.holdFrom = 0;
+    assert.ok(!/Loading the loop/.test(ov._radarNote()), ov._radarNote());
+  } finally { Date.now = real; }
+  assert.equal(w.I.radarAge(59), '59 min'); assert.equal(w.I.radarAge(60), '1 h'); assert.equal(w.I.radarAge(1307), '21 h 47 min');
+  const text = ov._radarReadout({ kind: 'echo', region: 'hawaii', rec: fr, dbz: 29.6 });
+  assert.ok(text.startsWith('30 dBZ · moderate rain · '), text);
+  ov.unmount();
+});
+test('a sheet with no room for the whole scale folds, without a toggle that opens nothing', async () => {
+  for (const [sh, cut] of [[5000, true], [10, false]]) {
+    const w = world(), ce = w.g.document.createElement;
+    w.g.document.createElement = (tag) => { const e = ce(tag); e.scrollHeight = sh; return e; };
+    const ov = ctl(w);
+    ov._dims = () => ({ w: 400, h: 500 });
+    ov.mount('radar');
+    w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2)); await settle();
+    assert.equal(ov.ui.compact, true);
+    assert.equal(!!ov.ui.collapsed, cut, 'scrollHeight ' + sh);
+    assert.equal(!!findCls(ov.ui.host, 'ov-details'), !cut);
+    assert.equal(!!findCls(ov.ui.host, 'ov-toggle'), !cut);
+    ov.unmount();
+  }
 });
 test('a slot joining while paused mid-loop: the map draws the frame the label names; a pointer that moves nothing keeps the hover', async (t) => {
   const w = world(), { p, st, layer, ov } = playerWith(w, pointerDoc('2026-11-06T12:00:00Z', 13));
@@ -832,12 +975,13 @@ test('a cell without its t2 draws the 20-degree t1 cell that holds it, not a t1 
   assert.ok(el._rPieces && el._rPieces.length, 'drawn');
   assert.ok(el._rPieces.every((q) => q.ppd === 25), 'the t1 picture, not t0: ' + el._rPieces.map((q) => q.ppd));
 });
-test('a failed file counts as done only for its cooldown; a final one for good', () => {
+test('a failed file counts as done only for its cooldown; a damaged one for five minutes', () => {
   const w = world(), st = new w.I.RadarStore(ROOT); st._take(pointerDoc('2026-11-06T12:00:00Z', 1));
-  st.fails.a = { at: Date.now(), final: false }; st.fails.b = { at: Date.now() - st.retryMs - 1, final: false }; st.fails.c = { at: 0, final: true };
+  st.fails.a = { at: Date.now(), final: false }; st.fails.b = { at: Date.now() - st.retryMs - 1, final: false }; st.fails.c = { at: Date.now() - 299000, final: true }; st.fails.e = { at: Date.now() - 301000, final: true };
   assert.equal(st.done('a'), true, 'cooling down');
   assert.equal(st.done('b'), false, 'to be asked again');
-  assert.equal(st.done('c'), true, 'final');
+  assert.equal(st.done('c'), true, 'damaged, within five minutes');
+  assert.equal(st.done('e'), false, 'damaged, past five minutes: asked again');
   assert.equal(st.done('d'), false, 'never asked');
 });
 test('the t1 stack is refused like the t2 stack when it does not fit', () => {

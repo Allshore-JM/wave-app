@@ -1322,7 +1322,7 @@ at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
 
-### The radar layer on the map (plan section 85, the client; overlay asset 2.25.1)
+### The radar layer on the map (plan section 85, the client; overlay asset 2.25.2)
 
 `RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no
 run lines. It opens still on the newest frame and plays only on Play; the loop choice is 2 hours (a frame every 10 minutes), 6 (20), 12
@@ -1343,6 +1343,7 @@ download the view no longer needs is dropped. Files are immutable, so a loop pla
 most; a stack that would not fit is not started and only the shown frame gets that tier. A file that answers 404 is tried again after a
 minute with the list read again (a slot can come back); a damaged file is given up on. The list is read just after the next expected
 publish, then every minute; a new slot joins the loop once what the view needs of it has landed, so the picture never goes blank for it.
+A region whose pictures do not answer says so in the panel: an empty map must not read as a dry one.
 
 Credit: "Radar: MRMS · OPERA CC BY 4.0", linking `/notice/radar` (NOAA named at its request, OPERA's licence and EUMETNET's rights, what was
 changed).

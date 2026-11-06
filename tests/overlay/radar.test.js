@@ -625,6 +625,20 @@ test('without the setting there is no radar; leaving for a model field drops the
   assert.deepEqual(w2.pending(/radar/), []);
   ov.unmount();
 });
+test('a region whose pictures do not answer says so; the note goes when they land', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2)); await settle();
+  const st = ov.radar, nw = st.newestOf('hawaii'), key = st.key(nw.t, 'hawaii', 't0');
+  assert.ok(!/not answering/.test(ov._radarNote()), 'nothing failed yet');
+  st.fails[key] = { at: Date.now(), final: false };
+  assert.ok(/hawaii.*not answering\. Trying again\./.test(ov._radarNote()), ov._radarNote());
+  st.fails[key] = { at: Date.now(), final: true };
+  assert.ok(/hawaii.*cannot be read\./.test(ov._radarNote()), ov._radarNote());
+  st.cov.hawaii = { slot: nw.t, pic: { q: new Uint8Array(1), cols: 1, rows: 1 } };   // the coverage is in hand: the map is right, no note
+  assert.ok(!/not answering|cannot be read/.test(ov._radarNote()), ov._radarNote());
+  ov.unmount();
+});
 test('the readout and the label', async () => {
   const w = world(), ov = ctl(w);
   ov.mount('radar');

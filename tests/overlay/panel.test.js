@@ -219,6 +219,10 @@ test('the speed selector: the chosen animal (decorative image + accessible name)
   assert.equal(menu.hidden, true); assert.equal(btn.getAttribute('aria-expanded'), 'false'); assert.equal(w.doc.activeElement, btn);
   assert.equal((w.doc.listeners.pointerdown || []).length, 0, 'the listener goes with the menu');
   assert.equal(btn.getAttribute('data-animal'), 'fish'); assert.equal(btn.querySelector('img').src, '/overlay/fish.png?v=9.9.9');
+  // the picture is asked for only when it changes: sync runs on every step, and img.src reads back absolute in a browser
+  { const pic = btn.querySelector('img'); let sets = 0, val = pic.src; Object.defineProperty(pic, 'src', { configurable: true, get: () => 'https://site' + val, set: (v) => { sets++; val = v; } });
+    for (let i = 0; i < 5; i++) w.ov.ui.speedSel.sync();
+    assert.equal(sets, 0, 'the same picture is not asked for again'); delete pic.src; pic.src = val; }
   assert.equal(btn.getAttribute('aria-label'), 'Speed: Fish, 2× speed');
   assert.deepEqual(opts.map((o) => o.getAttribute('aria-selected')), ['false', 'true', 'false']);
 }));

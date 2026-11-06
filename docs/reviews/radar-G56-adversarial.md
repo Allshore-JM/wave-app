@@ -142,3 +142,43 @@ Timing on the served 2.25.7 (shark, cold frames, gap p50/p90 ms once loaded, 0 s
 While loading, in rain, the first 8 s show 28 steps instead of 43: the hold and the short step wait, by design. Tier flips remain at 3-44 cells until `job/radar-tmin` is live and the old slots age out (24 h).
 
 Not checked: Guam in rain, rain crossing a seam, echoes above 48 dBZ (none on the nights tested), a real iPhone or a real slow link.
+
+## Fresh re-check of the fixes (one reviewer on 22787f4), and the last fix round (overlay 2.25.8, f5837d8)
+
+Asked for by the plan's step 5, because the store, layer and player had changed. **0 P0, 0 P1, 1 P2, 6 P3.**
+
+| # | Sev | Finding | Outcome |
+|---|---|---|---|
+| R-1 | P2 | Pause leaves the frame on the map at its playing tier (Europe z7 6-h: 70 pieces at 25 per degree) | Fixed: pause plans again and redraws (69 pieces at 100) |
+| R-2 | P3 | The first plan's "doesn't fit" was never revisited, so a loop picked before Play stayed coarse | Fixed: Play plans again (US z4 24-h playing keeps 25 per degree, the stack on; was all 10) |
+| R-3 | P3 | Retry could fail during recovery's own read | Fixed: a read stopped and asked again; Retry -> the layer within 5 s |
+| R-4 | P3 | A filled hole + a slot join: the label and the map could differ | Fixed: the join compares against the step key before it |
+| R-5 | P3 | A hidden tab went on retrying | Fixed: hidden asks nothing, shown asks again |
+| R-6 | P3 | "No picture for" gave the slot's time, not the file's | Fixed: every note uses the file's own time |
+| R-7 | P3 | Changing the loop during Play dropped to the coarsest tier at once | Partly: the hold restarts. See below |
+
+**R-7 as it stands.** Europe z7, files slowed to 500 ms, 2 h -> 6 h while playing: the frame on the map stays at 25/100 per
+degree for 3.25 s (the hold's cap), then 10 per degree for about 2.4 s, then 25 for the rest of the loop. Before the fix the
+same change showed 10 per degree for about 5 s straight away. Accepted: the hold is bounded on purpose, so Play never looks
+dead, and new frames that have not landed can only draw their coarse tier. On a normal link the gap is shorter.
+
+Held, per the reviewer:
+- the hold is never stranded;
+- recovery stays quiet;
+- the readout equals the drawn pixel at 61,980 samples;
+- the memory caps are 48 / 32 MB;
+- the readout's placement is right.
+
+The reviewer could not check a real iPhone, iPad or Safari, a real slow link, a real slot arriving during a hold, a live 5-minute damaged-file retry, or real heap.
+
+### 2.25.8 on the test site
+- Served since 17:31:16 UTC, sha = repo.
+- Mutants of the round: 14 of 14 killed.
+- Full suites on 2.25.8: pytest 2,473 passed, 1 skipped; Node 1,166 passed.
+- A fresh page, desktop and phone: opens paused on the newest frame, Play works, no sideways scroll, 0 console problems.
+- Timing (shark, cold frames, gap p50/p90 ms, 0 skips): Hawaii z8.8 126/135, Europe z7 129/136, phone Hawaii 129/133.
+
+### On record for the owner
+- **Europe z4, 24-h, on 1080p plays at 10 per degree.** The stack estimate is cautious near the cap (a later plan finds it would fit at 45.4 MB). At zoom 4 a 10-per-degree node is about one screen pixel, so this was accepted, with A-11 (Europe z7 long loops stay at the middle tier).
+- The rain word is used over snow too.
+- Tier flips last until `job/radar-tmin` is live and the old slots age out (24 h).

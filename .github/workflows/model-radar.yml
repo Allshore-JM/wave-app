@@ -55,10 +55,14 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           SLOTS: ${{ github.event.inputs.slots }}
+          # a repository variable switches a source off with no deploy (e.g. mrms,opera); empty = every source
+          SOURCES: ${{ vars.RADAR_SOURCES }}
         run: |
           if [ -n "$SLOTS" ] && ! [[ "$SLOTS" =~ ^[0-9]+$ ]]; then echo "bad slots input"; exit 2; fi
           ARGS=()
+          if [ -n "$SOURCES" ] && ! [[ "$SOURCES" =~ ^[a-z,]+$ ]]; then echo "bad RADAR_SOURCES"; exit 2; fi
           [ -n "$SLOTS" ] && ARGS+=(--slots "$SLOTS")
+          [ -n "$SOURCES" ] && ARGS+=(--sources "$SOURCES")
           [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
           rc=0
           /usr/bin/time -v -o time.txt python tools/model_frames/radar.py "${ARGS[@]}" || rc=$?

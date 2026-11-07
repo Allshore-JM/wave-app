@@ -101,7 +101,6 @@ REGIONS = {
     "guam":   ("Guam", "mrms", "GUAM", 9, 140, 18, 150, 2),
     "europe": ("Europe", "opera", None, 31, -40, 75, 58, 1),
 }
-SOURCES = ("mrms", "opera")
 
 
 class Missing(Exception):
@@ -256,12 +255,13 @@ def _get(url, headers=None, timeout=60):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def _read_whole(url, get, max_bytes):
-    """Read to the end within FETCH_MAX_S; a body shorter than its Content-Length is a dropped connection, not a damaged file
+def _read_whole(url, get, max_bytes, timeout=None, max_s=None):
+    """Read to the end within max_s; a body shorter than its Content-Length is a dropped connection, not a damaged file
     (http.client returns what it has on a clean close, without an error)."""
+    timeout, max_s = timeout or FETCH_TIMEOUT_S, max_s or FETCH_MAX_S
     began = time.monotonic()
     parts, size = [], 0
-    with get(url, timeout=FETCH_TIMEOUT_S) as r:
+    with get(url, timeout=timeout) as r:
         headers = getattr(r, "headers", None)
         want = headers.get("Content-Length") if headers is not None else None
         while True:
@@ -271,21 +271,21 @@ def _read_whole(url, get, max_bytes):
             size += len(chunk)
             if size > max_bytes:
                 raise ValueError(f"{url}: more than {max_bytes} bytes")
-            if time.monotonic() - began > FETCH_MAX_S:
-                raise TimeoutError(f"{url}: not finished in {FETCH_MAX_S} s")
+            if time.monotonic() - began > max_s:
+                raise TimeoutError(f"{url}: not finished in {max_s} s")
             parts.append(chunk)
     if want is not None and str(want).isdigit() and size != int(want):
         raise ConnectionError(f"{url}: {size} of {want} bytes")
     return b"".join(parts)
 
 
-def fetch(url, get, max_bytes):
+def fetch(url, get, max_bytes, timeout=None, max_s=None):
     """The whole body. 404 = Missing (both buckets answer 404 for an absent key); other answers, time-outs and dropped connections
     = Down: a refusal or an outage must never count as "never published"."""
     last = None
     for attempt in range(2):
         try:
-            return _read_whole(url, get, max_bytes)
+            return _read_whole(url, get, max_bytes, timeout=timeout, max_s=max_s)
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 raise Missing(f"HTTP {exc.code}") from None
@@ -378,6 +378,28 @@ def opera_frame(slot_dt, get):
     return _reading("OPERA", lambda: opera_lattice(data["values"])), 0, data["radars"]
 
 
+def _read_mrms(region, dt, now, get):
+    lattice, offset = mrms_frame(region, dt, now, get)
+    return lattice, offset, None
+
+
+def _read_opera(region, dt, now, get):
+    lattice, offset, radars = opera_frame(dt, get)
+    return lattice, offset, f"{radars} radars"
+
+
+# A source and its clock, in the order a tick runs them. read(region, slot datetime, now, get) -> (lattice, minutes after the slot, a
+# log line or None). ready_s: no frame is taken for a slot younger than this. reach_h: slots older than this are never asked for (None:
+# the whole window). backfill_s: older slots are started only this long into the budget's start; spend_s, when set, makes that start
+# the source's own turn and also stops the whole source that long after it, so a slow source cannot take the time of the next. MRMS
+# and OPERA count from the tick's start, so a hung MRMS still leaves Europe's newest frame.
+SOURCE = {
+    "mrms":  {"read": _read_mrms, "ready_s": MRMS_READY_S, "reach_h": None, "backfill_s": BACKFILL_S / 2, "spend_s": None},
+    "opera": {"read": _read_opera, "ready_s": 0, "reach_h": None, "backfill_s": BACKFILL_S, "spend_s": None},
+}
+SOURCES = tuple(SOURCE)
+
+
 # ---------------------------------------------------------------- publishing
 def store_region(store, slot, region, lattice, offset, stop=None):
     """Every object of one region and slot -> its pointer entry, with sizes for the summary. Past `stop` the rest is left (Down: the
@@ -423,6 +445,19 @@ def newest_of(pointer):
     return out
 
 
+def note_began(pointer, now):
+    """When each region joined the job: a region added later must not read as silent since the job's first tick and alarm at once. A
+    region the pointer already lists counts from `started`. -> whether anything was added."""
+    began = pointer.setdefault("began", {})
+    listed = pointer.get("regions", {})
+    added = False
+    for region in REGIONS:
+        if region not in began:
+            began[region] = pointer["started"] if region in listed else A.utc(now)
+            added = True
+    return added
+
+
 def write_pointer(store, pointer, now):
     pointer["slots"].sort(key=lambda x: x["t"])
     pointer["published_utc"] = A.utc(now)
@@ -434,11 +469,14 @@ def plan(pointer, now, source, keep=KEEP_SLOTS):
     """[(slot name, datetime, [regions still to do])] of `source`, newest first: slots not yet filled and not given up."""
     have = {s["t"]: s for s in pointer["slots"]}
     newest = slot_of(now)
+    cfg = SOURCE[source]
     out = []
     for i in range(keep):
         dt = newest - timedelta(minutes=SLOT_MINUTES * i)
-        if source == "mrms" and (now - dt).total_seconds() < MRMS_READY_S:
+        if (now - dt).total_seconds() < cfg["ready_s"]:
             continue
+        if cfg["reach_h"] is not None and now - dt > timedelta(hours=cfg["reach_h"]):
+            break
         name = slot_name(dt)
         rec = have.get(name, {})
         todo = [r for r in regions_of(source) if r not in rec.get("r", {}) and rec.get("x", {}).get(r, 0) < MAX_TRIES]
@@ -511,11 +549,11 @@ def alarm(store, line, now, kind):
 
 
 def _quiet_since(pointer, region, newest):
-    """The newest frame of `region` (or, with none, when the job first ran) as (label, datetime)."""
+    """The newest frame of `region` (or, with none, when the region joined the job) as (label, datetime)."""
     t = newest.get(region)
     if t:
         return t, parse_slot(t)
-    return "none", A.parse_iso(pointer["started"])
+    return "none", A.parse_iso(pointer.get("began", {}).get(region) or pointer["started"])
 
 
 def state_alarms(store, pointer, now, sources):
@@ -536,35 +574,34 @@ def state_alarms(store, pointer, now, sources):
 
 
 # ---------------------------------------------------------------- one tick
-def run_source(source, store, pointer, now, clock, started, get, log, budget, keep=KEEP_SLOTS, max_slots=None):
-    """Fill `source`'s missing frames, newest first, within the time budgets. A file that cannot be read costs its own region
-    at most BAD_PER_TICK tries this tick and nothing else. -> (frames done, per-tier stats, {region: alarm line})."""
+def run_source(source, store, pointer, now, clock, started, get, log, budget, keep=KEEP_SLOTS, max_slots=None, deadline=DEADLINE_S):
+    """Fill `source`'s missing frames, newest first, within the time budgets (seconds since `started`). A file that cannot be read
+    costs its own region at most BAD_PER_TICK tries this tick and nothing else. -> (frames done, per-tier stats, {region: alarm line})."""
     done, stats, down, out_of_time = 0, {"t0": [0, 0], "t1": [0, 0], "t2": [0, 0]}, False, False
     newest = newest_of(pointer)
     bad, bad_lines = {}, {}
     stop = lambda: clock() - started > HARD_S                          # noqa: E731
+    read = SOURCE[source]["read"]
     for i, (name, dt, todo) in enumerate(plan(pointer, now, source, keep=keep)):
         if max_slots is not None and i >= max_slots:
             break
         elapsed = clock() - started
         recent = dt >= slot_of(now) - timedelta(minutes=SLOT_MINUTES * (LOOKBACK - 1))
-        if elapsed > DEADLINE_S or (not recent and elapsed > budget):
+        if elapsed > deadline or (not recent and elapsed > budget):
             log(f"{source}: time budget used ({elapsed:.0f} s), {name} and older left for later ticks")
             break
         dirty = False
         for region in todo:
             if bad.get(region, 0) >= BAD_PER_TICK:
                 continue
-            if clock() - started > DEADLINE_S:
+            if clock() - started > deadline:
                 log(f"{source}: time budget used, {name} {region} and older left for later ticks")
                 out_of_time = True
                 break
             try:
-                if source == "mrms":
-                    lattice, offset = mrms_frame(region, dt, now, get)
-                else:
-                    lattice, offset, radars = opera_frame(dt, get)
-                    log(f"{name} {region}: {radars} radars")
+                lattice, offset, note = read(region, dt, now, get)
+                if note:
+                    log(f"{name} {region}: {note}")
                 entry, st = store_region(store, name, region, lattice, offset, stop=stop)
             except Missing as exc:
                 log(f"{name} {region}: not published ({exc})")
@@ -664,7 +701,8 @@ def good_pointer(p):
             and all(isinstance(s["t"], str) and parse_slot(s["t"]) and isinstance(s["r"], dict) and isinstance(s.get("x", {}), dict)
                     for s in p["slots"]) \
             and all(isinstance(g["t"], str) and parse_slot(g["t"]) and A.parse_iso(g["at"]) for g in p["gone"]) \
-            and (p.get("started") is None or bool(A.parse_iso(p["started"])))
+            and (p.get("started") is None or bool(A.parse_iso(p["started"]))) \
+            and isinstance(p.get("began", {}), dict) and all(A.parse_iso(v) for v in p.get("began", {}).values())
     except (KeyError, TypeError, ValueError, AttributeError):
         return False
 
@@ -714,17 +752,28 @@ def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
     try:
         first = "started" not in pointer                               # the alarms' clock: a region never seen is silent since then
         pointer.setdefault("started", A.utc(now))
+        joined = note_began(pointer, now)
         pointer.update(regions=regions_block(), credit=CREDIT)
         retired = retire_old(pointer, now)
         for src in sources:
-            # each source gets its own budget from the same start: MRMS's backfill cannot starve Europe's newest frame
-            done, stats, alarms = run_source(src, store, pointer, now, clock, started, get, log,
-                                                  BACKFILL_S if src == sources[-1] else BACKFILL_S / 2, max_slots=a.slots)
+            cfg = SOURCE[src]
+            try:
+                budget, deadline = cfg["backfill_s"], DEADLINE_S       # MRMS's backfill cannot starve Europe's newest frame
+                if cfg["spend_s"] is not None:
+                    turn = clock() - started
+                    budget, deadline = turn + cfg["backfill_s"], min(DEADLINE_S, turn + cfg["spend_s"])
+                done, stats, alarms = run_source(src, store, pointer, now, clock, started, get, log, budget,
+                                                 max_slots=a.slots, deadline=deadline)
+            except Exception as exc:                                   # noqa: BLE001   one source's fault must not cost the others their frames
+                A._summary(f"radar: {src} stopped on {exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))}; "
+                           "the other sources go on")
+                lines.append(f"{src}: stopped")
+                continue
             lines.append(f"{src}: {done} frames, t0 {stats['t0'][1] // 1024} KB, t1 {stats['t1'][0]} cells {stats['t1'][1] // 1024} KB, "
                          f"t2 {stats['t2'][0]} cells {stats['t2'][1] // 1024} KB")
             for region, line in alarms.items():
                 rc = alarm(store, line, now, f"format_{region}") or rc
-        if prune_gone(store, pointer, now, over=lambda: clock() - started > DEADLINE_S) or retired or first:
+        if prune_gone(store, pointer, now, over=lambda: clock() - started > DEADLINE_S) or retired or first or joined:
             write_pointer(store, pointer, now)
     except Exception as exc:                                           # noqa: BLE001   the bucket went away mid-tick
         A._summary(f"radar: stopped on {exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))}; the next tick goes on")

@@ -1317,6 +1317,13 @@ writes, a pointer that is not this job's) fails the run only around 00:00 and 12
 at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read, 2 attempts. Run by hand:
 
     python -I tools/model_frames/radar.py --local out --slots 3     # write under a folder
+
+The sources sit in one table, `radar.SOURCE` (plan section 86): each has its reader, how long after a slot its file can exist, how far
+back it can be asked for and how long it may take. They run in that order inside one job, so the two oldest have written their frames
+before a newer source's code runs, and a stray exception in one source costs the others nothing. `began` in the pointer records when a
+region joined, so a new region does not read as silent since the job's first tick. The repository variable `RADAR_SOURCES` (e.g.
+`mrms,opera`) switches a source off with no deploy; empty means all. `tests/model_frames/test_radar_golden.py` holds MRMS and OPERA to
+their output before the table existed.
     python -I tools/model_frames/radar.py --dry-run --slots 1       # fetch and encode, store nothing
 
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are

@@ -31,6 +31,9 @@ MAX_TILE_BYTES = 256 * 1024             # the largest seen is 5.9 KB
 MAX_OUTLINE_BYTES = 1024 * 1024         # 168 KB on the wire
 MAX_OUTLINE_UNPACKED = 8 * 1024 * 1024  # 994 KB
 CUT_WEST = 122.5
+# The outline's fill is an even-odd rule, so one extra ring can turn it inside out at the same area: places it must and must not hold.
+INSIDE_OUTLINE = ((35.68, 139.77), (43.06, 141.35), (33.59, 130.4), (26.33, 127.8))   # Tokyo, Sapporo, Fukuoka, Okinawa
+OUTSIDE_OUTLINE = ((21.5, 148.5), (46.9, 148.9), (45.0, 123.0))                       # the box's far corners, past the radars' reach
 # (rgb on the palette, mm/h from, mm/h to, the code of the class's middle)
 CLASSES = (
     ((242, 242, 255), 0, 1, 28),
@@ -185,6 +188,14 @@ def coverage(rings, s, w, n, e, ppd):
     area = mask.sum() / float(ppd * ppd)
     if not 150 <= area <= 800:
         raise ValueError(f"the data area is {area:.0f} square degrees")
+    def at(lat, lon):
+        return bool(mask[int((n - lat) * ppd), int((lon - w) * ppd)])
+    for lat, lon in INSIDE_OUTLINE:
+        if not at(lat, lon):
+            raise ValueError(f"the data area leaves out {lat}, {lon}")
+    for lat, lon in OUTSIDE_OUTLINE:
+        if at(lat, lon):
+            raise ValueError(f"the data area holds {lat}, {lon}")
     return mask
 
 

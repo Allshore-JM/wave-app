@@ -94,16 +94,16 @@ const settle = async (n) => { for (let i = 0; i < (n || 12); i++) { await new Pr
 const until = async (fn) => { for (let i = 0; i < 300; i++) { if (fn()) return true; await new Promise((r) => setTimeout(r, 10)); } return fn(); };
 
 // A pointer over ten-minute slots ending at endIso (the newest), holding the given regions with their real boxes.
-const BOXES = { conus: [20, -130, 55, -60], alaska: [50, -176, 72, -126], hawaii: [15, -164, 26, -151], carib: [10, -90, 25, -60], guam: [9, 140, 18, 150], europe: [31, -40, 75, 58] };
+const BOXES = { conus: [20, -130, 55, -60], alaska: [50, -176, 72, -126], hawaii: [15, -164, 26, -151], carib: [10, -90, 25, -60], guam: [9, 140, 18, 150], europe: [31, -40, 75, 58], japan: [20, 122, 47, 149], taiwan: [18, 115, 29, 127] };
 function slotName(ms) { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return '' + d.getUTCFullYear() + p(d.getUTCMonth() + 1) + p(d.getUTCDate()) + p(d.getUTCHours()) + p(d.getUTCMinutes()); }
 function pointerDoc(endIso, count, regions, entry) {
   const end = Date.parse(endIso), slots = [];
   regions = regions || ['hawaii'];
   for (let i = count - 1; i >= 0; i--) {
-    const r = {}; for (const nm of regions) r[nm] = Object.assign({ o: nm === 'europe' ? 0 : 4 }, entry ? entry(nm, end - i * 600000) : {});
+    const r = {}; for (const nm of regions) r[nm] = Object.assign({ o: ['europe', 'japan', 'taiwan'].indexOf(nm) >= 0 ? 0 : 4 }, entry ? entry(nm, end - i * 600000) : {});
     slots.push({ t: slotName(end - i * 600000), r });
   }
-  const reg = {}; for (const nm of Object.keys(BOXES)) reg[nm] = { name: nm, src: nm === 'europe' ? 'opera' : 'mrms', box: BOXES[nm] };
+  const reg = {}; for (const nm of Object.keys(BOXES)) reg[nm] = Object.assign({ name: nm, src: { europe: 'opera', japan: 'jma', taiwan: 'cwa' }[nm] || 'mrms', box: BOXES[nm] }, nm === 'japan' ? { scale: 'jma8' } : {});
   return { format: 'radar-v1', credit: 'x', floor_dbz: 5, step_dbz: 0.5, max_code: 142, newest: {}, published_utc: new Date(end + 8 * 60000).toISOString().replace('.000Z', 'Z'), started: '2026-11-06T03:00:00Z', gone: [],
     tiers: { t0: { ppd: 10 }, t1: { cell: 20, ppd: 25 }, t2: { cell: 5, ppd: 100 } }, regions: reg, slots };
 }

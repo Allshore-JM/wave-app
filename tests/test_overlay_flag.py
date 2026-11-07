@@ -394,14 +394,20 @@ def test_the_radar_look_is_one_look():
 
 def test_the_radar_notice_the_credit_links():
     """The radar credit is short (the map's corner: 29 visible characters), so what the terms ask for is in the notice it links:
-    NOAA named at its request and not an official product; OPERA's CC BY 4.0 with its link and EUMETNET's rights; what was changed."""
+    NOAA named at its request and not an official product; OPERA's CC BY 4.0 with its link and EUMETNET's rights; JMA named as its
+    licence asks, and that the data was edited; Taiwan's provider, year, data set and licence; what was changed."""
+    from datetime import datetime, timezone
     r = A.app.test_client().get("/notice/radar")
     assert r.status_code == 200 and r.mimetype == "text/plain" and r.headers["Cache-Control"] == "public, max-age=86400"
     body = r.get_data(as_text=True)
     for need in ("NOAA", "Multi-Radar/Multi-Sensor", "not an official NOAA product", "EUMETNET OPERA", "Property rights: EUMETNET",
                  "Creative Commons Attribution 4.0", "https://creativecommons.org/licenses/by/4.0/", "Modified by Allshore Surf",
-                 "No warranty"):
+                 "No warranty", "Source: Japan Meteorological Agency website", "Public Data License (Version 1.0)",
+                 "https://www.digital.go.jp/resources/open_data/public_data_license_v1.0", "Edited by Allshore Surf",
+                 "not a product of the Japan Meteorological Agency", "Central Weather Administration (Taiwan), %d," % datetime.now(timezone.utc).year,
+                 "O-A0059-001", "Open Government Data License, version 1.0", "https://data.gov.tw/license"):
         assert need in body, need
+    assert "{" not in body, "the year filled in"
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/radar"' in js, "the credit's link opens this notice"
 

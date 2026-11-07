@@ -236,6 +236,23 @@ def test_a_pointer_with_a_bad_began_is_refused(began):
     assert not R.good_pointer(p)
 
 
+def test_a_job_drops_the_slot_entries_of_regions_it_does_not_write(two):
+    """A job rolled back past a region's merge: the pointer it writes names none of that region's frames, at once, with no new frame."""
+    import json
+    store = Store()
+    assert tick(store) == 0
+    pointer = store.get_json(POINTER)
+    kept = {slot["t"]: dict(slot["r"]) for slot in pointer["slots"]}
+    assert kept
+    for slot in pointer["slots"]:
+        slot["r"]["mars"] = {"o": 0}
+    store.objects[POINTER] = json.dumps(pointer).encode()
+    assert tick(store) == 0
+    after = store.get_json(POINTER)
+    assert {slot["t"]: slot["r"] for slot in after["slots"]} == kept
+    assert R.drop_unlisted(after) is False
+
+
 def test_a_pointer_of_stage_one_is_good():
     p = R.empty_pointer()
     assert "began" not in p and R.good_pointer(p)

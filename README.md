@@ -1326,6 +1326,10 @@ region joined, so a new region does not read as silent since the job's first tic
 their output before the table existed.
     python -I tools/model_frames/radar.py --dry-run --slots 1       # fetch and encode, store nothing
 
+Stopping a source: use `RADAR_SOURCES`. Its regions stay listed and their frames age out, and the pointer stays valid for every client.
+Rolling the job back past a region's merge is safe from the commit that added `drop_unlisted`: the older job then removes the region's
+slot entries on its first tick. A client also ignores slot entries of a region the pointer does not list.
+
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
 

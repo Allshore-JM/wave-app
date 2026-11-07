@@ -638,7 +638,7 @@ test('the entry: only the radar\'s files, its pane and credit, the panel with pl
   assert.ok(findCls(host, 'ov-play')); assert.ok(findCls(host, 'ov-timeline')); assert.ok(findCls(host, 'ov-speed')); assert.ok(findCls(host, 'ov-radar-loop')); assert.ok(findCls(host, 'ov-radar-words'));
   assert.equal(findCls(host, 'ov-timeline').max, '12');
   assert.equal(findCls(host, 'ov-play')['aria-label'], 'Play');
-  assert.ok(/Radar: NOAA MRMS, EUMETNET OPERA/.test(allText(host)));
+  assert.ok(/Radar: NOAA MRMS/.test(allText(host)) && !/OPERA/.test(allText(host)), 'the head names what is in view: ' + allText(host));
   assert.ok(/No/.test('No') && !/GFS-Wave/.test(allText(host)));
   ov.unmount();
 });
@@ -1198,4 +1198,201 @@ test('the scale in dBZ is the same for both unit systems; the slot names read ba
   assert.equal(I.unitOf('radar', 'US').label, 'dBZ');
   assert.equal(slotName(Date.parse('2026-11-06T12:00:00Z')), '202611061200');
   assert.equal(I.radarSlotMs('202611061200'), Date.parse('2026-11-06T12:00:00Z'));
+});
+
+// ------------------------------------------------------------------ stage 2: Japan's classes, Taiwan, the credit (plan section 86)
+const visible = (html) => html.replace(/<[^>]+>/g, '');
+const nowSlot = () => new Date(Date.now() - Date.now() % 600000).toISOString().replace('.000Z', 'Z');
+const moved = (w) => { for (const f of w.reg.map.moveend || []) f(); };
+test('Japan\'s classes: the table, the snap (ties go down), the words, the mm/h text', () => {
+  const rows = I.RADAR_JMA8, codes = rows.map((r) => r[0]);
+  for (const r of rows) { assert.equal(I.radarRainWord(I.radarDbz(r[0])), r[3], 'the same word as the same rain on the dBZ scale: ' + r[0]); assert.equal(I.RADAR_JMA8_SNAP[r[0]], r[0]); }
+  for (let c = 0; c <= 142; c++) { let best = codes[0]; for (const k of codes) if (Math.abs(k - c) < Math.abs(best - c)) best = k; assert.equal(I.RADAR_JMA8_SNAP[c], best, 'code ' + c); }
+  assert.equal(I.RADAR_JMA8_SNAP[57], 49, 'half way between 49 and 65');
+  assert.equal(I.RADAR_JMA8_SNAP[58], 65);
+  assert.deepEqual(rows.map(I.radarClassText), ['<1 mm/h', '1-5 mm/h', '5-10 mm/h', '10-20 mm/h', '20-30 mm/h', '30-50 mm/h', '50-80 mm/h', '80+ mm/h']);
+  assert.equal(I.radarClassOf(65)[1], 5); assert.equal(I.radarClassOf(64.6)[0], 65); assert.equal(I.radarClassOf(142)[0], 102); assert.equal(I.radarClassOf(0)[0], 28);
+});
+// Two classes in stripes: every drawn pixel of a region on classes is one class's colour, and the hover reads that pixel.
+function stripes(region) { return t0Of(region, (r, c) => (Math.floor(c / 3) % 2 ? 89 : 49)); }
+function classWorld(region, scale) {
+  const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 1, [region]);
+  if (scale === null) delete doc.regions[region].scale; else if (scale) doc.regions[region].scale = scale;
+  const st = storeWith(w, doc), rec = st.frames[0];
+  st.landed(rec.t, region, 't0', null, stripes(region));
+  st.loop = [rec];
+  return { w, st, rec, layer: layerWith(w, st, 0, false) };
+}
+test('a region on classes: every pixel is one class, the hover = the drawn pixel; a region on dBZ still blends', () => {
+  const { layer } = classWorld('japan'), z = 9, lut = I.radarLut();
+  const n = 512, lat = 35, lon = 135, s = Math.sin(lat * Math.PI / 180), x = Math.floor((lon + 180) / 360 * n), y = Math.floor((0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n);
+  const el = tile(layer, x, y, z), allowed = new Set([49, 65, 75, 82, 89].map((c) => lut.slice(c * 2 * 4, c * 2 * 4 + 4).join()));
+  const img = el.lastImg, seen = new Set(); let echo = 0, checked = 0;
+  for (let py = 0; py < 256; py += 7) for (let px = 0; px < 256; px += 7) {
+    const k = (py * 256 + px) * 4, rgba = Array.from(img.slice(k, k + 4)).join(), c = pixelCentre(x, y, z, px, py), r = layer.readoutAt(c.lat, c.lon, z);
+    assert.equal(r.kind, 'echo', px + ',' + py);
+    assert.ok(allowed.has(rgba), 'a class colour at ' + px + ',' + py + ': ' + rgba);
+    assert.equal(rgba, lut.slice(r.code * 2 * 4, r.code * 2 * 4 + 4).join(), 'the hover reads the drawn pixel');
+    assert.equal(I.RADAR_JMA8_SNAP[r.code], r.code);
+    seen.add(r.code); echo++; checked++;
+  }
+  assert.ok(echo > 100 && checked && seen.has(49) && seen.has(89), [...seen].join());
+  // the same picture on the dBZ scale keeps its blend
+  const dbz = classWorld('japan', null), el2 = tile(dbz.layer, x, y, z);
+  let between = 0;
+  for (let py = 0; py < 256; py += 3) for (let px = 0; px < 256; px += 3) { const c = pixelCentre(x, y, z, px, py), r = dbz.layer.readoutAt(c.lat, c.lon, z); if (r.kind === 'echo' && I.RADAR_JMA8_SNAP[Math.round(r.code)] !== r.code) between++; }
+  assert.ok(between > 100 && el2, 'blended pixels ' + between);
+});
+test('a scale this client does not know: no failure, no snap, the dBZ words', async () => {
+  const c = classWorld('japan', 'future');
+  assert.equal(I.validRadarPointer(c.st.pointer), true);
+  const lat = 35, lon = 135, z = 9, el = tileAt(c.layer, lat, lon, z);
+  assert.ok(el.lastImg, 'drawn');
+  let between = 0;
+  for (let d = 0; d < 30; d++) { const r = c.layer.readoutAt(lat, lon + d * 0.031, z); if (r && r.kind === 'echo' && I.RADAR_JMA8_SNAP[Math.round(r.code)] !== r.code) between++; }
+  assert.ok(between > 0);
+});
+test('the hover says the class in a region on classes, in mm/h in both unit systems; elsewhere dBZ', async () => {
+  for (const unit of ['US', 'Metric']) {
+    const w = world(), ov = ctl(w, { getUnit: () => unit });
+    ov.mount('radar');
+    w.view({ s: 30, n: 40, w: 130, e: 140 });
+    const doc = pointerDoc('2026-11-06T12:00:00Z', 1, ['japan', 'hawaii']);
+    w.answer(/latest\.json$/, doc); await settle();
+    const rec = ov.radar.frames[0], clock = ov._radarClock(I.radarSlotMs(rec.t)).clock;
+    const say = (code, region) => ov._radarReadout({ kind: 'echo', code, dbz: I.radarDbz(code), region: region || 'japan', rec });
+    assert.equal(say(65), '5-10 mm/h · moderate rain · ' + clock);
+    assert.equal(say(28), '<1 mm/h · very light rain · ' + clock);
+    assert.equal(say(102), '80+ mm/h · very heavy rain · ' + clock);
+    assert.ok(/^ *\d+ dBZ · /.test(say(65, 'hawaii')), say(65, 'hawaii'));
+    assert.equal(ov._radarReadout({ kind: 'dry', region: 'japan', rec }), 'no echo');
+    ov.unmount();
+  }
+});
+test('the credit: every subset of the sources fits the corner and links the notice; the words; nothing from the pointer in the HTML', () => {
+  const all = ['mrms', 'opera', 'jma', 'cwa'];
+  for (let m = 0; m < 16; m++) {
+    const srcs = all.filter((_, i) => m >> i & 1), html = I.radarCredit(srcs), text = visible(html);
+    assert.ok(text.length <= 29, text + ' ' + text.length);
+    assert.ok(/href="\/notice\/radar"/.test(html) && /modified by Allshore Surf/.test(html), html);
+  }
+  assert.equal(I.RADAR_ATTRIBUTION, 'Radar: <a href="/notice/radar" target="_blank" rel="noopener" title="NOAA MRMS and EUMETNET OPERA, modified by Allshore Surf">MRMS · OPERA CC BY 4.0</a>', 'stage 1\'s credit where only its sources are in view');
+  const said = (s) => visible(I.radarCredit(s));
+  assert.equal(said(['opera', 'mrms']), 'Radar: MRMS · OPERA CC BY 4.0', 'one order whatever came first');
+  assert.equal(said(['opera', 'jma']), 'Radar: OPERA CC BY 4.0 · JMA');
+  assert.equal(said(['mrms', 'jma']), 'Radar: MRMS · JMA');
+  assert.equal(said(['jma', 'cwa']), 'Radar: JMA · CWA');
+  assert.equal(said(['cwa']), 'Radar: CWA');
+  assert.equal(said(['jma', 'cwa', 'mrms']), 'Radar: 3 sources');
+  assert.equal(said(all), 'Radar: 4 sources');
+  assert.equal(said([]), 'Radar: sources');
+  assert.ok(/Japan Meteorological Agency and Taiwan Central Weather Administration/.test(I.radarCredit(['jma', 'cwa'])));
+  assert.ok(/NOAA MRMS, EUMETNET OPERA, Japan Meteorological Agency and Taiwan/.test(I.radarCredit(all)));
+  const odd = I.radarCredit(['<img src=x>']);
+  assert.equal(visible(odd), 'Radar: 1 source'); assert.ok(!/img/.test(odd), odd);
+  assert.equal(I.radarHead([]), 'Radar'); assert.equal(I.radarHead(['cwa', 'mrms']), 'Radar: NOAA MRMS, CWA'); assert.equal(I.radarHead(all), 'Radar: NOAA MRMS, EUMETNET OPERA, JMA, CWA');
+  assert.equal(I.radarHead(['<img src=x>']), 'Radar');
+});
+test('the head, the credit and the class note follow the view; one credit on the map at a time', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2, ['hawaii', 'europe', 'japan', 'taiwan'])); await settle();
+  const said = () => { assert.equal(w.attrs.length, 1, w.attrs.join(' | ')); return visible(w.attrs[0]); };
+  const scale = () => findCls(ov.ui.host, 'ov-radar-scale');
+  assert.equal(said(), 'Radar: MRMS'); assert.equal(ov.ui.title.textContent, 'Radar: NOAA MRMS'); assert.equal(scale().hidden, true);
+  w.view({ s: 20, n: 45, w: 120, e: 150 }); moved(w);
+  assert.equal(said(), 'Radar: JMA · CWA'); assert.equal(ov.ui.title.textContent, 'Radar: JMA, CWA');
+  assert.equal(scale().hidden, false); assert.ok(/^japan: rain-rate classes/.test(scale().textContent), scale().textContent);
+  w.view({ s: 19, n: 28, w: 116, e: 121 }); moved(w);
+  assert.equal(said(), 'Radar: CWA'); assert.equal(scale().hidden, true);
+  w.view({ s: 40, n: 50, w: 0, e: 20 }); moved(w);
+  assert.equal(said(), 'Radar: OPERA CC BY 4.0');
+  w.view({ s: -30, n: -20, w: 10, e: 20 }); moved(w);
+  assert.equal(said(), 'Radar: sources'); assert.equal(ov.ui.title.textContent, 'Radar');
+  w.view({ s: -60, n: 70, w: -180, e: 180 }); moved(w);
+  assert.equal(said(), 'Radar: 4 sources');
+  ov.unmount();
+  assert.equal(w.attrs.length, 0);
+});
+test('Taiwan one step behind: no note, the label says its own frame\'s time; two steps behind says so', async () => {
+  const w = world(), ov = ctl(w), iso = nowSlot();
+  ov.mount('radar');
+  w.view({ s: 19, n: 28, w: 116, e: 121 });
+  const doc = pointerDoc(iso, 3, ['taiwan', 'hawaii']);
+  delete doc.slots[2].r.taiwan;
+  w.answer(/latest\.json$/, doc); await settle();
+  const st = ov.radar, p = ov.radarPlayer, fr = st.frames;
+  assert.equal(p.idx, p.frames.length - 1);
+  st.landed = (slot, region, f) => st._land({ key: st.key(slot, region, 't0'), slot, region, tier: 't0' }, w.I.radarPic(f));
+  st.landed(fr[1].t, 'taiwan', t0Of('taiwan', () => 1)); st.landed(fr[0].t, 'taiwan', t0Of('taiwan', () => 1));
+  assert.equal(st.resolve('taiwan', p.idx), fr[1], 'its last frame');
+  assert.ok(ov._radarLabel().indexOf(ov._radarClock(I.radarSlotMs(fr[1].t)).clock) >= 0, 'the frame on the map: ' + ov._radarLabel());
+  assert.ok(!/ shows /.test(ov._radarNote()), 'one slot behind is no news: ' + ov._radarNote());
+  // two slots behind: the note, in that frame's own time
+  delete fr[1].r.taiwan; st.pics.delete(st.key(fr[1].t, 'taiwan', 't0'));
+  assert.equal(st.resolve('taiwan', p.idx), fr[0]);
+  const note = ov._radarNote();
+  assert.ok(/taiwan shows /.test(note) && note.indexOf(ov._radarClock(I.radarSlotMs(fr[0].t)).clock) >= 0, note);
+  ov.unmount();
+});
+test('the settle read: a young publish is read again just after its later regions can be in, and a late region is fetched at once', async () => {
+  const w = world(), st = new w.I.RadarStore(ROOT), delays = [], nodeST = global.setTimeout;
+  const arm = (ageMs) => { st.pointer.published_utc = new Date(Date.now() - ageMs).toISOString(); global.setTimeout = (f, ms) => { delays.push(ms); return nodeST(f, 0x7ffffff); }; try { st.active = true; st._arm(); } finally { global.setTimeout = nodeST; } return delays[delays.length - 1]; };
+  st._take(pointerDoc('2026-11-06T12:00:00Z', 2));
+  const near = (got, want) => assert.ok(Math.abs(got - want) < 500, got + ' vs ' + want);
+  near(arm(30000), 100000);                                  // written 30 s ago: at 130 s
+  near(arm(70000), 60000);                                   // never sooner than the floor
+  near(arm(119000), 60000);
+  near(arm(121000), 600000 + 20000 - 121000);                // settled: just after the next publish
+  near(arm(400000), 600000 + 20000 - 400000);
+  st.stop();
+  // the pointer read then carries the region; the slot on the map is not re-joined, its file is asked for
+  const w2 = world(), ov = ctl(w2);
+  ov.mount('radar');
+  w2.view({ s: 19, n: 28, w: 116, e: 121 });
+  const doc = pointerDoc('2026-11-06T12:00:00Z', 2, ['taiwan']), slot = doc.slots[1].t;
+  delete doc.slots[1].r.taiwan;
+  w2.answer(/latest\.json$/, doc); await settle();
+  const idx = ov.radarPlayer.idx;
+  const next = clone(doc); next.slots[1].r.taiwan = { o: 0 }; next.published_utc = '2026-11-06T12:11:00Z';
+  ov.radar._take(next); await settle();
+  assert.ok(w2.pending(new RegExp(slot + '/taiwan/t0')).length === 1, w2.pending().join(' '));
+  assert.equal(ov.radarPlayer.idx, idx);
+  ov.unmount();
+});
+test('the regions\' order is the client\'s, whatever the pointer lists; only sources with frames count, each once; the label takes the newest file on the map', async () => {
+  const w0 = world(), st0 = new w0.I.RadarStore(ROOT), d0 = pointerDoc('2026-11-06T12:00:00Z', 1, ['hawaii']), flipped = {};
+  for (const k of Object.keys(d0.regions).reverse()) flipped[k] = d0.regions[k];
+  d0.regions = flipped; st0._take(d0);
+  assert.deepEqual(st0.order, ['hawaii', 'guam', 'conus', 'alaska', 'carib', 'europe', 'japan', 'taiwan']);
+  // a region in view with no frames is not named
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii', 'conus', 'alaska', 'carib'])); await settle();
+  const said = () => visible(w.attrs[0]);
+  w.view({ s: 30, n: 40, w: 130, e: 140 }); moved(w);
+  assert.equal(said(), 'Radar: sources', 'Japan is listed and has no frames');
+  w.view({ s: -60, n: 70, w: -180, e: -50 }); moved(w);
+  assert.equal(said(), 'Radar: MRMS', 'four regions, one source');
+  ov.unmount();
+  // two regions on the map, their files at different times: the newer one, whichever comes first in the order
+  const w2 = world(), ov2 = ctl(w2);
+  ov2.mount('radar');
+  const doc = pointerDoc(nowSlot(), 3, ['hawaii', 'taiwan']);
+  delete doc.slots[2].r.taiwan;
+  w2.answer(/latest\.json$/, doc); await settle();
+  const st = ov2.radar, p2 = ov2.radarPlayer, fr = st.frames;
+  const land = (slot, region) => st._land({ key: st.key(slot, region, 't0'), slot, region, tier: 't0' }, w2.I.radarPic(t0Of(region, () => 1)));
+  land(fr[2].t, 'hawaii'); land(fr[1].t, 'taiwan');
+  const newer = ov2._radarClock(I.radarSlotMs(fr[2].t) + 4 * 60000).clock, older = ov2._radarClock(I.radarSlotMs(fr[1].t)).clock;
+  const regionsIn = st.regionsIn;
+  st.regionsIn = () => ['taiwan', 'hawaii'];
+  assert.ok(ov2._radarLabel().indexOf(newer) >= 0, ov2._radarLabel());
+  st.regionsIn = () => ['hawaii', 'taiwan'];
+  assert.ok(ov2._radarLabel().indexOf(newer) >= 0, ov2._radarLabel());
+  st.regionsIn = () => ['taiwan'];
+  assert.ok(ov2._radarLabel().indexOf(older) >= 0, ov2._radarLabel());
+  st.regionsIn = regionsIn;
+  assert.ok(p2);
+  ov2.unmount();
 });

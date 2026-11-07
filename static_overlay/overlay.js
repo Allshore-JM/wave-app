@@ -205,7 +205,7 @@
   var RADAR_PREFIX = 'radar/v1', RADAR_FORMAT = 'radar-v1', RADAR_FLOOR = 5, RADAR_STEP = 0.5, RADAR_MAX_CODE = 142;
   var RADAR_PPD = { t0: 10, t1: 25, t2: 100 }, RADAR_CELL = { t1: 20, t2: 5 };
   var RADAR_LOOPS = { 2: 10, 6: 20, 12: 30, 24: 60 }, RADAR_LOOP_HOURS = [2, 6, 12, 24], RADAR_DEFAULT_LOOP = 2;   // hours -> minutes between frames (owner, 2026-11-06)
-  var RADAR_ORDER = ['hawaii', 'guam', 'conus', 'alaska', 'carib', 'europe'];   // who draws a pixel two regions cover
+  var RADAR_ORDER = ['hawaii', 'guam', 'conus', 'alaska', 'carib', 'europe', 'japan', 'taiwan'];   // who draws a pixel two regions cover
   var RADAR_T1_ZOOM = 4, RADAR_T2_ZOOM = 7;                 // tile zoom from which t1 / t2 are wanted: about one screen pixel per picture node
   var RADAR_FILL = 0.5;                                     // a t1 / t2 cell's share of its full size before any has landed (kept: the box round its rain)
   var RADAR_HOLD_STEPS = 2;                                 // a region missing a step holds its previous frame this many steps, then shows none
@@ -213,14 +213,44 @@
   var READOUT_DX = 12, READOUT_DY = 28, READOUT_PAD = 4, READOUT_NEAR_EDGE = 360;   // px: the readout's offset from the cursor (the CSS's), and how near the right edge it is measured
   var RADAR_REGION_AREA = 6000, RADAR_TOTAL_AREA = 20000;    // square degrees (today's largest region: Europe 4,312; all six 8,545)
   var RADAR_STALL_MS = 15000, RADAR_RETRY_MS = 60000, RADAR_PUBLISH_MS = 10 * 60 * 1000, RADAR_UI_MS = 30000;
+  var RADAR_SETTLE_MS = 120000;                              // a publish this young may still be writing its later regions: read again just after this
   var RADAR_STEP_WAIT_MS = 5000, RADAR_END_HOLD_MS = 1000, RADAR_WARN_MIN = 30;
   var RADAR_PLAY_HOLD_MS = 3000, RADAR_RECOVER_MS = 60000, RADAR_DAMAGED_RETRY_MS = 5 * 60000;   // Play's wait for the view's stacks; a refused pointer asked again; a damaged file asked again
   var RADAR_FDEF = { lo: 5, hi: 75, legend: [5, 65] };
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
-  var RADAR_HEAD = 'Radar: NOAA MRMS, EUMETNET OPERA';
+  // Japan's files hold JMA's eight rain-rate classes as the dBZ codes of the same rain (tools/model_frames/jma.py; a Python test compares
+  // the rows): [code, from mm/h, to mm/h, the word]. A pixel of such a region is one of these codes, never between two.
+  var RADAR_JMA8 = [[28, 0, 1, 'very light rain'], [49, 1, 5, 'light rain'], [65, 5, 10, 'moderate rain'], [75, 10, 20, 'heavy rain'], [82, 20, 30, 'heavy rain'], [89, 30, 50, 'heavy rain'], [96, 50, 80, 'very heavy rain'], [102, 80, null, 'very heavy rain']];
+  var RADAR_JMA8_SNAP = (function () {                       // code -> the nearest class's code; a tie goes to the lower class
+    var out = new Uint8Array(RADAR_MAX_CODE + 2);
+    for (var c = 0; c < out.length; c++) {
+      var best = RADAR_JMA8[0][0];
+      for (var i = 1; i < RADAR_JMA8.length; i++) if (Math.abs(RADAR_JMA8[i][0] - c) < Math.abs(best - c)) best = RADAR_JMA8[i][0];
+      out[c] = best;
+    }
+    return out;
+  })();
+  var RADAR_SCALE_NOTE = ': rain-rate classes, in the colours of the same rain on this scale.';
+  // Who the frames in view come from: the corner's short credit, the panel's head, the link's tooltip.
+  var RADAR_SOURCES = { mrms: { credit: 'MRMS', head: 'NOAA MRMS', full: 'NOAA MRMS' }, opera: { credit: 'OPERA CC BY 4.0', head: 'EUMETNET OPERA', full: 'EUMETNET OPERA' },
+    jma: { credit: 'JMA', head: 'JMA', full: 'Japan Meteorological Agency' }, cwa: { credit: 'CWA', head: 'CWA', full: 'Taiwan Central Weather Administration' } };
+  var RADAR_SOURCE_ORDER = ['mrms', 'opera', 'jma', 'cwa'];
+  function radarKnown(srcs) { return RADAR_SOURCE_ORDER.filter(function (k) { return srcs.indexOf(k) >= 0; }); }
+  function radarHead(srcs) {
+    var known = radarKnown(srcs);
+    return known.length ? 'Radar: ' + known.map(function (k) { return RADAR_SOURCES[k].head; }).join(', ') : 'Radar';
+  }
+  // The corner's credit for the sources in view: at most 29 visible characters whichever they are (the map's rule); the licences and
+  // the "modified" are in the notice it opens. Only this module's own words go into the HTML, never a name from the pointer.
+  function radarCredit(srcs) {
+    var known = radarKnown(srcs), names = known.map(function (k) { return RADAR_SOURCES[k].full; });
+    var text = !srcs.length ? 'sources' : srcs.length > 2 || known.length !== srcs.length ? srcs.length + (srcs.length === 1 ? ' source' : ' sources') : known.map(function (k) { return RADAR_SOURCES[k].credit; }).join(' · ');
+    var who = names.length ? names.slice(0, -1).join(', ') + (names.length > 1 ? ' and ' : '') + names[names.length - 1] : 'The radar sources';
+    return 'Radar: <a href="/notice/radar" target="_blank" rel="noopener" title="' + who + ', modified by Allshore Surf">' + text + '</a>';
+  }
   var RADAR_KEY = 'Tinted: the area radar can see. Nothing is shown where there is no radar.';
   // The credit's visible text is 29 characters (the map's rule): the licences and the "modified" are in the notice it opens.
-  var RADAR_ATTRIBUTION = 'Radar: <a href="/notice/radar" target="_blank" rel="noopener" title="NOAA MRMS and EUMETNET OPERA, modified by Allshore Surf">MRMS · OPERA CC BY 4.0</a>';
+  var RADAR_ATTRIBUTION = radarCredit(['mrms', 'opera']);
   // The observations the panel can show (mode 'obs'): own keys only (G30-9).
   var OBS_DEFS = { sst: { label: 'sea surface temperature', attribution: SST_ATTRIBUTION }, sat: { label: 'satellite waves', attribution: SAT_ATTRIBUTION }, radar: { label: 'radar', attribution: RADAR_ATTRIBUTION } };
   function hasObs(key) { return typeof key === 'string' && Object.prototype.hasOwnProperty.call(OBS_DEFS, key); }
@@ -3068,6 +3098,13 @@
     return dbz < 20 ? 'very light rain' : dbz < 30 ? 'light rain' : dbz < 40 ? 'moderate rain' : dbz < 50 ? 'heavy rain' : dbz < 60 ? 'very heavy rain' : 'intense rain, possible hail';
   }
   function radarLoopOf(v) { return RADAR_LOOP_HOURS.indexOf(v) >= 0 ? v : RADAR_DEFAULT_LOOP; }
+  // The class row of a drawn code in a region on JMA's scale.
+  function radarClassOf(code) {
+    var c = RADAR_JMA8_SNAP[Math.max(0, Math.min(RADAR_MAX_CODE, Math.round(code)))];
+    for (var i = 0; i < RADAR_JMA8.length; i++) if (RADAR_JMA8[i][0] === c) return RADAR_JMA8[i];
+    return RADAR_JMA8[0];
+  }
+  function radarClassText(row) { return row[1] === 0 ? '<' + row[2] + ' mm/h' : row[2] === null ? row[1] + '+ mm/h' : row[1] + '-' + row[2] + ' mm/h'; }
   // The job's cell_table: south to north, then west to east; a cell is named by its south-west corner.
   function radarCellTable(box, cell) {
     var out = [], index = Object.create(null);
@@ -3256,6 +3293,7 @@
     if (!this.active || this.hidden) return;
     var pub = this.pointer ? Date.parse(this.pointer.published_utc) : NaN, now = Date.now();
     var wait = pub === pub ? Math.min(pub + RADAR_PUBLISH_MS + 20000 - now, RADAR_PUBLISH_MS * 2) : 0;
+    if (pub === pub && now - pub < RADAR_SETTLE_MS) wait = Math.min(pub + RADAR_SETTLE_MS + 10000 - now, wait);   // a job still writing its later regions: they are seen minutes sooner
     this.timer = setTimeout(function () {
       self.timer = null;
       self._read().then(function () { self._arm(); });
@@ -3532,7 +3570,7 @@
   function radarSample(pieces, el, own, x0, x1, y0, y1, out) {
     var count = 0, lats = el._rLat, lons = el._rLon;
     for (var p = 0; p < pieces.length; p++) {
-      var pc = pieces[p], pic = pc.pic, q = pic.q, cols = pic.cols, rows = pic.rows, re = pic.re, who = pc.own, ppd = pc.ppd;
+      var pc = pieces[p], pic = pc.pic, q = pic.q, cols = pic.cols, rows = pic.rows, re = pic.re, who = pc.own, ppd = pc.ppd, snap = pc.snap;
       var ys = Math.max(pc.y0, y0), ye = Math.min(pc.y1, y1), xs = Math.max(pc.x0, x0), xe = Math.min(pc.x1, x1);
       for (var y = ys; y < ye; y++) {
         var fy = (pc.top - lats[y]) * ppd + pc.ay - pic.r0, r0 = Math.floor(fy), wy = fy - r0, r1 = r0 + 1;
@@ -3553,7 +3591,7 @@
             if (ok1 && (v = q[b1 + c1]) >= 2) { f = wx * wy; w += f; acc += f * v; }
           }
           if (w < 0.25) continue;
-          out[i] = acc / w; count++;
+          out[i] = snap ? snap[Math.round(acc / w)] : acc / w; count++;   // a region on classes: never a value between two
         }
       }
     }
@@ -3635,8 +3673,8 @@
         return rects[k];
       }
       function piece(rec, who, region, tier, pic, rect, lat0, lon0) {
-        var b = st.pointer.regions[region].box, t0 = tier === 't0', ppd = RADAR_PPD[tier];
-        out.push({ rec: rec, region: region, own: who, pic: pic, ppd: ppd, x0: rect.x0, x1: rect.x1, y0: rect.y0, y1: rect.y1,
+        var def = st.pointer.regions[region], b = def.box, t0 = tier === 't0', ppd = RADAR_PPD[tier];
+        out.push({ rec: rec, region: region, own: who, pic: pic, ppd: ppd, snap: def.scale === 'jma8' ? RADAR_JMA8_SNAP : null, x0: rect.x0, x1: rect.x1, y0: rect.y0, y1: rect.y1,
           top: t0 ? b[2] : lat0 + RADAR_CELL[tier], ay: t0 ? -0.5 : 0.5, left: t0 ? b[1] : lon0, ax: t0 ? -0.5 : 0.5 });
       }
       for (var ri = 0; ri < st.order.length; ri++) {
@@ -5849,6 +5887,17 @@
     if (this.radarLayer) { this.radarLayer.store = null; this.map.removeLayer(this.radarLayer); this.radarLayer = null; }
   };
   Overlay.prototype._radarView = function () { if (this.radarPlayer) this.radarPlayer.viewChanged(); };
+  // The sources of the regions in view that have frames: what the head and the credit name.
+  Overlay.prototype._radarSources = function () {
+    var p = this.radarPlayer, st = this.radar, out = [];
+    if (!p || !st || !st.pointer) return out;
+    var regs = st.regionsIn(p.view());
+    for (var i = 0; i < regs.length; i++) {
+      var s = st.pointer.regions[regs[i]].src;
+      if (st.newestOf(regs[i]) && typeof s === 'string' && out.indexOf(s) < 0) out.push(s);
+    }
+    return out;
+  };
   Overlay.prototype._radarClock = function (ms) {
     var iso = new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z'), abbr = this.opts.tzAbbr(iso, this.opts.tz), st = ribbonFormatter(this.opts.tz).stamp(ms);
     return { day: st.weekday, clock: st.clock, zone: abbr ? ' ' + abbr : '' };
@@ -5857,9 +5906,15 @@
   Overlay.prototype._radarLabel = function () {
     var p = this.radarPlayer, fr = p && p.frames[p.idx];
     if (!fr) return 'no radar frames yet';
-    var ms = radarSlotMs(fr.t), st = this.radar, regs = st && st.pointer ? st.regionsIn(p.view()) : [], real = null;
-    for (var i = 0; i < regs.length; i++) { var e = fr.r[regs[i]]; if (e && (real === null || e.o > real)) real = e.o; }   // the newest file in view: what the hover says
-    if (real !== null) ms += real * 60000;
+    var ms = radarSlotMs(fr.t), st = this.radar, regs = st && st.pointer ? st.regionsIn(p.view()) : [], real = null, held = null, i;
+    for (i = 0; i < regs.length; i++) { var e = fr.r[regs[i]]; if (e && (real === null || e.o > real)) real = e.o; }
+    // The newest file on the map, as the hover says it: a region one step behind (Taiwan's file lands a tick later) shows its own frame.
+    for (i = 0; i < regs.length; i++) {
+      var rec = st.resolve(regs[i], p.idx), own = rec && rec.r[regs[i]];
+      if (own && (held === null || radarSlotMs(rec.t) + own.o * 60000 > held)) held = radarSlotMs(rec.t) + own.o * 60000;
+    }
+    if (held !== null) ms = held;
+    else if (real !== null) ms += real * 60000;              // nothing on the map yet: the frame's own files
     var c = this._radarClock(ms), mins = Math.round((Date.now() - ms) / 60000);
     return (c.day ? c.day + ' ' : '') + c.clock + c.zone + ' · ' + (mins < 1 ? 'now' : radarAge(mins) + ' ago');
   };
@@ -5876,7 +5931,7 @@
       if (nw && (now - real(nw, regs[i])) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + radarAge(Math.round((now - real(nw, regs[i])) / 60000)) + ' old.');
       else if (fr) {
         var rec = st.resolve(regs[i], p.idx);
-        if (rec && rec !== fr) out.push(name + ' shows ' + this._radarClock(real(rec, regs[i])).clock + '.');
+        if (rec && rec !== fr) { if (radarSlotMs(fr.t) - radarSlotMs(rec.t) > RADAR_PUBLISH_MS) out.push(name + ' shows ' + this._radarClock(real(rec, regs[i])).clock + '.'); }   // one slot behind is how a late file lands, not news
         else if (!rec) out.push(name + ': no picture for ' + this._radarClock(real(fr, regs[i])).clock + '.');
       }
     }
@@ -5892,12 +5947,14 @@
     if (r.kind === 'nopic') return 'no radar picture for this time';
     if (r.kind === 'dry' || !r.rec) return 'no echo';
     var st = this.radar, e = r.rec.r[r.region], ms = radarSlotMs(r.rec.t) + (e ? e.o : 0) * 60000, c = this._radarClock(ms).clock;
+    if (st.pointer.regions[r.region].scale === 'jma8') { var row = radarClassOf(r.code); return radarClassText(row) + ' · ' + row[3] + ' · ' + c; }
     var opera = st.pointer.regions[r.region].src === 'opera';
     return Math.round(r.dbz) + ' dBZ · ' + radarRainWord(Math.round(r.dbz)) + ' · ' + (opera ? '10-min max to ' : '') + c;
   };
   // The player's parts of the panel, in place (a new frame must not rebuild the panel: menus and focus stay).
   Overlay.prototype._radarUI = function () {
     var ui = this.ui, p = this.radarPlayer;
+    if (p) this._attribute();                                // the corner names what is in view
     if (!ui || !ui.radar || !p) return;
     var playing = p.playing, label = this._radarLabel(), n = p.frames.length;
     if (ui.play) {
@@ -5911,15 +5968,24 @@
     }
     if (ui.speedSel) ui.speedSel.sync();
     if (ui.radarLine) ui.radarLine.textContent = label;
-    if (ui.collapsed && ui.title) ui.title.textContent = 'Radar · ' + label;
+    if (ui.title) { var said = ui.collapsed ? 'Radar · ' + label : radarHead(this._radarSources()); if (ui.title.textContent !== said) ui.title.textContent = said; }
     if (ui.radarLoop) ui.radarLoop.value = String(p.loopH);
     if (ui.radarNote) { var note = this._radarNote(); ui.radarNote.textContent = note; ui.radarNote.hidden = !note; }
+    if (ui.radarScale) { var sn = this._radarScaleNote(); ui.radarScale.textContent = sn; ui.radarScale.hidden = !sn; }
+  };
+  // A region on rain-rate classes in view: the panel says so beside the dBZ scale.
+  Overlay.prototype._radarScaleNote = function () {
+    var p = this.radarPlayer, st = this.radar, out = [];
+    if (!p || !st || !st.pointer) return '';
+    var regs = st.regionsIn(p.view());
+    for (var i = 0; i < regs.length; i++) if (st.pointer.regions[regs[i]].scale === 'jma8' && st.newestOf(regs[i])) out.push(st.pointer.regions[regs[i]].name + RADAR_SCALE_NOTE);
+    return out.join(' ');
   };
   // The radar's panel: head = the sources; the transport (play, slider, speed) stays on the smallest sheets; details = the frame's
   // time, the loop length, the scale with its rain words, the notes; folded: "Radar · Thu 7:40 PM HST · 10 min ago".
   Overlay.prototype._renderRadar = function (st, host, compact, focusCls, mapH) {
     var self = this, p = this.radarPlayer, unit = this.opts.getUnit();
-    this._obsShell(st, host, compact, focusCls, mapH, RADAR_HEAD, 'Radar · ' + this._radarLabel(), function (body) {
+    this._obsShell(st, host, compact, focusCls, mapH, radarHead(this._radarSources()), 'Radar · ' + this._radarLabel(), function (body) {
       var row = mk('div', 'ov-row ov-radar-line'), line = mk('span', 'ov-radar-label', self._radarLabel());
       var sel = mk('select', 'ov-radar-loop'); sel.setAttribute('aria-label', 'Loop length'); sel.setAttribute('autocomplete', 'off');
       RADAR_LOOP_HOURS.forEach(function (h) { var o = mk('option', null, h + ' h'); o.value = String(h); sel.appendChild(o); });
@@ -5934,6 +6000,7 @@
       });
       body.appendChild(words);
       body.appendChild(mk('div', 'ov-meta ov-radar-key', RADAR_KEY));
+      var scale = mk('div', 'ov-meta ov-radar-key ov-radar-scale'); scale.hidden = true; body.appendChild(scale); self.ui.radarScale = scale;
       var note = mk('div', 'ov-warn'); note.hidden = true; body.appendChild(note); self.ui.radarNote = note;
     }, function (h, ui) {
       var row = mk('div', 'ov-row ov-transport ov-radar-row');
@@ -6943,7 +7010,7 @@
     return { w: c.clientWidth || s.x, h: c.clientHeight || s.y };
   };
   Overlay.prototype._attribution = function () {
-    var text = this.mode === 'obs' ? OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].attribution : this._def().attribution;
+    var text = this.mode === 'obs' ? (this.field === 'radar' ? radarCredit(this._radarSources()) : OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].attribution) : this._def().attribution;
     if (this.mode !== 'obs' && this.layer && this.layer.hasLake() && this.layer._lakeMask && this._lakeOnScreen()) text += LAKE_ATTRIBUTION;   // a lake frame drawn, the lakes' coverage, and the lakes in the view (plan section 50; G33 B-5)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
@@ -8150,7 +8217,7 @@
     var fold = function (keepToggle) {
       if (!keepToggle && btn.parentNode) head.removeChild(btn);
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
-      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
+      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.radarScale = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
@@ -8349,7 +8416,7 @@
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
-      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, RADAR_HEAD: RADAR_HEAD, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
+      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,

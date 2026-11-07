@@ -1337,13 +1337,16 @@ run lines. It opens still on the newest frame and plays only on Play; the loop c
 light tint (16 % white) marks the water and land radar can see; nothing is drawn outside it.
 
 What is drawn is what the hover reads: one sampler for both, over the same pieces. A pixel belongs to the first region in the order
-Hawaii, Guam, US, Alaska, Caribbean, Europe whose newest whole-region frame covers it (by coverage, never by box: the US box's no-coverage
+Hawaii, Guam, US, Alaska, Caribbean, Europe, Japan, Taiwan whose newest whole-region frame covers it (by coverage, never by box: the US box's no-coverage
 strip does not hide the Caribbean). Inside that region: at tile zoom 7 and up the 100-a-degree cell, from 4 the 25-a-degree cell, below
 that the 10-a-degree frame: about one screen pixel per picture node at each switch. While playing, a cell takes a tier only once every step of the loop that lists it has landed, so no tile flips
 between tiers from frame to frame; paused, whatever has landed. A region missing a step keeps its last frame for at most two steps.
 
 The hover says "32 dBZ · moderate rain · 7:40 PM" (Europe: "10-min max to 7:40 PM"), "no echo" or "no radar coverage". dBZ in both unit
-systems; the rain words are rough: radar sees echoes, not rain on the ground.
+systems; the rain words are rough: radar sees echoes, not rain on the ground. Japan's files hold JMA's eight rain-rate classes, not a
+reflectivity (the region's `scale` in the pointer says so): each is drawn in the colour of the same rain on the dBZ scale, a pixel is one
+class and never between two (snapped in the one sampler), and the hover says the class, "5-10 mm/h · moderate rain · 8:10 AM", in mm/h in
+both unit systems. A scale this client does not know is drawn as dBZ, no failure.
 
 The downloads are the view's and nothing else: the newest coverage first, the shown frame, then the loop forward, at most 4 at once; a
 download the view no longer needs is dropped. Files are immutable, so a loop played twice costs nothing the second time. 48 MB of pictures at
@@ -1353,11 +1356,13 @@ stops it, and only the shown frame gets that tier. Playback never waits for a fi
 minute with the list read again (a slot can come back); a damaged file after five minutes. Play waits up to 3 s for the view's stacks, so the
 picture does not drop a tier as the loop starts, and a step waits up to 5 s for its whole-region frame rather than draw an empty map. A refused list is asked again
 once a minute while the error shows. The list is read just after the next expected
-publish, then every minute; a new slot joins the loop once what the view needs of it has landed, so the picture never goes blank for it.
+publish, then every minute (and once more about two minutes after a publish, when the job's later regions are in); a new slot joins the loop once what the view needs of it has landed, so the picture never goes blank for it.
 A region whose pictures do not answer says so in the panel: an empty map must not read as a dry one.
 
-Credit: "Radar: MRMS · OPERA CC BY 4.0", linking `/notice/radar` (NOAA named at its request, OPERA's licence and EUMETNET's rights, what was
-changed).
+Credit, and the panel's head, name the sources of the regions in view: "Radar: MRMS · OPERA CC BY 4.0", "Radar: JMA · CWA", "Radar: 3 sources"
+when three or more are, linking `/notice/radar` (NOAA named at its request, OPERA's licence and EUMETNET's rights, JMA's citation and that its
+data is edited, Taiwan's provider, data set and licence, what was changed). A region one slot behind the shown frame (Taiwan's file lands a tick
+later) says nothing; further behind, the panel says which time it shows.
 
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 

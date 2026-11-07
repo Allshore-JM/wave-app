@@ -133,6 +133,14 @@ def test_an_opaque_pixel_on_an_rgba_tile_is_a_changed_feed():
         jma.decode_tile(buf.getvalue())
 
 
+def test_an_rgba_tile_with_one_barely_opaque_pixel_is_a_changed_feed():
+    img = Image.new("RGBA", (256, 256), (0, 0, 0, 0))
+    img.putpixel((3, 3), (255, 0, 0, 1))
+    buf = io.BytesIO(); img.save(buf, "PNG")
+    with pytest.raises(ValueError):
+        jma.decode_tile(buf.getvalue())
+
+
 def test_a_colour_off_the_table_is_a_changed_feed():
     pal = [1, 2, 3] * 256
     body = png_of(np.ones((256, 256)), palette=pal, transparency=b"\x00")      # index 1 opaque, not on the table
@@ -273,6 +281,23 @@ def test_the_real_outline_as_a_mask():
     assert not mask[:, :int((jma.CUT_WEST - w) * 100)].any()
 
 
+def test_an_outline_turned_inside_out_refuses_the_frame():
+    s, w, n, e = R.box("japan")
+    rings = jma.parse_outline(OUTLINE)
+    box = np.array([[w, s], [e, s], [e, n], [w, n], [w, s]], dtype=np.float64)   # one more ring round the whole box: the same even-odd rule, the area beside it
+    with pytest.raises(ValueError):
+        jma.coverage(rings + [box], s, w, n, e, 10)
+
+
+def test_the_sanity_points_lie_on_the_right_sides_of_the_real_outline():
+    s, w, n, e = R.box("japan")
+    mask = jma.coverage(jma.parse_outline(OUTLINE), s, w, n, e, 10)     # no error: and each place is where the rule says
+    for lat, lon in jma.INSIDE_OUTLINE:
+        assert mask[int((n - lat) * 10), int((lon - w) * 10)]
+    for lat, lon in jma.OUTSIDE_OUTLINE:
+        assert not mask[int((n - lat) * 10), int((lon - w) * 10)]
+
+
 def test_an_absurd_area_refuses_the_frame():
     ring = np.array([[130.0, 30.0], [131.0, 30.0], [131.0, 31.0], [130.0, 31.0], [130.0, 30.0]])
     s, w, n, e = R.box("japan")
@@ -388,7 +413,8 @@ def test_a_tile_over_its_size_limit_is_a_changed_feed():
         R.jma_frame("japan", SLOT, web)
 
 
-def test_a_rain_pixel_outside_the_data_area_is_logged():
+def test_a_rain_pixel_outside_the_data_area_is_logged(monkeypatch):
+    monkeypatch.setattr(jma, "INSIDE_OUTLINE", ()); monkeypatch.setattr(jma, "OUTSIDE_OUTLINE", ())   # a made-up area: the sanity points are the real outline's
     outline = gzip.decompress(OUTLINE)
     doc = json.loads(outline)
     # a data area over the far north-east only: the rain tile (56, 25) falls outside it
@@ -432,6 +458,28 @@ def cwa_body(values=None, when="2026-11-07T12:00:00+08:00", head=None):
 
 
 CWA_SLOT = datetime(2026, 11, 7, 4, 0, tzinfo=timezone.utc)
+
+
+def test_the_pointer_credit_names_every_source_and_the_new_regions_file_at_their_own_minute():
+    for word in ("Japan Meteorological Agency", "Central Weather Administration", "EUMETNET", "MRMS"):
+        assert word in R.CREDIT, word
+
+
+@pytest.mark.parametrize("name", ("jma", "cwa"))
+def test_a_frames_offset_is_zero_minutes(name, monkeypatch):
+    lattice = np.zeros((10, 10), dtype=np.uint8)
+    target = {"jma": "jma_frame", "cwa": "cwa_frame"}[name]
+    monkeypatch.setattr(R, target, lambda region, dt, get: (lattice, "note"))
+    reader = R.SOURCE[name]["read"]
+    got = reader("japan" if name == "jma" else "taiwan", datetime(2026, 11, 7, 3, 0, tzinfo=timezone.utc), datetime(2026, 11, 7, 3, 20, tzinfo=timezone.utc), None)
+    assert got[1] == 0
+
+
+def test_a_nan_in_the_grid_head_is_a_changed_file():
+    head = CWA_HEAD.replace(b"<GridResolution>0.0125", b"<GridResolution>nan")
+    assert head != CWA_HEAD
+    with pytest.raises(ValueError):
+        cwa.read(head)
 
 
 def test_the_key_is_taiwan_time_across_midnight():

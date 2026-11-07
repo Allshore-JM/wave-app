@@ -33,7 +33,7 @@ def read(body):
     head = dict(_TAG.findall(body[:i]))
     want = {b"StartPointLongitude": LON0, b"StartPointLatitude": LAT0, b"GridResolution": STEP, b"GridDimensionX": COLS, b"GridDimensionY": ROWS}
     for name, value in want.items():
-        if name not in head or abs(float(head[name]) - value) > 1e-9:
+        if name not in head or not abs(float(head[name]) - value) <= 1e-9:     # written so a "nan" fails too
             raise ValueError(f"{name.decode()} is {head.get(name)!r}, not {value}")
     if head.get(b"Reflectivity") != b"dBZ":
         raise ValueError(f"unit {head.get(b'Reflectivity')!r}")

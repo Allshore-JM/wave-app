@@ -1,11 +1,11 @@
 # TEMPORARY (plan section 86, step 3): Japan and Taiwan on the runner, nothing stored; removed before the merge (a test pins that it is gone).
-name: radar-dryrun
+name: radar2-dryrun
 on:
   push:
     branches: ["feat/radar2"]
-    paths: [".github/workflows/radar-dryrun.yml", "tools/model_frames/radar.py", "tools/model_frames/jma.py", "tools/model_frames/cwa.py"]
+    paths: [".github/workflows/radar2-dryrun.yml", "tools/model_frames/radar.py", "tools/model_frames/jma.py", "tools/model_frames/cwa.py"]
 concurrency:
-  group: radar-dryrun
+  group: radar2-dryrun
   cancel-in-progress: true
 permissions:
   contents: read

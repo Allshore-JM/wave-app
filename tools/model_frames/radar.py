@@ -538,6 +538,18 @@ def note_began(pointer, now):
     return added
 
 
+def drop_unlisted(pointer):
+    """Slot entries of regions this job does not write: a client refuses a pointer naming a region it does not list, so a job rolled
+    back past a region's merge must not leave them for the 24 h those slots live. Their files go with their slots. -> whether any went."""
+    known, dropped = set(REGIONS), False
+    for slot in pointer["slots"]:
+        for region in list(slot["r"]):
+            if region not in known:
+                del slot["r"][region]
+                dropped = True
+    return dropped
+
+
 def write_pointer(store, pointer, now):
     pointer["slots"].sort(key=lambda x: x["t"])
     pointer["published_utc"] = A.utc(now)
@@ -834,6 +846,7 @@ def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
         pointer.setdefault("started", A.utc(now))
         joined = note_began(pointer, now)
         pointer.update(regions=regions_block(), credit=CREDIT)
+        dropped = drop_unlisted(pointer)
         retired = retire_old(pointer, now)
         for src in sources:
             cfg = SOURCE[src]
@@ -853,7 +866,7 @@ def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
                          f"t2 {stats['t2'][0]} cells {stats['t2'][1] // 1024} KB")
             for region, line in alarms.items():
                 rc = alarm(store, line, now, f"format_{region}") or rc
-        if prune_gone(store, pointer, now, over=lambda: clock() - started > DEADLINE_S) or retired or first or joined:
+        if prune_gone(store, pointer, now, over=lambda: clock() - started > DEADLINE_S) or retired or first or joined or dropped:
             write_pointer(store, pointer, now)
     except Exception as exc:                                           # noqa: BLE001   the bucket went away mid-tick
         A._summary(f"radar: stopped on {exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))}; the next tick goes on")

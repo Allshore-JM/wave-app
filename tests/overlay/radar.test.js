@@ -1628,3 +1628,20 @@ test('the regions\' order is the client\'s, whatever the pointer lists; only sou
   assert.ok(p2);
   ov2.unmount();
 });
+test('re-check P3-1: a held frame that is also a loop frame is counted once in the stack budget', () => {
+  const w = world(), st = new w.I.RadarStore(ROOT);
+  const doc = pointerDoc('2026-11-06T12:20:00Z', 40, ['taiwan', 'hawaii'], () => ({ t1: 'f', t2: 'ffffffff' }));
+  delete doc.slots[39].r.taiwan; st._take(doc);
+  const view = { whole: false, s: 19, n: 28, w: 116, e: 121, z: 5 }, loop = w.I.radarLoopFrames(st.frames, 2);
+  st.maxBytes = 1e12; st.plan(view, loop, loop.length - 1, null);
+  assert.ok(st.held.length && loop.indexOf(st.held[0][0]) >= 0, 'the held frame is a loop frame (the 2-h loop)');
+  assert.ok(st.queue.some((q) => q.tier === 't1'), 't1 planned');
+  for (const shown of [loop.length - 1, 0]) {                  // at the newest step the held cells are planned up front; at the first, with the stack
+    st.maxBytes = 1e12; st.plan(view, loop, shown, null);
+    const need = st.queue.reduce((s, q) => s + q.size, 0);
+    st.maxBytes = need; st.plan(view, loop, shown, null);
+    assert.equal(st.stack.t1, true, 'the stack fits a cap equal to what it downloads, step ' + shown);
+    st.maxBytes = need - 1; st.plan(view, loop, shown, null);
+    assert.equal(st.stack.t1, false, 'step ' + shown);
+  }
+});

@@ -3475,17 +3475,20 @@
     for (i = 0; i < held.length; i++) add(held[i][0], held[i][1], 't0');
     // what the stacks would hold: each tier wanted only while the running total fits the cap
     var sum = 0; for (i = 0; i < items.length; i++) sum += items[i].size;
+    // each cell once: the cells already planned (the shown frame's, the held frames') are in `sum`; a held frame can be a loop frame
     function stackSize(tier) {
-      var total = 0;
-      for (var f = 0; f < n; f++) for (var q = 0; q < regs.length; q++) {
-        if (!loop[f].r[regs[q]]) continue;
-        var cells = self._cellsIn(regs[q], tier, view);
-        for (var c = 0; c < cells.length; c++) if (self.listed(loop[f], regs[q], tier, cells[c].name)) total += self._cellBytes(self.key(loop[f].t, regs[q], tier, cells[c].name), tier);
+      var total = 0, counted = Object.create(null);
+      function cellsOf(rec, region) {
+        var cells = self._cellsIn(region, tier, view);
+        for (var c = 0; c < cells.length; c++) {
+          if (!self.listed(rec, region, tier, cells[c].name)) continue;
+          var key = self.key(rec.t, region, tier, cells[c].name);
+          if (seen[key] || counted[key]) continue;
+          counted[key] = true; total += self._cellBytes(key, tier);
+        }
       }
-      for (var h = 0; h < held.length; h++) {
-        var hc = self._cellsIn(held[h][1], tier, view);
-        for (var d = 0; d < hc.length; d++) if (self.listed(held[h][0], held[h][1], tier, hc[d].name)) total += self._cellBytes(self.key(held[h][0].t, held[h][1], tier, hc[d].name), tier);
-      }
+      for (var f = 0; f < n; f++) for (var q = 0; q < regs.length; q++) if (loop[f].r[regs[q]]) cellsOf(loop[f], regs[q]);
+      for (var h = 0; h < held.length; h++) cellsOf(held[h][0], held[h][1]);
       return total;
     }
     var s1 = want >= 1 ? stackSize('t1') : 0, s2 = want >= 2 ? stackSize('t2') : 0;
@@ -7628,13 +7631,13 @@
       }
       hideIn(!el.hidden && satShown ? SAT_TAP_MS : 1500);
     }
-    c.addEventListener('touchstart', ts, { passive: true }); c.addEventListener('touchend', te, { passive: true }); c.addEventListener('touchmove', te, { passive: true });
+    c.addEventListener('touchstart', ts, { passive: true }); c.addEventListener('touchend', te, { passive: true }); c.addEventListener('touchmove', te, { passive: true }); c.addEventListener('touchcancel', te, { passive: true });
     this._touch = [c, ts, te, function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }];
   };
   Overlay.prototype._unbindReadout = function () {
     if (this._touch) {
       var c = this._touch[0];
-      c.removeEventListener('touchstart', this._touch[1]); c.removeEventListener('touchend', this._touch[2]); c.removeEventListener('touchmove', this._touch[2]);
+      c.removeEventListener('touchstart', this._touch[1]); c.removeEventListener('touchend', this._touch[2]); c.removeEventListener('touchmove', this._touch[2]); c.removeEventListener('touchcancel', this._touch[2]);
       this._touch[3](); this._touch = null;
     }
     if (this.readout) { this.readout.remove(); this.readout = null; }

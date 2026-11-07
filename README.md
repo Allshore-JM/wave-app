@@ -1317,6 +1317,7 @@ writes, a pointer that is not this job's) fails the run only around 00:00 and 12
 at 12; a whole file 2 minutes; the bucket's client 10 s to connect, 30 s to read, 2 attempts. Run by hand:
 
     python -I tools/model_frames/radar.py --local out --slots 3     # write under a folder
+    python -I tools/model_frames/radar.py --dry-run --slots 1       # fetch and encode, store nothing
 
 The sources sit in one table, `radar.SOURCE` (plan section 86): each has its reader, how long after a slot its file can exist, how far
 back it can be asked for and how long it may take. They run in that order inside one job, so the two oldest have written their frames
@@ -1324,10 +1325,34 @@ before a newer source's code runs, and a stray exception in one source costs the
 region joined, so a new region does not read as silent since the job's first tick. The repository variable `RADAR_SOURCES` (e.g.
 `mrms,opera`) switches a source off with no deploy; empty means all. `tests/model_frames/test_radar_golden.py` holds MRMS and OPERA to
 their output before the table existed.
-    python -I tools/model_frames/radar.py --dry-run --slots 1       # fetch and encode, store nothing
 
 Terms: NOAA asks for attribution and that modified data does not pass as original; OPERA is CC BY 4.0, property rights EUMETNET. Both are
 named, with "modified", in the job's `credit` and on the page.
+
+#### Japan and Taiwan (plan section 86)
+
+| Region | Source | Grid | Frame |
+|---|---|---|---|
+| japan | JMA's nowcast tiles (`jma.py`), zoom 6, about 2 km a pixel, Web Mercator; the website's own backend, undocumented | 8 rain-rate classes, not a reflectivity | the 5-minute label at the slot, out about 20-50 s later |
+| taiwan | CWA's composite on its public bucket (`cwa.py`), 0.0125 deg, nearest point | dBZ | the 10-minute label at the slot (the key is in +08:00), out about 7 minutes later |
+
+Japan: only tiles holding rain exist. A published frame answers every other tile, and any tile off the grid, with one 334-byte
+transparent picture (dry, not missing); a frame not yet published answers 404. So a 404 on any of the 42 tiles means the frame is not
+there and nothing of it is stored (a partial frame must never read as "no rain"), and a palette colour off the table or an opaque RGBA
+pixel is a changed feed. Each class is stored as the job's code at the class's geometric middle (Z = 200 R^1.6: 28, 49, 65, 75, 82, 89,
+96, 102), so it draws in the colour of that dBZ; the region's `scale` (`jma8`) tells the client to snap to these codes and say the class
+in the hover. Coverage is JMA's own data area, the hole in `hrpns_nd/data.geojson` (read once a tick), cut at 122.5 E so Taiwan keeps its
+own island; rain outside it is dropped and counted in the log.
+
+Taiwan: -999 is out of range, -99 "invalid data", read here as covered with no echo (an inference, so far out at sea the tint overstates
+useful range); the file's `DateTime` must equal the slot. The file states the TWD67 datum; no shift is applied (under a kilometre by the
+datum, not measurable against JMA's frames so far).
+
+One source pixel of theirs fills several lattice pixels, so the coarse tiers take the 4th (t1) and 12th (t0) strongest instead of the
+2nd and 3rd: measured on real frames, a coarse tier's rain area against t2 then matches the others' (t1 1.25, t0 1.6).
+
+Terms: JMA's Public Data License 1.0 (equal to CC BY 4.0: "Source: Japan Meteorological Agency website", say the data was edited), never a
+forecast; Taiwan's Open Government Data License v1.0, credited by provider, year and dataset.
 
 ### The radar layer on the map (plan section 85, the client; overlay asset 2.25.8)
 

@@ -1,6 +1,6 @@
-# Publishes the newest precipitation radar over the US, Hawaii, Puerto Rico / the Caribbean, Guam and Europe to R2 under radar/v1/
-# (plan section 85): NOAA MRMS SeamlessHSR (AWS Open Data) and EUMETNET OPERA maximum reflectivity (CC BY 4.0). A frame every
-# 10 minutes, kept 24 h, so the job runs on every tick of the trigger Worker and always has work; it takes about 1-2 minutes. A
+# Publishes the newest precipitation radar over the US, Hawaii, Puerto Rico / the Caribbean, Guam, Europe, Japan and Taiwan to R2 under
+# radar/v1/ (plan sections 85, 86): NOAA MRMS SeamlessHSR (AWS Open Data), EUMETNET OPERA maximum reflectivity (CC BY 4.0), JMA's nowcast
+# tiles (PDL 1.0) and Taiwan CWA's composite (OGDL v1.0). A frame every 10 minutes, kept 24 h, so the job runs on every tick of the trigger Worker and always has work; it takes about 1-2 minutes. A
 # source that does not answer is a summary line, not a failed run; mail comes only for a source silent for 6 h or a changed file layout.
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: model-radar

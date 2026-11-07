@@ -1,19 +1,20 @@
-"""Radar job (plan section 85): the newest precipitation radar over the US, Hawaii, Puerto Rico / the Caribbean, Guam and Europe
--> R2 under radar/v1/, a frame every 10 minutes, kept 24 h.
+"""Radar job (plan sections 85, 86): the newest precipitation radar over the US, Hawaii, Puerto Rico / the Caribbean, Guam, Europe, Japan
+and Taiwan -> R2 under radar/v1/, a frame every 10 minutes, kept 24 h.
 
-Sources: NOAA MRMS SeamlessHSR (mrms.py) and EUMETNET OPERA maximum reflectivity (opera.py). A slot is a nominal 10-minute time
-("YYYYMMDDHHMM"). Europe's frame is the OPERA label at the slot (a MAX over the 10 minutes ending there); each MRMS frame is the
-file at slot + 4 minutes (else + 2, + 0): it is out by about :x5:36, the Worker's tick is :x5, and no slot is taken before slot + 4:30, so
-a run on time and a run late pick the same file nearly always. Each region's entry says its offset.
+Sources: NOAA MRMS SeamlessHSR (mrms.py), EUMETNET OPERA maximum reflectivity (opera.py), JMA's nowcast tiles (jma.py: 8 rain-rate
+classes stored as dBZ codes, the region's "scale" says so) and Taiwan CWA's composite (cwa.py). A slot is a nominal 10-minute time
+("YYYYMMDDHHMM"). Europe's, Japan's and Taiwan's frames are their source's label at the slot (Europe's a MAX over the 10 minutes ending
+there); each MRMS frame is the file at slot + 4 minutes (else + 2, + 0): it is out by about :x5:36, the Worker's tick is :x5, and no slot
+is taken before slot + 4:30, so a run on time and a run late pick the same file nearly always. Each region's entry says its offset.
 
 Every tier sits on one lattice: pixels of 1/ppd degree from whole-degree region boxes, row 0 at the box's north edge. Codes u8:
 0 = no radar coverage, 1 = covered, no echo (below FLOOR_DBZ), code >= 2: dBZ = FLOOR_DBZ + (code - 2) * STEP_DBZ, up to MAX_CODE.
   t0  10 pixels a degree, the whole region, codes 0 / 1 / 2+ (the client's tint and "no coverage" always come from here)
   t1  25 pixels a degree, 20-degree cells, echo only (code < 2 stored as 0)
   t2 100 pixels a degree,  5-degree cells, echo only
-A coarser pixel takes the k-th strongest fine pixel under it (k = COARSE_K), so a storm core stays and one stray pixel cannot paint
-11 km; it counts as covered when any fine pixel is. A cell named "<lat0>_<lon0>" (its south-west corner) covers lat0 <= lat <
-lat0 + cell, lon0 <= lon < lon0 + cell, in a picture of n + 2 pixels a side (a one-pixel apron from the neighbouring cells, so a
+A coarser pixel takes the k-th strongest fine pixel under it (k = COARSE_K, or the region's own where one source pixel fills several
+of the lattice's), so a storm core stays and one stray pixel cannot paint 11 km; it counts as covered when any fine pixel is. A cell
+named "<lat0>_<lon0>" (its south-west corner) covers lat0 <= lat < lat0 + cell, lon0 <= lon < lon0 + cell, in a picture of n + 2 pixels a side (a one-pixel apron from the neighbouring cells, so a
 point in the cell finds its bilinear neighbours in the cell's own picture): row r is centred at lat0 + cell + 0.5/ppd - r/ppd,
 column c at lon0 - 0.5/ppd + c/ppd. Only cells holding echo are written (T1_MIN, T2_MIN pixels at MIN_DBZ or more): most of the
 map is dry. A threshold above one made light showers flip between tiers from frame to frame in a playing loop (owner, 2026-11-06).
@@ -50,7 +51,9 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import alt as A          # noqa: E402  (fetch, alarms, summary, store from the environment)
+import cwa               # noqa: E402
 import encode as E       # noqa: E402  (to_png)
+import jma               # noqa: E402
 import mrms              # noqa: E402
 import opera             # noqa: E402
 import publish as P      # noqa: E402
@@ -68,6 +71,9 @@ T1_MIN, T2_MIN = 1, 1                   # pixels at MIN_DBZ or more (measured: ~
 PPD_T0, PPD_T1, PPD_T2 = 10, 25, 100
 CELL_T1, CELL_T2 = 20, 5
 COARSE_K = {PPD_T1: 2, PPD_T0: 3}       # the k-th strongest fine pixel under a coarse pixel
+# k set on real frames so a coarse tier's rain area against t2 matches the other regions' (t1 1.25, t0 1.6): one source pixel of theirs
+# fills several of the lattice's
+COARSE_K_REGION = {"japan": {PPD_T1: 4, PPD_T0: 12}, "taiwan": {PPD_T1: 4, PPD_T0: 12}}
 SLOT_MINUTES = 10
 KEEP_SLOTS = 145                        # 24 h of 10-minute frames (+ the newest)
 GRACE_MIN = 60                          # a slot that left the pointer stays this long for open tabs, then goes
@@ -89,8 +95,12 @@ FETCH_MAX_S = 120                       # a whole file
 READ_CHUNK = 256 * 1024
 UA = "allshoresurf.com radar (https://allshoresurf.com)"
 R2_CONNECT_S, R2_READ_S, R2_ATTEMPTS = 10, 30, 2      # the bucket answers in time or waits for the next tick: a tick is 10 minutes
+JMA_WORKERS = 4                         # tiles at a time from an undocumented website backend
+JMA_READ_S, JMA_TILE_S, JMA_FRAME_S = 8, 15, 40        # per socket read, a tile, a frame
+CWA_READ_S, CWA_FILE_S = 20, 60
 CREDIT = ("Radar: NOAA Multi-Radar/Multi-Sensor System (MRMS) via AWS Open Data; EUMETNET OPERA composite, CC BY 4.0 "
-          "(https://creativecommons.org/licenses/by/4.0/), property rights EUMETNET; both modified: regridded, quantised, thinned "
+          "(https://creativecommons.org/licenses/by/4.0/), property rights EUMETNET; Source: Japan Meteorological Agency website; Taiwan "
+          "Central Weather Administration, Open Government Data License v1.0; all modified: regridded, quantised, thinned "
           "and rendered by Allshore Surf")
 # name -> (label, source, MRMS domain, south, west, north, east, MRMS pool)
 REGIONS = {
@@ -100,7 +110,10 @@ REGIONS = {
     "carib":  ("Puerto Rico and the Caribbean", "mrms", "CARIB", 10, -90, 25, -60, 1),
     "guam":   ("Guam", "mrms", "GUAM", 9, 140, 18, 150, 2),
     "europe": ("Europe", "opera", None, 31, -40, 75, 58, 1),
+    "japan":  ("Japan", "jma", None, 20, 122, 47, 149, 1),
+    "taiwan": ("Taiwan", "cwa", None, 18, 115, 29, 127, 1),
 }
+SCALE = {"japan": "jma8"}               # the region's codes are classes, not a reflectivity: the client snaps to them and says the class
 
 
 class Missing(Exception):
@@ -233,8 +246,9 @@ def inner_echo(pic):
 
 def tiers_of(t2_codes, region):
     """A region's 100-per-degree lattice -> [(key parts, png bytes)] and its entry's bitsets."""
-    t1 = pool_kth(t2_codes, PPD_T2 // PPD_T1, COARSE_K[PPD_T1])
-    t0 = pool_kth(t2_codes, PPD_T2 // PPD_T0, COARSE_K[PPD_T0])
+    k = COARSE_K_REGION.get(region, COARSE_K)
+    t1 = pool_kth(t2_codes, PPD_T2 // PPD_T1, k[PPD_T1])
+    t0 = pool_kth(t2_codes, PPD_T2 // PPD_T0, k[PPD_T0])
     objects = [(("t0", None, None), t0)]
     flags = {}
     for name, arr, ppd, cell, need in (("t1", t1, PPD_T1, CELL_T1, T1_MIN), ("t2", t2_codes, PPD_T2, CELL_T2, T2_MIN)):
@@ -378,6 +392,60 @@ def opera_frame(slot_dt, get):
     return _reading("OPERA", lambda: opera_lattice(data["values"])), 0, data["radars"]
 
 
+_JMA = {}
+
+
+def jma_geometry(region, stamp, get):
+    """Once a tick: the lattice's mosaic indices and JMA's own data area."""
+    if "mask" not in _JMA:
+        s, w, n, e = box(region)
+        body = fetch(jma.outline_url(stamp), get, jma.MAX_OUTLINE_BYTES, timeout=JMA_READ_S, max_s=JMA_TILE_S)
+        _JMA["mask"] = _reading("JMA outline", lambda: jma.coverage(jma.parse_outline(body), s, w, n, e, PPD_T2))
+        _JMA["index"] = jma.lattice_index(s, w, n, e, PPD_T2)
+    return _JMA["mask"], _JMA["index"]
+
+
+def jma_frame(region, slot_dt, get):
+    """(lattice, a log line). A tile answering 404 = the frame is not there, and nothing of it is stored: a partial frame must never read
+    as "no rain". A frame past JMA_FRAME_S is Down."""
+    stamp = jma.stamp_of(slot_dt)
+    began = time.monotonic()
+    late = lambda: time.monotonic() - began > JMA_FRAME_S              # noqa: E731
+    first, *rest = jma.tile_list()
+
+    def one(xy):
+        if late():
+            raise Down(f"a frame not finished in {JMA_FRAME_S} s")
+        body = fetch(jma.tile_url(stamp, *xy), get, jma.MAX_TILE_BYTES, timeout=JMA_READ_S, max_s=JMA_TILE_S)
+        return xy, _reading("JMA tile", lambda: jma.decode_tile(body))
+
+    tiles = dict([one(first)])
+    mask, (rows, cols) = jma_geometry(region, stamp, get)
+    with ThreadPoolExecutor(JMA_WORKERS) as pool:
+        tiles.update(pool.map(one, rest))
+    wet = sum(1 for a in tiles.values() if a.any())
+    codes, dropped = _reading("JMA frame", lambda: jma.lattice(jma.mosaic(tiles), rows, cols, mask))
+    return codes, f"{wet} of {len(tiles)} tiles with rain" + (f", {dropped} rain pixels outside JMA's data area" if dropped else "")
+
+
+_CWA = {}
+
+
+def cwa_frame(region, slot_dt, get):
+    body = fetch(cwa.url_of(slot_dt), get, cwa.MAX_BYTES, timeout=CWA_READ_S, max_s=CWA_FILE_S)
+    data = _reading("CWA", lambda: cwa.read(body))
+    if data["time"] != slot_name(slot_dt):
+        raise ValueError(f"the file for {slot_name(slot_dt)} says {data['time']}")
+    if "index" not in _CWA:
+        _CWA["index"] = cwa.lattice_index(*box(region), PPD_T2)
+    rows, cols = _CWA["index"]
+    s, w, n, e = box(region)
+    out = np.zeros(((n - s) * PPD_T2, (e - w) * PPD_T2), dtype=np.uint8)
+    rr, cc = np.nonzero(rows >= 0)[0], np.nonzero(cols >= 0)[0]
+    out[np.ix_(rr, cc)] = code_table(data["values"])[np.ix_(rows[rr], cols[cc])]
+    return out
+
+
 def _read_mrms(region, dt, now, get):
     lattice, offset = mrms_frame(region, dt, now, get)
     return lattice, offset, None
@@ -388,6 +456,15 @@ def _read_opera(region, dt, now, get):
     return lattice, offset, f"{radars} radars"
 
 
+def _read_jma(region, dt, now, get):
+    lattice, note = jma_frame(region, dt, get)
+    return lattice, 0, note
+
+
+def _read_cwa(region, dt, now, get):
+    return cwa_frame(region, dt, get), 0, None
+
+
 # A source and its clock, in the order a tick runs them. read(region, slot datetime, now, get) -> (lattice, minutes after the slot, a
 # log line or None). ready_s: no frame is taken for a slot younger than this. reach_h: slots older than this are never asked for (None:
 # the whole window). backfill_s: older slots are started only this long into the budget's start; spend_s, when set, makes that start
@@ -396,6 +473,8 @@ def _read_opera(region, dt, now, get):
 SOURCE = {
     "mrms":  {"read": _read_mrms, "ready_s": MRMS_READY_S, "reach_h": None, "backfill_s": BACKFILL_S / 2, "spend_s": None},
     "opera": {"read": _read_opera, "ready_s": 0, "reach_h": None, "backfill_s": BACKFILL_S, "spend_s": None},
+    "jma":   {"read": _read_jma, "ready_s": 90, "reach_h": None, "backfill_s": 20, "spend_s": 45},
+    "cwa":   {"read": _read_cwa, "ready_s": 450, "reach_h": None, "backfill_s": 30, "spend_s": 60},
 }
 SOURCES = tuple(SOURCE)
 
@@ -426,7 +505,8 @@ def store_region(store, slot, region, lattice, offset, stop=None):
 
 
 def regions_block():
-    return {k: {"name": v[0], "src": v[1], "box": [v[3], v[4], v[5], v[6]]} for k, v in REGIONS.items()}
+    return {k: dict({"name": v[0], "src": v[1], "box": [v[3], v[4], v[5], v[6]]}, **({"scale": SCALE[k]} if k in SCALE else {}))
+            for k, v in REGIONS.items()}
 
 
 def empty_pointer():

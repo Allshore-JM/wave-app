@@ -3696,7 +3696,11 @@ test('G57: one hide timer at a time: a new press cancels the last lift\'s, and i
   press(); await wait(500); assert.equal(o.readout.hidden, false);
   await wait(1000); assert.equal(o.readout.hidden, false, 'still shown past the first lift\'s 1.5 s');
   lift(); await wait(1600); assert.equal(o.readout.hidden, true, 'hidden 1.5 s after its own lift');
-  o._unbindReadout(); o.unmount();
+  // re-check P3-3: a long press, its lift, then a touch the browser cancels: the cancel starts the hide (it cleared the lift's)
+  press(); await wait(500); lift(); await wait(200);
+  on.touchstart({ touches: [touch, touch], target: null }); on.touchcancel({ type: 'touchcancel', changedTouches: [touch], target: null });
+  await wait(1600); assert.equal(o.readout.hidden, true, 'hidden 1.5 s after a cancelled touch');
+  w.orig._unbindReadout.call(o); assert.equal(on.touchcancel, undefined, 'unbound'); assert.equal(on.touchstart, undefined); o.unmount();
 }));
 const tpLakes = (w, extra) => lakeMounted(w, Object.assign({ field: 'tp', manifest: Object.assign({}, A, { fields: Object.assign({}, A.fields, { tp: TPH }) }) }, extra || {}));
 const hsFramesOf = (w) => w.fetches.filter((u) => /\/glwu\/v1\/\d{10}\/hs\//.test(u));

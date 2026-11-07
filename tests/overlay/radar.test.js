@@ -58,7 +58,7 @@ test('validRadarPointer takes the real pointer and refuses what the client canno
     upper: (p) => { p.regions.HAWAII = p.regions.hawaii; }, proto: (p) => { Object.defineProperty(p.regions, '__proto__', { value: p.regions.hawaii, enumerable: true }); },
     floatBox: (p) => { p.regions.hawaii.box = [15.5, -164, 26, -151]; }, inverted: (p) => { p.regions.hawaii.box = [26, -164, 15, -151]; }, world: (p) => { p.regions.hawaii.box = [15, -200, 26, -151]; },
     noName: (p) => { delete p.regions.hawaii.name; }, slotText: (p) => { p.slots[0].t = 'yesterday'; }, slotOrder: (p) => { p.slots.reverse(); }, slotDup: (p) => { p.slots[1].t = p.slots[0].t; },
-    unknownRegion: (p) => { p.slots[0].r.mars = { o: 0 }; }, offset: (p) => { p.slots[0].r.hawaii.o = 60; }, offsetFloat: (p) => { p.slots[0].r.hawaii.o = 1.5; }, hex: (p) => { p.slots[0].r.hawaii.t1 = 'xyz'; }, hexUpper: (p) => { p.slots[0].r.hawaii.t2 = 'AB'; }
+    offset: (p) => { p.slots[0].r.hawaii.o = 60; }, offsetFloat: (p) => { p.slots[0].r.hawaii.o = 1.5; }, hex: (p) => { p.slots[0].r.hawaii.t1 = 'xyz'; }, hexUpper: (p) => { p.slots[0].r.hawaii.t2 = 'AB'; }
   };
   for (const k of Object.keys(bad)) { const p = clone(POINTER); bad[k](p); assert.equal(I.validRadarPointer(p), false, k); }
   assert.equal(I.validRadarPointer(null), false); assert.equal(I.validRadarPointer([]), false);
@@ -1354,10 +1354,242 @@ test('the settle read: a young publish is read again just after its later region
   delete doc.slots[1].r.taiwan;
   w2.answer(/latest\.json$/, doc); await settle();
   const idx = ov.radarPlayer.idx;
-  const next = clone(doc); next.slots[1].r.taiwan = { o: 0 }; next.published_utc = '2026-11-06T12:11:00Z';
+  const next = clone(doc); next.slots[1].r.taiwan = { o: 0 };   // the job's later write of the same tick: the same stamp
+  assert.equal(next.published_utc, doc.published_utc);
   ov.radar._take(next); await settle();
   assert.ok(w2.pending(new RegExp(slot + '/taiwan/t0')).length === 1, w2.pending().join(' '));
   assert.equal(ov.radarPlayer.idx, idx);
+  assert.ok(ov.radarPlayer.frames[ov.radarPlayer.idx].r.taiwan, 'the player holds the new entry');
+  // the same pointer read again changes nothing
+  let fired = 0; const was = ov.radar.onPointer; ov.radar.onPointer = () => { fired++; was(); };
+  ov.radar._take(clone(next)); assert.equal(fired, 0);
+  // an older slot filled in late under one stamp counts too
+  const late = clone(next); delete late.slots[0].r.taiwan; ov.radar._take(late); assert.equal(fired, 1);
+  ov.unmount();
+});
+for (const hours of [6, 12, 24]) {
+  test('a region a slot behind at the loop\'s newest step shows its own last frame in the ' + hours + '-hour loop, off the clock marks too, and no note', async () => {
+    const w = world(), ov = ctl(w), iso = nowSlot().slice(0, 14) + '20:00Z';            // the newest frame at :20, the slot behind it off every mark
+    ov.mount('radar');
+    w.view({ s: 19, n: 28, w: 116, e: 121 });
+    const newest = new Date(Date.parse(iso) - (Date.parse(iso) > Date.now() ? 3600000 : 0)).toISOString().replace('.000Z', 'Z');
+    const doc = pointerDoc(newest, 40, ['taiwan', 'hawaii']);
+    delete doc.slots[39].r.taiwan;
+    w.answer(/latest\.json$/, doc); await settle();
+    const st = ov.radar, p = ov.radarPlayer;
+    p.loopH = hours; p._frames(true); p._plan();
+    const behind = st.frames[38];
+    assert.equal(st.newestOf('taiwan'), behind);
+    // the plan asks for its own last frame, though the loop's marks do not hold it, and nothing older takes its place
+    assert.ok(w.pending(new RegExp(behind.t + '/taiwan/t0')).length === 1, w.pending().join(' '));
+    const land = (slot) => st._land({ key: st.key(slot, 'taiwan', 't0'), slot, region: 'taiwan', tier: 't0' }, w.I.radarPic(t0Of('taiwan', () => 1)));
+    for (const f of p.frames) if (f.r.taiwan) land(f.t);
+    land(behind.t);
+    assert.equal(st.resolve('taiwan', p.idx), behind);
+    assert.ok(ov._radarLabel().indexOf(ov._radarClock(I.radarSlotMs(behind.t)).clock) >= 0, ov._radarLabel());
+    assert.ok(!/ shows /.test(ov._radarNote()), ov._radarNote());
+    // an earlier step of the loop keeps the loop's rule; three slots behind is past the hold of the newest step
+    assert.equal(st.heldAt('taiwan', p.frames[p.frames.length - 1].t, true), behind);
+    delete st.frames[38].r.taiwan; delete st.frames[37].r.taiwan;
+    assert.equal(st.heldAt('taiwan', p.frames[p.frames.length - 1].t), null);
+    ov.unmount();
+  });
+}
+test('a slot naming a region the pointer does not list costs that entry only (a rolled-back job), and the frames of the others stay', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:00:00Z', 3, ['hawaii', 'japan']);
+  delete doc.regions.japan;
+  assert.equal(w.I.validRadarPointer(doc), true);
+  const worse = clone(doc); worse.slots[0].r.hawaii.o = 99;
+  assert.equal(w.I.validRadarPointer(worse), false, 'a listed region keeps its checks');
+  const st = new w.I.RadarStore(ROOT); st._take(doc);
+  assert.deepEqual(Object.keys(st.frames[0].r), ['hawaii']);
+  assert.equal(st.order.indexOf('japan'), -1);
+  // a slot holding only that region is no frame
+  const only = pointerDoc('2026-11-06T12:00:00Z', 2, ['hawaii', 'japan']); delete only.regions.japan; delete only.slots[1].r.hawaii;
+  const s2 = new w.I.RadarStore(ROOT); s2._take(only);
+  assert.equal(s2.frames.length, 1);
+});
+test('a pointer dropping a region on the map: it leaves the map, the rest renumber, the hover never names it', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.view({ s: 19, n: 40, w: 116, e: 145 });
+  const doc = pointerDoc(nowSlot(), 2, ['japan', 'taiwan']);
+  w.answer(/latest\.json$/, doc); await settle();
+  const st = ov.radar, p = ov.radarPlayer;
+  for (const f of st.frames) for (const r of ['japan', 'taiwan']) st._land({ key: st.key(f.t, r, 't0'), slot: f.t, region: r, tier: 't0' }, w.I.radarPic(t0Of(r, () => 40)));
+  const covWas = st.covRev, rec = st.frames[1], stale = { kind: 'echo', code: 40, dbz: 24, region: 'japan', rec };
+  assert.ok(ov._radarReadout(stale), 'said while it is listed');
+  let shown = 0; const was = p._show; p._show = function () { shown++; return was.call(this); };
+  const next = clone(doc); delete next.regions.japan;
+  st._take(next);
+  assert.equal(st.cov.japan, undefined);
+  assert.ok(st.covRev > covWas, 'the owners are worked out again');
+  assert.ok([...st.pics.keys()].every((k) => k.indexOf('/japan/') < 0), 'its pictures are gone');
+  assert.ok(st.bytes >= 0);
+  assert.equal(shown, 1, 'redrawn though the step did not change');
+  assert.equal(st.regionsMoved, false);
+  assert.deepEqual(Object.keys(st.frames[0].r), ['taiwan']);
+  assert.equal(ov._radarReadout(stale), null, 'no TypeError for a region gone');
+  // a tile whose owners are an older pointer's says nothing until it is redrawn
+  const layer = ov.radarLayer, px = w.I.pixelOf(25, 120, 5), key = px.x + ':' + px.y + ':' + px.z;
+  layer._tiles[key] = { el: { _rOwn: new Uint8Array(65536).fill(1), _rOwnRev: covWas } };
+  assert.equal(layer.readoutAt(25, 120, 5), null);
+  delete layer._tiles[key];
+  // a regions block moved with the slots unchanged counts as a change
+  let fired = 0; const onP = st.onPointer; st.onPointer = () => { fired++; onP(); };
+  const scaled = clone(next); scaled.regions.taiwan.scale = 'jma8';
+  st._take(scaled); assert.equal(fired, 1);
+  st._take(clone(scaled)); assert.equal(fired, 1);
+  ov.unmount();
+});
+test('a region joining ahead of the others renumbers the tiles: redrawn at once, and no hover from the old numbers', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.view({ s: 19, n: 40, w: 116, e: 145 });
+  const full = pointerDoc(nowSlot(), 2, ['japan', 'taiwan']), doc = clone(full);
+  delete doc.regions.japan;
+  w.answer(/latest\.json$/, doc); await settle();
+  const st = ov.radar, p = ov.radarPlayer, covWas = st.covRev;
+  assert.ok(st.order.indexOf('taiwan') < 0 || st.order.indexOf('japan') < 0);
+  let shown = 0; const was = p._show; p._show = function () { shown++; return was.call(this); };
+  st._take(full);
+  assert.ok(st.order.indexOf('japan') < st.order.indexOf('taiwan'));
+  assert.ok(st.covRev > covWas, 'the owners are worked out again');
+  assert.equal(shown, 1);
+  ov.unmount();
+});
+test('the age warning does not hide what is drawn', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.view({ s: 19, n: 28, w: 116, e: 121 });
+  const doc = pointerDoc(nowSlot(), 8, ['taiwan', 'hawaii']);
+  for (const k of [7, 6, 5]) delete doc.slots[k].r.taiwan;   // its newest is 30+ min old: past the warning
+  w.answer(/latest\.json$/, doc); await settle();
+  const st = ov.radar, p = ov.radarPlayer, f = st.frames;
+  st._land({ key: st.key(f[4].t, 'taiwan', 't0'), slot: f[4].t, region: 'taiwan', tier: 't0' }, w.I.radarPic(t0Of('taiwan', () => 1)));
+  p.idx = 6;                                                 // two steps after its frame: held, and 20 min behind
+  assert.equal(st.resolve('taiwan', 6), f[4]);
+  const note = ov._radarNote();
+  assert.ok(/newest frame is .* old/.test(note) && /taiwan shows /.test(note), note);
+  // nothing to draw: the age says it, no second sentence of "no picture"
+  p.idx = 7;
+  assert.equal(st.resolve('taiwan', 7), null);
+  assert.ok(/newest frame is .* old/.test(ov._radarNote()) && !/no picture/.test(ov._radarNote()), ov._radarNote());
+  ov.unmount();
+});
+test('a sheet is measured with the class note: it is there when the panel is built, and a flip lays the sheet out again, once', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  const japan = { s: 30, n: 40, w: 130, e: 140 };
+  w.view(japan);
+  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii', 'japan'])); await settle();
+  const scale = () => ov.ui.radarScale;
+  // built with its words, before the panel is measured (the player's line comes after the measure)
+  const ui = ov._radarUI; ov._radarUI = () => {};
+  ov.render(ov.last);
+  ov._radarUI = ui;
+  assert.equal(scale().hidden, false);
+  assert.ok(scale().textContent.indexOf('japan') === 0, scale().textContent);
+  let renders = 0; const was = ov.render; ov.render = function (st) { renders++; return was.call(this, st); };
+  ov.ui.compact = true;
+  ov._radarUI(); assert.equal(renders, 0, 'no flip');
+  w.view({ s: 60, n: 70, w: -40, e: -30 });
+  ov._radarUI(); assert.equal(renders, 1, 'the note went: measured again');
+  assert.equal(ov._radarScaleShown, false); assert.equal(scale().hidden, true);
+  ov.ui.compact = false; w.view(japan);
+  ov._radarUI(); assert.equal(renders, 1, 'a desktop panel does not rebuild');
+  assert.equal(scale().hidden, false);
+  ov.unmount();
+});
+test('a held frame\'s cells: asked for while it is on the map, part of the stack, and waited for while playing', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:20:00Z', 40, ['taiwan', 'hawaii'], () => ({ t1: 'f', t2: 'ffffffff' })), st = storeWith(w, doc);
+  delete doc.slots[39].r.taiwan;
+  st._take(clone(doc));
+  const frames = st.frames, behind = frames[38], view = { whole: false, s: 19, n: 28, w: 116, e: 121, z: 5 };
+  const loop = w.I.radarLoopFrames(frames, 6);
+  assert.ok(loop.indexOf(behind) < 0, 'a slot off the marks');
+  st.plan(view, loop, loop.length - 1, null);
+  assert.deepEqual(st.held.map((h) => [h[0].t, h[1]]), [[behind.t, 'taiwan']]);
+  const name = st._cellsIn('taiwan', 't1', view)[0].name, key = st.key(behind.t, 'taiwan', 't1', name);
+  assert.ok(st.planSet[key], 'its cell is in the plan');
+  // shown elsewhere with no stack: only its t0
+  st.maxBytes = 1; st.plan(view, loop, 0, null);
+  assert.ok(!st.planSet[key], 'not while another step is shown and the stack does not fit');
+  assert.ok(st.planSet[st.key(behind.t, 'taiwan', 't0')], 'its t0 stays planned');
+  // playing: the tier waits for its cell
+  st.maxBytes = 1e12; st.plan(view, loop, 0, null);
+  assert.ok(st.planSet[key], 'in the stack when it fits');
+  for (const f of loop) if (st.listed(f, 'taiwan', 't1', name)) st.pics.set(st.key(f.t, 'taiwan', 't1', name), { bytes: 1 });
+  st.rev++;
+  assert.equal(st.stackReady('taiwan', 't1', name), false, 'the held frame\'s cell is not in');
+  st.pics.set(key, { bytes: 1 }); st.rev++;
+  assert.equal(st.stackReady('taiwan', 't1', name), true);
+});
+test('only the loop\'s newest step takes a frame off the marks; a slot not joined yet is never the frame held', () => {
+  const w = world(), doc = pointerDoc('2026-11-06T12:20:00Z', 40, ['taiwan', 'hawaii'], () => ({ t1: 'f', t2: 'ffffffff' })), st = storeWith(w, doc);
+  const on = (t) => st.frames.find((f) => f.t === t), view = { whole: false, s: 19, n: 28, w: 116, e: 121, z: 5 }, pic = () => w.I.radarPic(t0Of('taiwan', () => 1));
+  const put = (f) => st._land({ key: st.key(f.t, 'taiwan', 't0'), slot: f.t, region: 'taiwan', tier: 't0' }, pic());
+  // the step at 12:00 has no Taiwan; the slot at 11:50 (off the marks) has, and has landed: an earlier step keeps the loop's rule
+  const noon = on('202611061200'), ten = on('202611061150'), mark = on('202611061140');
+  delete noon.r.taiwan;
+  const loop = w.I.radarLoopFrames(st.frames, 6), i = loop.indexOf(noon);
+  assert.ok(i > 0 && i < loop.length - 1 && loop.indexOf(ten) < 0 && loop.indexOf(mark) >= 0);
+  st.plan(view, loop, i, null);
+  put(ten); put(mark);
+  assert.equal(st.resolve('taiwan', i), mark, 'the loop\'s step before it, not the slot off the marks');
+  // a newer slot than the step: not held
+  assert.equal(st.heldAt('taiwan', mark.t), mark);
+  assert.notEqual(st.heldAt('taiwan', ten.t).t > ten.t, true);
+  // the newest step joined lacks Taiwan, a slot not joined yet has it: the held frame's t0 is planned though it is not the region's newest
+  const d2 = pointerDoc('2026-11-06T12:30:00Z', 40, ['taiwan', 'hawaii'], () => ({ t1: 'f', t2: 'ffffffff' })), s2 = storeWith(w, d2), f2 = s2.frames;
+  const pend = f2[39], joined = f2[38], own = f2[37];
+  delete joined.r.taiwan;
+  const l2 = w.I.radarLoopFrames(f2, 6, joined.t);
+  assert.equal(s2.heldAt('taiwan', joined.t), own, 'not the newer slot');
+  s2.maxBytes = 1;
+  s2.plan(view, l2, 0, null);
+  assert.ok(s2.planSet[s2.key(own.t, 'taiwan', 't0')], 'its t0');
+  assert.equal(s2.newestOf('taiwan'), pend);
+  // while it is on the map its cells come whatever the stack: the viewer sees that frame now
+  s2.plan(view, l2, l2.length - 1, null);
+  const name = s2._cellsIn('taiwan', 't1', view)[0].name;
+  assert.equal(s2.stack.t1, false);
+  assert.ok(s2.planSet[s2.key(own.t, 'taiwan', 't1', name)], 'its t1 cell');
+});
+test('a file of the frame on the map redraws, whichever step of the loop holds it; a region\'s unknown name still gets an order place', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.view({ s: 19, n: 28, w: 116, e: 121 });
+  // the frame a slot behind must lie off the 24-hour loop's marks, whatever the hour the suite runs at
+  let end = Date.parse(nowSlot()); if ((end - 600000) % 3600000 === 0) end -= 600000;
+  const doc = pointerDoc(new Date(end).toISOString().replace('.000Z', 'Z'), 40, ['taiwan', 'hawaii']);
+  delete doc.slots[39].r.taiwan;
+  w.answer(/latest\.json$/, doc); await settle();
+  const st = ov.radar, p = ov.radarPlayer;
+  p.loopH = 24; p._frames(true); p._plan();
+  const behind = st.frames[38], cell = st._cellsIn('taiwan', 't1', p.view())[0].name;
+  st._land({ key: st.key(behind.t, 'taiwan', 't0'), slot: behind.t, region: 'taiwan', tier: 't0' }, w.I.radarPic(t0Of('taiwan', () => 1)));
+  let queued = 0; p.drawQ = null;
+  const raf = global.requestAnimationFrame; global.requestAnimationFrame = () => { queued++; return 1; };
+  try {
+    st.cov.taiwan = { slot: 'other', pic: null };             // the coverage is another frame's: only the on-the-map rule asks for the draw
+    p._onLanding({ key: st.key(behind.t, 'taiwan', 't1', cell), slot: behind.t, region: 'taiwan', tier: 't1' });
+    assert.equal(p.drawQ !== null || queued > 0, true, 'the held frame\'s file draws');
+  } finally { global.requestAnimationFrame = raf; p.drawQ = null; }
+  ov.unmount();
+  const w2 = world(), d2 = pointerDoc('2026-11-06T12:00:00Z', 1, ['hawaii']);
+  d2.regions.fiji = { name: 'Fiji', src: 'nms', box: [-20, 176, -16, 180] };
+  const s2 = new w2.I.RadarStore(ROOT); s2._take(d2);
+  assert.equal(s2.order[s2.order.length - 1], 'fiji', 'a region the client does not know is drawn last');
+});
+test('the class note waits for a frame of Japan: a listed region with none says nothing', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.view({ s: 30, n: 40, w: 130, e: 140 });
+  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii'])); await settle();
+  assert.equal(ov._radarScaleNote(), '');
+  ov.radar._take(pointerDoc(nowSlot(), 2, ['hawaii', 'japan'])); await settle();
+  assert.ok(ov._radarScaleNote().indexOf('japan') === 0, ov._radarScaleNote());
   ov.unmount();
 });
 test('the regions\' order is the client\'s, whatever the pointer lists; only sources with frames count, each once; the label takes the newest file on the map', async () => {

@@ -322,7 +322,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.25.9"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.25.10"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -480,8 +480,8 @@ RADAR_NOTICE = "\n".join([
     "Central Weather Administration (Taiwan), {year}, composite radar reflectivity, open data set O-A0059-001.",
     "Licence: Open Government Data License, version 1.0: https://data.gov.tw/license",
     "",
-    "Modified by Allshore Surf, all: regridded to latitude and longitude, quantised to 0.5 dBZ, echoes below 5 dBZ removed,",
-    "thinned for coarser map zooms, coloured and rendered as a map layer. Radar shows echoes, not rain on the ground; values can be",
+    "Modified by Allshore Surf, all: regridded to latitude and longitude, thinned for coarser map zooms, coloured and rendered as a",
+    "map layer; all but Japan's rain-rate classes also quantised to 0.5 dBZ, echoes below 5 dBZ removed. Radar shows echoes, not rain on the ground; values can be",
     "wrong (sea clutter, beam blockage, snow or hail). No warranty: do not use this for safety decisions.",
     "",
 ])

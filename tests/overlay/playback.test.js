@@ -3677,6 +3677,27 @@ function readoutOn(w, o) {
   const fn = (ev) => o._listeners.filter((l) => l[0] === ev).map((l) => l[1]).pop();
   return { move: (lat, lng) => fn('mousemove')({ latlng: { lat, lng }, containerPoint: { x: 400, y: 300 }, originalEvent: { pointerType: 'mouse', target: null } }), out: () => fn('mouseout')({}) };
 }
+// G57: a long press within 1.5 s of an earlier lift keeps its readout (the lift's hide timer used to hide it)
+test('G57: one hide timer at a time: a new press cancels the last lift\'s, and its own lift starts a fresh one', () => onRunDay(async () => {
+  const w = world(); const o = await tpLakes(w);
+  await w.releaseAll(); await settle();
+  const on = {}, cont = { clientWidth: 1200, clientHeight: 800, classList: { add() {}, remove() {} }, style: { setProperty() {}, removeProperty() {} }, appendChild() {},
+    addEventListener(t, f) { on[t] = f; }, removeEventListener(t) { delete on[t]; } };
+  w.map.getContainer = () => cont;
+  w.map.mouseEventToContainerPoint = (t) => ({ x: t.clientX, y: t.clientY });
+  w.map.containerPointToLatLng = () => ({ lat: 45, lng: -87 });
+  const ce = w.doc.createElement; w.doc.createElement = (t) => { const e = ce(t); e.style = {}; e.classList = { toggle() {} }; e.remove = () => {}; return e; };
+  w.orig._bindReadout.call(o);
+  o.layer.readoutAt = () => 12.5; o.layer.lakeAt = () => false;
+  const touch = { clientX: 300, clientY: 200 }, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const press = () => on.touchstart({ touches: [touch], target: null }), lift = () => on.touchend({ type: 'touchend', changedTouches: [touch], target: null });
+  press(); await wait(500); assert.equal(o.readout.hidden, false, 'the first long press');
+  lift(); await wait(300);                                  // pressed again 0.3 s after the lift, and held
+  press(); await wait(500); assert.equal(o.readout.hidden, false);
+  await wait(1000); assert.equal(o.readout.hidden, false, 'still shown past the first lift\'s 1.5 s');
+  lift(); await wait(1600); assert.equal(o.readout.hidden, true, 'hidden 1.5 s after its own lift');
+  o._unbindReadout(); o.unmount();
+}));
 const tpLakes = (w, extra) => lakeMounted(w, Object.assign({ field: 'tp', manifest: Object.assign({}, A, { fields: Object.assign({}, A.fields, { tp: TPH }) }) }, extra || {}));
 const hsFramesOf = (w) => w.fetches.filter((u) => /\/glwu\/v1\/\d{10}\/hs\//.test(u));
 

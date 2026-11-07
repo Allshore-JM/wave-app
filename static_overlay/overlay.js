@@ -7540,7 +7540,9 @@
   Overlay.prototype._bindReadout = function () {
     var self = this, map = this.map, el = mk('div', 'ov-readout'); el.hidden = true;
     map.getContainer().appendChild(el); this.readout = el;
-    var pressTimer = null, lastTouch = 0, last = null, satShown = false;   // satShown: the readout shows a satellite mark (G52 B-4)
+    var pressTimer = null, hideTimer = null, lastTouch = 0, last = null, satShown = false;   // satShown: the readout shows a satellite mark (G52 B-4)
+    // one hide timer at a time: an earlier lift's timer must not hide a later press's readout (G57: a press within 1.5 s of a lift)
+    function hideIn(ms) { if (hideTimer) clearTimeout(hideTimer); hideTimer = setTimeout(function () { hideTimer = null; el.hidden = true; }, ms); }
     function overControl(ev) { var t = ev && ev.target; return !!(t && t.closest && t.closest('.leaflet-control, .ov-sheet')); }
     function place(pt) {
       el.hidden = false;
@@ -7608,6 +7610,7 @@
     var c = map.getContainer();
     function ts(e) {
       lastTouch = Date.now();
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
       if (e.touches.length !== 1 || overControl(e)) return;
       var t = e.touches[0];
       pressTimer = setTimeout(function () { pressTimer = null; var pt = map.mouseEventToContainerPoint(t); show(map.containerPointToLatLng(pt), pt); }, 450);
@@ -7621,12 +7624,12 @@
       if (quick && e && e.type === 'touchend' && e.changedTouches && e.changedTouches.length === 1 && sat && sat.hasWindow() && !overControl(e)) {
         var pt = map.mouseEventToContainerPoint(e.changedTouches[0]), ll = map.containerPointToLatLng(pt);
         var sz = typeof sat._tileZoom === 'number' ? sat._tileZoom : Math.round(map.getZoom());
-        if (sat.hitAt(ll.lat, ll.lng, sz) >= 0) { show(ll, pt); setTimeout(function () { el.hidden = true; }, SAT_TAP_MS); return; }
+        if (sat.hitAt(ll.lat, ll.lng, sz) >= 0) { show(ll, pt); hideIn(SAT_TAP_MS); return; }
       }
-      setTimeout(function () { el.hidden = true; }, !el.hidden && satShown ? SAT_TAP_MS : 1500);
+      hideIn(!el.hidden && satShown ? SAT_TAP_MS : 1500);
     }
     c.addEventListener('touchstart', ts, { passive: true }); c.addEventListener('touchend', te, { passive: true }); c.addEventListener('touchmove', te, { passive: true });
-    this._touch = [c, ts, te, function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } }];
+    this._touch = [c, ts, te, function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; } }];
   };
   Overlay.prototype._unbindReadout = function () {
     if (this._touch) {

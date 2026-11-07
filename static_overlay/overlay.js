@@ -3147,8 +3147,9 @@
       if (!rec || typeof rec.t !== 'string' || !/^\d{12}$/.test(rec.t) || rec.t <= last || !rec.r || typeof rec.r !== 'object' || Array.isArray(rec.r)) return false;
       last = rec.t;
       for (var nm in rec.r) {
+        if (!Object.prototype.hasOwnProperty.call(p.regions, nm)) continue;   // a rolled-back job's leftovers: _take drops them
         var e = rec.r[nm];
-        if (!Object.prototype.hasOwnProperty.call(p.regions, nm) || !e || typeof e !== 'object' || e.o !== Math.round(e.o) || e.o < 0 || e.o > 59) return false;
+        if (!e || typeof e !== 'object' || e.o !== Math.round(e.o) || e.o < 0 || e.o > 59) return false;
         if ((e.t1 !== undefined && !/^[0-9a-f]{0,2048}$/.test(e.t1)) || (e.t2 !== undefined && !/^[0-9a-f]{0,2048}$/.test(e.t2))) return false;
       }
     }
@@ -3218,7 +3219,7 @@
     this.frames = []; this.order = []; this.tables = Object.create(null); this.index = Object.create(null);
     this.pics = new Map(); this.bytes = 0; this.inflight = Object.create(null); this.fails = Object.create(null);
     this.tierSeen = { t1: { n: 0, bytes: 0 }, t2: { n: 0, bytes: 0 } }; this.lastPlan = null;
-    this.queue = []; this.planSet = Object.create(null); this.loop = []; this.stack = { t1: false, t2: false };
+    this.queue = []; this.planSet = Object.create(null); this.loop = []; this.held = []; this.slotSig = null; this.stack = { t1: false, t2: false };
     this.cov = Object.create(null); this.covRev = 0; this.rev = 0; this._memo = null; this._memoRev = -1;
     this.active = false; this.hidden = false; this.timer = null; this.retryTimer = null;
     this.onLanding = null; this.onPointer = null;
@@ -3241,13 +3242,17 @@
     return p;
   };
   RadarStore.prototype._take = function (ptr) {
-    var held = this.pointer, oldNewest = this.frames.length ? this.frames[this.frames.length - 1].t : null;
-    var changed = !held || ptr.published_utc !== held.published_utc || ptr.slots.length !== held.slots.length;
+    var held = this.pointer, oldNewest = this.frames.length ? this.frames[this.frames.length - 1].t : null, s, nm;
+    for (s = 0; s < ptr.slots.length; s++) for (nm in ptr.slots[s].r) if (!Object.prototype.hasOwnProperty.call(ptr.regions, nm)) delete ptr.slots[s].r[nm];
+    // The job writes a tick's regions one after another under one stamp, so a later region shows only in the slots.
+    var sig = JSON.stringify([ptr.regions, ptr.slots]), changed = !held || ptr.published_utc !== held.published_utc || sig !== this.slotSig;
+    this.slotSig = sig;
     if (held) this._boxesMoved(held, ptr);
     this.pointer = ptr; this.readAt = Date.now();
     var names = Object.keys(ptr.regions), order = [], i;
     for (i = 0; i < RADAR_ORDER.length; i++) if (names.indexOf(RADAR_ORDER[i]) >= 0) order.push(RADAR_ORDER[i]);
     for (i = 0; i < names.length; i++) if (order.indexOf(names[i]) < 0) order.push(names[i]);
+    if (held && order.join() !== this.order.join()) { this.covRev++; this.rev++; this.regionsMoved = true; }   // the tiles' owner numbers count in this order
     this.order = order;
     this.frames = ptr.slots.filter(function (s) { for (var k in s.r) return true; return false; });   // `r: {}` is no frame (G56a P3-7)
     this.index = Object.create(null);
@@ -3259,13 +3264,13 @@
   RadarStore.prototype._boxesMoved = function (held, ptr) {
     for (var name in held.regions) {
       var was = held.regions[name].box, now = ptr.regions[name] && ptr.regions[name].box;
-      if (!now || (was[0] === now[0] && was[1] === now[1] && was[2] === now[2] && was[3] === now[3])) continue;
+      if (now && was[0] === now[0] && was[1] === now[1] && was[2] === now[2] && was[3] === now[3]) continue;
       delete this.tables[name + '|t1']; delete this.tables[name + '|t2'];
       if (this.cov[name]) { delete this.cov[name]; this.covRev++; }
       var self = this, mark = '/' + name + '/', gone = [];
       this.pics.forEach(function (pic, key) { if (key.indexOf(mark) >= 0) gone.push([key, pic]); });
       gone.forEach(function (g) { self.pics.delete(g[0]); self.bytes -= g[1].bytes; });
-      this.rev++;
+      this.rev++; this.regionsMoved = true;
     }
   };
   // Resolves to the store with a pointer, or null when none can be read (never rejects). force: a viewer's pick or Retry.
@@ -3351,9 +3356,24 @@
     return false;
   };
   RadarStore.prototype.resolve = function (region, i) {
-    for (var j = i; j >= 0 && j >= i - RADAR_HOLD_STEPS; j--) {
-      var rec = this.loop[j];
+    var step = this.loop[i], rec;
+    if (step && step.r[region] && this.pics.has(this.key(step.t, region, 't0'))) return step;
+    if (step && i === this.loop.length - 1 && (rec = this.heldAt(region, step.t, true))) return rec;
+    for (var j = i - 1; j >= 0 && j >= i - RADAR_HOLD_STEPS; j--) {
+      rec = this.loop[j];
       if (rec && rec.r[region] && this.pics.has(this.key(rec.t, region, 't0'))) return rec;
+    }
+    return null;
+  };
+  // The region's own newest frame at or before the slot, at most RADAR_HOLD_STEPS slots back, on the loop's clock marks or not: at the
+  // loop's newest step a region a slot behind (Taiwan's file lands a tick later) shows its own last frame, not the last mark's.
+  RadarStore.prototype.heldAt = function (region, slot, landed) {
+    var limit = radarSlotMs(slot) - RADAR_HOLD_STEPS * RADAR_PUBLISH_MS;
+    for (var i = this.frames.length - 1; i >= 0; i--) {
+      var rec = this.frames[i];
+      if (rec.t > slot) continue;
+      if (radarSlotMs(rec.t) < limit) return null;
+      if (rec.r[region] && (!landed || this.pics.has(this.key(rec.t, region, 't0')))) return rec;
     }
     return null;
   };
@@ -3367,6 +3387,9 @@
     var ok = true;
     for (var i = 0; i < this.loop.length; i++) {
       if (this.listed(this.loop[i], region, tier, name) && !this.done(this.key(this.loop[i].t, region, tier, name))) { ok = false; break; }
+    }
+    for (i = 0; ok && i < this.held.length; i++) {
+      if (this.held[i][1] === region && this.listed(this.held[i][0], region, tier, name) && !this.done(this.key(this.held[i][0].t, region, tier, name))) ok = false;
     }
     this._memo[k] = ok;
     return ok;
@@ -3432,13 +3455,24 @@
       }
     }
     for (r = 0; r < regs.length; r++) { var nw = this.newestOf(regs[r]); if (nw) add(nw, regs[r], 't0'); }
+    var n = loop.length, last = loop[n - 1], held = this.held = [];   // the regions a slot behind at the newest step (resolve)
+    if (last) for (r = 0; r < regs.length; r++) {
+      if (last.r[regs[r]]) continue;
+      var own = this.heldAt(regs[r], last.t);
+      if (own) held.push([own, regs[r]]);
+    }
     front(loop[shown]);
+    if (shown === n - 1) for (i = 0; i < held.length; i++) {
+      add(held[i][0], held[i][1], 't0');
+      if (want >= 1) addCells(held[i][0], held[i][1], 't1');
+      if (want >= 2) addCells(held[i][0], held[i][1], 't2');
+    }
     front(extra);
-    var n = loop.length;
     for (i = 0; i < n; i++) {
       var rec = loop[(shown + i) % n];
       for (r = 0; r < regs.length; r++) if (rec.r[regs[r]]) add(rec, regs[r], 't0');
     }
+    for (i = 0; i < held.length; i++) add(held[i][0], held[i][1], 't0');
     // what the stacks would hold: each tier wanted only while the running total fits the cap
     var sum = 0; for (i = 0; i < items.length; i++) sum += items[i].size;
     function stackSize(tier) {
@@ -3448,12 +3482,20 @@
         var cells = self._cellsIn(regs[q], tier, view);
         for (var c = 0; c < cells.length; c++) if (self.listed(loop[f], regs[q], tier, cells[c].name)) total += self._cellBytes(self.key(loop[f].t, regs[q], tier, cells[c].name), tier);
       }
+      for (var h = 0; h < held.length; h++) {
+        var hc = self._cellsIn(held[h][1], tier, view);
+        for (var d = 0; d < hc.length; d++) if (self.listed(held[h][0], held[h][1], tier, hc[d].name)) total += self._cellBytes(self.key(held[h][0].t, held[h][1], tier, hc[d].name), tier);
+      }
       return total;
     }
     var s1 = want >= 1 ? stackSize('t1') : 0, s2 = want >= 2 ? stackSize('t2') : 0;
     this.stack = { t1: want >= 1 && sum + s1 <= this.maxBytes, t2: want >= 2 && sum + s1 + s2 <= this.maxBytes };
     if (this.stack.t1) for (i = 0; i < n; i++) { var a = loop[(shown + i) % n]; for (r = 0; r < regs.length; r++) if (a.r[regs[r]]) addCells(a, regs[r], 't1'); }
     if (this.stack.t2) for (i = 0; i < n; i++) { var b2 = loop[(shown + i) % n]; for (r = 0; r < regs.length; r++) if (b2.r[regs[r]]) addCells(b2, regs[r], 't2'); }
+    for (i = 0; i < held.length; i++) {
+      if (this.stack.t1) addCells(held[i][0], held[i][1], 't1');
+      if (this.stack.t2) addCells(held[i][0], held[i][1], 't2');
+    }
     this.queue = items; this.planSet = seen;
     for (var k in this.inflight) if (!seen[k]) this._drop(k);
     this._evict();
@@ -3544,7 +3586,7 @@
   // Leaving the layer: nothing of the pictures stays in memory (the browser's cache has the files).
   RadarStore.prototype.release = function () {
     this.stop();
-    this.pics.clear(); this.bytes = 0; this.fails = Object.create(null); this.cov = Object.create(null); this.covRev++; this.loop = []; this.rev++; this.lastPlan = null;
+    this.pics.clear(); this.bytes = 0; this.fails = Object.create(null); this.cov = Object.create(null); this.covRev++; this.loop = []; this.held = []; this.rev++; this.lastPlan = null;
   };
   // The tile's latitudes and longitudes at pixel centres, kept with the tile.
   function radarTileGeom(el, coords) {
@@ -3738,7 +3780,7 @@
     // {kind: 'unknown'} a region's coverage is not in yet, {kind: 'nopic'} covered, but no picture for the shown time.
     readoutAt: function (lat, lng, z) {
       var p = pixelOf(lat, lng, z), t = this._tiles[p.x + ':' + p.y + ':' + p.z], el = t && t.el;
-      if (!el || !el._rOwn) return null;
+      if (!el || !el._rOwn || el._rOwnRev !== this.store.covRev) return null;   // the tile's owners are an older pointer's: its redraw is on the way
       var i = p.py * TILE + p.px, who = el._rOwn[i];
       if (!who) return { kind: this.store.coverageDue(lat, lng) ? 'unknown' : 'none' };
       var region = this.store.order[who - 1], rec = null, pcs = el._rPieces || [];
@@ -3801,7 +3843,8 @@
     var before = this._stepKey();
     this._frames(false);
     this._plan();
-    if (!this._tryJoin(before) && before !== this._stepKey()) this._show();
+    var moved = this.store.regionsMoved; this.store.regionsMoved = false;
+    if ((!this._tryJoin(before) && before !== this._stepKey()) || moved) this._show();
     this.ov._radarUI();
   };
   RadarPlayer.prototype._tryJoin = function (prevKey) {
@@ -3823,6 +3866,8 @@
     if (!cur) return;
     var near = false;
     for (var j = this.idx; j >= 0 && j >= this.idx - RADAR_HOLD_STEPS; j--) if (this.frames[j] && this.frames[j].t === it.slot) near = true;
+    var drawn = this.store.resolve(it.region, this.idx);
+    if (drawn && drawn.t === it.slot) near = true;
     if (!near && this.store.cov[it.region] && this.store.cov[it.region].slot !== it.slot) return;
     if (!near && !this.store.cov[it.region]) return;
     if (this.drawQ !== null) return;
@@ -5928,11 +5973,12 @@
       if (bad) { out.push(name + (bad.final ? ': the radar pictures cannot be read.' : ': the radar pictures are not answering. Trying again.')); continue; }
       if (nw && !st.cov[regs[i]]) { loading = true; continue; }
       var real = function (r, reg) { return radarSlotMs(r.t) + ((r.r[reg] && r.r[reg].o) || 0) * 60000; };   // the file's own time, as the label and the hover say it
-      if (nw && (now - real(nw, regs[i])) / 60000 > RADAR_WARN_MIN) out.push(name + ': the newest frame is ' + radarAge(Math.round((now - real(nw, regs[i])) / 60000)) + ' old.');
-      else if (fr) {
+      var old = nw && (now - real(nw, regs[i])) / 60000 > RADAR_WARN_MIN;
+      if (old) out.push(name + ': the newest frame is ' + radarAge(Math.round((now - real(nw, regs[i])) / 60000)) + ' old.');
+      if (fr) {
         var rec = st.resolve(regs[i], p.idx);
         if (rec && rec !== fr) { if (radarSlotMs(fr.t) - radarSlotMs(rec.t) > RADAR_PUBLISH_MS) out.push(name + ' shows ' + this._radarClock(real(rec, regs[i])).clock + '.'); }   // one slot behind is how a late file lands, not news
-        else if (!rec) out.push(name + ': no picture for ' + this._radarClock(real(fr, regs[i])).clock + '.');
+        else if (!rec && !old) out.push(name + ': no picture for ' + this._radarClock(real(fr, regs[i])).clock + '.');
       }
     }
     if (loading) out.unshift('Loading the radar pictures.');
@@ -5946,9 +5992,11 @@
     if (r.kind === 'unknown') return 'radar pictures not in yet';
     if (r.kind === 'nopic') return 'no radar picture for this time';
     if (r.kind === 'dry' || !r.rec) return 'no echo';
-    var st = this.radar, e = r.rec.r[r.region], ms = radarSlotMs(r.rec.t) + (e ? e.o : 0) * 60000, c = this._radarClock(ms).clock;
-    if (st.pointer.regions[r.region].scale === 'jma8') { var row = radarClassOf(r.code); return radarClassText(row) + ' · ' + row[3] + ' · ' + c; }
-    var opera = st.pointer.regions[r.region].src === 'opera';
+    var st = this.radar, def = st.pointer && st.pointer.regions[r.region];
+    if (!def) return null;                                     // the region left the pointer between the sample and this line
+    var e = r.rec.r[r.region], ms = radarSlotMs(r.rec.t) + (e ? e.o : 0) * 60000, c = this._radarClock(ms).clock;
+    if (def.scale === 'jma8') { var row = radarClassOf(r.code); return radarClassText(row) + ' · ' + row[3] + ' · ' + c; }
+    var opera = def.src === 'opera';
     return Math.round(r.dbz) + ' dBZ · ' + radarRainWord(Math.round(r.dbz)) + ' · ' + (opera ? '10-min max to ' : '') + c;
   };
   // The player's parts of the panel, in place (a new frame must not rebuild the panel: menus and focus stay).
@@ -5971,7 +6019,9 @@
     if (ui.title) { var said = ui.collapsed ? 'Radar · ' + label : radarHead(this._radarSources()); if (ui.title.textContent !== said) ui.title.textContent = said; }
     if (ui.radarLoop) ui.radarLoop.value = String(p.loopH);
     if (ui.radarNote) { var note = this._radarNote(); ui.radarNote.textContent = note; ui.radarNote.hidden = !note; }
-    if (ui.radarScale) { var sn = this._radarScaleNote(); ui.radarScale.textContent = sn; ui.radarScale.hidden = !sn; }
+    var sn = this._radarScaleNote();
+    if (ui.compact && !!sn !== !!this._radarScaleShown && this.last && this.last.state === 'ready') { this.render(this.last); return; }   // the sheet is measured with the note
+    if (ui.radarScale) { ui.radarScale.textContent = sn; ui.radarScale.hidden = !sn; }
   };
   // A region on rain-rate classes in view: the panel says so beside the dBZ scale.
   Overlay.prototype._radarScaleNote = function () {
@@ -5984,7 +6034,8 @@
   // The radar's panel: head = the sources; the transport (play, slider, speed) stays on the smallest sheets; details = the frame's
   // time, the loop length, the scale with its rain words, the notes; folded: "Radar · Thu 7:40 PM HST · 10 min ago".
   Overlay.prototype._renderRadar = function (st, host, compact, focusCls, mapH) {
-    var self = this, p = this.radarPlayer, unit = this.opts.getUnit();
+    var self = this, p = this.radarPlayer, unit = this.opts.getUnit(), scaleNote = this._radarScaleNote();
+    this._radarScaleShown = !!scaleNote;
     this._obsShell(st, host, compact, focusCls, mapH, radarHead(this._radarSources()), 'Radar · ' + this._radarLabel(), function (body) {
       var row = mk('div', 'ov-row ov-radar-line'), line = mk('span', 'ov-radar-label', self._radarLabel());
       var sel = mk('select', 'ov-radar-loop'); sel.setAttribute('aria-label', 'Loop length'); sel.setAttribute('autocomplete', 'off');
@@ -6000,7 +6051,7 @@
       });
       body.appendChild(words);
       body.appendChild(mk('div', 'ov-meta ov-radar-key', RADAR_KEY));
-      var scale = mk('div', 'ov-meta ov-radar-key ov-radar-scale'); scale.hidden = true; body.appendChild(scale); self.ui.radarScale = scale;
+      var scale = mk('div', 'ov-meta ov-radar-key ov-radar-scale', scaleNote); scale.hidden = !scaleNote; body.appendChild(scale); self.ui.radarScale = scale;
       var note = mk('div', 'ov-warn'); note.hidden = true; body.appendChild(note); self.ui.radarNote = note;
     }, function (h, ui) {
       var row = mk('div', 'ov-row ov-transport ov-radar-row');

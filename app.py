@@ -322,7 +322,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.25.8"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.25.9"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -455,8 +455,9 @@ ECMWF_NOTICE = "\n".join([
 ])
 
 
-# The radar notice the map credit links ("Radar: MRMS · OPERA CC BY 4.0"; plan section 85): NOAA's data is public domain and NOAA asks
-# for attribution and that modified data not pass as the original; OPERA is CC BY 4.0 with EUMETNET's property rights.
+# The radar notice the map credit links (plan sections 85, 86): NOAA's data is public domain and NOAA asks for attribution and that
+# modified data not pass as the original; OPERA is CC BY 4.0 with EUMETNET's property rights; JMA's Public Data License 1.0 asks for the
+# source and that edited data say so; Taiwan's Open Government Data License asks for the provider, year, data set and the licence.
 RADAR_NOTICE = "\n".join([
     "Radar data in the Allshore Surf map (allshoresurf.com)",
     "",
@@ -469,7 +470,17 @@ RADAR_NOTICE = "\n".join([
     "EUMETNET OPERA radar composite, maximum reflectivity over 10 minutes. Property rights: EUMETNET.",
     "Licence: Creative Commons Attribution 4.0 International (CC BY 4.0): https://creativecommons.org/licenses/by/4.0/",
     "",
-    "Modified by Allshore Surf, both: regridded to latitude and longitude, quantised to 0.5 dBZ, echoes below 5 dBZ removed,",
+    "Japan:",
+    "Source: Japan Meteorological Agency website (https://www.jma.go.jp/bosai/nowc/), rain-rate observations, 2 km.",
+    "Licence: Public Data License (Version 1.0): https://www.digital.go.jp/resources/open_data/public_data_license_v1.0",
+    "Edited by Allshore Surf: regridded, thinned, and each rain-rate class drawn in the colour of the matching reflectivity on the map's",
+    "scale (the hover gives the class, in mm/h). This is not a product of the Japan Meteorological Agency.",
+    "",
+    "Taiwan:",
+    "Central Weather Administration (Taiwan), {year}, composite radar reflectivity, open data set O-A0059-001.",
+    "Licence: Open Government Data License, version 1.0: https://data.gov.tw/license",
+    "",
+    "Modified by Allshore Surf, all: regridded to latitude and longitude, quantised to 0.5 dBZ, echoes below 5 dBZ removed,",
     "thinned for coarser map zooms, coloured and rendered as a map layer. Radar shows echoes, not rain on the ground; values can be",
     "wrong (sea clutter, beam blockage, snow or hail). No warranty: do not use this for safety decisions.",
     "",
@@ -479,7 +490,7 @@ RADAR_NOTICE = "\n".join([
 @app.route("/notice/radar")
 def radar_notice():
     """The radar attribution notice (plain text)."""
-    resp = app.response_class(RADAR_NOTICE, mimetype="text/plain")
+    resp = app.response_class(RADAR_NOTICE.format(year=datetime.now(timezone.utc).year), mimetype="text/plain")
     resp.headers["Cache-Control"] = "public, max-age=86400"
     return resp
 

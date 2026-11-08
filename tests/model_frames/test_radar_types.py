@@ -1,3 +1,4 @@
+import re
 """Rain, mix and snow in the radar job (plan section 89): NOAA's PrecipFlag file of the reflectivity's own minute says snow or a rain
 class, NOAA's model wet-bulb temperature marks the estimated mix, and the codes keep the type through every tier. The real files are a
 1 x 2 degree cut of CONUS of 2026-11-08 18:52 UTC (tests/capture_radar_types_fixtures.py); their expected values come from eccodes and
@@ -569,3 +570,13 @@ def test_a_tick_without_a_wet_bulb_hour_writes_rs(small, monkeypatch):
     store = FakeStore()
     assert tick(store, Web(r1_files(SLOT + timedelta(minutes=4), tw_hour=None))) == 0
     assert slot_entry(store, R.slot_name(SLOT))["r"]["r1"]["ty"] == "rs"
+
+
+def test_the_client_reads_the_bands_the_job_writes():
+    """overlay.js RADAR_TYPE_CODES = R.type_codes(): a client that read other bands would refuse every type (radarTypeCodesOk)."""
+    js = open(os.path.join(os.path.dirname(__file__), "..", "..", "static_overlay", "overlay.js"), encoding="utf-8").read()
+    m = re.search(r"RADAR_TYPE_CODES = \{ snow: \[(\d+), (\d+), (\d+)\], mix: \[(\d+), (\d+), (\d+)\] \}", js)
+    assert m, "RADAR_TYPE_CODES not found in overlay.js"
+    v = [int(x) for x in m.groups()]
+    assert {"snow": v[0:3], "mix": v[3:6]} == {k: [int(x) for x in b] for k, b in R.type_codes().items()}
+    assert int(re.search(r"RADAR_TYPE_BASE = (\d+)", js).group(1)) == R.MAX_CODE + 1

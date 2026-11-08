@@ -70,6 +70,19 @@
   // (the owner's pick on real frames, plan section 85).
   RAMPS.radar = [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
                  [0.583, '#e5bc00'], [0.667, '#fd9500'], [0.75, '#fd0000'], [0.833, '#d40000'], [0.917, '#bc0000'], [1, '#f800fd']];
+  // Snow and the estimated mix over the same 5-65 dBZ legend (plan section 89; snow seldom passes 35 dBZ, so the colours change most
+  // in the bar's lower half). Two candidates each for the owner's pick on real frames.
+  var RADAR_SNOW_LOOKS = {
+    A: [[0, '#f1ebff'], [0.1, '#dacdff'], [0.2, '#bea8ff'], [0.3, '#9f80f2'], [0.42, '#7f57d9'], [0.55, '#5f33b3'], [1, '#2c0f63']],
+    B: [[0, '#f3faff'], [0.1, '#d3ecff'], [0.2, '#a9d4fb'], [0.3, '#78b2ec'], [0.42, '#4a8bd8'], [0.55, '#2862b4'], [1, '#0c2c6e']]
+  };
+  var RADAR_MIX_LOOKS = {
+    A: [[0, '#ffe3f0'], [0.1, '#ffc6e0'], [0.2, '#ff9fca'], [0.3, '#f774b0'], [0.42, '#e04b95'], [0.55, '#b82a76'], [1, '#6b0f42']],
+    B: [[0, '#fff0e0'], [0.1, '#ffd9b8'], [0.2, '#ffbb8a'], [0.3, '#fb9a5f'], [0.42, '#ec763d'], [0.55, '#c95428'], [1, '#7a2a10']]
+  };
+  function radarLookOf(q, name) { var m = new RegExp('[?&]' + name + '=([AB])').exec(q); return m ? m[1] : 'A'; }
+  RAMPS.radarSnow = RADAR_SNOW_LOOKS[radarLookOf(pageQuery(), 'ovsnow')];
+  RAMPS.radarMix = RADAR_MIX_LOOKS[radarLookOf(pageQuery(), 'ovmix')];
   var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.57, 1];   // alpha at the 5-dBZ floor and from 25 dBZ up (the layer's own opacity on top)
   // The radar's opacity (plan section 89): one CSS opacity on the layer, set by the panel's transparency slider; kept on the device.
   var RADAR_OPACITY_KEY = 'allshore.radarOpacity.v1', RADAR_OPACITY_MIN = 20, RADAR_OPACITY_MAX = 100, RADAR_OPACITY_DEFAULT = 75;
@@ -225,6 +238,29 @@
   var RADAR_STEP_WAIT_MS = 5000, RADAR_END_HOLD_MS = 1000, RADAR_WARN_MIN = 30;
   var RADAR_PLAY_HOLD_MS = 3000, RADAR_RECOVER_MS = 60000, RADAR_DAMAGED_RETRY_MS = 5 * 60000;   // Play's wait for the view's stacks; a refused pointer asked again; a damaged file asked again
   var RADAR_FDEF = { lo: 5, hi: 75, legend: [5, 65] };
+  // Rain 2-142 (0.5 dB), snow 143-213 (1 dB), mix 214-249 (2 dB), each from 5 dBZ; 250-255 never written (radar.py TYPE_CODES). A
+  // sampled pixel is stored as type * RADAR_TYPE_BASE + its value on the rain codes' scale: one colour table, one readout.
+  var RADAR_TYPE_CODES = { snow: [143, 213, 1], mix: [214, 249, 2] }, RADAR_TYPE_BASE = 143, RADAR_TYPES = ['rain', 'snow', 'mix'];
+  var RADAR_RC = new Float64Array(256), RADAR_T = new Uint8Array(256);
+  (function () {
+    for (var v = 2; v <= RADAR_MAX_CODE; v++) RADAR_RC[v] = v;
+    RADAR_TYPES.forEach(function (name, t) {
+      var b = RADAR_TYPE_CODES[name];
+      if (!b) return;
+      for (var c = b[0]; c <= b[1]; c++) { RADAR_RC[c] = (RADAR_FLOOR + (c - b[0]) * b[2] - RADAR_FLOOR) / RADAR_STEP + 2; RADAR_T[c] = t; }
+    });
+  })();
+  // A pointer's type_codes must say exactly what this client reads; else its codes past the rain ones are never drawn.
+  function radarTypeCodesOk(tc) {
+    if (!tc || typeof tc !== 'object' || Array.isArray(tc)) return false;
+    var names = Object.keys(tc);
+    if (names.length !== 2) return false;
+    for (var i = 0; i < names.length; i++) {
+      var want = RADAR_TYPE_CODES[names[i]], got = tc[names[i]];
+      if (!want || !Array.isArray(got) || got.length !== 3 || got[0] !== want[0] || got[1] !== want[1] || got[2] !== want[2]) return false;
+    }
+    return true;
+  }
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
   // Japan's files hold JMA's eight rain-rate classes as the dBZ codes of the same rain (tools/model_frames/jma.py; a Python test compares
   // the rows): [code, from mm/h, to mm/h, the word]. A pixel of such a region is one of these codes, never between two.
@@ -3103,6 +3139,8 @@
   function radarRainWord(dbz) {
     return dbz < 20 ? 'very light rain' : dbz < 30 ? 'light rain' : dbz < 40 ? 'moderate rain' : dbz < 50 ? 'heavy rain' : dbz < 60 ? 'very heavy rain' : 'intense rain, possible hail';
   }
+  function radarSnowWord(dbz) { return dbz < 15 ? 'very light snow' : dbz < 25 ? 'light snow' : dbz < 32 ? 'moderate snow' : 'heavy snow'; }
+  function radarMixWord(dbz) { return dbz < 25 ? 'light mix (estimated)' : dbz < 40 ? 'mix (estimated)' : 'heavy mix (estimated)'; }
   function radarLoopOf(v) { return RADAR_LOOP_HOURS.indexOf(v) >= 0 ? v : RADAR_DEFAULT_LOOP; }
   // The class row of a drawn code in a region on JMA's scale.
   function radarClassOf(code) {
@@ -3254,7 +3292,7 @@
     var sig = JSON.stringify([ptr.regions, ptr.slots]), changed = !held || ptr.published_utc !== held.published_utc || sig !== this.slotSig;
     this.slotSig = sig;
     if (held) this._boxesMoved(held, ptr);
-    this.pointer = ptr; this.readAt = Date.now();
+    this.pointer = ptr; this.readAt = Date.now(); this.typed = radarTypeCodesOk(ptr.type_codes);
     var names = Object.keys(ptr.regions), order = [], i;
     for (i = 0; i < RADAR_ORDER.length; i++) if (names.indexOf(RADAR_ORDER[i]) >= 0) order.push(RADAR_ORDER[i]);
     for (i = 0; i < names.length; i++) if (order.indexOf(names[i]) < 0) order.push(names[i]);
@@ -3618,10 +3656,13 @@
   // THE sampler (tiles and readout alike): fractional codes of the pieces into out[y * 256 + x], bilinear over the echo nodes
   // present (fewer than a quarter of the weight present = none); only pixels the piece's region owns. A row whose two node rows
   // hold no echo is skipped at once, so a dry frame costs next to nothing. -> how many pixels hold echo.
+  // A typed region's piece: bilinear on the value (the rain codes' scale), the type of the node with the most weight (the first of
+  // equals), so a colour is never a blend of two types; codes past the rain ones only where the pointer's types can be read.
+  function radarTypedDef(st, def) { return !!(st.typed && def && typeof def.types === 'string' && /[sm]/.test(def.types) && def.scale !== 'jma8'); }
   function radarSample(pieces, el, own, x0, x1, y0, y1, out) {
-    var count = 0, lats = el._rLat, lons = el._rLon;
+    var count = 0, lats = el._rLat, lons = el._rLon, RC = RADAR_RC, T = RADAR_T, MAXC = RADAR_MAX_CODE, BASE = RADAR_TYPE_BASE;
     for (var p = 0; p < pieces.length; p++) {
-      var pc = pieces[p], pic = pc.pic, q = pic.q, cols = pic.cols, rows = pic.rows, re = pic.re, who = pc.own, ppd = pc.ppd, snap = pc.snap;
+      var pc = pieces[p], pic = pc.pic, q = pic.q, cols = pic.cols, rows = pic.rows, re = pic.re, who = pc.own, ppd = pc.ppd, snap = pc.snap, typed = pc.typed;
       var ys = Math.max(pc.y0, y0), ye = Math.min(pc.y1, y1), xs = Math.max(pc.x0, x0), xe = Math.min(pc.x1, x1);
       for (var y = ys; y < ye; y++) {
         var fy = (pc.top - lats[y]) * ppd + pc.ay - pic.r0, r0 = Math.floor(fy), wy = fy - r0, r1 = r0 + 1;
@@ -3633,13 +3674,27 @@
           if (own[i] !== who) continue;
           var fx = (lons[x] - pc.left) * ppd + pc.ax - pic.c0, c0 = Math.floor(fx), wx = fx - c0, c1 = c0 + 1, w = 0, acc = 0, v, f;
           var ok0 = c0 >= 0 && c0 < cols, ok1 = c1 >= 0 && c1 < cols;
+          if (typed) {
+            var best = -1, bt = 0, r;
+            if (has0) {
+              if (ok0 && (r = RC[v = q[b0 + c0]]) > 0) { f = (1 - wx) * (1 - wy); w += f; acc += f * r; if (f > best) { best = f; bt = T[v]; } }
+              if (ok1 && (r = RC[v = q[b0 + c1]]) > 0) { f = wx * (1 - wy); w += f; acc += f * r; if (f > best) { best = f; bt = T[v]; } }
+            }
+            if (has1) {
+              if (ok0 && (r = RC[v = q[b1 + c0]]) > 0) { f = (1 - wx) * wy; w += f; acc += f * r; if (f > best) { best = f; bt = T[v]; } }
+              if (ok1 && (r = RC[v = q[b1 + c1]]) > 0) { f = wx * wy; w += f; acc += f * r; if (f > best) { best = f; bt = T[v]; } }
+            }
+            if (w < 0.25) continue;
+            out[i] = bt * BASE + acc / w; count++;
+            continue;
+          }
           if (has0) {
-            if (ok0 && (v = q[b0 + c0]) >= 2) { f = (1 - wx) * (1 - wy); w += f; acc += f * v; }
-            if (ok1 && (v = q[b0 + c1]) >= 2) { f = wx * (1 - wy); w += f; acc += f * v; }
+            if (ok0 && (v = q[b0 + c0]) >= 2 && v <= MAXC) { f = (1 - wx) * (1 - wy); w += f; acc += f * v; }
+            if (ok1 && (v = q[b0 + c1]) >= 2 && v <= MAXC) { f = wx * (1 - wy); w += f; acc += f * v; }
           }
           if (has1) {
-            if (ok0 && (v = q[b1 + c0]) >= 2) { f = (1 - wx) * wy; w += f; acc += f * v; }
-            if (ok1 && (v = q[b1 + c1]) >= 2) { f = wx * wy; w += f; acc += f * v; }
+            if (ok0 && (v = q[b1 + c0]) >= 2 && v <= MAXC) { f = (1 - wx) * wy; w += f; acc += f * v; }
+            if (ok1 && (v = q[b1 + c1]) >= 2 && v <= MAXC) { f = wx * wy; w += f; acc += f * v; }
           }
           if (w < 0.25) continue;
           out[i] = snap ? snap[Math.round(acc / w)] : acc / w; count++;   // a region on classes: never a value between two
@@ -3648,14 +3703,18 @@
     }
     return count;
   }
-  // RGBA per half code: colour by the legend's position, alpha rising from thin drizzle to solid rain.
+  // RGBA per half code: colour by the legend's position, alpha rising from thin drizzle to solid rain; rain, snow and mix each a
+  // section of RADAR_TYPE_BASE * 2 entries (a pixel's stored value * 2 is its index).
   function radarLut() {
-    var n = RADAR_MAX_CODE * 2 + 2, out = new Uint8ClampedArray(n * 4), rgb = [0, 0, 0], leg = RADAR_FDEF.legend;
-    for (var i = 4; i < n; i++) {
-      var dbz = radarDbz(i / 2), t = Math.max(0, Math.min(1, (dbz - leg[0]) / (leg[1] - leg[0])));
-      rampAt(RAMPS.radar, t, rgb, 0);
-      out[i * 4] = rgb[0]; out[i * 4 + 1] = rgb[1]; out[i * 4 + 2] = rgb[2];
-      out[i * 4 + 3] = 255 * Math.min(RADAR_ALPHA[1], RADAR_ALPHA[0] + (dbz - RADAR_FLOOR) / 20 * (RADAR_ALPHA[1] - RADAR_ALPHA[0]));
+    var n = RADAR_MAX_CODE * 2 + 2, sec = RADAR_TYPE_BASE * 2, out = new Uint8ClampedArray(sec * 3 * 4), rgb = [0, 0, 0], leg = RADAR_FDEF.legend;
+    var ramps = [RAMPS.radar, RAMPS.radarSnow, RAMPS.radarMix];
+    for (var t = 0; t < 3; t++) {
+      for (var i = 4; i < n; i++) {
+        var dbz = radarDbz(i / 2), pos = Math.max(0, Math.min(1, (dbz - leg[0]) / (leg[1] - leg[0]))), k = (t * sec + i) * 4;
+        rampAt(ramps[t], pos, rgb, 0);
+        out[k] = rgb[0]; out[k + 1] = rgb[1]; out[k + 2] = rgb[2];
+        out[k + 3] = 255 * Math.min(RADAR_ALPHA[1], RADAR_ALPHA[0] + (dbz - RADAR_FLOOR) / 20 * (RADAR_ALPHA[1] - RADAR_ALPHA[0]));
+      }
     }
     return out;
   }
@@ -3725,7 +3784,7 @@
       }
       function piece(rec, who, region, tier, pic, rect, lat0, lon0) {
         var def = st.pointer.regions[region], b = def.box, t0 = tier === 't0', ppd = RADAR_PPD[tier];
-        out.push({ rec: rec, region: region, own: who, pic: pic, ppd: ppd, snap: def.scale === 'jma8' ? RADAR_JMA8_SNAP : null, x0: rect.x0, x1: rect.x1, y0: rect.y0, y1: rect.y1,
+        out.push({ rec: rec, region: region, own: who, pic: pic, ppd: ppd, snap: def.scale === 'jma8' ? RADAR_JMA8_SNAP : null, typed: radarTypedDef(st, def), x0: rect.x0, x1: rect.x1, y0: rect.y0, y1: rect.y1,
           top: t0 ? b[2] : lat0 + RADAR_CELL[tier], ay: t0 ? -0.5 : 0.5, left: t0 ? b[1] : lon0, ax: t0 ? -0.5 : 0.5 });
       }
       for (var ri = 0; ri < st.order.length; ri++) {
@@ -3797,8 +3856,8 @@
       if (!rec) return { kind: 'nopic', region: region, rec: null };
       this._code[i] = 0;
       if (!radarSample(pcs, el, el._rOwn, p.px, p.px + 1, p.py, p.py + 1, this._code)) return { kind: 'dry', region: region, rec: rec };
-      var c = this._code[i];
-      return { kind: 'echo', code: c, dbz: radarDbz(Math.round(c * 2) / 2), region: region, rec: rec };
+      var c = this._code[i], ty = Math.floor(c / RADAR_TYPE_BASE), rc = c - ty * RADAR_TYPE_BASE;
+      return { kind: 'echo', code: rc, type: ty, dbz: radarDbz(Math.round(rc * 2) / 2), region: region, rec: rec };
     }
   });
   // The loop: opens paused on the newest frame, never plays by itself; its own play state, cadence and paint gate, none of them the
@@ -5954,6 +6013,23 @@
     }
     return out;
   };
+  // A region whose types can be read is in view with a frame: the snow and mix bars mean something here.
+  Overlay.prototype._radarTyped = function () {
+    var p = this.radarPlayer, st = this.radar;
+    if (!p || !st || !st.pointer || !st.typed) return false;
+    var regs = st.regionsIn(p.view());
+    for (var i = 0; i < regs.length; i++) if (radarTypedDef(st, st.pointer.regions[regs[i]]) && st.newestOf(regs[i])) return true;
+    return false;
+  };
+  // A thin bar on the legend's dBZ axis, its name on it.
+  function radarTypeBar(ramp, label) {
+    var row = mk('div', 'ov-radar-type'), cv = mk('canvas'); cv.width = 256; cv.height = 1; row.appendChild(cv);
+    var lut = legendBar(ramp, RADAR_FDEF.legend), ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1);
+    for (var i = 0; i < 256; i++) { im.data[i * 4] = lut[i * 3]; im.data[i * 4 + 1] = lut[i * 3 + 1]; im.data[i * 4 + 2] = lut[i * 3 + 2]; im.data[i * 4 + 3] = 255; }
+    ctx.putImageData(im, 0, 0);
+    row.appendChild(mk('span', null, label));
+    return row;
+  }
   Overlay.prototype._radarClock = function (ms) {
     var iso = new Date(ms).toISOString().replace(/\.\d+Z$/, 'Z'), abbr = this.opts.tzAbbr(iso, this.opts.tz), st = ribbonFormatter(this.opts.tz).stamp(ms);
     return { day: st.weekday, clock: st.clock, zone: abbr ? ' ' + abbr : '' };
@@ -6007,8 +6083,8 @@
     if (!def) return null;                                     // the region left the pointer between the sample and this line
     var e = r.rec.r[r.region], ms = radarSlotMs(r.rec.t) + (e ? e.o : 0) * 60000, c = this._radarClock(ms).clock;
     if (def.scale === 'jma8') { var row = radarClassOf(r.code); return radarClassText(row) + ' · ' + row[3] + ' · ' + c; }
-    var opera = def.src === 'opera';
-    return Math.round(r.dbz) + ' dBZ · ' + radarRainWord(Math.round(r.dbz)) + ' · ' + (opera ? '10-min max to ' : '') + c;
+    var opera = def.src === 'opera', d = Math.round(r.dbz), word = r.type === 1 ? radarSnowWord(d) : r.type === 2 ? radarMixWord(d) : radarRainWord(d);
+    return d + ' dBZ · ' + word + ' · ' + (opera ? '10-min max to ' : '') + c;
   };
   // The player's parts of the panel, in place (a new frame must not rebuild the panel: menus and focus stay).
   Overlay.prototype._radarUI = function () {
@@ -6029,6 +6105,7 @@
     if (ui.radarLine) ui.radarLine.textContent = label;
     if (ui.title) { var said = ui.collapsed ? 'Radar · ' + label : radarHead(this._radarSources()); if (ui.title.textContent !== said) ui.title.textContent = said; }
     if (ui.radarLoop) ui.radarLoop.value = String(p.loopH);
+    if (ui.radarTypes) { var typed = this._radarTyped(); if (ui.radarTypes.hidden === typed) ui.radarTypes.hidden = !typed; }
     if (ui.radarNote) { var note = this._radarNote(); ui.radarNote.textContent = note; ui.radarNote.hidden = !note; }
   };
   // The radar's panel: head = the sources; the transport (play, slider, speed) stays on the smallest sheets; details = the frame's
@@ -6049,6 +6126,11 @@
         var s = mk('span', null, w[1]); s.style.left = (legendPos('radar', RADAR_FDEF.legend, w[0]) * 100).toFixed(2) + '%'; words.appendChild(s);
       });
       body.appendChild(words);
+      var types = mk('div', 'ov-radar-types');
+      types.appendChild(radarTypeBar('radarSnow', 'Snow'));
+      types.appendChild(radarTypeBar('radarMix', 'Mix (est.)'));
+      types.hidden = !self._radarTyped();
+      body.appendChild(types); self.ui.radarTypes = types;
       body.appendChild(self._radarOpacityRow());
       var note = mk('div', 'ov-warn'); note.hidden = true; body.appendChild(note); self.ui.radarNote = note;
     }, function (h, ui) {
@@ -8489,7 +8571,7 @@
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
-      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
+      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SNOW_LOOKS: RADAR_SNOW_LOOKS, RADAR_MIX_LOOKS: RADAR_MIX_LOOKS, radarLookOf: radarLookOf, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,

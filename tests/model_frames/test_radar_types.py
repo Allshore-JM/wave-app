@@ -97,9 +97,11 @@ def small(monkeypatch):
     monkeypatch.setattr(R.time, "sleep", lambda s: None)
     R._TW.clear()
     R._TW_ORDER.clear()
+    R._TW_DOWN.clear()
     yield
     R._TW.clear()
     R._TW_ORDER.clear()
+    R._TW_DOWN.clear()
 
 
 def r1_values():
@@ -580,3 +582,27 @@ def test_the_client_reads_the_bands_the_job_writes():
     v = [int(x) for x in m.groups()]
     assert {"snow": v[0:3], "mix": v[3:6]} == {k: [int(x) for x in b] for k, b in R.type_codes().items()}
     assert int(re.search(r"RADAR_TYPE_BASE = (\d+)", js).group(1)) == R.MAX_CODE + 1
+
+
+def test_a_wet_bulb_that_does_not_answer_is_asked_once_and_the_others_not_that_tick(small):
+    """G58 P3-2: a hung bucket must cost one file's time limit a tick, not two tries per region."""
+    when = datetime(2026, 11, 6, 12, 34, tzinfo=timezone.utc)
+    h12 = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
+    files = tw_only([h12])
+    files.update(tw_only([h12], "D2"))
+    web = Web(files, down=(mrms.url_of("D1", h12, mrms.TW_PRODUCT),))
+    assert "did not answer" in R.tw_band("D1", when, web)[2]
+    assert len(tw_asks(web)) == 1, "one try only"
+    grid, _band, why = R.tw_band("D2", when, web)
+    assert grid is None and "not asked" in why and len(tw_asks(web)) == 1
+    R.main(["--dry-run", "--sources", "mrms", "--slots", "1"], get=Web(), store=FakeStore(), now=NOW)
+    assert R._TW_DOWN == [], "a new tick asks again"
+
+
+def test_the_snow_and_mix_counts_in_the_note(small):
+    """G58 P3-4 (M33): the frame's note counts its snow and mix pixels, as the lattice holds them."""
+    web = Web(r1_files(SLOT + timedelta(minutes=4)))
+    lattice, _off, meta = R.mrms_frame("r1", SLOT, NOW + timedelta(minutes=10), web)
+    snow = int(((lattice >= R.SNOW_CODE0) & (lattice <= R.SNOW_MAX)).sum())
+    mix = int(((lattice >= R.MIX_CODE0) & (lattice <= R.MIX_MAX)).sum())
+    assert snow > 0 and mix > 0 and meta["note"].startswith(f"snow {snow} px, mix {mix} px, ")

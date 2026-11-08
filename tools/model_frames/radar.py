@@ -338,11 +338,11 @@ def _read_whole(url, get, max_bytes, timeout=None, max_s=None):
     return b"".join(parts)
 
 
-def fetch(url, get, max_bytes, timeout=None, max_s=None):
+def fetch(url, get, max_bytes, timeout=None, max_s=None, tries=2):
     """The whole body. 404 = Missing (both buckets answer 404 for an absent key); other answers, time-outs and dropped connections
     = Down: a refusal or an outage must never count as "never published"."""
     last = None
-    for attempt in range(2):
+    for attempt in range(tries):
         try:
             return _read_whole(url, get, max_bytes, timeout=timeout, max_s=max_s)
         except urllib.error.HTTPError as exc:
@@ -353,7 +353,7 @@ def fetch(url, get, max_bytes, timeout=None, max_s=None):
             raise
         except Exception as exc:                                       # noqa: BLE001
             last = exc
-        if attempt == 0:
+        if attempt + 1 < tries:
             time.sleep(2)
     raise Down(f"{last.__class__.__name__}: {P.redact(str(last))}")
 
@@ -414,14 +414,20 @@ def flag_types(msg, flag, band):
 
 _TW = {}                                # (domain, hour) -> (grid, band) | "missing" | "evicted" | why not: one tick's wet-bulb reads
 _TW_ORDER = []                          # decoded hours, the least recently used first (TW_CACHE kept)
+_TW_DOWN = []                           # why a wet-bulb file did not answer this tick: the others are not asked in it (G58 P3-2)
 
 
 def _read_tw(domain, hour, get):
+    """One try, and none after a file that did not answer this tick: a hung bucket costs one TW_FILE_S a tick, not one per region."""
+    if _TW_DOWN:
+        return f"wet-bulb {hour:%H}Z not asked ({_TW_DOWN[0]})"
     try:
-        body = fetch(mrms.url_of(domain, hour, mrms.TW_PRODUCT), get, mrms.TW_MAX_GZ_BYTES, timeout=TW_READ_S, max_s=TW_FILE_S)
+        body = fetch(mrms.url_of(domain, hour, mrms.TW_PRODUCT), get, mrms.TW_MAX_GZ_BYTES, timeout=TW_READ_S, max_s=TW_FILE_S,
+                     tries=1)
     except Missing:
         return "missing"
     except Down as exc:
+        _TW_DOWN.append(f"{domain} {hour:%H}Z did not answer")
         return f"wet-bulb {hour:%H}Z did not answer ({exc})"
     try:
         msg = _reading("wet-bulb", lambda: mrms.read(mrms.gunzip(body, mrms.TW_MAX_GZ_BYTES), mrms.TW_IDENTITY, (8, 16, 24)))
@@ -1005,6 +1011,7 @@ def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
     started = clock()
     _TW.clear()
     _TW_ORDER.clear()
+    _TW_DOWN.clear()
     try:
         pointer = store.get_json(f"{PREFIX}/latest.json")
     except ValueError as exc:

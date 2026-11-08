@@ -1379,7 +1379,9 @@ tiers pool by strength across the types and keep the chosen pixel's own type (`r
 A flag file never costs a frame: when the same minute has none yet, an older minute that has both files is used; when no minute has one,
 the newest reflectivity is written untyped. A flag file that cannot be read leaves the frame untyped; one that does not answer is the
 source's outage like any other file. A wet-bulb file that is missing, does not answer, cannot be read or lies on another grid only means
-no mix for that frame; it is read once a tick and held in memory (3 hours at most, about 25 MB each for CONUS).
+no mix for that frame. It is asked once, and after one that does not answer the other regions' files are not asked that tick, so a
+hung bucket costs one file's time limit (60 s) a tick. It is read once a tick and held in memory (3 hours at most, about 25 MB each for
+CONUS; decoding CONUS's 24-bit file peaks near 0.7 GB for about a second).
 
 Plan deviation, on record: the plan stored the wet-bulb as our own small mask under `radar/v1/tw/`. The job reads NOAA's hourly file
 directly instead (about 23 MB a tick from AWS Open Data at no charge, 1-3 s): no extra objects, pointer entries or prune, and the band can

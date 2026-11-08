@@ -1821,3 +1821,40 @@ test('a pixel exactly between four nodes takes the first node\'s type; a region 
   assert.equal(I.radarTypedDef({ typed: false }, { types: 'rms' }), false);
   assert.equal(I.radarTypedDef(st, null), false);
 });
+test('G58 pins: a dry node adds no weight beside a typed one; no bars without a typed frame; each bar under its own name', async () => {
+  // J18: one snow node and three dry ones, four equal weights: the pixel is the snow node's own value, not a quarter of it
+  const q = Uint8Array.from([1, snowCode(20), 1, 1]), pic = { q, cols: 2, rows: 2, r0: 0, c0: 0, re: Uint8Array.from([1, 1]) };
+  const lats = new Float64Array(256).fill(9.875), lons = new Float64Array(256).fill(20.125);
+  const own = new Uint8Array(256 * 256).fill(1), out = new Float64Array(256 * 256);
+  I.radarSample([{ pic, own: 1, ppd: 8, typed: true, x0: 0, x1: 1, y0: 0, y1: 1, top: 10, ay: -0.5, left: 20, ax: -0.5 }], { _rLat: lats, _rLon: lons }, own, 0, 1, 0, 1, out);
+  assert.equal(Math.floor(out[0] / 143), 1, 'snow');
+  assert.equal(I.radarDbz(out[0] - 143), 20, 'the dry nodes carry no weight: ' + out[0]);
+  // J13: Hawaii typed and in view but without a frame: no bars
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  const doc = typedDoc(2); for (const sl of doc.slots) delete sl.r.hawaii;
+  w.answer(/latest\.json$/, doc); await settle();
+  assert.equal(findCls(ov.ui.host, 'ov-radar-types').hidden, true, 'a typed region with no frame: no bars');
+  ov.unmount();
+  // J23 in the panel: under "Snow" the snow ramp, under "Mix (est.)" the mix ramp
+  const w3 = world(), ov3 = ctl(w3);
+  ov3.mount('radar');
+  w3.answer(/latest\.json$/, typedDoc(2)); await settle();
+  const rows = findCls(ov3.ui.host, 'ov-radar-types').children;
+  const first = (ramp) => { const L = I.legendBar(ramp, I.RADAR_FDEF.legend); return [L[0], L[1], L[2]]; };
+  for (const row of rows) {
+    const cv = row.children.find((c) => c.tag === 'canvas'), name = allText(row);
+    assert.deepEqual([...cv.lastImg.slice(0, 3)], first(/Snow/.test(name) ? 'radarSnow' : 'radarMix'), name);
+  }
+  assert.equal(rows.length, 2);
+  ov3.unmount();
+  // J23: the Snow bar is drawn from the snow ramp and the Mix bar from the mix ramp
+  const lut = (ramp) => { const L = I.legendBar(ramp, I.RADAR_FDEF.legend); return [L[0], L[1], L[2]]; };
+  for (const [ramp, label] of [['radarSnow', 'Snow'], ['radarMix', 'Mix (est.)']]) {
+    const row = I.radarTypeBar(ramp, label), cv = row.children.find((c) => c.tag === 'canvas');
+    assert.deepEqual([...cv.lastImg.slice(0, 3)], lut(ramp), label);
+    assert.ok(allText(row).includes(label));
+  }
+  assert.notDeepEqual(lut('radarSnow'), lut('radarMix'));
+});
+

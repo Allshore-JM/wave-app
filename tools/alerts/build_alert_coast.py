@@ -342,6 +342,20 @@ def decode(s):
 
 
 # ---------------------------------------------------------------- build
+# NWS's own time-zone letter in the zone file (WSOM) -> IANA. "CE" = a zone split between Central and Eastern: the first.
+TZ_CODES = {"A": "America/Anchorage", "h": "America/Adak", "H": "Pacific/Honolulu", "P": "America/Los_Angeles",
+            "M": "America/Denver", "m": "America/Phoenix", "C": "America/Chicago", "E": "America/New_York",
+            "V": "America/Puerto_Rico", "G": "Pacific/Guam", "S": "Pacific/Pago_Pago"}
+TZ_STATE = {("MP", "G"): "Pacific/Saipan", ("VI", "V"): "America/St_Thomas"}
+
+
+def zone_tz(row):
+    """The zone's civil time zone (IANA) from NWS's own TIME_ZONE letter, so an alert's times can be shown in the
+    coast's own clock. None for a letter not in TZ_CODES."""
+    code = (row.get("TIME_ZONE") or "")[:1]
+    return TZ_STATE.get((row.get("STATE"), code)) or TZ_CODES.get(code)
+
+
 def coastal_pieces(rows, shapes):
     """-> (ids, meta, pieces): the coastal states' zone ids (sorted), their name / office, and every row as
     (zone index, rings)."""
@@ -351,7 +365,7 @@ def coastal_pieces(rows, shapes):
     for r, s in zip(rows, shapes):
         if r.get("STATE") in COASTAL and s:
             zid = ugc(r)
-            meta.setdefault(zid, {"name": r.get("NAME", ""), "cwa": r.get("CWA", "")})
+            meta.setdefault(zid, {"name": r.get("NAME", ""), "cwa": r.get("CWA", ""), "tz": zone_tz(r)})
             pieces.append((index[zid], s))
     return ids, meta, pieces
 
@@ -466,6 +480,8 @@ def check(doc, log=print):
     pts = 0
     decoded = {}
     for zid, z in zones.items():
+        if not isinstance(z.get("tz"), str) or "/" not in z["tz"]:
+            probs.append(f"{zid}: no time zone")
         if not isinstance(z.get("lines"), list) or not z["lines"]:
             probs.append(f"{zid}: no lines")
             continue

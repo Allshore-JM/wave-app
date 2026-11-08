@@ -22,7 +22,7 @@ import build_coast as C  # noqa: E402
 
 
 # ---------------------------------------------------------------- synthetic inputs
-FIELDS = [("STATE", 2), ("ZONE", 3), ("CWA", 3), ("NAME", 24), ("STATE_ZONE", 5)]
+FIELDS = [("STATE", 2), ("ZONE", 3), ("CWA", 3), ("NAME", 24), ("STATE_ZONE", 5), ("TIME_ZONE", 2)]
 
 
 def shapefile_zip(rows):
@@ -61,7 +61,8 @@ def box(w, e, s, n):
 
 
 def zone(state, num, name, ring_list):
-    return ({"STATE": state, "ZONE": num, "CWA": "HFO", "NAME": name, "STATE_ZONE": state + num}, ring_list)
+    return ({"STATE": state, "ZONE": num, "CWA": "HFO", "NAME": name, "STATE_ZONE": state + num, "TIME_ZONE": "H"},
+            ring_list)
 
 
 def coast_cache(tmp_path, cells):
@@ -118,6 +119,16 @@ def test_polyline_round_trip_and_bad_strings():
 
 def test_ugc_ids():
     assert A.ugc({"STATE": "HI", "ZONE": "007"}) == "HIZ007"
+
+
+def test_zone_time_zones_from_nws_letters():
+    assert A.zone_tz({"STATE": "HI", "TIME_ZONE": "H"}) == "Pacific/Honolulu"
+    assert A.zone_tz({"STATE": "AK", "TIME_ZONE": "h"}) == "America/Adak"
+    assert A.zone_tz({"STATE": "FL", "TIME_ZONE": "CE"}) == "America/Chicago"
+    assert A.zone_tz({"STATE": "MP", "TIME_ZONE": "G"}) == "Pacific/Saipan"
+    assert A.zone_tz({"STATE": "GU", "TIME_ZONE": "G"}) == "Pacific/Guam"
+    assert A.zone_tz({"STATE": "PR", "TIME_ZONE": "V"}) == "America/Puerto_Rico"
+    assert A.zone_tz({"STATE": "XX", "TIME_ZONE": "Q"}) is None
 
 
 def test_shapefile_reader_rows_and_rings():
@@ -209,6 +220,7 @@ def test_build_cuts_the_island_coast_by_zone(tmp_path):
     assert A.nearest_km(north, 22.0, -158.0) < 0.2 and A.nearest_km(north, 21.0, -158.0) > 50
     assert A.nearest_km(south, 21.0, -158.0) < 0.2 and A.nearest_km(south, 22.0, -158.0) > 50
     assert zones["HIZ002"]["name"] == "South B" and zones["HIZ001"]["cwa"] == "HFO"
+    assert zones["HIZ001"]["tz"] == "Pacific/Honolulu"
 
 
 def test_build_leaves_out_coast_beyond_the_near_reach(tmp_path):

@@ -32,6 +32,7 @@
   var WEIGHT = 4, WEIGHT_WARNING = 5;
   var DASH = '8 6';
   var HIT_PX = 7;                   // a line takes a click this far beyond its own half width (plus a touch screen's reach)
+  var POP_CHROME = 64;              // the popup's own frame (~26 px) + the 16-px pan padding on each side: it fits a 375-px phone
   var CREDIT = 'Alerts: <a href="https://www.weather.gov/" target="_blank" rel="noopener">NWS</a>';
   var ZONE_RE = /^[A-Z]{2}Z\d{3}$/; // a forecast zone (the NWS page link below takes these)
   var MAX_LINE_CHARS = 2000000;     // an encoded line beyond this is not decoded (a damaged answer)
@@ -213,7 +214,12 @@
     var tool = opts.tool || function () { return false; };
     var tip = opts.tip || null;
     var AlertLine = Lf.Polyline.extend({
-      _clickTolerance: function () { return Lf.Polyline.prototype._clickTolerance.call(this) + HIT_PX; }
+      _clickTolerance: function () { return Lf.Polyline.prototype._clickTolerance.call(this) + HIT_PX; },
+      // the map's renderer gives a click to the NEAREST line holding it (two zones' lines meet at their boundary)
+      _lineDistance: function (p) {
+        var q = this.closestLayerPoint ? this.closestLayerPoint(p) : null;
+        return q && isFinite(q.distance) ? q.distance : 1e5;
+      }
     });
     var data = null, started = false, fetching = false, lastFetch = -Infinity, dueAt = 0;
     var fetchTimer = null, tickTimer = null, note = '', drawnSig = '', creditOn = false, popup = null, popupZone = null;
@@ -244,7 +250,7 @@
       if (!data || !data.byZone[zone]) return;
       var size = map.getSize ? map.getSize() : { x: 400, y: 400 };
       var content = buildPopup(doc, zone, data.zones[zone], data.byZone[zone], nowS());
-      popup = Lf.popup({ className: 'alert-popup', maxWidth: Math.max(200, Math.min(340, size.x - 40)),
+      popup = Lf.popup({ className: 'alert-popup', maxWidth: Math.max(200, Math.min(340, size.x - POP_CHROME)),
                          maxHeight: Math.max(160, Math.min(340, size.y - 90)), autoPanPadding: [16, 16] })
         .setLatLng(latlng).setContent(content).openOn(map);
       popupZone = zone;
@@ -378,7 +384,7 @@
     create: create,
     _internals: { URL: URL, FORMAT: FORMAT, MIN_ZOOM: MIN_ZOOM, REFRESH_MS: REFRESH_MS, LOADING_RETRY_MS: LOADING_RETRY_MS,
                   FAIL_RETRY_MS: FAIL_RETRY_MS, TICK_MS: TICK_MS, WAIT_MAX_MS: WAIT_MAX_MS, COLORS: COLORS, RANK: RANK,
-                  HIT_PX: HIT_PX, DASH: DASH, CREDIT: CREDIT, WEIGHT: WEIGHT, WEIGHT_WARNING: WEIGHT_WARNING,
+                  HIT_PX: HIT_PX, POP_CHROME: POP_CHROME, DASH: DASH, CREDIT: CREDIT, WEIGHT: WEIGHT, WEIGHT_WARNING: WEIGHT_WARNING,
                   decodePolyline: decodePolyline, zoneStyle: zoneStyle, popupOrder: popupOrder, worldOffsets: worldOffsets,
                   fmtTime: fmtTime, whenText: whenText, buildPopup: buildPopup, takeAnswer: takeAnswer, afterWait: afterWait }
   };

@@ -170,6 +170,7 @@ function fakeL() {
     addTo(g) { g.addLayer(this); return this; }
     bringToBack() { const it = this._g.items; it.splice(it.indexOf(this), 1); it.unshift(this); return this; }
     _clickTolerance() { return (this.options.weight || 0) / 2 + 8; }
+    closestLayerPoint(p) { return this.near === undefined ? null : { x: p.x, y: p.y, distance: this.near }; }
   }
   Path.extend = function (props) { class Sub extends Path {} Object.assign(Sub.prototype, props); return Sub; };
   class Popup {
@@ -375,6 +376,19 @@ test('a click opens the zone\'s products; a running map tool takes it instead; t
   assert.equal(r.A.state().popupZone, 'ORZ103');
   assert.equal(r.map.opened.o.className, 'alert-popup');
   assert.ok(texts(r.map.opened.c).includes('Central Coast of Oregon'));
+  assert.equal(r.map.opened.o.maxWidth, 340, 'a desktop popup: 340 px wide at most');
+  r.map.getSize = () => ({ x: 375, y: 812 });
+  line.handlers.click({ latlng: { lat: 44.6, lng: -124.1 } });
+  assert.equal(r.map.opened.o.maxWidth, 375 - I.POP_CHROME, 'a phone: the popup and its pan padding fit the screen');
+  r.map.getSize = () => ({ x: 240, y: 400 });
+  line.handlers.click({ latlng: { lat: 44.6, lng: -124.1 } });
+  assert.equal(r.map.opened.o.maxWidth, 200, 'never below 200 px');
+  line.near = 2.5;
+  assert.equal(line._lineDistance({ x: 1, y: 1 }), 2.5, "the distance from the line to the pointer: the map canvas ranks lines by it");
+  line.near = undefined;
+  assert.equal(line._lineDistance({ x: 1, y: 1 }), 1e5, 'no point on the line: last among lines');
+  line.near = NaN;
+  assert.equal(line._lineDistance({ x: 1, y: 1 }), 1e5);
   const r2 = rig();
   r2.coarse = true;
   r2.start(); await settle();

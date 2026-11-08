@@ -1518,6 +1518,7 @@
     const COARSE_TOL = 8;
     const coarseQuery = window.matchMedia ? window.matchMedia('(any-pointer: coarse)') : null;
     function coarsePointer() { return !!(coarseQuery && coarseQuery.matches); }
+    const LINE_RANK = 1e6;
     function nearestPath(r, point, e) {
       const click = !!e && (e.type === 'click' || e.type === 'preclick');
       let best = null, bd = Infinity;
@@ -1525,7 +1526,8 @@
         const l = o.layer;
         if (!l.options.interactive || !l._containsPoint(point)) continue;
         if (click && r._map._draggableMoved(l)) continue;
-        const d = l._point ? point.distanceTo(l._point) : Infinity;
+        // a dot: its centre's distance; a coastal-hazard line (plan section 90): after every dot, then by its own distance
+        const d = l._point ? point.distanceTo(l._point) : (l._lineDistance ? LINE_RANK + l._lineDistance(point) : Infinity);
         if (d <= bd) { bd = d; best = l; }
       }
       return best;

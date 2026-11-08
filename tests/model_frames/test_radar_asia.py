@@ -642,6 +642,10 @@ def test_every_box_fits_the_live_clients_caps():
         assert all(isinstance(x, int) for x in v[3:7]) and re.fullmatch(r"[a-z]{2,12}", k), k
 
 
+def test_the_temporary_dry_run_is_gone():
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "radar2-dryrun.yml"))
+
+
 def test_the_hosts_are_on_the_tls_check():
     src = open(os.path.join(ROOT, "tools", "tls_check.py"), encoding="utf-8").read()
     assert "www.jma.go.jp" in src and "cwaopendata.s3.ap-northeast-1.amazonaws.com" in src

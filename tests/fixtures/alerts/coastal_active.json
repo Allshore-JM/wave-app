@@ -1,0 +1,574 @@
+{
+ "features": [
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.bf7b59e202f68a7723c289cff6f559b12f0cb8f6.001.2",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.bf7b59e202f68a7723c289cff6f559b12f0cb8f6.001.2",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/TXZ451",
+     "https://api.weather.gov/zones/forecast/TXZ454",
+     "https://api.weather.gov/zones/forecast/TXZ455"
+    ],
+    "areaDesc": "Kenedy Island; Willacy Island; Cameron Island",
+    "category": "Met",
+    "description": "* WHAT...For the Coastal Flood Statement, isolated minor coastal\nflooding. For the High Rip Current Risk, dangerous rip\ncurrents.\n\n* WHERE...Kenedy Island, Willacy Island and Cameron Island\nCounties.\n\n* WHEN...For the Coastal Flood Statement, through late tonight.\nFor the High Rip Current Risk, through Monday afternoon.\n\n* IMPACTS...Wave run-up may approach the dunes along narrow\nbeaches. Beach equipment, such as umbrellas and chairs, could\nbe moved by waves. Vehicles driving along narrow beaches may\nexperience higher water levels. Elevated water levels may also\noccur across the Laguna Madre and South Bay, and along State\nHighway 4 west of Boca Chica State Park. Rip currents can\nsweep even the best swimmers away from shore into deeper water.",
+    "effective": "2026-11-08T14:57:00-06:00",
+    "ends": "2026-11-09T18:00:00-06:00",
+    "event": "Rip Current Statement",
+    "expires": "2026-11-08T23:00:00-06:00",
+    "geocode": {
+     "SAME": [
+      "048261",
+      "048489",
+      "048061"
+     ],
+     "UGC": [
+      "TXZ451",
+      "TXZ454",
+      "TXZ455"
+     ]
+    },
+    "headline": "Rip Current Statement issued November 8 at 2:57PM CST until November 9 at 6:00PM CST by NWS Brownsville TX",
+    "id": "urn:oid:2.49.0.1.840.0.bf7b59e202f68a7723c289cff6f559b12f0cb8f6.001.2",
+    "instruction": "Do not drive through flooded roadways.\n\nSwim near a lifeguard. If caught in a rip current, relax and\nfloat. Don't swim against the current. If able, swim in a\ndirection following the shoreline. If unable to escape, face the\nshore and call or wave for help.",
+    "messageType": "Alert",
+    "onset": "2026-11-08T14:57:00-06:00",
+    "parameters": {
+     "NWSheadline": [
+      "COASTAL FLOOD STATEMENT REMAINS IN EFFECT THROUGH LATE TONIGHT... ...HIGH RIP CURRENT RISK REMAINS IN EFFECT THROUGH MONDAY AFTERNOON"
+     ]
+    },
+    "references": [],
+    "senderName": "NWS Brownsville TX",
+    "sent": "2026-11-08T14:57:00-06:00",
+    "severity": "Moderate",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.bf7b59e202f68a7723c289cff6f559b12f0cb8f6.001.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.bf7b59e202f68a7723c289cff6f559b12f0cb8f6.001.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/TXZ451",
+     "https://api.weather.gov/zones/forecast/TXZ454",
+     "https://api.weather.gov/zones/forecast/TXZ455"
+    ],
+    "areaDesc": "Kenedy Island; Willacy Island; Cameron Island",
+    "category": "Met",
+    "description": "* WHAT...For the Coastal Flood Statement, isolated minor coastal\nflooding. For the High Rip Current Risk, dangerous rip\ncurrents.\n\n* WHERE...Kenedy Island, Willacy Island and Cameron Island\nCounties.\n\n* WHEN...For the Coastal Flood Statement, through late tonight.\nFor the High Rip Current Risk, through Monday afternoon.\n\n* IMPACTS...Wave run-up may approach the dunes along narrow\nbeaches. Beach equipment, such as umbrellas and chairs, could\nbe moved by waves. Vehicles driving along narrow beaches may\nexperience higher water levels. Elevated water levels may also\noccur across the Laguna Madre and South Bay, and along State\nHighway 4 west of Boca Chica State Park. Rip currents can\nsweep even the best swimmers away from shore into deeper water.",
+    "effective": "2026-11-08T14:57:00-06:00",
+    "ends": "2026-11-09T06:00:00-06:00",
+    "event": "Coastal Flood Statement",
+    "expires": "2026-11-08T23:00:00-06:00",
+    "geocode": {
+     "SAME": [
+      "048261",
+      "048489",
+      "048061"
+     ],
+     "UGC": [
+      "TXZ451",
+      "TXZ454",
+      "TXZ455"
+     ]
+    },
+    "headline": "Coastal Flood Statement issued November 8 at 2:57PM CST until November 9 at 6:00AM CST by NWS Brownsville TX",
+    "id": "urn:oid:2.49.0.1.840.0.bf7b59e202f68a7723c289cff6f559b12f0cb8f6.001.1",
+    "instruction": "Do not drive through flooded roadways.\n\nSwim near a lifeguard. If caught in a rip current, relax and\nfloat. Don't swim against the current. If able, swim in a\ndirection following the shoreline. If unable to escape, face the\nshore and call or wave for help.",
+    "messageType": "Alert",
+    "onset": "2026-11-08T14:57:00-06:00",
+    "parameters": {
+     "NWSheadline": [
+      "COASTAL FLOOD STATEMENT REMAINS IN EFFECT THROUGH LATE TONIGHT... ...HIGH RIP CURRENT RISK REMAINS IN EFFECT THROUGH MONDAY AFTERNOON"
+     ]
+    },
+    "references": [],
+    "senderName": "NWS Brownsville TX",
+    "sent": "2026-11-08T14:57:00-06:00",
+    "severity": "Minor",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.001.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.001.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/CAZ340",
+     "https://api.weather.gov/zones/forecast/CAZ346"
+    ],
+    "areaDesc": "San Luis Obispo County Beaches; Santa Barbara County Central Coast Beaches",
+    "category": "Met",
+    "description": "* WHAT...For the Coastal Flood Advisory, moderate coastal\nflooding expected. For the High Surf Advisory, large breaking\nwaves of 10 to 16 feet with dangerous rip currents.\n\n* WHERE...San Luis Obispo County Beaches and Santa Barbara\nCounty Central Coast Beaches.\n\n* WHEN...Until noon PST Tuesday.\n\n* IMPACTS...Moderate flooding of sea water is likely over some\nvulnerable low-lying coastal areas, especially around the time\nof high tide, including over beach parking lots, bike paths,\nand harbor walkways. Moderate beach erosion is likely.\nIsolated damage is unlikely but possible. There is an\nincreased risk for ocean drowning. Rip currents can pull\nswimmers and surfers out to sea. Large breaking waves can\ncause injury, wash people off beaches and rocks, and capsize\nsmall boats near shore.\n\n* ADDITIONAL DETAILS...High tides of 7.1 to 7.4 feet (MLLW) are\nexpected each morning. The High Surf and Coastal Flood\nAdvisories may need to be extended through the week.",
+    "effective": "2026-11-08T12:52:00-08:00",
+    "ends": "2026-11-10T12:00:00-08:00",
+    "event": "Coastal Flood Advisory",
+    "expires": "2026-11-09T14:00:00-08:00",
+    "geocode": {
+     "SAME": [
+      "006079",
+      "006083"
+     ],
+     "UGC": [
+      "CAZ340",
+      "CAZ346"
+     ]
+    },
+    "headline": "Coastal Flood Advisory issued November 8 at 12:52PM PST until November 10 at 12:00PM PST by NWS Los Angeles/Oxnard CA",
+    "id": "urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.001.1",
+    "instruction": "Take the necessary actions to protect flood-prone property. Do\nNOT drive around barricades or through water of unknown depth.\n\nRemain out of the water due to dangerous surf conditions, or stay\nnear occupied lifeguard towers. Rock jetties can be deadly in\nsuch conditions, stay off the rocks.",
+    "messageType": "Update",
+    "onset": "2026-11-08T12:52:00-08:00",
+    "parameters": {
+     "NWSheadline": [
+      "COASTAL FLOOD ADVISORY NOW IN EFFECT UNTIL NOON PST TUESDAY... ...HIGH SURF ADVISORY NOW IN EFFECT UNTIL NOON PST TUESDAY"
+     ]
+    },
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.34dc09d958d559334216e730a255f4183063a076.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.34dc09d958d559334216e730a255f4183063a076.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-06T01:39:00-08:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.5934831b744b28532b8e69120db02029ca27b571.003.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.5934831b744b28532b8e69120db02029ca27b571.003.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T02:10:00-08:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c177fd1a1df502d20ccd8290a7479c84e2e46cdd.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.c177fd1a1df502d20ccd8290a7479c84e2e46cdd.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T02:25:00-08:00"
+     }
+    ],
+    "senderName": "NWS Los Angeles/Oxnard CA",
+    "sent": "2026-11-08T12:52:00-08:00",
+    "severity": "Minor",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.002.2",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.002.2",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/CAZ354"
+    ],
+    "areaDesc": "Ventura County Beaches",
+    "category": "Met",
+    "description": "* WHAT...For the Coastal Flood Advisory, moderate coastal\nflooding during morning high tides expected. For the High Surf\nAdvisory, dangerous rip currents and large breaking waves of 5\nto 7 feet, except peaking at 6 to 9 feet on Monday.\n\n* WHERE...Ventura County Beaches.\n\n* WHEN...Until noon PST Tuesday.\n\n* IMPACTS...There is an increased risk of ocean drowning. Rip\ncurrents can pull swimmers and surfers out to sea. Waves can\nwash people off beaches and rocks, and capsize small boats\nnearshore. Flooded sandy beach areas and moderate beach\nerosion possible. Localized and shallow flooding of beach\nparking lots, bike paths, and walkways. Isolated damage is\nunlikely, but cannot be discounted.\n\n* ADDITIONAL DETAILS...High tides of 7.2 to 7.6 feet (MLLW) are\nexpected each morning. Surf and coastal flooding impacts peak\non Monday.",
+    "effective": "2026-11-08T12:52:00-08:00",
+    "ends": "2026-11-10T12:00:00-08:00",
+    "event": "High Surf Advisory",
+    "expires": "2026-11-09T14:00:00-08:00",
+    "geocode": {
+     "SAME": [
+      "006111"
+     ],
+     "UGC": [
+      "CAZ354"
+     ]
+    },
+    "headline": "High Surf Advisory issued November 8 at 12:52PM PST until November 10 at 12:00PM PST by NWS Los Angeles/Oxnard CA",
+    "id": "urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.002.2",
+    "instruction": "Take the necessary actions to protect flood-prone property. Do\nNOT drive around barricades or through water of unknown depth.\n\nRemain out of the water due to dangerous surf conditions, or stay\nnear occupied lifeguard towers. Rock jetties can be deadly in\nsuch conditions, stay off the rocks.",
+    "messageType": "Update",
+    "onset": "2026-11-08T12:52:00-08:00",
+    "parameters": {
+     "NWSheadline": [
+      "COASTAL FLOOD ADVISORY REMAINS IN EFFECT UNTIL NOON PST TUESDAY... ...HIGH SURF ADVISORY REMAINS IN EFFECT UNTIL NOON PST TUESDAY"
+     ]
+    },
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.5934831b744b28532b8e69120db02029ca27b571.001.3",
+      "identifier": "urn:oid:2.49.0.1.840.0.5934831b744b28532b8e69120db02029ca27b571.001.3",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T02:10:00-08:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c177fd1a1df502d20ccd8290a7479c84e2e46cdd.002.2",
+      "identifier": "urn:oid:2.49.0.1.840.0.c177fd1a1df502d20ccd8290a7479c84e2e46cdd.002.2",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T02:25:00-08:00"
+     }
+    ],
+    "senderName": "NWS Los Angeles/Oxnard CA",
+    "sent": "2026-11-08T12:52:00-08:00",
+    "severity": "Minor",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.004.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.004.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/CAZ349",
+     "https://api.weather.gov/zones/forecast/CAZ350"
+    ],
+    "areaDesc": "Santa Barbara County Southwestern Coast; Santa Barbara County Southeastern Coast",
+    "category": "Met",
+    "description": "* WHAT...Dangerous rip currents and breaking waves due to\nelevated surf up to 4 to 6 feet expected. Minor tidal overflow\npossible during morning high tides, especially across west\nfacing beaches.\n\n* WHERE...Santa Barbara County Southwestern Coast and Santa\nBarbara County Southeastern Coast.\n\n* WHEN...Through Tuesday morning.\n\n* IMPACTS...There is an increased risk of ocean drowning. Rip\ncurrents can pull swimmers and surfers out to sea. Waves can\nwash people off beaches and rocks, and capsize small boats\nnearshore. Pooling of sea water is possible around high tide\nat beach and harbor areas that is uncommon with normal tidal\nranges. Enhanced beach erosion is also possible.\n\n* ADDITIONAL DETAILS...High tides of 7.2 to 7.6 feet (MLLW) are\nexpected each morning.",
+    "effective": "2026-11-08T12:52:00-08:00",
+    "ends": "2026-11-10T12:00:00-08:00",
+    "event": "Beach Hazards Statement",
+    "expires": "2026-11-09T14:00:00-08:00",
+    "geocode": {
+     "SAME": [
+      "006083"
+     ],
+     "UGC": [
+      "CAZ349",
+      "CAZ350"
+     ]
+    },
+    "headline": "Beach Hazards Statement issued November 8 at 12:52PM PST until November 10 at 12:00PM PST by NWS Los Angeles/Oxnard CA",
+    "id": "urn:oid:2.49.0.1.840.0.ce9d90fc1cc8916b74afa4ecc95afe0e302d2189.004.1",
+    "instruction": "Remain out of the water due to hazardous swimming conditions, or\nstay near occupied lifeguard towers. Rock jetties can be deadly\nin such conditions, stay off the rocks.",
+    "messageType": "Update",
+    "onset": "2026-11-08T12:52:00-08:00",
+    "parameters": {
+     "NWSheadline": [
+      "BEACH HAZARDS STATEMENT REMAINS IN EFFECT THROUGH TUESDAY MORNING"
+     ]
+    },
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.34dc09d958d559334216e730a255f4183063a076.002.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.34dc09d958d559334216e730a255f4183063a076.002.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-06T01:39:00-08:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.5934831b744b28532b8e69120db02029ca27b571.004.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.5934831b744b28532b8e69120db02029ca27b571.004.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T02:10:00-08:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c177fd1a1df502d20ccd8290a7479c84e2e46cdd.004.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.c177fd1a1df502d20ccd8290a7479c84e2e46cdd.004.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T02:25:00-08:00"
+     }
+    ],
+    "senderName": "NWS Los Angeles/Oxnard CA",
+    "sent": "2026-11-08T12:52:00-08:00",
+    "severity": "Moderate",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c51739fbe4b44495176a15620c0555c74d4c84aa.001.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c51739fbe4b44495176a15620c0555c74d4c84aa.001.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/PRZ001",
+     "https://api.weather.gov/zones/forecast/PRZ002",
+     "https://api.weather.gov/zones/forecast/PRZ005",
+     "https://api.weather.gov/zones/forecast/PRZ008",
+     "https://api.weather.gov/zones/forecast/PRZ010",
+     "https://api.weather.gov/zones/forecast/PRZ012"
+    ],
+    "areaDesc": "San Juan and Vicinity; Northeast; North Central; Northwest; Mayaguez and Vicinity; Culebra",
+    "category": "Met",
+    "description": "* WHAT...High Rip Current Risk, life-threatening rip currents.\n\n* WHERE...North-facing beaches of Puerto Rico, including Culebra.\n\n* WHEN...Through Monday afternoon.\n\n* IMPACTS...Rip currents can sweep even the best swimmers away\nfrom shore into deeper water, where it becomes difficult to\nreturn to safety.\n\n* ADDITIONAL DETAILS...Lingering northerly swells generated by\ndistant surface low over the central Atlantic will support\nbreaking waves of 5 to 8 feet and a high risk of life-\nthreatening rip currents along the northern exposed beaches of\nPuerto Rico and Culebra.",
+    "effective": "2026-11-08T16:36:00-04:00",
+    "ends": "2026-11-09T18:00:00-04:00",
+    "event": "Rip Current Statement",
+    "expires": "2026-11-09T00:45:00-04:00",
+    "geocode": {
+     "SAME": [
+      "072021",
+      "072031",
+      "072033",
+      "072061",
+      "072127",
+      "072135",
+      "072137",
+      "072139",
+      "072029",
+      "072037",
+      "072053",
+      "072069",
+      "072087",
+      "072089",
+      "072103",
+      "072119",
+      "072013",
+      "072017",
+      "072051",
+      "072054",
+      "072091",
+      "072143",
+      "072145",
+      "072005",
+      "072027",
+      "072065",
+      "072071",
+      "072115",
+      "072003",
+      "072011",
+      "072067",
+      "072097",
+      "072099",
+      "072117",
+      "072125",
+      "072049"
+     ],
+     "UGC": [
+      "PRZ001",
+      "PRZ002",
+      "PRZ005",
+      "PRZ008",
+      "PRZ010",
+      "PRZ012"
+     ]
+    },
+    "headline": "Rip Current Statement issued November 8 at 4:36PM AST until November 9 at 6:00PM AST by NWS San Juan PR",
+    "id": "urn:oid:2.49.0.1.840.0.c51739fbe4b44495176a15620c0555c74d4c84aa.001.1",
+    "instruction": "There is a high risk of rip currents.\n\nRip currents are powerful channels of water flowing quickly away\nfrom shore, which occur most often at low spots or breaks in the\nsandbar and in the vicinity of structures such as groins, jetties\nand piers. Heed the advice of lifeguards, beach patrol flags and\nsigns.\n\nIf you become caught in a rip current, yell for help. Remain\ncalm, do not exhaust yourself and stay afloat while waiting for\nhelp. If you have to swim out of a rip current, swim parallel to\nshore and back toward the beach when possible. Do not attempt to\nswim directly against a rip current as you will tire quickly.",
+    "messageType": "Update",
+    "onset": "2026-11-08T16:36:00-04:00",
+    "parameters": {
+     "NWSheadline": [
+      "HIGH RIP CURRENT RISK REMAINS IN EFFECT THROUGH MONDAY AFTERNOON"
+     ]
+    },
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.43a1be4ffae17654af1b74b899f84236cbe22d5a.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.43a1be4ffae17654af1b74b899f84236cbe22d5a.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T04:04:00-04:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f5e400fc1502a2c5f5a0690358435eb16b3e3615.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.f5e400fc1502a2c5f5a0690358435eb16b3e3615.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T09:37:00-04:00"
+     }
+    ],
+    "senderName": "NWS San Juan PR",
+    "sent": "2026-11-08T16:36:00-04:00",
+    "severity": "Moderate",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.87a7bea29be087d2e8d0c3c101609eb6a98cbaa0.001.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.87a7bea29be087d2e8d0c3c101609eb6a98cbaa0.001.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/FLZ168",
+     "https://api.weather.gov/zones/forecast/FLZ172",
+     "https://api.weather.gov/zones/forecast/FLZ173"
+    ],
+    "areaDesc": "Coastal Palm Beach County; Coastal Broward County; Coastal Miami Dade County",
+    "category": "Met",
+    "description": "* WHAT...Isolated minor coastal flooding.\n\n* WHERE...Coastal Palm Beach County, Coastal Broward County and\nCoastal Miami Dade County.\n\n* WHEN...Through Monday morning.\n\n* IMPACTS...Some water on low lying roads and property.",
+    "effective": "2026-11-08T15:23:00-05:00",
+    "ends": "2026-11-09T09:00:00-05:00",
+    "event": "Coastal Flood Statement",
+    "expires": "2026-11-09T09:00:00-05:00",
+    "geocode": {
+     "SAME": [
+      "012099",
+      "012011",
+      "012086"
+     ],
+     "UGC": [
+      "FLZ168",
+      "FLZ172",
+      "FLZ173"
+     ]
+    },
+    "headline": "Coastal Flood Statement issued November 8 at 3:23PM EST until November 9 at 9:00AM EST by NWS Miami FL",
+    "id": "urn:oid:2.49.0.1.840.0.87a7bea29be087d2e8d0c3c101609eb6a98cbaa0.001.1",
+    "instruction": "Do not drive through flooded roadways.",
+    "messageType": "Update",
+    "onset": "2026-11-08T15:23:00-05:00",
+    "parameters": {
+     "NWSheadline": [
+      "COASTAL FLOOD STATEMENT REMAINS IN EFFECT THROUGH MONDAY MORNING"
+     ]
+    },
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.bea047f28fb40f8a0e767482d8cb55790e8b42e5.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.bea047f28fb40f8a0e767482d8cb55790e8b42e5.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T01:19:00-05:00"
+     }
+    ],
+    "senderName": "NWS Miami FL",
+    "sent": "2026-11-08T15:23:00-05:00",
+    "severity": "Minor",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.4b2cb3eac034e813a2343c69c8fb4ad1134ab1fe.001.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.4b2cb3eac034e813a2343c69c8fb4ad1134ab1fe.001.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/CAZ103"
+    ],
+    "areaDesc": "Northern Coastal Humboldt",
+    "category": "Met",
+    "description": "* WHAT...For the High Surf Advisory, large breaking waves 22 to 24\nfeet. For the Coastal Flood Advisory, High astronomical tides\nwill cause minor flooding in low lying areas around Humboldt\nBay. Up to one half foot of saltwater inundation above ground\nlevel is possible near shorelines and tidal waterways. Between\n8.7 and 8.9 feet MLLW at the North Spit tide gauge is predicted.\n\n* WHERE...Northern Coastal Humboldt County.\n\n* WHEN...For the High Surf Advisory, until 10 PM PST this evening.\nFor the Coastal Flood Advisory, from 10 AM to noon PST Monday.\nHigh tide is at 10:54 AM at the Humboldt Bay North Spit tide\ngauge. Saltwater inundation will be possible 1 to 2 hours before\nand after high tide.\n\n* IMPACTS...Flooding of low lying areas around Humboldt Bay\nincluding parks and roads with only isolated closures\nexpected. Flooding will likely impact Jackson Ranch Road in\nthe Arcata Bottoms and several roads in King Salmon. Dangerous\nsurf conditions and localized beach erosion. Beachcombing is\nhighly discouraged!.\n\n* ADDITIONAL DETAILS...The large surf on Sunday will coincide\nwith high astronomical tides and high tidal anomalies. This\nwill allow significant runup onto area beaches and may impact\nnormally dry land or even roads or parking lots.",
+    "effective": "2026-11-08T12:17:00-08:00",
+    "ends": "2026-11-09T12:00:00-08:00",
+    "event": "Coastal Flood Advisory",
+    "expires": "2026-11-08T20:30:00-08:00",
+    "geocode": {
+     "SAME": [
+      "006023"
+     ],
+     "UGC": [
+      "CAZ103"
+     ]
+    },
+    "headline": "Coastal Flood Advisory issued November 8 at 12:17PM PST until November 9 at 12:00PM PST by NWS Eureka CA",
+    "id": "urn:oid:2.49.0.1.840.0.4b2cb3eac034e813a2343c69c8fb4ad1134ab1fe.001.1",
+    "instruction": "A Coastal Flood Advisory indicates that onshore winds and tides\nwill combine to generate flooding of low areas along the shore.\n\nFeet Above Ground is locally defined as feet above the Highest\nAstronomical Tide or HAT.\n\nLarge breaking waves along the coast will lead to increased wave\nrun-up on beaches with waves topping and washing over large rocks\nand jetties. These large waves can be erratic and unpredictable.\nUse extra caution near the surf zone as these large waves will be\ncapable of sweeping people into the frigid and turbulent ocean\nwater. Mariners traversing the bar are urged to exercise extreme\ncaution or stay in port until the threat subsides. Please contact\nthe U.S. Coast Guard for information regarding harbor and bar\nclosures.",
+    "messageType": "Alert",
+    "onset": "2026-11-09T10:00:00-08:00",
+    "parameters": {
+     "NWSheadline": [
+      "HIGH SURF ADVISORY REMAINS IN EFFECT UNTIL 10 PM PST THIS EVENING... ...COASTAL FLOOD ADVISORY IN EFFECT FROM 10 AM TO NOON PST MONDAY"
+     ]
+    },
+    "references": [],
+    "senderName": "NWS Eureka CA",
+    "sent": "2026-11-08T12:17:00-08:00",
+    "severity": "Minor",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.06f32577af14ac2a3815203abd691e7736b9b9cd.002.1",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.06f32577af14ac2a3815203abd691e7736b9b9cd.002.1",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/ORZ101",
+     "https://api.weather.gov/zones/forecast/ORZ102",
+     "https://api.weather.gov/zones/forecast/WAZ201"
+    ],
+    "areaDesc": "Clatsop County Coast; Tillamook County Coast; South Washington Coast",
+    "category": "Met",
+    "description": "* WHAT...Large waves and dangerous surf conditions. Breakers\nbetween 28 to 33 feet.\n\n* WHERE...Clatsop and Tillamook Coast, and South Washington\nCoast.\n\n* WHEN...Until 10 PM PST this evening.\n\n* IMPACTS...Destructive waves may wash over beaches, jetties,\nand other structures unexpectedly. People can be swept off\nrocks and jetties and drown while observing high surf. Severe\nbeach erosion may destroy coastal properties and buildings.\nHigher than normal water run-up is expected on beaches and low-\nlying shoreline.\n\n* ADDITIONAL DETAILS...Caution should be used when in or near\nthe water, especially those who will be razor clamming. Keep\nchildren and pets away from the surf zone. Keep off of\njetties, rocks and logs near the surf zone. If you see someone\nswept into the sea do not swim in after them. Call 911 and\nkeep an eye on them until help arrives.",
+    "effective": "2026-11-08T10:14:00-08:00",
+    "ends": "2026-11-08T22:00:00-08:00",
+    "event": "High Surf Warning",
+    "expires": "2026-11-08T22:00:00-08:00",
+    "geocode": {
+     "SAME": [
+      "041007",
+      "041057",
+      "053049"
+     ],
+     "UGC": [
+      "ORZ101",
+      "ORZ102",
+      "WAZ201"
+     ]
+    },
+    "headline": "High Surf Warning issued November 8 at 10:14AM PST until November 8 at 10:00PM PST by NWS Portland OR",
+    "id": "urn:oid:2.49.0.1.840.0.06f32577af14ac2a3815203abd691e7736b9b9cd.002.1",
+    "instruction": "A High Surf Warning means that high surf will affect beaches,\nproducing rip currents, sneaker waves and beach erosion. Stay\nwell back from the water's edge and be alert for exceptionally\nhigh waves.\n\nKeep away from large logs on the beach. Water running up on the\nbeach can lift or roll logs which can injure or kill someone\ncaught in their path.",
+    "messageType": "Update",
+    "onset": "2026-11-08T10:14:00-08:00",
+    "parameters": {
+     "NWSheadline": [
+      "HIGH SURF WARNING REMAINS IN EFFECT UNTIL 10 PM PST THIS EVENING"
+     ]
+    },
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.696701c73e884843829913e1c900cf4f2248dec2.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.696701c73e884843829913e1c900cf4f2248dec2.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-07T12:35:00-08:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.41764d6c3f28b1a91a7ef4de6555b0c0cd958021.001.2",
+      "identifier": "urn:oid:2.49.0.1.840.0.41764d6c3f28b1a91a7ef4de6555b0c0cd958021.001.2",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-08T03:58:00-08:00"
+     }
+    ],
+    "senderName": "NWS Portland OR",
+    "sent": "2026-11-08T10:14:00-08:00",
+    "severity": "Moderate",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  },
+  {
+   "geometry": null,
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.06f32577af14ac2a3815203abd691e7736b9b9cd.001.2",
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.06f32577af14ac2a3815203abd691e7736b9b9cd.001.2",
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/ORZ103"
+    ],
+    "areaDesc": "Central Coast of Oregon",
+    "category": "Met",
+    "description": "* WHAT...Large waves and dangerous surf conditions. Breakers\nbetween 28 to 33 feet.\n\n* WHERE...Central Coast of Oregon.\n\n* WHEN...Until 10 PM PST this evening.\n\n* IMPACTS...Destructive waves may wash over beaches, jetties,\nand other structures unexpectedly. People can be swept off\nrocks and jetties and drown while observing high surf. Severe\nbeach erosion may destroy coastal properties and buildings.\nHigher than normal water run-up is expected on beaches and low-\nlying shoreline.\n\n* ADDITIONAL DETAILS...Caution should be used when in or near\nthe water, especially those who will be razor clamming. Keep\nchildren and pets away from the surf zone. Keep off of\njetties, rocks and logs near the surf zone. If you see someone\nswept into the sea do not swim in after them. Call 911 and\nkeep an eye on them until help arrives.",
+    "effective": "2026-11-08T10:14:00-08:00",
+    "ends": "2026-11-08T22:00:00-08:00",
+    "event": "High Surf Warning",
+    "expires": "2026-11-08T22:00:00-08:00",
+    "geocode": {
+     "SAME": [
+      "041041",
+      "041039"
+     ],
+     "UGC": [
+      "ORZ103"
+     ]
+    },
+    "headline": "High Surf Warning issued November 8 at 10:14AM PST until November 8 at 10:00PM PST by NWS Portland OR",
+    "id": "urn:oid:2.49.0.1.840.0.06f32577af14ac2a3815203abd691e7736b9b9cd.001.2",
+    "instruction": "A High Surf Warning means that high surf will affect beaches,\nproducing rip currents, sneaker waves and beach erosion. Stay\nwell back from the water's edge and be alert for exceptionally\nhigh waves.\n\nKeep away from large logs on the beach. Water running up on the\nbeach can lift or roll logs which can injure or kill someone\ncaught in their path.",
+    "messageType": "Alert",
+    "onset": "2026-11-08T10:14:00-08:00",
+    "parameters": {
+     "NWSheadline": [
+      "HIGH SURF WARNING IN EFFECT UNTIL 10 PM PST THIS EVENING"
+     ]
+    },
+    "references": [],
+    "senderName": "NWS Portland OR",
+    "sent": "2026-11-08T10:14:00-08:00",
+    "severity": "Moderate",
+    "status": "Actual"
+   },
+   "type": "Feature"
+  }
+ ],
+ "type": "FeatureCollection"
+}

@@ -56,6 +56,10 @@ def _no_bulletin_archive(monkeypatch):
         def refuse_head(url, **k):
             raise ConnectionError("tests do not probe NOAA")
         monkeypatch.setattr(app._PROBE_HTTP, "head", refuse_head)
+    if app is not None and hasattr(app, "_ALERTS_HTTP"):          # nor the NWS alerts (section 90)
+        def refuse_alerts(url, **k):
+            raise ConnectionError("tests do not reach the NWS alerts")
+        monkeypatch.setattr(app._ALERTS_HTTP, "get", refuse_alerts)
     if app is not None and hasattr(app, "_RUN_CACHE"):            # every test starts with no run found (G36 B-2)
         with app._CACHE_LOCK:
             app._RUN_CACHE.update(ts=0.0, value=(None, None), failed=False, good=None, good_ts=0.0)

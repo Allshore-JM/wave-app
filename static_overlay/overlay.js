@@ -71,18 +71,9 @@
   RAMPS.radar = [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
                  [0.583, '#e5bc00'], [0.667, '#fd9500'], [0.75, '#fd0000'], [0.833, '#d40000'], [0.917, '#bc0000'], [1, '#f800fd']];
   // Snow and the estimated mix over the same 5-65 dBZ legend (plan section 89; snow seldom passes 35 dBZ, so the colours change most
-  // in the bar's lower half). Two candidates each for the owner's pick on real frames.
-  var RADAR_SNOW_LOOKS = {
-    A: [[0, '#f1ebff'], [0.1, '#dacdff'], [0.2, '#bea8ff'], [0.3, '#9f80f2'], [0.42, '#7f57d9'], [0.55, '#5f33b3'], [1, '#2c0f63']],
-    B: [[0, '#f3faff'], [0.1, '#d3ecff'], [0.2, '#a9d4fb'], [0.3, '#78b2ec'], [0.42, '#4a8bd8'], [0.55, '#2862b4'], [1, '#0c2c6e']]
-  };
-  var RADAR_MIX_LOOKS = {
-    A: [[0, '#ffe3f0'], [0.1, '#ffc6e0'], [0.2, '#ff9fca'], [0.3, '#f774b0'], [0.42, '#e04b95'], [0.55, '#b82a76'], [1, '#6b0f42']],
-    B: [[0, '#fff0e0'], [0.1, '#ffd9b8'], [0.2, '#ffbb8a'], [0.3, '#fb9a5f'], [0.42, '#ec763d'], [0.55, '#c95428'], [1, '#7a2a10']]
-  };
-  function radarLookOf(q, name) { var m = new RegExp('[?&]' + name + '=([AB])').exec(q); return m ? m[1] : 'A'; }
-  RAMPS.radarSnow = RADAR_SNOW_LOOKS[radarLookOf(pageQuery(), 'ovsnow')];
-  RAMPS.radarMix = RADAR_MIX_LOOKS[radarLookOf(pageQuery(), 'ovmix')];
+  // in the bar's lower half). Snow lavender to purple, mix pink: the owner's pick of 2026-11-08 from two candidates on real frames.
+  RAMPS.radarSnow = [[0, '#f1ebff'], [0.1, '#dacdff'], [0.2, '#bea8ff'], [0.3, '#9f80f2'], [0.42, '#7f57d9'], [0.55, '#5f33b3'], [1, '#2c0f63']];
+  RAMPS.radarMix = [[0, '#ffe3f0'], [0.1, '#ffc6e0'], [0.2, '#ff9fca'], [0.3, '#f774b0'], [0.42, '#e04b95'], [0.55, '#b82a76'], [1, '#6b0f42']];
   var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.57, 1];   // alpha at the 5-dBZ floor and from 25 dBZ up (the layer's own opacity on top)
   // The radar's opacity (plan section 89): one CSS opacity on the layer, set by the panel's transparency slider; kept on the device.
   var RADAR_OPACITY_KEY = 'allshore.radarOpacity.v1', RADAR_OPACITY_MIN = 20, RADAR_OPACITY_MAX = 100, RADAR_OPACITY_DEFAULT = 75;
@@ -8571,7 +8562,7 @@
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
-      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SNOW_LOOKS: RADAR_SNOW_LOOKS, RADAR_MIX_LOOKS: RADAR_MIX_LOOKS, radarLookOf: radarLookOf, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
+      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,

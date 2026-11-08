@@ -167,7 +167,7 @@
 .ov-radar-types { margin-top: 2px; }
 .ov-radar-type { position: relative; margin-top: 2px; }
 .ov-radar-type canvas { display: block; width: 100%; height: 9px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(29,43,79,0.18); }
-.ov-radar-type span { position: absolute; right: 4px; top: -1px; font-size: 9.5px; font-weight: 600; line-height: 11px; color: #1d2b4f;
+.ov-radar-type span { position: absolute; left: 4px; top: -1px; font-size: 9.5px; font-weight: 600; line-height: 11px; color: #1d2b4f;
   text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff; pointer-events: none; }
 .ov-sheet .ov-radar-type canvas { height: 7px; }
 .ov-sheet .ov-radar-type span { font-size: 9px; line-height: 9px; }

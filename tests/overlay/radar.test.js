@@ -1782,8 +1782,8 @@ test('the colour table: rain as before, snow and mix from their own colours, the
 test('the words: snow and the estimated mix', () => {
   assert.deepEqual([10, 15, 24, 25, 31, 32, 50].map(I.radarSnowWord), ['very light snow', 'light snow', 'light snow', 'moderate snow', 'moderate snow', 'heavy snow', 'heavy snow']);
   assert.deepEqual([10, 24, 25, 39, 40].map(I.radarMixWord), ['light mix (estimated)', 'light mix (estimated)', 'mix (estimated)', 'mix (estimated)', 'heavy mix (estimated)']);
-  assert.equal(I.radarLookOf('?ovsnow=B', 'ovsnow'), 'B'); assert.equal(I.radarLookOf('?x=1&ovmix=B', 'ovmix'), 'B');
-  assert.equal(I.radarLookOf('?ovsnow=C', 'ovsnow'), 'A'); assert.equal(I.radarLookOf('', 'ovsnow'), 'A');
+  assert.equal(I.radarLookOf, undefined, 'no palette switch left in the page');
+  assert.deepEqual(I.RAMPS.radarSnow[0], [0, '#f1ebff']); assert.deepEqual(I.RAMPS.radarMix[0], [0, '#ffe3f0']);
 });
 test('the panel: snow and mix bars while a typed region with frames is in view; the hover names the type', async () => {
   const w = world(), ov = ctl(w);

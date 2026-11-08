@@ -27,7 +27,7 @@ URL_RE = re.compile(r"^https://github\.com/mamba-org/micromamba-releases/release
 
 def _workflows():
     out = {}
-    for path in sorted(glob.glob(os.path.join(WF, "*.yml"))):
+    for path in sorted(glob.glob(os.path.join(WF, "model-*.yml"))):      # the publishers; a temporary dry run is not one
         text = open(path, encoding="utf-8").read()
         if "setup-micromamba" in text:
             out[os.path.basename(path)] = text

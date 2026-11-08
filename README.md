@@ -1365,6 +1365,12 @@ run lines. It opens still on the newest frame and plays only on Play; the loop c
 (30) or 24 (60), remembered for the tab, plus the newest frame whatever its minute. The speeds are the animals'. Echoes use the familiar radar colours; a
 light tint (16 % white) marks the water and land radar can see; nothing is drawn outside it.
 
+A transparency slider sits under the scale (plan section 89, overlay asset 2.25.13): 0 % (fully opaque) to 80 % (faint), 25 % on a first
+visit, kept on the device (`localStorage` `allshore.radarOpacity.v1`, the layer's opacity 20-100). It is one CSS opacity on the radar
+layer, so moving it redraws nothing; the tint fades with the echoes. The colours' own alpha rises from 57 % at 5 dBZ to 100 % from 25 dBZ,
+so the slider's value is the strongest echo's opacity. No notes sit under the scale (owner, section 89); the hover still says where there is
+no radar.
+
 What is drawn is what the hover reads: one sampler for both, over the same pieces. A pixel belongs to the first region in the order
 Hawaii, Guam, US, Alaska, Caribbean, Europe, Japan, Taiwan whose newest whole-region frame covers it (by coverage, never by box: the US box's no-coverage
 strip does not hide the Caribbean). Inside that region: at tile zoom 7 and up the 100-a-degree cell, from 4 the 25-a-degree cell, below

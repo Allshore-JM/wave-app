@@ -120,7 +120,7 @@ test('the colour table: nothing below the floor, thin drizzle, solid rain; the w
   const lut = I.radarLut();
   assert.equal(lut[1 * 2 * 4 + 3], 0, 'code 1 = no echo');
   const floor = lut[2 * 2 * 4 + 3], at25 = lut[(2 + 40) * 2 * 4 + 3], top = lut[142 * 2 * 4 + 3];
-  assert.ok(floor > 100 && floor < 140, 'alpha at 5 dBZ ' + floor); assert.ok(at25 > 200 && at25 === top, 'alpha from 25 dBZ');
+  assert.ok(floor > 140 && floor < 150, 'alpha at 5 dBZ (57 %) ' + floor); assert.ok(at25 === 255 && at25 === top, 'alpha from 25 dBZ');
   assert.equal(I.radarDbz(2), 5); assert.equal(I.radarDbz(142), 75);
   assert.deepEqual([15, 25, 35, 45, 55, 65].map(I.radarRainWord), ['very light rain', 'light rain', 'moderate rain', 'heavy rain', 'very heavy rain', 'intense rain, possible hail']);
   const text = I.RADAR_ATTRIBUTION.replace(/<[^>]+>/g, '');
@@ -1293,18 +1293,18 @@ test('the credit: every subset of the sources fits the corner and links the noti
   assert.equal(I.radarHead([]), 'Radar'); assert.equal(I.radarHead(['cwa', 'mrms']), 'Radar: NOAA MRMS, CWA'); assert.equal(I.radarHead(all), 'Radar: NOAA MRMS, EUMETNET OPERA, JMA, CWA');
   assert.equal(I.radarHead(['<img src=x>']), 'Radar');
 });
-test('the head, the credit and the class note follow the view; one credit on the map at a time', async () => {
+test('the head and the credit follow the view; one credit on the map at a time; no notes under the scale', async () => {
   const w = world(), ov = ctl(w);
   ov.mount('radar');
   w.answer(/latest\.json$/, pointerDoc('2026-11-06T12:00:00Z', 2, ['hawaii', 'europe', 'japan', 'taiwan'])); await settle();
   const said = () => { assert.equal(w.attrs.length, 1, w.attrs.join(' | ')); return visible(w.attrs[0]); };
-  const scale = () => findCls(ov.ui.host, 'ov-radar-scale');
-  assert.equal(said(), 'Radar: MRMS'); assert.equal(ov.ui.title.textContent, 'Radar: NOAA MRMS'); assert.equal(scale().hidden, true);
+  assert.equal(findCls(ov.ui.host, 'ov-radar-scale'), null); assert.equal(findCls(ov.ui.host, 'ov-radar-key'), null);
+  assert.equal(said(), 'Radar: MRMS'); assert.equal(ov.ui.title.textContent, 'Radar: NOAA MRMS');
   w.view({ s: 20, n: 45, w: 120, e: 150 }); moved(w);
   assert.equal(said(), 'Radar: JMA · CWA'); assert.equal(ov.ui.title.textContent, 'Radar: JMA, CWA');
-  assert.equal(scale().hidden, false); assert.ok(/^japan: rain-rate classes/.test(scale().textContent), scale().textContent);
+  assert.equal(findCls(ov.ui.host, 'ov-radar-scale'), null);
   w.view({ s: 19, n: 28, w: 116, e: 121 }); moved(w);
-  assert.equal(said(), 'Radar: CWA'); assert.equal(scale().hidden, true);
+  assert.equal(said(), 'Radar: CWA');
   w.view({ s: 40, n: 50, w: 0, e: 20 }); moved(w);
   assert.equal(said(), 'Radar: OPERA CC BY 4.0');
   w.view({ s: -30, n: -20, w: 10, e: 20 }); moved(w);
@@ -1477,29 +1477,53 @@ test('the age warning does not hide what is drawn', async () => {
   assert.ok(/newest frame is .* old/.test(ov._radarNote()) && !/no picture/.test(ov._radarNote()), ov._radarNote());
   ov.unmount();
 });
-test('a sheet is measured with the class note: it is there when the panel is built, and a flip lays the sheet out again, once', async () => {
+test('the transparency slider: under the scale, 25 % by default, the layer at 75 %; a move sets the layer and is kept on the device', async () => {
   const w = world(), ov = ctl(w);
   ov.mount('radar');
-  const japan = { s: 30, n: 40, w: 130, e: 140 };
-  w.view(japan);
-  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii', 'japan'])); await settle();
-  const scale = () => ov.ui.radarScale;
-  // built with its words, before the panel is measured (the player's line comes after the measure)
-  const ui = ov._radarUI; ov._radarUI = () => {};
-  ov.render(ov.last);
-  ov._radarUI = ui;
-  assert.equal(scale().hidden, false);
-  assert.ok(scale().textContent.indexOf('japan') === 0, scale().textContent);
+  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii'])); await settle();
+  const row = findCls(ov.ui.host, 'ov-radar-opacity'), range = ov.ui.radarOpacity, value = findCls(row, 'ov-radar-opacity-value');
+  assert.ok(row && range, 'the row is built');
+  assert.equal(range.min, '0'); assert.equal(range.max, '80'); assert.equal(range.step, '5');
+  assert.equal(range.value, '25'); assert.equal(value.textContent, '25%'); assert.equal(range['aria-valuetext'], '25% transparent');
+  assert.equal(ov.radarLayer.opacity, 0.75);
+  const body = row.parentNode, kids = body.children;
+  assert.ok(kids.indexOf(findCls(body, 'ov-radar-words')) < kids.indexOf(row), 'under the scale');
   let renders = 0; const was = ov.render; ov.render = function (st) { renders++; return was.call(this, st); };
-  ov.ui.compact = true;
-  ov._radarUI(); assert.equal(renders, 0, 'no flip');
-  w.view({ s: 60, n: 70, w: -40, e: -30 });
-  ov._radarUI(); assert.equal(renders, 1, 'the note went: measured again');
-  assert.equal(ov._radarScaleShown, false); assert.equal(scale().hidden, true);
-  ov.ui.compact = false; w.view(japan);
-  ov._radarUI(); assert.equal(renders, 1, 'a desktop panel does not rebuild');
-  assert.equal(scale().hidden, false);
+  range.value = '60'; range._ls.input();
+  assert.equal(ov.radarLayer.opacity, 0.4); assert.equal(w.ls['allshore.radarOpacity.v1'], '40');
+  assert.equal(value.textContent, '60%'); assert.equal(range['aria-valuetext'], '60% transparent');
+  range.value = '0'; range._ls.input();
+  assert.equal(ov.radarLayer.opacity, 1); assert.equal(w.ls['allshore.radarOpacity.v1'], '100');
+  assert.equal(renders, 0, 'no panel rebuild, no redraw: one CSS opacity');
   ov.unmount();
+});
+test('the saved opacity: read on the next page; nonsense and blocked storage give 75 %', async () => {
+  const K = 'allshore.radarOpacity.v1';
+  for (const [v, want] of [['40', 0.4], ['100', 1], ['20', 0.2], ['19', 0.75], ['101', 0.75], ['40.5', 0.75], ['x', 0.75], ['', 0.75], [undefined, 0.75]]) {
+    const ls = {}; if (v !== undefined) ls[K] = v;
+    const w = world({ ls }), ov = ctl(w);
+    ov.mount('radar');
+    w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii'])); await settle();
+    assert.equal(ov.radarLayer.opacity, want, String(v));
+    assert.equal(ov.ui.radarOpacity.value, String(Math.round(100 - want * 100)));
+    ov.unmount();
+  }
+  const w = world({ lsThrows: true }), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii'])); await settle();
+  assert.equal(ov.radarLayer.opacity, 0.75);
+  ov.ui.radarOpacity.value = '50'; ov.ui.radarOpacity._ls.input();
+  assert.equal(ov.radarLayer.opacity, 0.5, 'the layer follows although the device keeps nothing');
+  ov.unmount();
+  const I = world().I;
+  assert.equal(I.radarOpacityOf(55), 55); assert.equal(I.radarOpacityOf(55.4), 55); assert.equal(I.radarOpacityOf(NaN), 75); assert.equal(I.radarOpacityOf(null), 75); assert.equal(I.radarOpacityOf('0x30'), 75);
+});
+test('the colours own alpha: thin drizzle at 57 %, solid from 25 dBZ (the slider opacity on top)', () => {
+  const I = world().I, lut = I.radarLut(), a = (code) => lut[Math.round(code * 2) * 4 + 3];
+  assert.deepEqual(Array.from(I.RADAR_ALPHA), [0.57, 1]);
+  assert.equal(a(2), Math.round(255 * 0.57));
+  assert.equal(a(2 + 40), 255, '25 dBZ'); assert.equal(a(142), 255, '75 dBZ');
+  assert.ok(a(2 + 20) > a(2) && a(2 + 20) < 255, 'rising between');
 });
 test('a held frame\'s cells: asked for while it is on the map, part of the stack, and waited for while playing', () => {
   const w = world(), doc = pointerDoc('2026-11-06T12:20:00Z', 40, ['taiwan', 'hawaii'], () => ({ t1: 'f', t2: 'ffffffff' })), st = storeWith(w, doc);
@@ -1581,16 +1605,6 @@ test('a file of the frame on the map redraws, whichever step of the loop holds i
   d2.regions.fiji = { name: 'Fiji', src: 'nms', box: [-20, 176, -16, 180] };
   const s2 = new w2.I.RadarStore(ROOT); s2._take(d2);
   assert.equal(s2.order[s2.order.length - 1], 'fiji', 'a region the client does not know is drawn last');
-});
-test('the class note waits for a frame of Japan: a listed region with none says nothing', async () => {
-  const w = world(), ov = ctl(w);
-  ov.mount('radar');
-  w.view({ s: 30, n: 40, w: 130, e: 140 });
-  w.answer(/latest\.json$/, pointerDoc(nowSlot(), 2, ['hawaii'])); await settle();
-  assert.equal(ov._radarScaleNote(), '');
-  ov.radar._take(pointerDoc(nowSlot(), 2, ['hawaii', 'japan'])); await settle();
-  assert.ok(ov._radarScaleNote().indexOf('japan') === 0, ov._radarScaleNote());
-  ov.unmount();
 });
 test('the regions\' order is the client\'s, whatever the pointer lists; only sources with frames count, each once; the label takes the newest file on the map', async () => {
   const w0 = world(), st0 = new w0.I.RadarStore(ROOT), d0 = pointerDoc('2026-11-06T12:00:00Z', 1, ['hawaii']), flipped = {};

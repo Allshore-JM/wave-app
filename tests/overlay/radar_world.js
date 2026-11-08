@@ -31,7 +31,7 @@ function world(opts) {
   const reg = { doc: {}, win: {}, map: {} };
   const on = (t) => (ev, fn) => { (reg[t][ev] = reg[t][ev] || []).push(fn); };
   const off = (t) => (ev, fn) => { reg[t][ev] = (reg[t][ev] || []).filter((f) => f !== fn); };
-  const w = { fetches: [], held: [], panes: {}, layers: [], attrs: [], canvases: [], reg };
+  const w = { fetches: [], held: [], panes: {}, layers: [], attrs: [], canvases: [], reg, ls: Object.assign({}, opts.ls || {}), lsThrows: !!opts.lsThrows };
   function ctx2d(el) {
     el.puts = 0;
     return { calls: [], globalAlpha: 1, clearRect() { el.cleared = (el.cleared || 0) + 1; el.lastImg = null; }, beginPath() {}, arc() {}, fill() {}, stroke() {}, moveTo() {}, lineTo() {}, closePath() {}, save() {}, restore() {}, setLineDash() {},
@@ -39,7 +39,7 @@ function world(opts) {
   }
   const g = {
     L: { GridLayer: { prototype: { initialize(o) { this.options = o; this._tiles = {}; }, onRemove() {} },
-      extend(p) { function C(o) { p.initialize.call(this, o); } C.prototype = Object.assign({ setOpacity() {}, addTo(m) { this._map = m; w.layers.push(this); return this; } }, p); return C; } },
+      extend(p) { function C(o) { p.initialize.call(this, o); } C.prototype = Object.assign({ setOpacity(k) { this.opacity = k; }, addTo(m) { this._map = m; w.layers.push(this); return this; } }, p); return C; } },
       DomEvent: { disableClickPropagation() {}, disableScrollPropagation() {} } },
     document: { hidden: false, addEventListener: on('doc'), removeEventListener: off('doc'), body: { appendChild() {} },
       createElement(tag) {
@@ -52,6 +52,7 @@ function world(opts) {
       },
       createTextNode(t) { return { nodeValue: t, textContent: t }; }, activeElement: null },
     sessionStorage: { getItem: () => (w.saved === undefined ? null : JSON.stringify(w.saved)), setItem(k, v) { w.saved = JSON.parse(v); } },
+    localStorage: { getItem(k) { if (w.lsThrows) throw new Error('blocked'); return Object.prototype.hasOwnProperty.call(w.ls, k) ? w.ls[k] : null; }, setItem(k, v) { if (w.lsThrows) throw new Error('blocked'); w.ls[k] = String(v); } },
     fetch: (url, o) => {
       w.fetches.push(url);
       if (o && o.signal && o.signal.aborted) return Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));

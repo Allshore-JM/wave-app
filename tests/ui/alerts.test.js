@@ -379,7 +379,7 @@ test('a click opens the zone\'s products; a running map tool takes it instead; t
   assert.equal(r.map.opened.o.maxWidth, 340, 'a desktop popup: 340 px wide at most');
   r.map.getSize = () => ({ x: 375, y: 812 });
   line.handlers.click({ latlng: { lat: 44.6, lng: -124.1 } });
-  assert.equal(r.map.opened.o.maxWidth, 375 - I.POP_CHROME, 'a phone: the popup and its pan padding fit the screen');
+  assert.equal(r.map.opened.o.maxWidth, 311, 'a 375-px phone: 311 px, so the popup and its pan padding fit the screen');
   r.map.getSize = () => ({ x: 240, y: 400 });
   line.handlers.click({ latlng: { lat: 44.6, lng: -124.1 } });
   assert.equal(r.map.opened.o.maxWidth, 200, 'never below 200 px');

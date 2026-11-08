@@ -53,6 +53,7 @@ def test_every_micromamba_step_names_one_fixed_download_address():
 
 def test_the_temporary_micromamba_dry_run_workflow_is_gone():
     assert not os.path.exists(os.path.join(WF, "mm-dryrun.yml"))
+    assert not os.path.exists(os.path.join(WF, "setup-dryrun.yml"))     # the 2026-11-08 set-up-skip proof
 
 
 def test_safe_prune_passes_the_result_through():

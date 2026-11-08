@@ -70,7 +70,15 @@
   // (the owner's pick on real frames, plan section 85).
   RAMPS.radar = [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
                  [0.583, '#e5bc00'], [0.667, '#fd9500'], [0.75, '#fd0000'], [0.833, '#d40000'], [0.917, '#bc0000'], [1, '#f800fd']];
-  var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.5, 0.88];   // alpha at the 5-dBZ floor and from 25 dBZ up
+  var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.57, 1];   // alpha at the 5-dBZ floor and from 25 dBZ up (the layer's own opacity on top)
+  // The radar's opacity (plan section 89): one CSS opacity on the layer, set by the panel's transparency slider; kept on the device.
+  var RADAR_OPACITY_KEY = 'allshore.radarOpacity.v1', RADAR_OPACITY_MIN = 20, RADAR_OPACITY_MAX = 100, RADAR_OPACITY_DEFAULT = 75;
+  function radarOpacityOf(v) {
+    var n = typeof v === 'string' && /^[0-9]{1,3}$/.test(v) ? +v : typeof v === 'number' && isFinite(v) ? Math.round(v) : NaN;
+    return n >= RADAR_OPACITY_MIN && n <= RADAR_OPACITY_MAX ? n : RADAR_OPACITY_DEFAULT;
+  }
+  function readRadarOpacity() { try { return radarOpacityOf(window.localStorage.getItem(RADAR_OPACITY_KEY)); } catch (e) { return RADAR_OPACITY_DEFAULT; } }
+  function writeRadarOpacity(n) { try { window.localStorage.setItem(RADAR_OPACITY_KEY, String(n)); } catch (e) {} }
   // Under the wind overlay the site's satellite imagery (earth tones) gives way to a neutral relief map
   // with a flat light sea; the field is multiplied into it (the sea shows the colour itself, land the
   // colour shaded by the terrain) and the coastlines are drawn into the wind tiles. The imagery stays for
@@ -230,7 +238,6 @@
     }
     return out;
   })();
-  var RADAR_SCALE_NOTE = ': rain-rate classes, in the colours of the same rain on this scale.';
   // Who the frames in view come from: the corner's short credit, the panel's head, the link's tooltip.
   var RADAR_SOURCES = { mrms: { credit: 'MRMS', head: 'NOAA MRMS', full: 'NOAA MRMS' }, opera: { credit: 'OPERA CC BY 4.0', head: 'EUMETNET OPERA', full: 'EUMETNET OPERA' },
     jma: { credit: 'JMA', head: 'JMA', full: 'Japan Meteorological Agency' }, cwa: { credit: 'CWA', head: 'CWA', full: 'Taiwan Central Weather Administration' } };
@@ -248,7 +255,6 @@
     var who = names.length ? names.slice(0, -1).join(', ') + (names.length > 1 ? ' and ' : '') + names[names.length - 1] : 'The radar sources';
     return 'Radar: <a href="/notice/radar" target="_blank" rel="noopener" title="' + who + ', modified by Allshore Surf">' + text + '</a>';
   }
-  var RADAR_KEY = 'Tinted: the area radar can see. Nothing is shown where there is no radar.';
   // The credit's visible text is 29 characters (the map's rule): the licences and the "modified" are in the notice it opens.
   var RADAR_ATTRIBUTION = radarCredit(['mrms', 'opera']);
   // The observations the panel can show (mode 'obs'): own keys only (G30-9).
@@ -5647,6 +5653,7 @@
     // the particles' strength (the page's settings slider, plan section 46): 0 = no particles (nothing animates, no
     // direction frames are fetched), 1 = today's look; never saved by the module (the page keeps it)
     this.particleOpacity = particleOpacityOf(opts.particles);
+    this.radarOpacity = readRadarOpacity();                    // the radar's own opacity, kept on the device (section 89)
     this.anim = this.particleOpacity > 0;
     this.dcache = new FrameCache(MAX_DECODED); this.flow = null; this.dres = null;   // direction frames and their animator
     // The isobars (plan section 46): on unless the page says otherwise (its settings gear); the pressure frames' cache
@@ -5924,6 +5931,7 @@
     this._detachRadar();
     store.maxBytes = this.map.getContainer().clientWidth < RADAR_SMALL_PX ? RADAR_MAX_BYTES_SMALL : RADAR_MAX_BYTES;   // a small screen needs fewer cells
     this.radarLayer = new RadarLayer().addTo(this.map);
+    this.radarLayer.setOpacity(this.radarOpacity / 100);
     this.radarLayer.setStore(store);
     this.radarPlayer = new RadarPlayer(this, store, this.radarLayer);
     this.radarPlayer.start();
@@ -6022,23 +6030,11 @@
     if (ui.title) { var said = ui.collapsed ? 'Radar · ' + label : radarHead(this._radarSources()); if (ui.title.textContent !== said) ui.title.textContent = said; }
     if (ui.radarLoop) ui.radarLoop.value = String(p.loopH);
     if (ui.radarNote) { var note = this._radarNote(); ui.radarNote.textContent = note; ui.radarNote.hidden = !note; }
-    var sn = this._radarScaleNote();
-    if (ui.compact && !!sn !== !!this._radarScaleShown && this.last && this.last.state === 'ready') { this.render(this.last); return; }   // the sheet is measured with the note
-    if (ui.radarScale) { ui.radarScale.textContent = sn; ui.radarScale.hidden = !sn; }
-  };
-  // A region on rain-rate classes in view: the panel says so beside the dBZ scale.
-  Overlay.prototype._radarScaleNote = function () {
-    var p = this.radarPlayer, st = this.radar, out = [];
-    if (!p || !st || !st.pointer) return '';
-    var regs = st.regionsIn(p.view());
-    for (var i = 0; i < regs.length; i++) if (st.pointer.regions[regs[i]].scale === 'jma8' && st.newestOf(regs[i])) out.push(st.pointer.regions[regs[i]].name + RADAR_SCALE_NOTE);
-    return out.join(' ');
   };
   // The radar's panel: head = the sources; the transport (play, slider, speed) stays on the smallest sheets; details = the frame's
   // time, the loop length, the scale with its rain words, the notes; folded: "Radar · Thu 7:40 PM HST · 10 min ago".
   Overlay.prototype._renderRadar = function (st, host, compact, focusCls, mapH) {
-    var self = this, p = this.radarPlayer, unit = this.opts.getUnit(), scaleNote = this._radarScaleNote();
-    this._radarScaleShown = !!scaleNote;
+    var self = this, p = this.radarPlayer, unit = this.opts.getUnit();
     this._obsShell(st, host, compact, focusCls, mapH, radarHead(this._radarSources()), 'Radar · ' + this._radarLabel(), function (body) {
       var row = mk('div', 'ov-row ov-radar-line'), line = mk('span', 'ov-radar-label', self._radarLabel());
       var sel = mk('select', 'ov-radar-loop'); sel.setAttribute('aria-label', 'Loop length'); sel.setAttribute('autocomplete', 'off');
@@ -6053,8 +6049,7 @@
         var s = mk('span', null, w[1]); s.style.left = (legendPos('radar', RADAR_FDEF.legend, w[0]) * 100).toFixed(2) + '%'; words.appendChild(s);
       });
       body.appendChild(words);
-      body.appendChild(mk('div', 'ov-meta ov-radar-key', RADAR_KEY));
-      var scale = mk('div', 'ov-meta ov-radar-key ov-radar-scale', scaleNote); scale.hidden = !scaleNote; body.appendChild(scale); self.ui.radarScale = scale;
+      body.appendChild(self._radarOpacityRow());
       var note = mk('div', 'ov-warn'); note.hidden = true; body.appendChild(note); self.ui.radarNote = note;
     }, function (h, ui) {
       var row = mk('div', 'ov-row ov-transport ov-radar-row');
@@ -6066,6 +6061,27 @@
       ui.radar = true; ui.play = play; ui.slider = slider; ui.speedSel = speed;
     });
     this._radarUI();
+  };
+  // The transparency slider under the scale: 0 % (fully opaque) to 80 % (faint); the layer's opacity is 100 minus it.
+  Overlay.prototype._radarOpacityRow = function () {
+    var self = this, row = mk('label', 'ov-row ov-radar-opacity'), name = mk('span', 'ov-radar-opacity-name', 'Transparency');
+    var range = mk('input', 'ov-radar-opacity-range'), out = mk('span', 'ov-radar-opacity-value');
+    range.type = 'range'; range.min = '0'; range.max = String(100 - RADAR_OPACITY_MIN); range.step = '5'; range.setAttribute('autocomplete', 'off');
+    function show() {
+      var t = 100 - self.radarOpacity;
+      range.value = String(t); out.textContent = t + '%'; range.setAttribute('aria-valuetext', t + '% transparent');
+    }
+    show();
+    range.addEventListener('input', function () { self.setRadarOpacity(100 - (+range.value)); show(); });
+    row.appendChild(name); row.appendChild(range); row.appendChild(out);
+    this.ui.radarOpacity = range;
+    return row;
+  };
+  // The radar layer's opacity, 20-100 %: kept on the device; the open layer follows at once (one CSS opacity: no redraw).
+  Overlay.prototype.setRadarOpacity = function (pct) {
+    var n = radarOpacityOf(pct);
+    this.radarOpacity = n; writeRadarOpacity(n);
+    if (this.radarLayer) this.radarLayer.setOpacity(n / 100);
   };
   // ---- the satellite readings (plan section 81) ----
   // The store the own entry shows: the swell's when chosen and offered, else the heights'.
@@ -8274,7 +8290,7 @@
     var fold = function (keepToggle) {
       if (!keepToggle && btn.parentNode) head.removeChild(btn);
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
-      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.radarScale = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
+      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.radarOpacity = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }
@@ -8473,7 +8489,7 @@
       composeDots: composeDots, satTileReadings: satTileReadings, satStrideFor: satStrideFor, satRadius: satRadius, satAlpha: satAlpha, satColourIndex: satColourIndex, satArrowLength: satArrowLength,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
-      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
+      radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,
       viewRangeOf: viewRangeOf, OBS_DEFS: OBS_DEFS, hasObs: hasObs, SAT_PREFIX: SAT_PREFIX, SWELL_PREFIX: SWELL_PREFIX, SAT_WINDOW_MS: SAT_WINDOW_MS, 
       SAT_RECHECK_MS: SAT_RECHECK_MS, SAT_STALE_H: SAT_STALE_H, SWELL_STALE_H: SWELL_STALE_H, SAT_FDEF: SAT_FDEF, SAT_HEAD: SAT_HEAD, SAT_ATTRIBUTION: SAT_ATTRIBUTION, 
       SAT_FADE: SAT_FADE, MAX_SAT_CHUNKS: MAX_SAT_CHUNKS, MAX_SAT_CHUNK_BYTES: MAX_SAT_CHUNK_BYTES, MAX_SAT_SAMPLES: MAX_SAT_SAMPLES, MAX_SAT_INFLIGHT: MAX_SAT_INFLIGHT, SAT_BUCKET_DEG: SAT_BUCKET_DEG,

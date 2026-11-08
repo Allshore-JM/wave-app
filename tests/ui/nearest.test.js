@@ -63,6 +63,23 @@ test('a dot that is not interactive, or one dragged on a click, is passed over; 
   only.r._onClick({ type: 'click', pt: new Pt(1, 0) }); assert.deepEqual(only.fired.pop(), [['line'], 'click']);
 });
 
+test('coastal-hazard lines (plan section 90): the nearest line takes the click, not the later drawn; any dot beats a line', () => {
+  const b = boot();
+  // two zones' lines meeting at a boundary, both holding the click: y = 0 drawn first, y = 9 later
+  const line = (name, y) => ({ name, options: { interactive: true }, moved: false, _containsPoint: (p) => Math.abs(p.y - y) <= 12,
+    _lineDistance: (p) => Math.abs(p.y - y) });
+  const { r, fired } = renderer(b, [line('HIZ007', 0), line('HIZ006', 9)]);
+  r._onClick({ type: 'click', pt: new Pt(0, 2) }); assert.deepEqual(fired.pop(), [['HIZ007'], 'click'], 'Leaflet (and the old rule) would open HIZ006');
+  r._onClick({ type: 'click', pt: new Pt(0, 7) }); assert.deepEqual(fired.pop(), [['HIZ006'], 'click']);
+  r._onClick({ type: 'click', pt: new Pt(0, 4.5) }); assert.deepEqual(fired.pop(), [['HIZ006'], 'click'], 'half way: the later drawn');
+  const d = renderer(b, [dot('51201', 0, 0), line('HIZ007', 0)]);
+  d.r._onClick({ type: 'click', pt: new Pt(9, 0) }); assert.deepEqual(d.fired.pop(), [['51201'], 'click'], 'a dot at the edge of its reach beats a line under the pointer');
+  const h = renderer(b, [line('HIZ007', 0), line('HIZ006', 9)]);
+  h.r._handleMouseHover({ type: 'mousemove' }, new Pt(0, 1));
+  assert.deepEqual(h.fired.splice(0), [[['HIZ007'], 'mouseover'], [['HIZ007'], 'mousemove']], 'hover: the nearest line too');
+  assert.equal(b.api.nearestPath({ _drawFirst: null }, new Pt(0, 0), null), null, 'nothing drawn, nothing taken');
+});
+
 test('hover takes the nearest too: mouseover once, mouseout on a change, throttled for 32 ms', () => {
   const b = boot();
   const { r, fired } = renderer(b, [dot('A', 0, 0), dot('B', 7, 0)]);

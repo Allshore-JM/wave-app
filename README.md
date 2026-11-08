@@ -2487,7 +2487,7 @@ other side of the world: their feeds wait up to 8 s to connect and 25 s in all (
 wind) shows the shortest averaging period. Env switches `WIND_WIS2=0`, `WIND_HKO=0`, `WIND_SMN=0`;
 `WIND_WIS2_PER_REFRESH` (nodes a refresh, default 2).
 
-## Coastal hazards (plan section 90, UI asset 1.29.0)
+## Coastal hazards (plan section 90, UI asset 1.29.1)
 
 The map outlines the stretch of coastline under an active NWS coastal hazard product, coloured by the product.
 
@@ -2518,7 +2518,8 @@ lines}}}` with only the zones the products name; `public, max-age=60` + ETag, ne
 **Page** (`static_ui/alerts.js`): the legend entry "Coastal hazards" (on by default, remembered for the tab with the
 other layers); drawn from zoom 5 (nothing at world zooms, no note); the lines on the map's own canvas under the forecast
 dots (a dot beside a line still takes its click), a dark halo under each, a hit area a few pixels wider than the line;
-a click or tap opens the zone's products (text only: the product, when it is in effect in the zone's own time, the
+where two zones' lines meet, a click goes to the line nearest the pointer (the map's canvas ranks lines after every dot,
+then by their own distance); a click or tap opens the zone's products (the popup fits a 375-px phone) (text only: the product, when it is in effect in the zone's own time, the
 headline, description, instruction, the issuing office and a link to NWS's forecast for a forecast zone); a hover label
 on mouse screens; a running map tool takes the click instead. The page asks again every 2 minutes while the layer is
 shown and the tab visible (`loading…` / `unavailable` in the legend note), and draws every world copy in view. Credit

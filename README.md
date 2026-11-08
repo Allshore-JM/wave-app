@@ -1358,6 +1358,14 @@ One source pixel of theirs fills several lattice pixels, so the coarse tiers tak
 Terms: JMA's Public Data License 1.0 (equal to CC BY 4.0: "Source: Japan Meteorological Agency website", say the data was edited), never a
 forecast; Taiwan's Open Government Data License v1.0, credited by provider, year and dataset.
 
+On the map (overlay asset 2.26.1; snow lavender to purple, mix pink: the owner's pick of 2026-11-08): a pixel of a typed region takes the type of the node with the most weight among the four
+around it (the first of equals) and its value from all of them, so no colour is ever a blend of rain and snow; it is stored as
+type x 143 + its value on the rain codes' scale, which keeps one colour table (rain, snow and mix sections) and one readout.
+The client draws codes past the rain ones only when the pointer's `type_codes` match its own exactly (`radarTypeCodesOk`;
+`tests/model_frames/test_radar_types.py` pins the two against each other). Under the scale two thin bars, "Snow" and
+"Mix (est.)", show while a typed region with frames is in view. The hover says e.g. "20 dBZ · light snow · 7:40 PM" or
+"30 dBZ · mix (estimated) · ...".
+
 ### The radar layer on the map (plan section 85, the client; overlay asset 2.25.8)
 
 `RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no

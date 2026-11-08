@@ -1659,3 +1659,202 @@ test('re-check P3-1: a held frame that is also a loop frame is counted once in t
     assert.equal(st.stack.t1, false, 'step ' + shown);
   }
 });
+
+// ------------------------------------------------------------------ rain, mix and snow (plan section 89)
+const TYPE_CODES = { snow: [143, 213, 1.0], mix: [214, 249, 2.0] };
+const rainCode = (d) => 2 + (d - 5) / 0.5, snowCode = (d) => 143 + Math.round(d - 5), mixCode = (d) => 214 + Math.round((d - 5) / 2);
+function typedDoc(count, codes) {
+  const doc = pointerDoc('2026-11-06T12:00:00Z', count || 1);
+  if (codes !== null) doc.type_codes = clone(codes || TYPE_CODES);
+  doc.regions.hawaii.types = 'rms';
+  return doc;
+}
+// rows 20-40: rain (cols 20-30) beside snow (cols 30-40) at 20 dBZ; rows 50-60: mix at 21 dBZ; the rest of the west covered
+const typedFrame = () => t0Of('hawaii', (r, c) => {
+  if (r >= 20 && r < 40 && c >= 20 && c < 30) return rainCode(20);
+  if (r >= 20 && r < 40 && c >= 30 && c < 40) return snowCode(20);
+  if (r >= 50 && r < 60 && c >= 20 && c < 40) return mixCode(21);
+  return c < 80 ? 1 : 0;
+});
+test('the type codes: rain unchanged; snow and mix on the rain codes\' scale; nothing past 249', () => {
+  const RC = I.RADAR_RC, T = I.RADAR_T;
+  assert.deepEqual([RC[0], RC[1], RC[250], RC[255]], [0, 0, 0, 0]);
+  for (let v = 2; v <= 142; v++) { assert.equal(RC[v], v); assert.equal(T[v], 0); }
+  for (let v = 143; v <= 213; v++) { assert.equal(T[v], 1); assert.equal(I.radarDbz(RC[v]), 5 + (v - 143)); }
+  for (let v = 214; v <= 249; v++) { assert.equal(T[v], 2); assert.equal(I.radarDbz(RC[v]), 5 + (v - 214) * 2); }
+  assert.equal(I.RADAR_TYPE_BASE, 143, 'one past the last rain code: a stored value never reads as another type');
+});
+test('radarTypeCodesOk: exactly the job\'s bands, else no types', () => {
+  assert.equal(I.radarTypeCodesOk(JSON.parse('{"snow": [143, 213, 1.0], "mix": [214, 249, 2.0]}')), true);
+  for (const bad of [undefined, null, [], {}, { snow: [143, 213, 1] }, { snow: [143, 213, 1], mix: [214, 249, 2], hail: [250, 255, 1] },
+    { snow: [143, 213, 0.5], mix: [214, 249, 2] }, { snow: [143, 212, 1], mix: [214, 249, 2] }, { snow: '143', mix: [214, 249, 2] }, { snow: [143, 213], mix: [214, 249, 2] }]) {
+    assert.equal(I.radarTypeCodesOk(bad), false, JSON.stringify(bad));
+  }
+});
+test('a typed region: the readout and the tile say rain, snow or mix, each in its own colours', () => {
+  const w = world(), st = storeWith(w, typedDoc(1)), rec = st.frames[0];
+  assert.equal(st.typed, true);
+  st.landed(rec.t, 'hawaii', 't0', null, typedFrame()); st.loop = [rec];
+  const layer = layerWith(w, st, 0, false), z = 4;
+  const at = (la, lo) => { tileAt(layer, la, lo, z); return layer.readoutAt(la, lo, z); };
+  const rain = at(23, -161.5), snow = at(23, -160.5), mix = at(20.5, -161);
+  assert.deepEqual([rain.kind, rain.type, rain.dbz], ['echo', 0, 20]);
+  assert.deepEqual([snow.kind, snow.type, snow.dbz], ['echo', 1, 20]);
+  assert.deepEqual([mix.kind, mix.type, mix.dbz], ['echo', 2, 21]);
+  // every drawn pixel of the two tiles holding the frame: one type, a value on the rain codes' scale, its own section's colour
+  const lut = layer._lut, seen = [0, 0, 0];
+  for (const key of ['0:6:4', '0:7:4']) {
+    const t = layer._tiles[key];
+    assert.ok(t, key);
+    layer._draw(t.el, t.coords);
+    const img = t.el.lastImg, code = layer._code;
+    for (let i = 0; i < 256 * 256; i++) {
+      const c = code[i];
+      if (!(c > 0)) continue;
+      const ty = Math.floor(c / 143), rc = c - 143 * ty;
+      assert.ok(ty >= 0 && ty <= 2 && rc >= 2 && rc <= 142, key + ' pixel ' + i + ': ' + c);
+      const j = Math.round(c * 2) * 4, k = i * 4;
+      assert.deepEqual([img[k], img[k + 1], img[k + 2], img[k + 3]], [lut[j], lut[j + 1], lut[j + 2], lut[j + 3]]);
+      seen[ty]++;
+    }
+  }
+  assert.ok(seen[0] > 20 && seen[1] > 20 && seen[2] > 20, 'rain, snow and mix all drawn: ' + seen);
+});
+test('the sampler: the value between the nodes, the type of the heaviest node, never a blend of two', () => {
+  // one 2 x 2 picture: rain 40 dBZ | snow 10 dBZ over mix 30 dBZ | rain 20 dBZ; every pixel against a reference
+  const q = Uint8Array.from([rainCode(40), snowCode(10), mixCode(30), rainCode(20)]), pic = { q, cols: 2, rows: 2, r0: 0, c0: 0, re: Uint8Array.from([1, 1]) };
+  const n = 32, lats = new Float64Array(256), lons = new Float64Array(256);
+  for (let i = 0; i < n; i++) { lats[i] = 10 - (i + 0.5) / n * 0.1; lons[i] = 20 + (i + 0.5) / n * 0.1; }
+  const piece = (typed) => ({ pic, own: 1, ppd: 10, typed, x0: 0, x1: n, y0: 0, y1: n, top: 10, ay: -0.5, left: 20, ax: -0.5 });
+  const own = new Uint8Array(256 * 256).fill(1), out = new Float64Array(256 * 256);
+  I.radarSample([piece(true)], { _rLat: lats, _rLon: lons }, own, 0, n, 0, n, out);
+  const RC = I.RADAR_RC, Tt = I.RADAR_T;
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const fy = (10 - lats[y]) * 10 - 0.5, fx = (lons[x] - 20) * 10 - 0.5, r0 = Math.floor(fy), c0 = Math.floor(fx), wy = fy - r0, wx = fx - c0;
+    let w = 0, acc = 0, best = -1, bt = 0;
+    for (const [r, c, f] of [[r0, c0, (1 - wx) * (1 - wy)], [r0, c0 + 1, wx * (1 - wy)], [r0 + 1, c0, (1 - wx) * wy], [r0 + 1, c0 + 1, wx * wy]]) {
+      if (r < 0 || c < 0 || r > 1 || c > 1) continue;
+      const v = q[r * 2 + c]; w += f; acc += f * RC[v]; if (f > best) { best = f; bt = Tt[v]; }
+    }
+    const want = w < 0.25 ? 0 : bt * 143 + acc / w, got = out[y * 256 + x];
+    assert.ok(Math.abs(got - want) < 1e-9, x + ',' + y + ': ' + got + ' vs ' + want);
+  }
+  // the same picture untyped: only the rain nodes count (never a snow code read as heavy rain)
+  out.fill(0);
+  I.radarSample([piece(false)], { _rLat: lats, _rLon: lons }, own, 0, n, 0, n, out);
+  for (let i = 0; i < out.length; i++) assert.ok(out[i] === 0 || (out[i] >= 2 && out[i] <= 142), 'untyped pixel ' + i + ': ' + out[i]);
+});
+test('a pointer without type_codes (or other bands): codes past the rain ones are not drawn', () => {
+  for (const codes of [null, { snow: [143, 213, 1], mix: [214, 249, 3] }]) {
+    const w = world(), st = storeWith(w, typedDoc(1, codes)), rec = st.frames[0];
+    assert.equal(st.typed, false);
+    st.landed(rec.t, 'hawaii', 't0', null, typedFrame()); st.loop = [rec];
+    const layer = layerWith(w, st, 0, false);
+    const at = (la, lo) => { tileAt(layer, la, lo, 4); return layer.readoutAt(la, lo, 4); };
+    assert.deepEqual([at(23, -161.5).kind, at(23, -161.5).dbz], ['echo', 20], 'rain still drawn');
+    assert.equal(at(23, -160.5).kind, 'dry', 'snow codes left out');
+    assert.equal(at(20.5, -161).kind, 'dry', 'mix codes left out');
+  }
+  // a typed pointer, but the region has no types: untyped there
+  const w = world(), doc = typedDoc(1); delete doc.regions.hawaii.types;
+  const st = storeWith(w, doc), rec = st.frames[0];
+  st.landed(rec.t, 'hawaii', 't0', null, typedFrame()); st.loop = [rec];
+  const layer = layerWith(w, st, 0, false); tileAt(layer, 23, -161, 4);
+  assert.equal(layer.readoutAt(23, -160.5, 4).kind, 'dry');
+});
+test('the colour table: rain as before, snow and mix from their own colours, the same alpha rule', () => {
+  const lut = I.radarLut(), sec = 286, leg = [5, 65], rgb = [0, 0, 0];
+  assert.equal(lut.length, sec * 3 * 4);
+  const ramp = (stops, pos) => { I.rampAt(stops, pos, rgb, 0); return Array.from(Uint8ClampedArray.from(rgb)); };
+  for (let t = 0; t < 3; t++) {
+    const stops = [I.RAMPS.radar, I.RAMPS.radarSnow, I.RAMPS.radarMix][t];
+    for (let h = 0; h < 286; h++) {
+      const k = (t * sec + h) * 4;
+      if (h < 4) { assert.equal(lut[k + 3], 0, 'below the floor ' + t + '/' + h); continue; }
+      const dbz = 5 + (h / 2 - 2) * 0.5, pos = Math.max(0, Math.min(1, (dbz - leg[0]) / (leg[1] - leg[0])));
+      assert.deepEqual([lut[k], lut[k + 1], lut[k + 2]], ramp(stops, pos), t + '/' + h);
+      assert.equal(lut[k + 3], lut[h * 4 + 3], 'the same alpha at the same dBZ');
+    }
+  }
+  assert.notDeepEqual(ramp(I.RAMPS.radarSnow, 0.25), ramp(I.RAMPS.radar, 0.25));
+  assert.notDeepEqual(ramp(I.RAMPS.radarMix, 0.25), ramp(I.RAMPS.radarSnow, 0.25));
+});
+test('the words: snow and the estimated mix', () => {
+  assert.deepEqual([10, 15, 24, 25, 31, 32, 50].map(I.radarSnowWord), ['very light snow', 'light snow', 'light snow', 'moderate snow', 'moderate snow', 'heavy snow', 'heavy snow']);
+  assert.deepEqual([10, 24, 25, 39, 40].map(I.radarMixWord), ['light mix (estimated)', 'light mix (estimated)', 'mix (estimated)', 'mix (estimated)', 'heavy mix (estimated)']);
+  assert.equal(I.radarLookOf, undefined, 'no palette switch left in the page');
+  assert.deepEqual(I.RAMPS.radarSnow[0], [0, '#f1ebff']); assert.deepEqual(I.RAMPS.radarMix[0], [0, '#ffe3f0']);
+});
+test('the panel: snow and mix bars while a typed region with frames is in view; the hover names the type', async () => {
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  w.answer(/latest\.json$/, typedDoc(2)); await settle();
+  const host = ov.ui.host, bars = findCls(host, 'ov-radar-types');
+  assert.ok(bars, 'the bars are built'); assert.equal(bars.hidden, false, 'Hawaii is typed and in view');
+  assert.ok(/Snow/.test(allText(bars)) && /Mix \(est\.\)/.test(allText(bars)), allText(bars));
+  const fr = ov.radarPlayer.frames[ov.radarPlayer.idx];
+  assert.ok(ov._radarReadout({ kind: 'echo', region: 'hawaii', rec: fr, dbz: 20, type: 1 }).startsWith('20 dBZ · light snow · '));
+  assert.ok(ov._radarReadout({ kind: 'echo', region: 'hawaii', rec: fr, dbz: 30, type: 2 }).startsWith('30 dBZ · mix (estimated) · '));
+  assert.ok(ov._radarReadout({ kind: 'echo', region: 'hawaii', rec: fr, dbz: 30, type: 0 }).startsWith('30 dBZ · moderate rain · '));
+  w.view({ s: 40, n: 50, w: 0, e: 10 }); ov._radarUI();
+  assert.equal(bars.hidden, true, 'Europe in view: no types there');
+  w.view({ s: 18, n: 24, w: -162, e: -154 }); ov._radarUI();
+  assert.equal(bars.hidden, false);
+  ov.unmount();
+  const w2 = world(), ov2 = ctl(w2);
+  ov2.mount('radar');
+  w2.answer(/latest\.json$/, typedDoc(2, null)); await settle();
+  assert.equal(findCls(ov2.ui.host, 'ov-radar-types').hidden, true, 'a pointer without type_codes: no bars');
+  ov2.unmount();
+});
+test('a pixel exactly between four nodes takes the first node\'s type; a region on classes is never typed', () => {
+  const q = Uint8Array.from([snowCode(20), rainCode(20), rainCode(20), rainCode(20)]), pic = { q, cols: 2, rows: 2, r0: 0, c0: 0, re: Uint8Array.from([1, 1]) };
+  const lats = new Float64Array(256).fill(9.875), lons = new Float64Array(256).fill(20.125);   // exact in binary: fy = fx = 0.5, four weights of 0.25
+  const own = new Uint8Array(256 * 256).fill(1), out = new Float64Array(256 * 256);
+  I.radarSample([{ pic, own: 1, ppd: 8, typed: true, x0: 0, x1: 1, y0: 0, y1: 1, top: 10, ay: -0.5, left: 20, ax: -0.5 }], { _rLat: lats, _rLon: lons }, own, 0, 1, 0, 1, out);
+  assert.equal(Math.floor(out[0] / 143), 1, 'ties go to the first node (top left): ' + out[0]);
+  assert.equal(I.radarDbz(out[0] - 143), 20);
+  const st = { typed: true };
+  assert.equal(I.radarTypedDef(st, { types: 'rms' }), true);
+  assert.equal(I.radarTypedDef(st, { types: 'rms', scale: 'jma8' }), false);
+  assert.equal(I.radarTypedDef(st, { types: 'r' }), false);
+  assert.equal(I.radarTypedDef({ typed: false }, { types: 'rms' }), false);
+  assert.equal(I.radarTypedDef(st, null), false);
+});
+test('G58 pins: a dry node adds no weight beside a typed one; no bars without a typed frame; each bar under its own name', async () => {
+  // J18: one snow node and three dry ones, four equal weights: the pixel is the snow node's own value, not a quarter of it
+  const q = Uint8Array.from([1, snowCode(20), 1, 1]), pic = { q, cols: 2, rows: 2, r0: 0, c0: 0, re: Uint8Array.from([1, 1]) };
+  const lats = new Float64Array(256).fill(9.875), lons = new Float64Array(256).fill(20.125);
+  const own = new Uint8Array(256 * 256).fill(1), out = new Float64Array(256 * 256);
+  I.radarSample([{ pic, own: 1, ppd: 8, typed: true, x0: 0, x1: 1, y0: 0, y1: 1, top: 10, ay: -0.5, left: 20, ax: -0.5 }], { _rLat: lats, _rLon: lons }, own, 0, 1, 0, 1, out);
+  assert.equal(Math.floor(out[0] / 143), 1, 'snow');
+  assert.equal(I.radarDbz(out[0] - 143), 20, 'the dry nodes carry no weight: ' + out[0]);
+  // J13: Hawaii typed and in view but without a frame: no bars
+  const w = world(), ov = ctl(w);
+  ov.mount('radar');
+  const doc = typedDoc(2); for (const sl of doc.slots) delete sl.r.hawaii;
+  w.answer(/latest\.json$/, doc); await settle();
+  assert.equal(findCls(ov.ui.host, 'ov-radar-types').hidden, true, 'a typed region with no frame: no bars');
+  ov.unmount();
+  // J23 in the panel: under "Snow" the snow ramp, under "Mix (est.)" the mix ramp
+  const w3 = world(), ov3 = ctl(w3);
+  ov3.mount('radar');
+  w3.answer(/latest\.json$/, typedDoc(2)); await settle();
+  const rows = findCls(ov3.ui.host, 'ov-radar-types').children;
+  const first = (ramp) => { const L = I.legendBar(ramp, I.RADAR_FDEF.legend); return [L[0], L[1], L[2]]; };
+  for (const row of rows) {
+    const cv = row.children.find((c) => c.tag === 'canvas'), name = allText(row);
+    assert.deepEqual([...cv.lastImg.slice(0, 3)], first(/Snow/.test(name) ? 'radarSnow' : 'radarMix'), name);
+  }
+  assert.equal(rows.length, 2);
+  ov3.unmount();
+  // J23: the Snow bar is drawn from the snow ramp and the Mix bar from the mix ramp
+  const lut = (ramp) => { const L = I.legendBar(ramp, I.RADAR_FDEF.legend); return [L[0], L[1], L[2]]; };
+  for (const [ramp, label] of [['radarSnow', 'Snow'], ['radarMix', 'Mix (est.)']]) {
+    const row = I.radarTypeBar(ramp, label), cv = row.children.find((c) => c.tag === 'canvas');
+    assert.deepEqual([...cv.lastImg.slice(0, 3)], lut(ramp), label);
+    assert.ok(allText(row).includes(label));
+  }
+  assert.notDeepEqual(lut('radarSnow'), lut('radarMix'));
+});
+

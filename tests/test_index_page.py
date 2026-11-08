@@ -357,10 +357,10 @@ def test_legend_button_in_the_top_right_row(client):
     fn = body[body.index("    function syncLegendNote() {"):]
     fn = fn[:fn.index("\n    }\n") + 6]
     for needle in ("const live = map.hasLayer(liveBuoyLayer) ? liveNoteText : '';",   # only while its layer is on (G37 F3)
-                   "[['Live buoys', live], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]",
+                   "[['Live buoys', live], ['Tide stations', tideNoteText], ['Wind stations', windNoteText], ['Coastal hazards', alertsNoteText]]",
                    "btn.setAttribute('data-tip', tip); btn.setAttribute('aria-label', tip);", "if (dot) dot.hidden = !notes.length;"):
         assert needle in fn, needle
-    assert body.count("      syncLegendNote();\n      const el = document.querySelector('.leaflet-control-layers [data-") == 3
+    assert body.count("      syncLegendNote();\n      const el = document.querySelector('.leaflet-control-layers [data-") == 4   # tide, wind, coastal hazards, live
     assert "map.on('overlayadd overlayremove', function (e) { if (e.layer === liveBuoyLayer) syncLegendNote(); });" in body
     # both panels lift the corner over the windows and fit the map while open (G37 F6)
     assert "const panels = legend ? [panel, legend] : [panel];" in body
@@ -608,7 +608,7 @@ def test_tide_stations_on_the_page(client):
         "const sig = (on ? '1' : '0') + '|' + (activeTideId || '') + '|' + renderSignature(vis) + '|' + nudgeSignature(nudges);",
         "const want = on && !tideStationsData.length ? tideListNote : '';", "tides: saved.tides !== false", "tides: map.hasLayer(tideLayer)",
         "'<span class=\"lc-dot lc-tide\"></span>Tide stations<span class=\"lc-note\" data-tide-note aria-hidden=\"true\"></span>': tideLayer",
-        "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintLiveNote(); return r; };",
+        "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintAlertsNote(); paintLiveNote(); return r; };",
         "map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });",
         "rebuildTideMarkers(true);\n        return;", "rebuildTideMarkers(false);\n      }, REFRESH_DEBOUNCE_MS);",
         "const TIDE_CREDIT = 'Tides: <a href=\"https://tidesandcurrents.noaa.gov/\" target=\"_blank\" rel=\"noopener\">NOAA CO-OPS</a>';",
@@ -1385,3 +1385,33 @@ def test_section_59_g41_fixes_on_the_page(client, monkeypatch):
         A._NWPS_PTR.clear()
         A._NWPS_PTR.update(saved)
 
+
+
+def test_coastal_alerts_on_the_page(client, monkeypatch):
+    """Plan section 90: the "Coastal hazards" legend entry (on unless the tab turned it off), its note beside the
+    others, the module after the page's other scripts, started with the map's own canvas (its lines take clicks
+    beside the forecast dots), a running map tool taking the click; COASTAL_ALERTS=0 leaves all of it out."""
+    monkeypatch.setattr(A, "COASTAL_ALERTS", True)
+    body = client.get("/?station=51201").get_data(as_text=True)
+    for needle in (
+        "const ALERTS_ON = true;", "const alertLayer = L.layerGroup();",
+        "if (ALERTS_ON && initialLayerVisibility.alerts) alertLayer.addTo(map);",
+        "alerts: saved.alerts !== false", "wind: true, alerts: true };",
+        "alerts: ALERTS_ON ? map.hasLayer(alertLayer) : initialLayerVisibility.alerts",
+        "'<span class=\"lc-dot lc-alert\"></span>Coastal hazards<span class=\"lc-note\" data-alerts-note aria-hidden=\"true\"></span>': alertLayer",
+        "['Coastal hazards', alertsNoteText]", "paintAlertsNote(); paintLiveNote(); return r;",
+        "layer: alertLayer, renderer: mapRenderer, coarse: coarsePointer, tip: textTip,",
+        "window.AllshoreTools.click(e.latlng, e.originalEvent);",
+        ".lc-alert {", ".alert-popup .leaflet-popup-content {", "white-space: pre-line;",
+    ):
+        assert needle in body, needle
+    tag = body.index('<script src="/ui/alerts.js?v=%s"></script>' % A.UI_ASSET_VERSION)
+    assert body.index("const map = L.map(") < tag < body.index("(function initAlerts()") < body.index("Cloudflare Web Analytics")
+    assert body.index('<script src="/ui/places.js?v=%s"></script>' % A.UI_ASSET_VERSION) < tag
+    r = client.get("/ui/alerts.js?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+
+    monkeypatch.setattr(A, "COASTAL_ALERTS", False)
+    off = client.get("/?station=51201").get_data(as_text=True)
+    assert "const ALERTS_ON = false;" in off
+    assert "/ui/alerts.js" not in off and "initAlerts" not in off and "Coastal hazards</span>" not in off

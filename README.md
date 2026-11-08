@@ -1358,6 +1358,34 @@ One source pixel of theirs fills several lattice pixels, so the coarse tiers tak
 Terms: JMA's Public Data License 1.0 (equal to CC BY 4.0: "Source: Japan Meteorological Agency website", say the data was edited), never a
 forecast; Taiwan's Open Government Data License v1.0, credited by provider, year and dataset.
 
+#### Rain, mix and snow (plan section 89)
+
+In the MRMS regions (the pointer's region `types: "rms"`) echo carries its type. Each reflectivity file is read with NOAA's
+PrecipFlag file of the same minute (`PrecipFlag_00.00`, 8-bit, on the reflectivity's own grid): flag 3 is snow; 1, 6, 7, 10, 91 and 96
+are rain classes. A rain or snow pixel whose model wet-bulb temperature (`Model_WetBulbTemp_00.50`, the newest hour at most 3 h old;
+Guam's file comes every 6 h, so 8 h there) lies in `radar.TW_BAND`, -0.5 to +1.5 C inclusive, is drawn as an estimated mix. Codes:
+
+| Codes | Meaning |
+|---|---|
+| 2-142 | rain, 5-75 dBZ in 0.5-dB steps (unchanged) |
+| 143-213 | snow, 5-75 dBZ in 1-dB steps |
+| 214-249 | mix (estimated), 5-75 dBZ in 2-dB steps |
+| 250-255 | never written |
+
+The pointer's `type_codes` gives each band's [first code, last code, dB step]. A region entry says what its frame holds: `ty: "rms"`
+typed with a wet-bulb hour, `ty: "rs"` typed without one (rain and snow only), no `ty` untyped (every echo drawn as rain). The coarse
+tiers pool by strength across the types and keep the chosen pixel's own type (`radar.KEY`). Europe, Japan and Taiwan stay rain.
+
+A flag file never costs a frame: when the same minute has none yet, an older minute that has both files is used; when no minute has one,
+the newest reflectivity is written untyped. A flag file that cannot be read leaves the frame untyped; one that does not answer is the
+source's outage like any other file. A wet-bulb file that is missing, does not answer, cannot be read or lies on another grid only means
+no mix for that frame; it is read once a tick and held in memory (3 hours at most, about 25 MB each for CONUS).
+
+Plan deviation, on record: the plan stored the wet-bulb as our own small mask under `radar/v1/tw/`. The job reads NOAA's hourly file
+directly instead (about 23 MB a tick from AWS Open Data at no charge, 1-3 s): no extra objects, pointer entries or prune, and the band can
+be retuned in code without republishing anything. `tests/capture_radar_types_fixtures.py` cuts the real fixtures of
+`tests/model_frames/test_radar_types.py` (a 1 x 2 degree piece of CONUS with rain, snow and mix) from a set of NOAA files.
+
 ### The radar layer on the map (plan section 85, the client; overlay asset 2.25.8)
 
 `RADAR_OVERLAY=1` offers "Radar" in the map overlay's dropdown. An observation, like the sea surface temperature: no model choice, no

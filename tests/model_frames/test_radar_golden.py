@@ -1,6 +1,7 @@
 """The MRMS and OPERA output must not move when a source is added (plan section 86): every object's decoded codes, the order objects
 are written and files asked for, and the pointer, over ticks that cover new frames, a late frame, a damaged file, a source that is down,
-the backfill budget, a gap and retirement. Captured from production 312da88 (before the source table existed):
+the backfill budget, a gap and retirement. Section 89's precipitation type leaves it as it was where NOAA has no PrecipFlag file (these
+ticks): its requests and the pointer's "type_codes" are left out. Captured from production 312da88 (before the source table existed):
     python -I tests/model_frames/test_radar_golden.py --capture
 Decoded codes, not PNG bytes: a PNG depends on the zlib build of the machine. Nothing reaches the network."""
 import gzip
@@ -26,8 +27,10 @@ NOW = datetime(2026, 11, 6, 12, 6, 0, tzinfo=timezone.utc)
 REGIONS = {"r1": ("One", "mrms", "D1", 20, -160, 22, -156, 1),
            "h1": ("Two", "mrms", "D2", 20, -150, 22, -146, 2),
            "e1": ("Eur", "opera", None, 50, 0, 52, 4, 1)}
-# what the pointer gains on purpose in section 86 stays out of the comparison
-NOT_COMPARED = ("regions", "credit", "began")
+# what the pointer gains on purpose in sections 86 and 89 stays out of the comparison
+NOT_COMPARED = ("regions", "credit", "began", "type_codes")
+# section 89 asks for each MRMS minute's PrecipFlag file (none here: the frames stay untyped) and wet-bulb hours: not in the golden
+TYPE_FILES = (mrms.FLAG_PRODUCT, mrms.TW_PRODUCT)
 
 
 def _png16(x):
@@ -177,7 +180,8 @@ def scenario():
         def tick(name, web, now, args=(), clock=None):
             kw = {"clock": clock} if clock else {}
             rc = R.main(list(args), get=web, store=store, now=now, **kw)
-            record.append({"name": name, "rc": rc, "asked": list(web.asked), "written": _groups(store.order),
+            record.append({"name": name, "rc": rc, "asked": [u for u in web.asked if not any(t in u for t in TYPE_FILES)],
+                           "written": _groups(store.order),
                            "objects": _digest(store), "pointer": _pointer(store)})
             store.order.clear()
 

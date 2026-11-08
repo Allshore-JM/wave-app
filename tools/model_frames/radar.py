@@ -8,12 +8,18 @@ there); each MRMS frame is the file at slot + 4 minutes (else + 2, + 0): it is o
 is taken before slot + 4:30, so a run on time and a run late pick the same file nearly always. Each region's entry says its offset.
 
 Every tier sits on one lattice: pixels of 1/ppd degree from whole-degree region boxes, row 0 at the box's north edge. Codes u8:
-0 = no radar coverage, 1 = covered, no echo (below FLOOR_DBZ), code >= 2: dBZ = FLOOR_DBZ + (code - 2) * STEP_DBZ, up to MAX_CODE.
+0 = no radar coverage, 1 = covered, no echo (below FLOOR_DBZ), 2..MAX_CODE rain: dBZ = FLOOR_DBZ + (code - 2) * STEP_DBZ. In the MRMS
+regions (plan section 89; the pointer's region "types") echo can also be snow, SNOW_CODE0..SNOW_MAX in SNOW_STEP, or a rain / snow mix,
+MIX_CODE0..MIX_MAX in MIX_STEP: NOAA's PrecipFlag file of the reflectivity's own minute says snow (or a rain class), and a rain or snow
+pixel whose model wet-bulb temperature (the newest hour, TW_EVERY) lies in TW_BAND is drawn as mix, an estimate. No flag file = rain, as
+the other sources; no wet-bulb hour = no mix. A frame's entry says what it holds ("ty": "rms" typed with a wet-bulb hour, "rs" without
+one, none = untyped).
   t0  10 pixels a degree, the whole region, codes 0 / 1 / 2+ (the client's tint and "no coverage" always come from here)
   t1  25 pixels a degree, 20-degree cells, echo only (code < 2 stored as 0)
   t2 100 pixels a degree,  5-degree cells, echo only
 A coarser pixel takes the k-th strongest fine pixel under it (k = COARSE_K, or the region's own where one source pixel fills several
-of the lattice's), so a storm core stays and one stray pixel cannot paint 11 km; it counts as covered when any fine pixel is. A cell
+of the lattice's), so a storm core stays and one stray pixel cannot paint 11 km; it counts as covered when any fine pixel is. Strongest by
+dBZ, whatever the type, and the chosen pixel keeps its own type (KEY). A cell
 named "<lat0>_<lon0>" (its south-west corner) covers lat0 <= lat < lat0 + cell, lon0 <= lon < lon0 + cell, in a picture of n + 2 pixels a side (a one-pixel apron from the neighbouring cells, so a
 point in the cell finds its bilinear neighbours in the cell's own picture): row r is centred at lat0 + cell + 0.5/ppd - r/ppd,
 column c at lon0 - 0.5/ppd + c/ppd. Only cells holding echo are written (T1_MIN, T2_MIN pixels at MIN_DBZ or more): most of the
@@ -67,6 +73,18 @@ MAX_DBZ = 75.0
 MAX_CODE = 2 + int(round((MAX_DBZ - FLOOR_DBZ) / STEP_DBZ))     # 142
 MIN_DBZ = 10.0                          # the echo a cell must hold to be written
 MIN_CODE = 2 + int(round((MIN_DBZ - FLOOR_DBZ) / STEP_DBZ))
+SNOW_CODE0, SNOW_STEP = 143, 1.0        # snow: 5-75 dBZ in 1-dB steps -> 143..213 (plan section 89)
+MIX_CODE0, MIX_STEP = 214, 2.0          # a rain / snow mix (estimated): 5-75 dBZ in 2-dB steps -> 214..249; 250-255 never written
+SNOW_MAX = SNOW_CODE0 + int(round((MAX_DBZ - FLOOR_DBZ) / SNOW_STEP))
+MIX_MAX = MIX_CODE0 + int(round((MAX_DBZ - FLOOR_DBZ) / MIX_STEP))
+FLAG_SNOW = 3                           # NOAA MRMS PrecipFlag values
+FLAG_RAIN = (1, 6, 7, 10, 91, 96)       # warm stratiform, convective, rain with hail, cool stratiform, tropical stratiform / convective
+FLAG_KNOWN = (-3, 0, FLAG_SNOW) + FLAG_RAIN
+TW_BAND = (-0.5, 1.5)                   # degrees C: a rain or snow pixel whose model wet-bulb lies in it (inclusive) is drawn as mix
+TW_EVERY = {"GUAM": (6, 8)}             # domain -> (hours between wet-bulb files, the oldest hour used for a frame, h); else (1, 3)
+TW_READ_S, TW_FILE_S = 20, 60           # the wet-bulb file (CONUS 15.6 MB): per socket read, the whole file
+TW_CACHE = 3                            # wet-bulb hours kept decoded in a tick (CONUS 24.5 MB each)
+TYPES = "rms"                           # the pointer's word for a region whose echo can be rain, mix or snow
 T1_MIN, T2_MIN = 1, 1                   # pixels at MIN_DBZ or more (measured: ~10 more files a slot than 6 and 40, 5 KB)
 PPD_T0, PPD_T1, PPD_T2 = 10, 25, 100
 CELL_T1, CELL_T2 = 20, 5
@@ -200,27 +218,54 @@ def code_table(values):
     return out
 
 
+def typed_codes(values, code0, step, cmax):
+    """Snow or mix codes of an array of dBZ: echo (FLOOR_DBZ or more) only, anything else 0."""
+    v = np.asarray(values, dtype=np.float32)
+    out = np.zeros(v.shape, dtype=np.uint8)
+    echo = np.isfinite(v) & (v >= FLOOR_DBZ)
+    out[echo] = np.clip(code0 + np.round((v[echo] - FLOOR_DBZ) / step), code0, cmax).astype(np.uint8)
+    return out
+
+
+def _code_dbz():
+    t = np.full(256, np.nan)
+    for c0, c1, step in ((2, MAX_CODE, STEP_DBZ), (SNOW_CODE0, SNOW_MAX, SNOW_STEP), (MIX_CODE0, MIX_MAX, MIX_STEP)):
+        c = np.arange(c0, c1 + 1)
+        t[c] = FLOOR_DBZ + (c - c0) * step
+    return t
+
+
+CODE_DBZ = _code_dbz()                  # each echo code's dBZ; NaN for 0, 1 and the codes never written
+STRONG = np.nan_to_num(CODE_DBZ, nan=-1.0) >= MIN_DBZ - 1e-9
+# The pooling key of each code: every echo above every non-echo code, then by strength (0.1 dB), then by code (rain < snow < mix at one
+# strength), so `key & 255` is the code back. A rain-only lattice pools exactly as by its codes.
+KEY = np.where(np.isnan(CODE_DBZ), np.minimum(np.arange(256), 1),
+               (np.round((np.nan_to_num(CODE_DBZ) - FLOOR_DBZ) * 10) + 1) * 256 + np.arange(256)).astype(np.uint32)
+
+
 def pool_max(a, b):
-    """The strongest of each b x b block."""
+    """The strongest echo of each b x b block, keeping its type (a block without echo: covered when any pixel is)."""
     r, c = a.shape
     if r % b or c % b:
         raise ValueError(f"{a.shape} does not divide by {b}")
-    return a.reshape(r // b, b, c // b, b).max(axis=(1, 3))
+    return (KEY[a].reshape(r // b, b, c // b, b).max(axis=(1, 3)) & 255).astype(np.uint8)
 
 
 def pool_kth(a, b, k):
-    """Each b x b block's k-th strongest echo; a block with fewer echoes than k reads as covered (1) when any pixel is covered."""
+    """Each b x b block's k-th strongest echo, keeping its type; a block with fewer echoes than k reads as covered (1) when any pixel
+    is covered."""
     r, c = a.shape
     if r % b or c % b:
         raise ValueError(f"{a.shape} does not divide by {b}")
-    blocks = a.reshape(r // b, b, c // b, b).transpose(0, 2, 1, 3)
+    blocks = KEY[a].reshape(r // b, b, c // b, b).transpose(0, 2, 1, 3)
     top = blocks.max(axis=(2, 3))
     out = np.minimum(top, 1).astype(np.uint8)
-    rows, cols = np.nonzero(top >= 2)
+    rows, cols = np.nonzero(top >= 256)
     if len(rows):
         vals = blocks[rows, cols].reshape(len(rows), b * b)
         kth = np.partition(vals, b * b - k, axis=1)[:, b * b - k]
-        out[rows[kth >= 2], cols[kth >= 2]] = kth[kth >= 2]
+        ok = kth >= 256
+        out[rows[ok], cols[ok]] = (kth[ok] & 255).astype(np.uint8)
     return out
 
 
@@ -240,8 +285,8 @@ def cell_picture(arr, region, ppd, cell, lat0, lon0):
 
 
 def inner_echo(pic):
-    """Pixels at MIN_DBZ or more inside the cell (the apron belongs to the neighbours)."""
-    return int((pic[1:-1, 1:-1] >= MIN_CODE).sum())
+    """Pixels at MIN_DBZ or more inside the cell (the apron belongs to the neighbours), whatever their type."""
+    return int(STRONG[pic[1:-1, 1:-1]].sum())
 
 
 def tiers_of(t2_codes, region):
@@ -323,30 +368,159 @@ def _reading(what, fn):
         raise ValueError(f"{what}: {exc.__class__.__name__}: {exc}") from None
 
 
-def mrms_lattice(region, msg):
-    """A decoded MRMS message -> the region's 100-per-degree lattice of codes. A grid that is not the expected one is a ValueError."""
+def mrms_lattice(region, msg, types=None):
+    """A decoded MRMS message -> the region's 100-per-degree lattice of codes; `types` (snow, mix: boolean arrays on the message's
+    grid) turns those echo pixels into snow or mix codes. A grid that is not the expected one is a ValueError."""
     label, _src, domain, s, w, n, e, pool = REGIONS[region]
     step = 0.01 / pool
     if msg["nj"] != round((n - s) / step) or msg["ni"] != round((e - w) / step) \
             or abs(msg["di"] - step) > 1e-5 or abs(msg["dj"] - step) > 1e-5 \
             or abs(msg["lat1"] - (n - step / 2)) > 0.6 * step or abs(msg["lon1"] - (w + step / 2)) > 0.6 * step:
         raise ValueError(f"{domain} grid {msg['ni']} x {msg['nj']} from {msg['lat1']}, {msg['lon1']} is not the expected one")
-    codes = code_table(mrms.value_table(msg))[msg["x"]]
+    x = msg["x"]
+    dbz = mrms.value_table(msg)
+    codes = code_table(dbz)[x]
+    if types is not None:
+        snow, mix = types
+        if snow.shape != codes.shape or mix.shape != codes.shape:
+            raise ValueError("the type masks are not on the reflectivity's grid")
+        echo = codes >= 2
+        sel = echo & snow & ~mix
+        codes[sel] = typed_codes(dbz, SNOW_CODE0, SNOW_STEP, SNOW_MAX)[x[sel]]
+        sel = echo & mix
+        codes[sel] = typed_codes(dbz, MIX_CODE0, MIX_STEP, MIX_MAX)[x[sel]]
     return pool_max(codes, pool) if pool > 1 else codes
 
 
+def flag_types(msg, flag, band):
+    """(snow, mix, pixels of an unknown flag value) on the reflectivity `msg`'s grid from its PrecipFlag message and the wet-bulb band
+    mask (None: no mix). A file on another grid is a ValueError."""
+    if not mrms.same_grid(msg, flag):
+        raise ValueError("the PrecipFlag file is on another grid")
+    fv = np.round(mrms.value_table(flag)).astype(np.int64)            # each packed value's flag
+    snow_t = fv == FLAG_SNOW
+    typed_t = snow_t | np.isin(fv, FLAG_RAIN)
+    fx = flag["x"]
+    snow = snow_t[fx]
+    if band is None:
+        mix = np.zeros(snow.shape, dtype=bool)
+    else:
+        if band.shape != snow.shape:
+            raise ValueError("the wet-bulb file is on another grid")
+        mix = typed_t[fx] & band
+    unknown = int((~np.isin(fv, FLAG_KNOWN))[fx].sum())
+    return snow, mix, unknown
+
+
+_TW = {}                                # (domain, hour) -> (grid, band) | "missing" | "evicted" | why not: one tick's wet-bulb reads
+_TW_ORDER = []                          # decoded hours, the least recently used first (TW_CACHE kept)
+
+
+def _read_tw(domain, hour, get):
+    try:
+        body = fetch(mrms.url_of(domain, hour, mrms.TW_PRODUCT), get, mrms.TW_MAX_GZ_BYTES, timeout=TW_READ_S, max_s=TW_FILE_S)
+    except Missing:
+        return "missing"
+    except Down as exc:
+        return f"wet-bulb {hour:%H}Z did not answer ({exc})"
+    try:
+        msg = _reading("wet-bulb", lambda: mrms.read(mrms.gunzip(body, mrms.TW_MAX_GZ_BYTES), mrms.TW_IDENTITY, (8, 16, 24)))
+        t = mrms.values(msg)
+    except ValueError as exc:
+        return f"wet-bulb {hour:%H}Z cannot be read ({P.redact(str(exc))})"
+    band = (t >= TW_BAND[0]) & (t <= TW_BAND[1])                       # -999 (missing) is never in it
+    return {k: msg[k] for k in ("ni", "nj", "lat1", "lon1", "di", "dj")}, band
+
+
+def _tw_get(domain, hour, get):
+    key = (domain, hour)
+    got = _TW.get(key, "evicted")
+    if got == "evicted":
+        got = _TW[key] = _read_tw(domain, hour, get)
+    if isinstance(got, tuple):
+        if key in _TW_ORDER:
+            _TW_ORDER.remove(key)
+        _TW_ORDER.append(key)                                          # the latest use goes last: a backfill reuses an hour six times
+        while len(_TW_ORDER) > TW_CACHE:
+            _TW[_TW_ORDER.pop(0)] = "evicted"
+    return got
+
+
+def tw_band(domain, when, get):
+    """(grid, band mask, hour) of the newest wet-bulb hour for a reflectivity file at `when`, or (None, None, why there is none). A
+    file that did not answer or cannot be read means no mix for it this tick (never asked again in it): never a frame lost."""
+    every, oldest = TW_EVERY.get(domain, (1, 3))
+    hour = when.replace(minute=0, second=0, microsecond=0)
+    hour -= timedelta(hours=hour.hour % every)
+    while when - hour <= timedelta(hours=oldest):
+        got = _tw_get(domain, hour, get)
+        if isinstance(got, tuple):
+            return got[0], got[1], hour
+        if got != "missing":
+            return None, None, got
+        hour -= timedelta(hours=every)
+    return None, None, f"no wet-bulb hour within {oldest} h"
+
+
+def _flag_body(domain, when, get):
+    """The PrecipFlag file of `when`, or None when NOAA has none (it follows the reflectivity by up to ~25 s). Down goes up."""
+    try:
+        return fetch(mrms.url_of(domain, when, mrms.FLAG_PRODUCT), get, mrms.MAX_GZ_BYTES)
+    except Missing:
+        return None
+
+
+def _typed_lattice(region, domain, body, flag_body, when, get):
+    """-> (lattice, the entry's "ty" or None, a log line). The reflectivity failing to read is the frame's ValueError; a flag file
+    failing to read only leaves the frame untyped."""
+    msg = _reading(domain, lambda: mrms.read(mrms.gunzip(body)))
+    types, ty, note = None, None, "no PrecipFlag file: all echo drawn as rain"
+    if flag_body is not None:
+        try:
+            flag = _reading("PrecipFlag", lambda: mrms.read(mrms.gunzip(flag_body), mrms.FLAG_IDENTITY, (8, 16)))
+            grid, band, hour = tw_band(domain, when, get)
+            if grid is not None and not mrms.same_grid(msg, grid):
+                band, hour = None, "the wet-bulb file is on another grid"
+            snow, mix, unknown = flag_types(msg, flag, band)
+            types, ty = (snow, mix), (TYPES if band is not None else "rs")
+            note = (f"wet-bulb {hour:%H}Z" if band is not None else f"no mix: {hour}") \
+                + (f"; {unknown} px of an unknown flag value, drawn as rain" if unknown else "")
+        except ValueError as exc:
+            note = f"the PrecipFlag file cannot be read ({P.redact(str(exc))}): all echo drawn as rain"
+    lattice = _reading(domain, lambda: mrms_lattice(region, msg, types))
+    if ty:
+        note = (f"snow {int(((lattice >= SNOW_CODE0) & (lattice <= SNOW_MAX)).sum())} px, "
+                f"mix {int(((lattice >= MIX_CODE0) & (lattice <= MIX_MAX)).sum())} px, {note}")
+    return lattice, ty, note
+
+
 def mrms_frame(region, slot_dt, now, get):
-    """(lattice, offset) of the newest MRMS file at slot + MRMS_OFFSETS not later than now."""
+    """(lattice, offset, {"ty", "note"}) of the newest MRMS file at slot + MRMS_OFFSETS not later than now, typed by NOAA's PrecipFlag
+    file of the same minute; when that one is not out yet, an older pair that has both; when no minute has a flag file, the newest
+    reflectivity untyped (drawn as rain): a flag file never costs a radar frame."""
     domain = REGIONS[region][2]
-    for off in MRMS_OFFSETS:
+    offs = [off for off in MRMS_OFFSETS if slot_dt + timedelta(minutes=off) <= now]
+    for i, off in enumerate(offs):
         when = slot_dt + timedelta(minutes=off)
-        if when > now:
-            continue
         try:
             body = fetch(mrms.url_of(domain, when), get, mrms.MAX_GZ_BYTES)
         except Missing:
             continue
-        return _reading(domain, lambda: mrms_lattice(region, mrms.read(mrms.gunzip(body)))), off
+        flag = _flag_body(domain, when, get)
+        if flag is None:
+            for off2 in offs[i + 1:]:
+                when2 = slot_dt + timedelta(minutes=off2)
+                flag2 = _flag_body(domain, when2, get)
+                if flag2 is None:
+                    continue
+                try:
+                    body2 = fetch(mrms.url_of(domain, when2), get, mrms.MAX_GZ_BYTES)
+                except Missing:
+                    continue
+                lattice, ty, note = _typed_lattice(region, domain, body2, flag2, when2, get)
+                return lattice, off2, {"ty": ty, "note": note}
+        lattice, ty, note = _typed_lattice(region, domain, body, flag, when, get)
+        return lattice, off, {"ty": ty, "note": note}
     raise Missing(f"no {domain} file for {slot_name(slot_dt)}")
 
 
@@ -447,8 +621,8 @@ def cwa_frame(region, slot_dt, get):
 
 
 def _read_mrms(region, dt, now, get):
-    lattice, offset = mrms_frame(region, dt, now, get)
-    return lattice, offset, None
+    lattice, offset, info = mrms_frame(region, dt, now, get)
+    return lattice, offset, info["note"], ({"ty": info["ty"]} if info["ty"] else None)
 
 
 def _read_opera(region, dt, now, get):
@@ -466,7 +640,7 @@ def _read_cwa(region, dt, now, get):
 
 
 # A source and its clock, in the order a tick runs them. read(region, slot datetime, now, get) -> (lattice, minutes after the slot, a
-# log line or None). ready_s: no frame is taken for a slot younger than this. reach_h: slots older than this are never asked for (None:
+# log line or None[, more of the region's entry or None]). ready_s: no frame is taken for a slot younger than this. reach_h: slots older than this are never asked for (None:
 # the whole window). backfill_s: older slots are started only this long into the budget's start; spend_s, when set, makes that start
 # the source's own turn and also stops the whole source that long after it, so a slow source cannot take the time of the next. MRMS
 # and OPERA count from the tick's start, so a hung MRMS still leaves Europe's newest frame.
@@ -480,9 +654,9 @@ SOURCES = tuple(SOURCE)
 
 
 # ---------------------------------------------------------------- publishing
-def store_region(store, slot, region, lattice, offset, stop=None):
-    """Every object of one region and slot -> its pointer entry, with sizes for the summary. Past `stop` the rest is left (Down: the
-    pointer never named them, and the next tick writes them again)."""
+def store_region(store, slot, region, lattice, offset, stop=None, extra=None):
+    """Every object of one region and slot -> its pointer entry (+ `extra`), with sizes for the summary. Past `stop` the rest is left
+    (Down: the pointer never named them, and the next tick writes them again)."""
     objects, flags, _t0 = tiers_of(lattice, region)
 
     def put(item):
@@ -496,7 +670,7 @@ def store_region(store, slot, region, lattice, offset, stop=None):
 
     with ThreadPoolExecutor(UPLOAD_WORKERS) as pool:
         sizes = list(pool.map(put, objects))
-    entry = {"o": offset}
+    entry = dict({"o": offset}, **(extra or {}))
     for t in ("t1", "t2"):
         if flags[t]:
             entry[t] = flags[t]
@@ -505,14 +679,20 @@ def store_region(store, slot, region, lattice, offset, stop=None):
 
 
 def regions_block():
-    return {k: dict({"name": v[0], "src": v[1], "box": [v[3], v[4], v[5], v[6]]}, **({"scale": SCALE[k]} if k in SCALE else {}))
+    return {k: dict({"name": v[0], "src": v[1], "box": [v[3], v[4], v[5], v[6]]}, **({"scale": SCALE[k]} if k in SCALE else {}),
+                    **({"types": TYPES} if v[1] == "mrms" else {}))
             for k, v in REGIONS.items()}
+
+
+def type_codes():
+    """The typed codes' layout, for the client: [first code, last code, dBZ step]; each starts at FLOOR_DBZ."""
+    return {"snow": [SNOW_CODE0, SNOW_MAX, SNOW_STEP], "mix": [MIX_CODE0, MIX_MAX, MIX_STEP]}
 
 
 def empty_pointer():
     return {"format": FORMAT, "floor_dbz": FLOOR_DBZ, "step_dbz": STEP_DBZ, "max_code": MAX_CODE,
             "tiers": {"t0": {"ppd": PPD_T0}, "t1": {"ppd": PPD_T1, "cell": CELL_T1}, "t2": {"ppd": PPD_T2, "cell": CELL_T2}},
-            "regions": regions_block(), "slots": [], "gone": [], "newest": {}, "credit": CREDIT}
+            "regions": regions_block(), "type_codes": type_codes(), "slots": [], "gone": [], "newest": {}, "credit": CREDIT}
 
 
 def newest_of(pointer):
@@ -691,10 +871,11 @@ def run_source(source, store, pointer, now, clock, started, get, log, budget, ke
                 out_of_time = True
                 break
             try:
-                lattice, offset, note = read(region, dt, now, get)
+                got = read(region, dt, now, get)
+                lattice, offset, note = got[:3]
                 if note:
                     log(f"{name} {region}: {note}")
-                entry, st = store_region(store, name, region, lattice, offset, stop=stop)
+                entry, st = store_region(store, name, region, lattice, offset, stop=stop, extra=got[3] if len(got) > 3 else None)
             except Missing as exc:
                 log(f"{name} {region}: not published ({exc})")
                 if dt < slot_of(now) - timedelta(hours=1):             # a recent slot is simply not out yet
@@ -822,6 +1003,8 @@ def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
     if store is None:
         store = NullStore() if a.dry_run else LocalStore(a.local) if a.local else _store_from_env()
     started = clock()
+    _TW.clear()
+    _TW_ORDER.clear()
     try:
         pointer = store.get_json(f"{PREFIX}/latest.json")
     except ValueError as exc:
@@ -845,7 +1028,7 @@ def main(argv=None, get=_get, store=None, now=None, clock=time.monotonic):
         first = "started" not in pointer                               # the alarms' clock: a region never seen is silent since then
         pointer.setdefault("started", A.utc(now))
         joined = note_began(pointer, now)
-        pointer.update(regions=regions_block(), credit=CREDIT)
+        pointer.update(regions=regions_block(), type_codes=type_codes(), credit=CREDIT)
         dropped = drop_unlisted(pointer)
         retired = retire_old(pointer, now)
         for src in sources:

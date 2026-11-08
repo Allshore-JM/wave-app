@@ -343,8 +343,8 @@ def test_mrms_takes_the_newest_file_of_the_slot(small):
     slot = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
     files = {**r1_file(slot + timedelta(minutes=2)), **r1_file(slot + timedelta(minutes=4))}
     web = Web(files)
-    _l, off = R.mrms_frame("r1", slot, NOW, web)
-    assert off == 4 and len(web.asked) == 1
+    _l, off, _info = R.mrms_frame("r1", slot, NOW, web)
+    assert off == 4 and len([u for u in web.asked if mrms.PRODUCT in u]) == 1      # (and the minutes' PrecipFlag files: none here)
     del web.files[mrms.url_of("D1", slot + timedelta(minutes=4))]
     assert R.mrms_frame("r1", slot, NOW, web)[1] == 2
 
@@ -975,7 +975,7 @@ def test_a_changed_layout_in_one_region_leaves_the_others_and_the_older_slots(tw
     assert tick(store, web) == 0                                       # the job is minutes old: too soon to mail
     for name in (R.slot_name(slot), R.slot_name(older)):
         assert list(slot_rec(store, name)["r"]) == ["r2"]
-    assert len([u for u in web.asked if "/D1/" in u]) == R.BAD_PER_TICK
+    assert len([u for u in web.asked if "/D1/" in u and mrms.PRODUCT in u]) == R.BAD_PER_TICK
 
 
 def test_one_damaged_old_file_becomes_a_gap_without_a_mail(small, monkeypatch):

@@ -161,3 +161,41 @@ def test_every_prune_after_a_publish_goes_through_safe_prune():
         assert lines, f"{mod.__name__}.main prunes after it publishes"
         for ln in lines:
             assert "safe_prune(" in ln, f"{mod.__name__}: {ln.strip()}"
+
+
+def test_a_failed_set_up_skips_the_tick_and_fails_loud_only_at_the_reporting_ticks():
+    """2026-11-08: GitHub's release server answered 504 for three hours; 85 runs failed in the micromamba set-up step
+    and sent 85 mails, though every product caught up on its next tick. The set-up step may fail (continue-on-error),
+    a "Set-up check" step skips the tick (green, a warning) unless the run began at the first tick of 00 or 12 UTC,
+    and every later step runs only after a good set-up."""
+    for name, text in _workflows().items():
+        step = text.split("mamba-org/setup-micromamba@", 1)[1].split("\n      - ", 1)[0]
+        assert "\n        id: env\n" in step and "\n        continue-on-error: true" in step, name
+        assert "      - name: Set-up check\n        if: steps.env.outcome != 'success'\n" in text, name
+        check = text.split("      - name: Set-up check\n", 1)[1]
+        body, rest = check.split("\n      - name: ", 1)
+        assert "GITHUB_STEP_SUMMARY" in body and "::warning::" in body, name
+        assert "000[0-9]|120[0-9])" in body and "exit 1" in body, name
+        for later in rest.split("\n      - name: "):
+            title, lines = later.split("\n", 1)
+            assert lines.startswith("        if: steps.env.outcome == 'success'\n"), f"{name}: {title!r} runs without a set-up"
+
+
+def test_the_set_up_check_rule_in_bash(tmp_path):
+    """The step's case rule, run as bash: loud only in the first ten minutes of 00 and 12 UTC."""
+    import shutil
+    import subprocess
+    bash = shutil.which("bash")
+    if not bash:
+        import pytest
+        pytest.skip("no bash")
+    text = _workflows()["model-frames.yml"]
+    body = text.split("      - name: Set-up check\n", 1)[1].split("\n      - name: ", 1)[0]
+    rule = body.split("hm=$(date -u +%H%M)", 1)[1]
+    script = tmp_path / "rule.sh"
+    script.write_text('hm="$1"' + rule.replace("          ", ""), encoding="utf-8", newline="\n")
+    loud = {"0000", "0005", "0009", "1200", "1209"}
+    quiet = {"0010", "0016", "0106", "1106", "1210", "1216", "2356", "0059"}
+    for hm in sorted(loud | quiet):
+        rc = subprocess.run([bash, str(script), hm], capture_output=True).returncode
+        assert (rc == 1) == (hm in loud), hm

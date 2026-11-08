@@ -2639,6 +2639,14 @@ Two causes of GitHub "Run failed" mail that were not data problems, and what the
   hash, so a new micromamba release no longer rebuilds every publisher's environment by itself. To move to a newer
   micromamba, change the version in every publisher at once (`tests/model_frames/test_ci_robust.py` wants one address
   everywhere); the first run after that rebuilds each environment once.
+- **A set-up failure skips the tick (2026-11-08).** The address did not help when GitHub's own release server answered
+  504 for three hours (08:46-12:06 UTC; GitHub's incident "Increase in timeouts for some unauthenticated users"): 85 runs
+  failed in the download step and sent 85 mails, while every product caught up on its next tick and nothing was wrong
+  with the data. The set-up step may now fail (`continue-on-error`); a "Set-up check" step then writes a warning and
+  ends the run green, and every later step runs only after a good set-up (`if: steps.env.outcome == 'success'`). A
+  run that began in the first ten minutes of 00 or 12 UTC still fails loud, so a set-up broken for good mails twice a
+  day per publisher (the stale alarms inside the jobs cannot run without the environment). A skipped tick is the
+  same as a dropped schedule tick: the next one, ten minutes later, does the work.
 - **The prune after a publish.** On 2026-11-03 model-points published its run and then exited 1: the bucket timed out
   five times (60 s each) on a 1,000-key delete of the old run. A run that is already live must not turn red over old
   objects, so every job's prune after a publish goes through `publish.safe_prune` (a WARNING in the log and the step

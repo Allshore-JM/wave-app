@@ -31,6 +31,8 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
       - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        id: env
+        continue-on-error: true   # a failed download skips this tick (the Set-up check step below), it does not fail the run
         with:
           environment-name: frames
           create-args: >-
@@ -47,11 +49,27 @@ jobs:
           # checks it with one request that is never retried (8 failed runs, 2026-10-29 .. 11-05). To move to a newer
           # micromamba, change the version in every publisher at once (tests/model_frames/test_ci_robust.py).
           micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Set-up check
+        if: steps.env.outcome != 'success'
+        shell: bash
+        run: |
+          # The set-up itself failed (2026-11-08: GitHub's own release server answered 504 for three hours; 85 runs
+          # failed in the same step and sent 85 mails while nothing was wrong with the data). The next tick retries by
+          # itself, so a skipped tick costs nothing: the run stays green and says so. It fails loud only at the first
+          # tick of 00 and 12 UTC, so a set-up broken for good still mails twice a day (tests/model_frames/test_ci_robust.py).
+          echo "set-up failed: this tick is skipped (the next tick retries)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::warning::micromamba set-up failed (the download from GitHub); this tick is skipped"
+          hm=$(date -u +%H%M)
+          case "$hm" in
+            000[0-9]|120[0-9]) echo "::error::micromamba set-up failed at a reporting tick ($hm UTC)"; exit 1 ;;
+          esac
       - name: Record environment
+        if: steps.env.outcome == 'success'
         shell: bash -l {0}
         run: |
           echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Publish ECMWF frames
+        if: steps.env.outcome == 'success'
         shell: bash -l {0}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

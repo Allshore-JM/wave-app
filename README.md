@@ -2487,6 +2487,47 @@ other side of the world: their feeds wait up to 8 s to connect and 25 s in all (
 wind) shows the shortest averaging period. Env switches `WIND_WIS2=0`, `WIND_HKO=0`, `WIND_SMN=0`;
 `WIND_WIS2_PER_REFRESH` (nodes a refresh, default 2).
 
+## Coastal hazards (plan section 90, UI asset 1.29.0)
+
+The map outlines the stretch of coastline under an active NWS coastal hazard product, coloured by the product.
+
+**Products** (US coasts only; the NWS API): High Surf Warning / Advisory, Rip Current Statement, Beach Hazards
+Statement, Coastal Flood Warning / Advisory / Watch / Statement, Lakeshore Flood Warning / Advisory / Watch / Statement,
+Storm Surge Warning / Watch. Hurricane and tropical-storm wind products are left out.
+
+**Colours** (owner's choice): a warning in effect red (thicker line), an advisory orange, a Rip Current or Beach Hazards
+Statement orange, a Coastal / Lakeshore Flood Statement blue; a watch, or any product issued but not yet in effect
+(its onset still ahead), yellow and dashed. Where several products name one zone the strongest in effect is drawn. A
+product past its end is never drawn; the page judges this every minute by itself, so a yellow line turns red or orange
+at its onset without asking the server.
+
+**The coastline of each zone** (`alert_coast.json`, built by `tools/alerts/build_alert_coast.py`). NWS coastal products
+name forecast zones (HIZ007 "Oahu North Shore"), not lines. The tool gives each zone the GSHHG coastline it covers (the
+site's own coast sets, `static/coast/v1` + `lakeoutlines-v1`), taken from NWS's public zone shapefile (pinned by name
+and sha256). 682 zones, 12,644 lines, 1.85 MB. A zone's line includes the shores of bays and lagoons inside it. Rebuild
+when NWS publishes a new zone file (a few times a year): bump `ZONES_FILE` / `ZONES_SHA256`, run the tool, then
+`--check`. A zone missing from the file gets no outline (counted in `/healthz`).
+
+**Server** (`alert_sources.py`, app.py): one request to `/alerts/active` every 2 minutes from the background tick (the
+site's User-Agent; never on a visitor's request), the last good answer kept through failures for 30 minutes.
+Cancellations, tests and products replaced by a newer one are dropped; a product past its end is dropped at serve time.
+`/api/alerts/coastal` answers `{format "coastal-alerts-v1", state, updated, alerts [...], zones {id: {name, tz,
+lines}}}` with only the zones the products name; `public, max-age=60` + ETag, never edge-cached. `/healthz` key
+`alerts`. `COASTAL_ALERTS=0` switches the layer off (no route, no legend entry, no script).
+
+**Page** (`static_ui/alerts.js`): the legend entry "Coastal hazards" (on by default, remembered for the tab with the
+other layers); drawn from zoom 5 (nothing at world zooms, no note); the lines on the map's own canvas under the forecast
+dots (a dot beside a line still takes its click), a dark halo under each, a hit area a few pixels wider than the line;
+a click or tap opens the zone's products (text only: the product, when it is in effect in the zone's own time, the
+headline, description, instruction, the issuing office and a link to NWS's forecast for a forecast zone); a hover label
+on mouse screens; a running map tool takes the click instead. The page asks again every 2 minutes while the layer is
+shown and the tab visible (`loading…` / `unavailable` in the legend note), and draws every world copy in view. Credit
+"Alerts: NWS".
+
+**Limits**: US only; zone edges at river mouths and harbours can leave short gaps or stubs; a product is drawn on its
+whole zone's coast even when its text names one beach; NWS updates whenever a forecaster does (the map follows within
+about 2 minutes).
+
 ## Feeds that need a key (plan section 69)
 
 Four agencies gave the site a key (registered in plan section 68); each feed is built only when its key is in the

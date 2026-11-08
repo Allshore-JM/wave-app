@@ -508,12 +508,12 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.28.9"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.29.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
               "winds.js": "application/javascript", "basemap.js": "application/javascript",
-              "places.js": "application/javascript"}
+              "places.js": "application/javascript", "alerts.js": "application/javascript"}
 
 
 @app.route("/ui/<name>")
@@ -4899,6 +4899,7 @@ def index():
         icon_version=ICON_VERSION,
         coast_base=_coast_base(),
         places_base=_places_base(),
+        coastal_alerts=COASTAL_ALERTS,              # the coastal hazards layer (plan section 90)
         geo_base=_geo_base(),
         retired_stations=sorted(BLANK_STATIONS),            # a stored default among them opens like none (G35 B-8)
         site_origin=SITE_ORIGIN,

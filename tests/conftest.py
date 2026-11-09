@@ -60,6 +60,10 @@ def _no_bulletin_archive(monkeypatch):
         def refuse_alerts(url, **k):
             raise ConnectionError("tests do not reach the NWS alerts")
         monkeypatch.setattr(app._ALERTS_HTTP, "get", refuse_alerts)
+    if app is not None and hasattr(app, "_WEATHER_HTTP"):         # nor Open-Meteo / the NWS grids (section 91)
+        def refuse_weather(url, **k):
+            raise ConnectionError("tests do not reach Open-Meteo or the NWS grids")
+        monkeypatch.setattr(app._WEATHER_HTTP, "get", refuse_weather)
     if app is not None and hasattr(app, "_RUN_CACHE"):            # every test starts with no run found (G36 B-2)
         with app._CACHE_LOCK:
             app._RUN_CACHE.update(ts=0.0, value=(None, None), failed=False, good=None, good_ts=0.0)

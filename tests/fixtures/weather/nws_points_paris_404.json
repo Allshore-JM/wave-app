@@ -1,0 +1,8 @@
+{
+    "correlationId": "9d8618d",
+    "title": "Data Unavailable For Requested Point",
+    "type": "https://api.weather.gov/problems/InvalidPoint",
+    "status": 404,
+    "detail": "Unable to provide data for requested point 48.85,2.35",
+    "instance": "https://api.weather.gov/requests/9d8618d"
+}

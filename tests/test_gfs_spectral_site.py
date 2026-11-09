@@ -320,7 +320,7 @@ def test_the_payload_carries_the_split_and_noaas_split_is_the_gfsb_button(world)
     assert A.resolve_model("pt_21667N_158054W", "GFSB") == "GFS" and A.resolve_model("45007", "gfsb") == "GLWU"
     assert A.resolve_model("NW-HFO51", "GFSB") == "GFS" and A.resolve_model("51201", "gfsb") == "GFSB"
     assert A.resolve_model("51201", "GFSB", nwps_ok=False, swan_ok=False) == "GFSB"
-    assert A.VALID_MODELS == ("GFS", "SWAN", "GLWU", "NWPS", "GFSB")
+    assert A.VALID_MODELS == ("GFS", "SWAN", "GLWU", "NWPS", "GFSB", "ECMWF", "ICON", "AIFS", "NWS")
     unlisted = A.compute_forecast_payload("NW-HFO51", None, "US", "GFS", compact=True)
     assert unlisted["gfsb_available"] is False and "split" not in unlisted, "not covered: the bulletin as before"
 

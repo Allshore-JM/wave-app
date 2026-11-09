@@ -53,6 +53,18 @@ META_TTL_S = 600                                              # a model's run is
 META_KEEP_S = 6 * 3600                                        # a failed read keeps the last run this long
 FAIL_TTL_S = 60                                               # a failed forecast call is not repeated sooner
 BLOCK_S = 60                                                  # Open-Meteo said 429: nobody asks for a minute
+BLOCK_LONG_S = {"hourly": 600, "daily": 1800}                 # ... or longer when its words name a longer limit
+
+
+def block_for(detail):
+    """How long nobody asks Open-Meteo after a 429 whose body says `detail` (its "reason": "Minutely API request
+    limit exceeded ...", "Hourly ...", "Daily ..."). Unknown words: a minute. The daily limit is asked again every 30
+    minutes, never all day (a shared address's count can fall when the others stop)."""
+    low = (detail or "").lower()
+    for word, secs in BLOCK_LONG_S.items():
+        if word in low:
+            return secs
+    return BLOCK_S
 OM_CACHE_POINTS = 32
 
 NWS_POINT_TTL_S = 24 * 3600
@@ -463,12 +475,12 @@ class WeatherService:
                     return hit["doc"], inits
                 if hit and None in runs and t - hit["at"] < META_TTL_S * 3:
                     return hit["doc"], inits                  # runs unknown: a recent answer stands
+                if t < self._blocked:                         # before the failure memory: a 429 is "busy"
+                    self.stats["busy"] += 1
+                    raise WeatherBusy("blocked")
                 failed = self._fail.get(key)
                 if failed is not None and t - failed < FAIL_TTL_S:
                     raise WeatherError("recent failure")
-                if t < self._blocked:
-                    self.stats["busy"] += 1
-                    raise WeatherBusy("blocked")
             self._budget(OM_COST)
             url = (f"{OM_FORECAST}?latitude={key[0]}&longitude={key[1]}&hourly={','.join(OM_VARS)}"
                    f"&models={','.join(OM_NAME[m] for m in OM_MODELS)}&timezone=GMT&forecast_days={OM_DAYS}"
@@ -482,7 +494,7 @@ class WeatherService:
                 with self._lock:
                     self._fail[key] = self.mono()
                     if status == 429:
-                        self._blocked = self.mono() + BLOCK_S
+                        self._blocked = self.mono() + block_for(getattr(exc, "detail", ""))
                 self._err(f"open-meteo {key}: {exc}")
                 if status == 429:
                     raise WeatherBusy("429") from exc

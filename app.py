@@ -679,9 +679,10 @@ def _far_window_fetch(url: str, max_bytes: int, headers=None) -> bytes:
 class HTTPStatusError(IOError):
     """A capped fetch answered with another status than the one asked for; `status` keeps the number."""
 
-    def __init__(self, status):
-        super().__init__(f"HTTP {status}")
+    def __init__(self, status, detail=""):
+        super().__init__(f"HTTP {status}" + (f" ({detail})" if detail else ""))
         self.status = status
+        self.detail = detail                       # a refusal's own words (429 only; at most 300 characters)
 
 
 class BodyTooLarge(IOError):
@@ -794,7 +795,14 @@ def _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_r
                 cut()                                                # the time ran out while the headers came
             try:
                 if resp.status_code != (200 if byte_range is None else 206):
-                    raise HTTPStatusError(resp.status_code)
+                    detail = ""
+                    if resp.status_code == 429:                  # say which limit (Open-Meteo: minutely / daily ...)
+                        try:
+                            detail = resp.raw.read(600, decode_content=True).decode("utf-8", "replace")
+                            detail = " ".join(detail.split())[:300]
+                        except Exception:
+                            detail = ""
+                    raise HTTPStatusError(resp.status_code, detail)
                 if byte_range is not None:
                     got = (resp.headers.get("Content-Range") or "").strip()
                     if not got.startswith(f"bytes {start}-{end}/"):  # another part of the object (G36 A P3-4)

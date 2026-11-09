@@ -27,7 +27,8 @@ test('resolveInitialState: URL beats saved settings beats the server; an empty t
   assert.deepEqual(I.resolveInitialState('?station=46001&tz=&unit=US&model=swan&view=Graph', { tz: 'UTC', unit: 'Metric' }, server),
     { station: '46001', tz: '', unit: 'US', model: 'SWAN', view: 'Graph' }, 'URL wins, incl. an explicit empty tz');
   assert.equal(I.resolveInitialState('?unit=Furlongs', {}, server).unit, 'US', 'unknown unit -> US');
-  assert.equal(I.resolveInitialState('?model=ECMWF', {}, server).model, 'GFS', 'unknown model -> GFS');
+  assert.equal(I.resolveInitialState('?model=HRRR', {}, server).model, 'GFS', 'unknown model -> GFS');
+  assert.equal(I.resolveInitialState('?model=ecmwf', {}, server).model, 'ECMWF', 'a weather tab is a model (the loader keeps it only at a land point: section 91)');
   assert.equal(I.resolveInitialState('?view=Chart', {}, server).view, 'Table');
   assert.equal(I.resolveInitialState('', { unit: 5, tz: null }, server).unit, 'US', 'a corrupted setting is ignored');
   assert.equal(I.resolveInitialState('', {}, {}).station, '51201');

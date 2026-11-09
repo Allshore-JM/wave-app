@@ -493,9 +493,9 @@ test('G16-B P2-1: every forecast that lands is announced with the table\'s zone,
   const b = boot({}); const seen = [];
   b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
   await settle(); b.fs_.last().release(payload({ tz_label: 'Pacific/Honolulu' })); await settle();
-  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', quiet: false, ok: true, point: null, final: false, reason: null, lat: null, lon: null }]);
+  assert.deepEqual(seen, [{ station: '51201', tz: 'Pacific/Honolulu', model: 'GFS', view: 'Table', quiet: false, ok: true, kind: 'swell', point: null, final: false, reason: null, lat: null, lon: null }]);
   b.page.tz.value = 'UTC'; b.page.tz.dispatch('change'); await settle(); b.fs_.last().release(payload({ tz_label: 'UTC', model: 'SWAN' })); await settle();
-  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', quiet: false, ok: true, point: null, final: false, reason: null, lat: null, lon: null });
+  assert.deepEqual(seen[1], { station: '51201', tz: 'UTC', model: 'SWAN', view: 'Table', quiet: false, ok: true, kind: 'swell', point: null, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').title, 'SWAN · updated 20260926 12 UTC'.replace('updated ', 'updated ').replace('SWAN · updated 20260926 12 UTC', b.doc.getElementById('fwCycle').textContent), 'titles carry the full text');
   // the answer's position goes with the event (a removed station's sheltered note offers its live buoy: G35 B-8; re-check F12)
   b.page.tz.value = ''; b.page.tz.dispatch('change'); await settle();
@@ -912,7 +912,7 @@ test('a forecast point: its answer is announced with ok and point; an old run sa
   await settle();
   const pt = { id: 'pt_21667N_158054W', lat: 21.667, lon: -158.054, cell_lat: 21.6667, cell_lon: -158.1667, cell_km: 11.6, grid: 'g16', run: '2026100206', age_hours: 9.4 };
   b.fs_.last().release(payload({ station: 'pt_21667N_158054W', swan_available: false, point: pt })); await settle();
-  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', quiet: false, ok: true, point: pt, final: false, reason: null, lat: null, lon: null });
+  assert.deepEqual(seen[0], { station: 'pt_21667N_158054W', tz: '', model: 'GFS', view: 'Table', quiet: false, ok: true, kind: 'swell', point: pt, final: false, reason: null, lat: null, lon: null });
   assert.equal(b.doc.getElementById('fwCycle').textContent, 'GFS · run 20260926 12 UTC', 'a run of normal age: no note');
   assert.equal(b.doc.getElementById('modelBar').hidden, true, 'no SWAN for a point');
   b.app.loader.cache.clear(); b.app.loader.load({ unit: 'Metric' }); await settle();
@@ -1830,4 +1830,123 @@ test('77d review P3-6: a load from the page cache ends a busy retry that is wait
   assert.deepEqual(applied, ['46001', '46001'], 'the page cache');
   const n = fs_.calls.length; waits[0](); await settle();
   assert.equal(fs_.calls.length, n, 'the waiting retry asks nothing after the other load'); assert.deepEqual(applied, ['46001', '46001']);
+});
+
+// ---- weather at land forecast points (plan section 91) ----
+const WX_PT = 'pt_21450N_158000W';
+function wxPayload(over) {
+  const labels = [];
+  for (let i = 0; i < 48; i++) labels.push(`Saturday, September 26, 2026 ${(i % 12) + 1}:00 ${i % 24 < 12 ? 'AM' : 'PM'}`);
+  const v = (x) => labels.map((_, i) => (i % 3 === 0 ? x : null));
+  return Object.assign({
+    station: WX_PT, kind: 'weather', model: 'GFS', weather_models: ['GFS', 'ECMWF', 'ICON', 'AIFS'], error: null,
+    table_html: '<table class="table forecast-compact wx-table"><tbody><tr data-t="2026-09-26T01:00"><td>80</td></tr></tbody></table>',
+    summary_html: '<table class="forecast-summary wx-summary"></table>',
+    graph_data: { kind: 'weather', labels, temp: v(80), dew: v(68), precip: v(0.01), p24: v(0.2), wind: v(12), gust: v(18), dir: v(60),
+      units: { temp: '°F', precip: 'in', wind: 'mph' }, tz: 'Pacific/Honolulu', sky: null },
+    graph_header: { cycle: 'Weather · GFS run 2026-11-09 06 UTC', location: WX_PT + ' (21.450N 158.000W, 679 ft)', tz: 'Pacific/Honolulu' },
+    weather: { model: 'GFS', label: 'GFS', total: '1.23', total_unit: 'in', credit: 'Weather: <a href="https://open-meteo.com/">Open-Meteo.com</a> (CC BY 4.0)' },
+    swan_available: false, nwps_available: false, gfsb_available: false, tz_label: 'Pacific/Honolulu',
+    point: { id: WX_PT, lat: 21.45, lon: -158.0, land: true }
+  }, over || {});
+}
+function wxBoot(search, initial) {
+  return boot({ search: search || '?station=' + WX_PT, initial: Object.assign({ station: WX_PT, swan_stations: ['51201'], land_weather: true, swan_available: false, nwps_available: false }, initial || {}) });
+}
+
+test('weather (section 91): a land point\'s answer shows GFS with the offered weather tabs only, the server\'s cycle as the header, the total and credit on the meta line, kind weather in the event', async () => {
+  const b = wxBoot(), seen = [];
+  b.doc.addEventListener('allshore:forecast', (e) => seen.push(e.detail));
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(wxPayload()); await settle();
+  assert.equal(bar.hidden, false, 'the weather tabs show');
+  ['GFS', 'ECMWF', 'ICON', 'AIFS'].forEach((m) => assert.equal(btn(m).hidden, false, m + ' offered'));
+  ['SWAN', 'NWPS', 'GFSB', 'NWS'].forEach((m) => assert.equal(btn(m).hidden, true, m + ' not offered'));
+  assert.equal(btn('GFS').getAttribute('aria-pressed'), 'true');
+  assert.equal(b.doc.getElementById('fwCycle').textContent, 'Weather · GFS run 2026-11-09 06 UTC', 'the weather cycle as the server wrote it');
+  const meta = b.doc.getElementById('forecastMeta');
+  assert.ok(meta.textContent.includes('Total precipitation: 1.23 in (whole forecast)'), meta.textContent);
+  const credit = meta.children.find((c) => c.className === 'wx-credit');
+  assert.ok(credit && /open-meteo\.com/.test(credit.innerHTML), 'the source\'s credit with its link');
+  assert.equal(/Cycle\s*:\s*([^|\n]*)/.exec(meta.textContent)[1].trim().indexOf('Weather'), 0, 'the overlay\'s pageCycle sees a weather table');
+  assert.equal(seen[0].kind, 'weather'); assert.equal(seen[0].ok, true, 'a land point\'s weather is a forecast on screen (the page keeps the point)');
+});
+
+test('weather (section 91): a tab asks for its model at the point; the echo presses it; NWS shows where the answer offers it', async () => {
+  const b = wxBoot();
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(wxPayload({ weather_models: ['GFS', 'ECMWF', 'ICON', 'AIFS', 'NWS'] })); await settle();
+  assert.equal(btn('NWS').hidden, false, 'a US point: NWS offered');
+  btn('ECMWF').dispatch('click'); await settle();
+  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'ECMWF'); assert.equal(b.fs_.param(b.fs_.last(), 'station'), WX_PT);
+  b.fs_.last().release(wxPayload({ model: 'ECMWF', weather_models: ['GFS', 'ECMWF', 'ICON', 'AIFS', 'NWS'], graph_header: { cycle: 'Weather · ECMWF IFS run 2026-11-09 00 UTC', location: WX_PT, tz: 'Pacific/Honolulu' } })); await settle();
+  assert.equal(btn('ECMWF').getAttribute('aria-pressed'), 'true'); assert.equal(btn('GFS').getAttribute('aria-pressed'), 'false');
+  assert.equal(b.app.state.model, 'ECMWF');
+  assert.ok(/model=ECMWF/.test(b.win.history.urls[b.win.history.urls.length - 1]), 'the address keeps the tab');
+});
+
+test('weather (section 91): the weather tabs are asked for only at points, and only with land weather on', async () => {
+  const on = wxBoot('?station=' + WX_PT + '&model=AIFS'); await settle();
+  assert.equal(on.fs_.param(on.fs_.last(), 'model'), 'AIFS', 'a point with land weather on');
+  const st = wxBoot('?station=51201&model=ECMWF', { station: '51201' }); await settle();
+  assert.equal(st.fs_.param(st.fs_.last(), 'model'), 'GFS', 'a station never asks a weather tab');
+  const off = wxBoot('?station=' + WX_PT + '&model=ICON', { land_weather: false }); await settle();
+  assert.equal(off.fs_.param(off.fs_.last(), 'model'), 'GFS', 'land weather off: GFS');
+  const junk = wxBoot('?station=' + WX_PT + '&model=HRRR'); await settle();
+  assert.equal(junk.fs_.param(junk.fs_.last(), 'model'), 'GFS', 'an unknown model: GFS');
+});
+
+test('weather (section 91): a failed load at the same point keeps the weather tabs; a station or a sea point hides them', async () => {
+  const b = wxBoot();
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(wxPayload()); await settle();
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().fail(); await settle();
+  assert.equal(bar.hidden, false, 'the tabs stay (a way to another model)'); assert.equal(btn('ECMWF').hidden, false);
+  b.app.loader.load({ station: '51201' });
+  b.fs_.last().release(payload({ station: '51201', swan_available: true })); await settle();
+  assert.equal(btn('ECMWF').hidden, true, 'a station: no weather tabs'); assert.equal(btn('SWAN').hidden, false);
+  b.app.loader.load({ station: 'pt_21700N_158200W' });
+  b.fs_.last().release(payload({ station: 'pt_21700N_158200W', swan_available: false, nwps_available: false, gfsb_available: false })); await settle();
+  assert.equal(bar.hidden, true, 'a sea point: its swell table, no bar');
+});
+
+test('weather (section 91): the Graph view draws temperature, precipitation and wind; no gust series without gusts; direction on its own compass axis', async () => {
+  const b = wxBoot('?station=' + WX_PT + '&view=Graph');
+  await settle();
+  b.fs_.last().release(wxPayload()); await settle();
+  b.app.expand(); await settle();
+  assert.equal(b.Chart.made.length, 3);
+  const [t, p, w] = b.Chart.made;
+  assert.deepEqual(t.data.datasets.map((d) => d.label), ['Temperature', 'Dew point']);
+  assert.deepEqual(p.data.datasets.map((d) => d.label), ['Precipitation (row step)', '24-h total']);
+  assert.equal(p.data.datasets[0].type, 'bar'); assert.equal(p.options.scales.y.min, 0);
+  assert.deepEqual(w.data.datasets.map((d) => d.label), ['Wind', 'Gust', 'Direction (from)']);
+  assert.equal(w.data.datasets[2].yAxisID, 'yDir'); assert.equal(w.options.scales.yDir.max, 360);
+  assert.ok(t.options.scales.y.title.text.includes('°F')); assert.ok(w.options.scales.y.title.text.includes('mph'));
+  assert.equal(t.options.interaction.mode, 'allshoreRow', 'rows every third slot: the row tooltip mode');
+  assert.equal(t.data.datasets[0].spanGaps, true, 'the line joins the model\'s own rows');
+  const I = b.F._internals;
+  const noGust = I.weatherSpecs(Object.assign({}, wxPayload().graph_data, { gust: null }));
+  assert.deepEqual(noGust[2][1].map((d) => d.label), ['Wind', 'Direction (from)'], 'AIFS: no gust series');
+  const met = I.weatherSpecs(Object.assign({}, wxPayload().graph_data, { units: { temp: '°C', precip: 'mm', wind: 'km/h' } }));
+  assert.ok(met[1][2].title.text.includes('mm')); assert.equal(met[1][2].suggestedMax, 2);
+});
+
+test('weather (section 91): tooltip lines carry the unit; a direction carries its compass point', () => {
+  const b = wxBoot(), I = b.F._internals;
+  assert.equal(I.compass16(0), 'N'); assert.equal(I.compass16(359), 'N'); assert.equal(I.compass16(60), 'ENE'); assert.equal(I.compass16(225), 'SW');
+  assert.equal(I.weatherLabel({ dataset: { label: 'Direction (from)', isDir: true }, raw: 60 }), 'Direction (from): 60° ENE');
+  assert.equal(I.weatherLabel({ dataset: { label: 'Wind', unit: 'mph' }, raw: 12, formattedValue: '12' }), 'Wind: 12 mph');
+  assert.equal(I.weatherLabel({ dataset: { label: 'Wind', unit: 'mph' }, raw: null }), '', 'an empty slot says nothing');
+});
+
+test('weather (section 91): shortCycle passes a weather cycle through for any tab; the swell models keep their own forms', () => {
+  const b = wxBoot(), I = b.F._internals;
+  assert.equal(I.shortCycle('ECMWF', { cycle: 'Weather · ECMWF IFS run 2026-11-09 00 UTC' }), 'Weather · ECMWF IFS run 2026-11-09 00 UTC');
+  assert.equal(I.shortCycle('NWS', { cycle: 'Weather · NWS grid forecast updated 2026-11-09 16 UTC' }), 'Weather · NWS grid forecast updated 2026-11-09 16 UTC');
+  assert.equal(I.shortCycle('GFS', { cycle: '20261109 06 UTC' }), 'GFS · run 20261109 06 UTC');
 });

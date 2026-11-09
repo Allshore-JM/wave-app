@@ -509,7 +509,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.29.2"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.30.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -5229,6 +5229,7 @@ def index():
                          and all(sid != selected_station for sid, _name in stations),
         points_enabled=bool(_points_root()),
         weather_models=(payload.get("weather_models") if payload else None),   # a land point's tabs (section 91)
+        weather_info=(payload.get("weather") if payload else None),       # its total and credit, no-script (section 91)
         old_run_note=old_run_note,                # " · N h old" on the no-script meta line (G41 re-check F-2; §64)
         timezones=timezones,
         selected_tz=selected_tz,

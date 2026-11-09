@@ -1282,7 +1282,7 @@ def test_section_77_the_gfs_spectral_table_on_the_page(client, monkeypatch):
     a point and a lake station never get it; with the flag off the button is hidden and the state says so."""
     src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
     assert "var GFSB = {{ initial_state.gfsb_on|tojson }};" in src
-    assert "m === 'GFSB' && GFSB && station.indexOf('pt_') !== 0 ? 'GFSB' : 'GFS'" in src
+    assert "m === 'GFSB' && GFSB && station.indexOf('pt_') !== 0 ? 'GFSB'" in src
     b0 = client.get("/?station=51201&model=GFSB").get_data(as_text=True)
     st0 = initial(b0)
     assert st0["model"] == "GFS" and st0["gfsb_on"] is False and st0["gfsb_available"] is False
@@ -1415,3 +1415,22 @@ def test_coastal_alerts_on_the_page(client, monkeypatch):
     off = client.get("/?station=51201").get_data(as_text=True)
     assert "const ALERTS_ON = false;" in off
     assert "/ui/alerts.js" not in off and "initAlerts" not in off and "Coastal hazards</span>" not in off
+
+
+def test_section_91_land_weather_on_the_page(client, monkeypatch):
+    """Plan section 91: the head's early rule keeps a weather tab only for a point with land weather on (= the loader's
+    normalise); the four weather buttons exist, hidden unless the answer offers them; the no-script select lists them for
+    a weather answer; the overlay's run note never compares a weather table with a model run; the point tool's wording
+    follows the flag."""
+    src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
+    assert "var WX = {{ initial_state.land_weather|tojson }};" in src
+    assert "WX && station.indexOf('pt_') === 0 && ['ECMWF', 'ICON', 'AIFS', 'NWS'].indexOf(m) >= 0 ? m : 'GFS'" in src
+    assert r"if (/^\s*Weather\b/.test(m[1])) return null;" in src
+    assert src.index(r"if (/^\s*Weather\b/.test(m[1]))") < src.index("if (/NWPS/.test(m[1]))")
+    assert "landWeather: {{ initial_state.land_weather|tojson }}," in src
+    b = client.get("/?station=51201").get_data(as_text=True)
+    for m in ("ECMWF", "ICON", "AIFS", "NWS"):
+        assert re.search(r'data-model="%s" aria-pressed="false" hidden' % m, b), m
+        assert '<option value="%s"' % m not in b
+    assert "var WX = false;" in b and initial(b)["land_weather"] is False
+

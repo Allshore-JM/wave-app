@@ -28,6 +28,7 @@ import cwa_tls
 import wind_keyed
 import wind_sources
 import alert_sources
+import weather_sources
 
 app = Flask(__name__)
 
@@ -818,6 +819,43 @@ def _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_r
 
 POINTS = point_forecast.PointSource(_points_root, _points_fetch)
 
+# ---- Weather at land forecast points (plan section 91): Open-Meteo (GFS, ECMWF IFS, DWD ICON, ECMWF AIFS in one call per
+# point and model run) and the NWS grid forecast at US points. LAND_WEATHER=1 turns it on (unset: a land click is
+# refused as before). The fetches run in the request (one Open-Meteo call per new point per model run) behind the
+# shared build cap, never in the background.
+_WEATHER_HTTP = requests.Session()     # one attempt per object (no retry adapter)
+_WEATHER_TIMEOUT = (5, 15)             # connect, read
+_WEATHER_MAX_S = 20                    # one object, in all
+WEATHER_BUSY = "Weather is busy right now; try again in a moment"
+WEATHER_DOWN = "Weather temporarily unavailable"
+WEATHER_CREDIT = {
+    "open-meteo": ('Weather: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a> '
+                   '(<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>;'
+                   " rows at the model's own steps)"),
+    "nws": ('Weather: <a href="https://www.weather.gov/" target="_blank" rel="noopener">NOAA National Weather Service</a>'
+            ' grid forecast'),
+}
+
+
+def _land_weather_on() -> bool:
+    return os.environ.get("LAND_WEATHER", "") == "1"
+
+
+def _weather_fetch(url: str, max_bytes: int, headers=None) -> bytes:
+    """A whole 200 body of at most max_bytes from Open-Meteo or api.weather.gov (see _capped_get)."""
+    return _capped_get(url, max_bytes, headers, _WEATHER_TIMEOUT, _WEATHER_MAX_S, session=_WEATHER_HTTP)
+
+
+WEATHER = weather_sources.WeatherService(_weather_fetch)
+
+
+def _weather_health():
+    """/healthz's weather key (plan section 91): the flag, today's counted Open-Meteo calls, cache sizes, last error."""
+    try:
+        return dict(WEATHER.health(), enabled=_land_weather_on())
+    except Exception as exc:                                   # never let a report cost /healthz
+        return {"enabled": _land_weather_on(), "error": str(exc)[:200]}
+
 
 def _point_failure(message: str, reason: str | None = None):
     """An answer without rows. reason: why a point has no forecast ("land", "sheltered", "nodata", "invalid", "off":
@@ -1428,7 +1466,10 @@ _SWAN_CYCLE_RE = re.compile(r"PacIOOS SWAN updated (\d{8}) (\d{2}) UTC")
 _SWAN_BG = {"thread": None, "started": 0}
 SWAN_PROBE = os.environ.get("SWAN_PROBE", "1") != "0"   # the background HEADs (off in the tests: conftest)
 
-VALID_MODELS = ("GFS", "SWAN", "GLWU", "NWPS", "GFSB")   # GFSB = NOAA's own swell split (plan section 77)
+VALID_MODELS = ("GFS", "SWAN", "GLWU", "NWPS", "GFSB", "ECMWF", "ICON", "AIFS", "NWS")
+# GFSB = NOAA's own swell split (plan section 77); ECMWF / ICON / AIFS / NWS = the weather tables of a land forecast
+# point (plan section 91): only point ids ask for them, and only a point on land answers with them
+WEATHER_MODELS = weather_sources.MODELS
 
 # The Great Lakes stations (plan section 50): NOAA's GLWU model publishes a bulletin for each (the 45xxx buoys, C-MAN / NOS
 # sites, named beach points); the GLWU job stores them in the frames bucket (glwu/v1/<RUN>/bull/<id>.bull) with the
@@ -1507,6 +1548,8 @@ def resolve_model(station_id: str, requested: str | None, nwps_ok: bool | None =
                             or not (nwps_offered(station_id) if nwps_ok is None else nwps_ok)):   # its office stopped (K-7)
         return "GFS"
     if model == "GFSB" and not gfsb_offered(station_id):     # NOAA's split as a choice: only where ours is the default (§77)
+        return "GFS"
+    if model in WEATHER_MODELS and not point_forecast.is_point_id(station_id):   # weather models: points only (§91)
         return "GFS"
     return model
 
@@ -4485,6 +4528,308 @@ def build_summary_html(rows, ann, days, unit, tz_label=None) -> str:
     return _ascii(html)
 
 
+# ------------------------------ Weather at land points (plan section 91) ------------------------------------
+
+WEATHER_COLORS = {"temp": ("#B23A48", "#F4D6DA", "#FBEDEF"), "air": ("#6A5ACD", "#E2DEF7", "#F2F0FC"),
+                  "prec": ("#1565C0", "#D3E3F7", "#EAF2FB"), "wind": ("#546E7A", "#CFD8DC", "#ECEFF1")}
+
+
+def _wx_temp(c, unit):
+    if c is None:
+        return ""
+    return f"{round(c * 9 / 5 + 32)}" if unit == "US" else f"{round(c)}"
+
+
+def _wx_precip(mm, unit):
+    if mm is None:
+        return ""
+    if unit == "US":
+        v = mm / 25.4
+        return "0" if v < 0.005 else f"{v:.2f}"
+    return "0" if mm < 0.05 else f"{mm:.1f}"
+
+
+def _wx_wind(ms, unit):
+    if ms is None:
+        return ""
+    return f"{int(round(ms * 2.23694))}" if unit == "US" else f"{int(round(ms * 3.6))}"
+
+
+def _wx_pct(v):
+    return "" if v is None else f"{int(round(v))}"
+
+
+def _weather_local(rows, zone):
+    """The weather rows with their local labels: [(row, date text, time text, naive local datetime)]."""
+    out = []
+    for r in rows:
+        local = UTC.localize(r["t"]).astimezone(zone)
+        out.append((r, f"{local:%A, %B} {local.day}, {local.year}", local.strftime("%I:%M %p").lstrip("0"),
+                    local.replace(tzinfo=None)))
+    return out
+
+
+def build_weather_table(lrows, sky_rows, unit, show_gust=True) -> str:
+    """The weather table of a land point (plan section 91), in the window's compact look: rows classed by the real
+    sky (the swell tables' CSS), the Sun/Moon column last."""
+    t_u, p_u, w_u = ("&deg;F", "in", "mph") if unit == "US" else ("&deg;C", "mm", "km/h")
+    sky_rows = sky_rows if sky_rows and len(sky_rows) == len(lrows) else None
+    C = WEATHER_COLORS
+    groups = [("Temperature", "temp", [f"Temp<br>({t_u})", f"Dew pt<br>({t_u})"]),
+              ("Air", "air", ["Humidity<br>(%)", "Cloud<br>(%)"]),
+              ("Precipitation", "prec", [f"Step<br>({p_u})", f"24 h<br>({p_u})", "Type"]),
+              ("Wind", "wind", [f"Speed<br>({w_u})"] + ([f"Gust<br>({w_u})"] if show_gust else []) + ["Dir"])]
+    html = '<table class="table table-bordered table-sm forecast-compact wx-table">\n<thead>\n<tr>'
+    html += ('<th rowspan="2" scope="col" class="col-date">Date</th>'
+             '<th rowspan="2" scope="col" class="col-time">Time</th>')
+    for title, key, subs in groups:
+        html += (f'<th colspan="{len(subs)}" scope="colgroup" style="background-color:{C[key][0]}; color:#fff; '
+                 f'text-align:center;">{title}</th>')
+    if sky_rows:
+        html += '<th rowspan="2" scope="col" class="col-sun col-last" title="Sun and moon">Sun/Moon</th>'
+    html += '</tr>\n<tr>'
+    for title, key, subs in groups:
+        for sub in subs:
+            html += f'<th scope="col" style="background-color:{C[key][1]}; text-align:center;">{sub}</th>'
+    html += '</tr>\n</thead>\n<tbody>\n'
+    last = '' if sky_rows else ' class="col-last"'
+
+    def td(v, key):
+        return f'<td style="background-color:{C[key][2]}; text-align:right;">{v}</td>'
+
+    for i, (r, dstr, tstr, local) in enumerate(lrows):
+        info = sky_rows[i] if sky_rows else None
+        state = (info.get("state") if info else None) or _clock_state(tstr)
+        classes = ([f"sky-{state}"] if state else []) + (["day-first"] if info and info.get("day_first") else []) + \
+            (["now-row"] if info and info.get("now") else [])
+        cls = f' class="{" ".join(classes)}"' if classes else ""
+        html += (f'<tr{cls} data-t="{local:%Y-%m-%dT%H:%M}"><td class="col-date" title="{html_escape(dstr)}">'
+                 f'{html_escape(_short_date(dstr))}</td><td class="col-time">{tstr}</td>')
+        html += td(_wx_temp(r["temp"], unit), "temp") + td(_wx_temp(r["dew"], unit), "temp")
+        html += td(_wx_pct(r["rh"]), "air") + td(_wx_pct(r["cloud"]), "air")
+        step_title = f' title="{r["step"]} h"' if r.get("step") else ""
+        html += (f'<td{step_title} style="background-color:{C["prec"][2]}; text-align:right;">'
+                 f'{_wx_precip(r["p"], unit)}</td>')
+        html += td(_wx_precip(r["p24"], unit), "prec")
+        typ = r.get("type") or ""
+        tcls = "wx-type" + (" wx-" + typ.lower() if typ else "")
+        html += f'<td class="{tcls}" style="background-color:{C["prec"][2]};">{typ}</td>'
+        html += td(_wx_wind(r["wind"], unit), "wind")
+        if show_gust:
+            html += td(_wx_wind(r["gust"], unit), "wind")
+        d = r.get("dir")
+        dir_str = "" if d is None else _dir_cell(int(round(d)) % 360)
+        html += (f'<td{last} style="background-color:{C["wind"][2]}; text-align:left; white-space:nowrap;">'
+                 f'{dir_str}</td>')
+        if sky_rows:
+            html += f'<td class="col-sun col-last">{_sun_cell(info or {})}</td>'
+        html += '</tr>\n'
+    html += '</tbody>\n</table>'
+    return _ascii(html)
+
+
+def weather_days(lrows, sky_rows, days):
+    """One entry per local date of the weather rows: high / low, the date's precipitation (the steps ending on that
+    date), its type with the most precipitation, peak wind and gust, mean cloud, sun and moon (sky.day_summary)."""
+    order, by = [], {}
+    for i, (r, dstr, tstr, local) in enumerate(lrows):
+        d = local.date()
+        if d not in by:
+            order.append(d)
+            by[d] = []
+        by[d].append((r, dstr, local, (sky_rows[i] if sky_rows and i < len(sky_rows) else None)))
+    out = []
+    for di, d in enumerate(order):
+        items = by[d]
+        rs = [x[0] for x in items]
+        temps = [r["temp"] for r in rs if r["temp"] is not None]
+        ps = [r["p"] for r in rs if r["p"] is not None]
+        kinds = {}
+        for r in rs:
+            if r.get("type") and r["p"]:
+                kinds[r["type"]] = kinds.get(r["type"], 0) + r["p"]
+        winds = [r["wind"] for r in rs if r["wind"] is not None]
+        gusts = [r["gust"] for r in rs if r.get("gust") is not None]
+        clouds = [r["cloud"] for r in rs if r["cloud"] is not None]
+        info = (days or {}).get(d) or {}
+        notes = []
+        if di == 0 and items[0][2].hour > 1:
+            notes.append("from " + _short_clock(items[0][2]))
+        if di == len(order) - 1 and items[-1][2].hour < 22:
+            notes.append("until " + _short_clock(items[-1][2]))
+        out.append({"date": d, "label": _short_date(items[0][1]), "long": items[0][1], "note": " ".join(notes) or None,
+                    "hi": max(temps) if temps else None, "lo": min(temps) if temps else None,
+                    "p": sum(ps) if ps else None, "type": max(kinds, key=kinds.get) if kinds else "",
+                    "wind": max(winds) if winds else None, "gust": max(gusts) if gusts else None,
+                    "cloud": sum(clouds) / len(clouds) if clouds else None, "info": info,
+                    "moon": info.get("moon")})
+    return out
+
+
+def build_weather_summary(lrows, sky_rows, days, unit) -> str:
+    """The Summary view of a land point's weather: one row per date."""
+    t_u, p_u, w_u = ("&deg;F", "in", "mph") if unit == "US" else ("&deg;C", "mm", "km/h")
+    html = ('<table class="table table-bordered table-sm forecast-summary wx-summary">\n<thead><tr>'
+            '<th scope="col" class="col-date">Day</th><th scope="col">High / Low</th>'
+            '<th scope="col" title="The steps ending that day">Precipitation</th>'
+            '<th scope="col" title="Peak wind and peak gust">Wind</th>'
+            '<th scope="col" title="Mean cloud cover">Cloud</th>'
+            '<th scope="col">Sunrise</th><th scope="col">Sunset</th><th scope="col">Moon</th></tr></thead>\n<tbody>\n')
+    for day in weather_days(lrows, sky_rows, days):
+        note = f'<br><span class="sum-sub">{html_escape(day["note"])}</span>' if day["note"] else ""
+        cls = "sum-day" + (" sum-note" if day["note"] else "")
+        html += (f'<tr class="{cls}" data-date="{day["date"]:%Y-%m-%d}"><td class="col-date" '
+                 f'title="{html_escape(str(day["long"]))}">{html_escape(str(day["label"]))}{note}</td>')
+        hl = ("" if day["hi"] is None else
+              f'<span class="wx-hi">{_wx_temp(day["hi"], unit)}</span> / {_wx_temp(day["lo"], unit)} {t_u}')
+        html += f"<td>{hl}</td>"
+        if day["p"] is None:
+            html += "<td></td>"
+        else:
+            typ = f' &middot; {day["type"]}' if day["type"] else ""
+            html += f'<td>{_wx_precip(day["p"], unit)} {p_u}{typ}</td>'
+        if day["wind"] is None:
+            html += "<td></td>"
+        else:
+            g = f' &middot; gusts {_wx_wind(day["gust"], unit)}' if day["gust"] is not None else ""
+            html += f'<td>{_wx_wind(day["wind"], unit)} {w_u}{g}</td>'
+        html += f'<td>{"" if day["cloud"] is None else _wx_pct(day["cloud"]) + "%"}</td>'
+        info = day["info"]
+        for k in ("sunrise", "sunset"):
+            t = info.get(k)
+            html += (f'<td class="sum-sun">{sky.EVENT_GLYPH[k]} {_short_clock(t)}</td>' if t
+                     else '<td class="sum-sun">&mdash;</td>')
+        m = day.get("moon")
+        html += (f'<td class="sum-moon"><span class="moon-phase" title="{html_escape(m["name"])}, {m["pct"]}% '
+                 f'illuminated">{m["glyph"]} {m["pct"]}%</span></td>' if m else "<td></td>")
+        html += "</tr>\n"
+    html += "</tbody>\n</table>"
+    return _ascii(html)
+
+
+def _weather_zone(tz, lat, lon):
+    """(zone name, pytz zone) for a land point: a valid ?tz first, else the point's own rule (_point_tz)."""
+    name = None
+    if tz:
+        try:
+            name = pytz.timezone(tz).zone
+        except Exception:
+            name = None
+    name = name or _point_tz(lat, lon)
+    try:
+        return name, pytz.timezone(name)
+    except Exception:
+        return "UTC", UTC
+
+
+def _weather_graph(lrows, unit, lat, lon, tz_name, show_gust):
+    """The weather graphs' data (plan section 91): one slot an HOUR from the first row to the last (empty between a
+    model's coarser steps, as a sea point's), so a day is as wide on day 10 as on day 1."""
+    t0, t1 = lrows[0][0]["t"], lrows[-1][0]["t"]
+    at = {x[0]["t"]: x[0] for x in lrows}
+    zone = pytz.timezone(tz_name)
+    us = unit == "US"
+    labels, times = [], []
+    temp, dew, prec, p24, wind, gust, wdir = [], [], [], [], [], [], []
+    t = t0
+    while t <= t1:
+        local = UTC.localize(t).astimezone(zone)
+        labels.append(f"{local:%A, %B} {local.day}, {local.year} {local.strftime('%I:%M %p').lstrip('0')}")
+        times.append(local.replace(tzinfo=None))
+        r = at.get(t)
+        temp.append(None if not r or r["temp"] is None else round(r["temp"] * 9 / 5 + 32 if us else r["temp"], 1))
+        dew.append(None if not r or r["dew"] is None else round(r["dew"] * 9 / 5 + 32 if us else r["dew"], 1))
+        prec.append(None if not r or r["p"] is None else round(r["p"] / 25.4 if us else r["p"], 3 if us else 2))
+        p24.append(None if not r or r["p24"] is None else round(r["p24"] / 25.4 if us else r["p24"], 3 if us else 2))
+        wind.append(None if not r or r["wind"] is None else round(r["wind"] * (2.23694 if us else 3.6), 1))
+        gust.append(None if not r or not show_gust or r.get("gust") is None
+                    else round(r["gust"] * (2.23694 if us else 3.6), 1))
+        wdir.append(None if not r or r["dir"] is None else int(round(r["dir"])) % 360)
+        t += timedelta(hours=1)
+    gd = {"kind": "weather", "labels": labels, "temp": temp, "dew": dew, "precip": prec, "p24": p24,
+          "wind": wind, "gust": gust if show_gust else None, "dir": wdir,
+          "units": {"temp": "°F" if us else "°C", "precip": "in" if us else "mm",
+                    "wind": "mph" if us else "km/h"},
+          "tz": tz_name, "sky": None}
+    try:
+        gsky = sky.annotate_rows(times, lat, lon, tz_name)
+        if gsky:
+            gd["sky"] = [a["state"] for a in gsky]
+    except Exception:
+        pass
+    return gd
+
+
+def _weather_payload(out, station, tz, unit, model):
+    """The answer for a forecast point on land (plan section 91): the weather table of `model` (GFS, ECMWF, ICON,
+    AIFS from Open-Meteo; NWS at US points), its Summary, graphs and the model bar's choices. Failing to read the
+    weather is a passing error (Retry), never final."""
+    lat, lon = point_forecast.parse_point_id(station)
+    tz_name, zone = _weather_zone(tz, lat, lon)
+    offered = [m for m in WEATHER_MODELS if m != "NWS" or weather_sources.nws_box(lat, lon)]
+    if model not in offered:
+        model = "GFS"
+    out.update({"kind": "weather", "model": model, "weather_models": offered, "lat": lat, "lon": lon,
+                "point": {"id": station, "lat": lat, "lon": lon, "land": True}, "tz_label": tz_name,
+                "swan_available": False, "nwps_available": False, "gfsb_available": False, "error": None})
+    for k in ("split", "split_note", "final", "reason"):
+        out.pop(k, None)
+    if _POINT_BUILDS.stuck(_POINT_BUILD_WAIT_S) or not _POINT_BUILDS.acquire(timeout=_POINT_BUILD_WAIT_S):
+        out["error"], out["busy"] = WEATHER_BUSY, True
+        return out
+    try:
+        table = WEATHER.table(model, lat, lon)
+        if table is None and model == "NWS":                  # the NWS has no grid here after all
+            offered = out["weather_models"] = [m for m in offered if m != "NWS"]
+            model = out["model"] = "GFS"
+            table = WEATHER.table(model, lat, lon)
+    except weather_sources.WeatherBusy:
+        out["error"], out["busy"] = WEATHER_BUSY, True
+        return out
+    except weather_sources.WeatherError as exc:
+        app.logger.warning("weather %s %s: %s", station, model, exc)
+        out["error"] = WEATHER_DOWN
+        return out
+    finally:
+        _POINT_BUILDS.release()
+    rows = (table or {}).get("rows") or []
+    if not rows:
+        out["error"] = WEATHER_DOWN
+        return out
+    lrows = _weather_local(rows, zone)
+    sky_rows = None
+    try:
+        sky_rows = sky.annotate_rows([x[3] for x in lrows], lat, lon, tz_name)
+    except Exception as exc:                                   # never let the sky cost the weather
+        app.logger.warning("weather sky %s: %s", station, exc)
+    show_gust = any(r.get("gust") is not None for r in rows)
+    out["table_html"] = build_weather_table(lrows, sky_rows, unit, show_gust)
+    try:
+        days = sky.day_summary(lat, lon, tz_name, sorted({x[3].date() for x in lrows}))
+        out["summary_html"] = build_weather_summary(lrows, sky_rows, days, unit)
+    except Exception as exc:
+        app.logger.warning("weather summary %s: %s", station, exc)
+    total = sum(r["p"] for r in rows if r["p"] is not None)
+    run = table.get("run")
+    run_txt = f"{run:%Y-%m-%d %H} UTC" if run else "latest"
+    label = weather_sources.LABEL[model]
+    cycle = (f"Weather · NWS grid forecast updated {run_txt}" if model == "NWS"
+             else f"Weather · {label} run {run_txt}")
+    elev = table.get("elev")
+    elev_txt = ""
+    if isinstance(elev, (int, float)):
+        elev_txt = f", {round(elev * 3.28084):,} ft" if unit == "US" else f", {round(elev):,} m"
+    out["weather"] = {"model": model, "label": label, "run_utc": run.strftime("%Y-%m-%dT%H:%MZ") if run else None,
+                      "total": _wx_precip(total, unit), "total_unit": "in" if unit == "US" else "mm",
+                      "credit": WEATHER_CREDIT[table["source"]], "elev_m": elev,
+                      "first": f"{lrows[0][1]} {lrows[0][2]}", "last": f"{lrows[-1][1]} {lrows[-1][2]}"}
+    out["wind_complete"] = True
+    out["graph_header"] = {"cycle": cycle, "location": f"{station} ({_fmt_latlon(lat, lon)}{elev_txt})",
+                           "tz": tz_name}
+    out["graph_data"] = _weather_graph(lrows, unit, lat, lon, tz_name, show_gust)
+    return out
+
+
 # ------------------------------ Flask routes -----------------------------------
 
 # NDBC / GFS station ids are short and alphanumeric, with hyphens/underscores
@@ -4583,6 +4928,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
         (cycle_str, location_str, model_run_str, rows, effective_tz_name, parse_error), point = point_forecast_data(
             station, tz or None)
         slots = (point or {}).get("_slots")
+        if rows is None and point and point.get("reason") == "land" and _land_weather_on():
+            return _weather_payload(out, station, tz, unit, model)   # land: the weather (plan section 91)
         if rows is None:
             out["point"] = None
             if parse_error == POINT_BUSY:
@@ -4593,6 +4940,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
             point = None
         else:
             point = out["point"] = {k: v for k, v in point.items() if not k.startswith("_")}
+        if model in WEATHER_MODELS and model != "GFS":         # a weather tab asked at a point on the sea: its swell table
+            model = out["model"] = "GFS"
     else:
         def gfs_table():
             """The GFS table: our spectral split where it is the default (section 77; the answer says which split it
@@ -4855,6 +5204,7 @@ def index():
         "swan_available": swan_available, "swan_stations": sorted(swan_list),
         "nwps_available": nwps_available, "nwps_stations": sorted(nwps_list),
         "gfsb_on": GFS_SPECTRAL, "gfsb_available": gfsb_available,   # the "GFS (Bulletin)" choice (plan section 77)
+        "land_weather": _land_weather_on(),                    # land points answer the weather (plan section 91)
         "inline": bool(payload),
     }
     if payload:                                                # render=full: the window shows this without a fetch
@@ -4862,7 +5212,7 @@ def index():
                               "error": payload["error"], "model": payload["model"],
                               "wind_complete": payload.get("wind_complete", True)})
         for k in ("point", "final", "busy", "reason", "summary_html", "nwps_age_hours", "swan_age_hours",
-                  "split", "split_note"):                                                                  # a point's
+                  "split", "split_note", "kind", "weather_models", "weather"):                             # a point's
                                             # own keys (a refusal is final: no Retry), the Summary view, the run's age
             if payload.get(k) is not None:
                 initial_state[k] = payload[k]
@@ -4878,6 +5228,7 @@ def index():
         selected_unknown=bool(selected_station) and not point_forecast.parse_point_id(selected_station)
                          and all(sid != selected_station for sid, _name in stations),
         points_enabled=bool(_points_root()),
+        weather_models=(payload.get("weather_models") if payload else None),   # a land point's tabs (section 91)
         old_run_note=old_run_note,                # " · N h old" on the no-script meta line (G41 re-check F-2; §64)
         timezones=timezones,
         selected_tz=selected_tz,
@@ -6777,6 +7128,7 @@ def _live_after_fork():
     _GSPEC_LOCK = threading.Lock()                # the GFS spectral table (plan section 77)
     _GSPEC["thread"] = None
     ALERTS.after_fork()                           # the coastal hazards' lock and reader (plan section 90)
+    WEATHER.reset_after_fork()                    # the land weather's locks (plan section 91)
     _WINDS_LOCK = threading.Lock()              # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()
@@ -6899,6 +7251,7 @@ def healthz():
         "nwps": _nwps_health(),                   # section 59: the NWPS tables' pointer; reported only
         "swan": _swan_health(),                   # section 64: the SWAN tables' publish times; reported only
         "alerts": _alerts_health(),               # section 90: the NWS coastal hazards; reported only
+        "weather": _weather_health(),             # section 91: land weather (Open-Meteo, NWS); reported only
     }
     resp = jsonify(body)
     resp.status_code = 200 if ok else 503

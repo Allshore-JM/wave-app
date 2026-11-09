@@ -54,6 +54,7 @@ function fetchStub() {
 function boot(opts) {
   opts = opts || {};
   const win = fakeWindow(opts), page = buildPage(win), F = load(win), fs_ = fetchStub(), Chart = fakeChart();
+  if (opts.ResizeObserver) win.ResizeObserver = opts.ResizeObserver;
   const all = [], timers = { all, set: (fn, ms) => { const t = { fn, ms, on: true }; all.push(t); return t; }, clear: (t) => { if (t) t.on = false; } };
   win.Chart = Chart;
   const app = F.init({ window: win, initial: Object.assign({ station: '51201', tz: '', unit: 'US', model: 'GFS', view: 'Table', swan_available: false, swan_stations: ['51201'] }, opts.initial || {}),
@@ -272,6 +273,28 @@ test('a forecast that lands while the detailed table is hidden gets its --date-w
   t.tableEl.style['--date-w'] = undefined;
   b.app.setView('Graph'); b.app.setView('Table');
   assert.equal(t.tableEl.style['--date-w'], '74.92px');
+});
+
+test('the frozen Time column follows the Date column when the table\'s box changes size with no resize of the window (section 91)', async () => {
+  // a reload with the window open: the table is measured, then the window's box settles narrower (the corner controls
+  // measured later) and a table narrower than the window shrinks with it, the Date column too
+  const obs = [];
+  function RO(cb) { this.cb = cb; this.els = []; obs.push(this); }
+  RO.prototype.observe = function (el) { this.els.push(el); };
+  const b = boot({ ResizeObserver: RO }); await settle(); const t = wireTable(b);
+  assert.equal(obs.length, 1); assert.deepEqual(obs[0].els, [b.page.table], 'the table\'s box is watched');
+  b.app.window.setMode('normal');
+  t.dateCell.getBoundingClientRect = () => ({ width: 94.32 });
+  b.fs_.last().release(skyPayload()); await settle();
+  assert.equal(t.tableEl.style['--date-w'], '94.32px', 'measured as the table lands');
+  t.dateCell.getBoundingClientRect = () => ({ width: 78.68 });
+  obs[0].cb([]);                                                             // the box changed size: no window resize
+  assert.equal(t.tableEl.style['--date-w'], '78.68px', 'measured again: the Time column next to the Date column');
+  b.app.setTableMode('summary'); t.dateCell.getBoundingClientRect = () => ({ width: 0 });
+  obs[0].cb([]);
+  assert.equal(t.tableEl.style['--date-w'], '78.68px', 'a hidden table measures nothing (its 0 is never kept)');
+  // without ResizeObserver (an old browser) the page still starts
+  const c = boot({}); await settle(); assert.ok(c.app.window);
 });
 
 test('an error answer clears the revealed station: back to it, the now row is revealed again (G24 B-8)', async () => {

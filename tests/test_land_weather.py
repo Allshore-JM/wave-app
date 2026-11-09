@@ -299,7 +299,7 @@ def test_weather_payload(A):
     assert out["summary_html"].count("sum-day") >= 15
     assert "Open-Meteo" in out["weather"]["credit"]
     assert out["graph_header"]["cycle"].endswith("run 2026-11-09 00 UTC")
-    assert "679 ft" in out["graph_header"]["location"]
+    assert out["graph_header"]["location"] == "21.450N 158.000W (elevation 679 ft)"   # as a swell point's line + height
     total = sum(r["p"] for r in rows if r["p"] is not None)
     assert out["weather"]["total"] == f"{total / 25.4:.2f}"
 
@@ -309,7 +309,7 @@ def test_weather_payload_metric_and_aifs(A):
     th = out["table_html"]
     assert out["model"] == "AIFS" and "&deg;C" in th and "(mm)" in th and "(km/h)" in th
     assert "Gust" not in th and out["graph_data"]["gust"] is None
-    assert "207 m" in out["graph_header"]["location"]
+    assert out["graph_header"]["location"] == "21.450N 158.000W (elevation 207 m)"
 
 
 def test_weather_payload_nws(A):

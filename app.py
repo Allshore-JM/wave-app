@@ -509,7 +509,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.30.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.30.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -4816,16 +4816,16 @@ def _weather_payload(out, station, tz, unit, model):
     cycle = (f"Weather · NWS grid forecast updated {run_txt}" if model == "NWS"
              else f"Weather · {label} run {run_txt}")
     elev = table.get("elev")
-    elev_txt = ""
+    elev_txt = ""                                               # the ground height the temperatures are for
     if isinstance(elev, (int, float)):
-        elev_txt = f", {round(elev * 3.28084):,} ft" if unit == "US" else f", {round(elev):,} m"
+        elev_txt = f" (elevation {round(elev * 3.28084):,} ft)" if unit == "US" else f" (elevation {round(elev):,} m)"
     out["weather"] = {"model": model, "label": label, "run_utc": run.strftime("%Y-%m-%dT%H:%MZ") if run else None,
                       "total": _wx_precip(total, unit), "total_unit": "in" if unit == "US" else "mm",
                       "credit": WEATHER_CREDIT[table["source"]], "elev_m": elev,
                       "first": f"{lrows[0][1]} {lrows[0][2]}", "last": f"{lrows[-1][1]} {lrows[-1][2]}"}
     out["wind_complete"] = True
-    out["graph_header"] = {"cycle": cycle, "location": f"{station} ({_fmt_latlon(lat, lon)}{elev_txt})",
-                           "tz": tz_name}
+    # the clicked point's coordinates, as a swell point's Location line shows them (section 31), then the elevation
+    out["graph_header"] = {"cycle": cycle, "location": point_forecast.fmt_coord(lat, lon) + elev_txt, "tz": tz_name}
     out["graph_data"] = _weather_graph(lrows, unit, lat, lon, tz_name, show_gust)
     return out
 

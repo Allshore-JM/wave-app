@@ -127,3 +127,88 @@ address is shared. The server no longer calls Open-Meteo's forecast at all.
 
 ### Deviation
 - The planned tooltip with Open-Meteo's own reason on a 429 is not built; the message alone is shown.
+
+## G60: two fresh reviewers (2026-11-09)
+Reviewer A read the code and checked the data with no browser; reviewer B used the test site in headless Chrome. Both
+reviewed feat/land-weather @ ca83ebe (UI 1.30.2). Reports: scratch `g60/a/g60-a-report.md` and `g60/b/g60-b-report.md`.
+
+### Count
+- A: 1 P1, 9 P3. B: 1 P1, 6 P3. A-1 and B-1 are the same defect, so **0 P0, 1 P1, 0 P2, 15 P3** in all.
+
+### What held up
+- **Values:** 0 mismatches between an independent read of Open-Meteo's text and the built tables.
+  - A: the Oahu capture, 4 models, each model's own steps.
+  - B: 16 land points worldwide, 60 tables, against the text the page itself fetched (both poles, the date line on
+    both sides, Tibet at 4,945 m, Lake Titicaca).
+- **GET / POST parity:** the POST builds exactly what a server-side build gives, in every unit and zone tried.
+- **No Open-Meteo forecast call from the server** on any path.
+- **Refusals:** stations, sea points, sheltered points, oversized bodies, another place's answer, unknown models.
+  - 53 hostile bodies: none caused a 500.
+  - Nothing is cached; a refused body is never logged.
+- **The 0.3-degree place check is safe for real answers:** Open-Meteo's grid point lies at most 0.154 deg from the click,
+  at 18 coastal and island points.
+- **The loader:** a superseded load cancels its Open-Meteo fetch and never writes a late answer. The held text is reused
+  across tabs, units, zones and Retry.
+- **The page:** views, units, zones, the point tool on desktop and phone, the frozen columns, a11y facts, console.
+- **Stations and sea points:** the same JSON as production.
+
+### Findings and outcomes
+| # | Finding | Outcome |
+|---|---|---|
+| A-1 = B-1 (P1) | NWS tab where api.weather.gov has no grid (southern Canada, northern Mexico, the Bahamas, Chukotka), or NWS pressed in the US then a land point abroad: the GET answered GFS + `om_url`, but the page POSTed `model=NWS` and the route refused it ("Not a land forecast point", final, the bar gone, stuck on reload) | Fixed: the POST carries the model the GET answered (`postQuery`); the route reads the model case-blind |
+| A-2 (P3) | The POST route compared the model case-sensitively | Fixed with A-1 |
+| A-3 (P3) | `elevation` unchecked: 1e300 printed a 300-digit height; NaN reached the generic error | Fixed: finite, within -500..9000 m, not a bool, else no elevation |
+| A-4 (P3) | The record's "byte-identical with the flag off" holds for the API answers, not the page | Wording corrected below |
+| A-5 (P3) | An NWS row with no rain block ending in its step still shows a Type (from the weather layer) | Recorded (code-reading only; not seen in the fixture) |
+| A-6 (P3) | `nws_type` read "ice_fog" / "freezing_fog" as ice | Fixed: fog, haze, smoke, dust, blowing sand and volcanic ash are skipped |
+| A-7 (P3) | The five meta.json reads ran one after another in the request | Fixed: read side by side when more than one is due |
+| A-8 (P3) | Two loads of one point at once each ask Open-Meteo | Recorded (one extra call against the visitor's own limit) |
+| A-9 (P3) | The step boundary comes from the server's meta run, not the body's | Recorded (a window of minutes around a run) |
+| A-10 (P3) | Test gaps: 13 surviving mutants | Fixed: tests for each (cell values for GFS and AIFS, repeated or missing hours, the 6-h meta keep, NWS steps and its 24-h total, the models offered abroad, a sea point asked with a weather model) |
+| B-2 (P3) | A transient 502 / 520 on the POST showed the error at once (2 of ~95 POSTs) | Fixed: one quiet retry with the same text on a gateway error (502, 503, 504, 520-524) or a dropped connection |
+| B-3 (P3) | The tool ignores a second click while "Checking that point..." (up to 20 s) | Recorded |
+| B-4 (P3) | After a 429 the tool said "Click another point." | Fixed: "Click / Tap the same point again in a moment, or another one." for passing failures; final refusals keep the old text |
+| B-5 (P3) | Ice and thunder colours below AA on the precipitation band (4.0 and 4.45:1) | Fixed: 5.31 and 5.76:1 |
+| B-6 (P3) | The no-script select lists ECMWF / ICON / AIFS, which answer "needs JavaScript" | Recorded |
+| B-7 (P3) | A unit or zone change during the first Open-Meteo fetch fetches again (cost 5.83 at Open-Meteo); the author's `v91c_fail.js` sent its station switch to `window`, so that check switched nothing | Recorded (`v91c_race.js` and B's runs cover the case) |
+
+**Correction to the step-4 record (A-4).** With the flag off:
+- the API answers are byte-identical to production;
+- the page differs in 16 lines (the head variable and its rule, four hidden weather buttons, CSS, the off flags);
+- `/healthz` gains a `weather` key;
+- `POST /api/forecast/weather` answers 400 where production answers 404.
+
+### The fix round
+- **Commits on feat/land-weather:**
+  - 9a76315 the fixes (UI 1.30.3);
+  - 9ee199b the golden;
+  - 741d91c a test of the page's retry flag.
+- **test @ c89a7c2** (cherry-picks), UI 1.30.3 served = the repo; the 1.30.2 URL answers 404.
+- **Suites:** full pytest 2,833 passed + 1 skipped; Node UI 629.
+- **Mutants:** 22 of 22 killed (M13, M24, M25, M26, M28, M36, M38, M40, M46, M52, J19, N1-N11).
+
+### Live check of the fixes (test site, headless Chrome, 2026-11-09 ~22:00 UTC)
+- **A-1, no grid:** the NWS tab at Montreal, Tijuana, Hermosillo and Chukotka.
+  - The GET asks NWS; the POST asks GFS (200); the GFS table shows (195 rows).
+  - The bar stays, with GFS lit; no error; no `model=NWS` left in the address.
+  - Fairbanks (a real grid): the NWS table, 65 rows.
+- **A-1, second path:** NWS pressed at Fairbanks, then Paris and Montreal from the picker. Each gets its GFS table; the
+  POST asks GFS.
+- **B-2:** POSTs answered by DevTools.
+  - One 502, or one dropped connection: the table, after two POSTs and one Open-Meteo fetch, with nothing shown on the
+    way.
+  - Two failures: "Weather temporarily unavailable" + Retry. Retry gives the table with no new Open-Meteo fetch.
+- **B-4:** after a 429 the tool bar reads "Weather is busy right now; try again in a moment / Click the same point again
+  in a moment, or another one." The phone says "Tap". The tool stays on and nothing is kept.
+- **B-5:** served colours: ice rgb(0,110,120) 5.31:1, thunder rgb(154,69,8) 5.76:1.
+- **Regression:**
+  - Oahu, the Alps, Alice Springs and Houston, every tab, rows checked against the page's own Open-Meteo text: 0
+    mismatches. The only differences are 0° shown for Open-Meteo's 360°, the same direction.
+  - Views, ranges, units and zones at Kiruna: as before, with no extra Open-Meteo fetch.
+  - The point tool on desktop and phone: land, sea, a kept point reopening.
+  - Console: only the injected errors.
+- The test origin's storage was emptied; the browser was stopped and its profile removed.
+
+### Owner awareness
+- In southern Canada, northern Mexico, the Bahamas and Chukotka the NWS tab is still offered. Pressing it shows the GFS
+  table with GFS lit, because api.weather.gov has no grid there.

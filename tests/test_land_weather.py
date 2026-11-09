@@ -62,7 +62,9 @@ class Fake:
             return json.dumps({"last_run_initialisation_time": ep}).encode()
         if "/v1/forecast" in url:
             if self.om_status:
-                raise Status(self.om_status)
+                err = Status(self.om_status)
+                err.detail = getattr(self, "detail", "")
+                raise err
             return raw("om_oahu.json")
         if "/points/" in url:
             if url.split("/points/")[1].startswith("21."):
@@ -244,6 +246,67 @@ def test_429_blocks_and_answers_busy():
     with pytest.raises((W.WeatherBusy, W.WeatherError)):
         s.table("GFS", 21.3, -157.8, now=NOW)                    # another point while blocked: not asked
     assert fake.count("/v1/forecast") == 1
+
+
+def test_a_429_says_busy_for_the_same_point_too():
+    """Test-site finding V4-3: the failure memory came first, so the point that met the 429 read "unavailable"."""
+    fake = Fake(om_status=429)
+    s = service(fake)
+    with pytest.raises(W.WeatherBusy):
+        s.table("GFS", *OAHU, now=NOW)
+    for _ in range(2):
+        with pytest.raises(W.WeatherBusy):                       # the same point, still blocked: busy, not down
+            s.table("GFS", *OAHU, now=NOW)
+    assert fake.count("/v1/forecast") == 1
+
+
+@pytest.mark.parametrize("detail,secs", [
+    ("", W.BLOCK_S), ("Too many", W.BLOCK_S),
+    ('{"reason":"Minutely API request limit exceeded. Please try again in one minute.","error":true}', W.BLOCK_S),
+    ('{"reason":"Hourly API request limit exceeded. Please try again in the next hour.","error":true}', 600),
+    ('{"reason":"Daily API request limit exceeded. Please try again tomorrow.","error":true}', 1800)])
+def test_how_long_a_429_blocks(detail, secs):
+    assert W.block_for(detail) == secs
+    fake = Fake(om_status=429)
+    fake.detail = detail
+    s = service(fake)
+    with pytest.raises(W.WeatherBusy):
+        s.table("GFS", *OAHU, now=NOW)
+    assert s.health()["blocked_s"] == secs
+    s._mono[0] += secs - 1
+    with pytest.raises(W.WeatherBusy):
+        s.table("GFS", 21.3, -157.8, now=NOW)
+    fake.om_status = None
+    s._mono[0] += 2
+    assert s.table("GFS", 21.3, -157.8, now=NOW)["rows"]
+
+
+def test_capped_get_keeps_a_429s_words(monkeypatch):
+    """The refusal's body (first 300 characters, one line) rides on the error, so the block and /healthz know it."""
+    import io
+    import app as A2
+    body = b'{"reason":"Daily API request limit\n exceeded. Please try again tomorrow.","error":true}' + b" " * 900
+
+    class R:
+        status_code = 429
+        headers = {}
+        class raw:                                   # urllib3's HTTPResponse.read signature
+            buf = io.BytesIO(body)
+
+            @classmethod
+            def read(cls, amt=None, decode_content=None):
+                return cls.buf.read(amt)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    session = type("S", (), {"get": staticmethod(lambda url, **k: R())})()
+    with pytest.raises(A2.HTTPStatusError) as got:
+        A2._capped_get("https://api.open-meteo.com/v1/forecast", 1000, None, (1, 1), 5, session=session)
+    assert got.value.status == 429 and "Daily API request limit exceeded" in got.value.detail
+    assert len(got.value.detail) <= 300 and "\n" not in got.value.detail and "Daily" in str(got.value)
 
 
 def test_daily_budget():

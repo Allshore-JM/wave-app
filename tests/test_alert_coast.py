@@ -241,6 +241,165 @@ def test_near_ok_refuses_a_way_along_the_coast_or_across_water():
     assert A.near_ok(-158.0, 21.0, (0, -158.0, 21.0002, 0.022), tangent=(0.0, 1.0))   # within 50 m: as is
 
 
+def test_near_ok_takes_the_zones_own_shore_within_near_shore_km():
+    # G59 re-check R1: a headland GSHHG draws a few hundred metres outside NWS's polygon reaches the zone's own shore
+    # edge along the coast; within NEAR_SHORE_KM that is the zone's shore, farther it is a border on the shore
+    near = (0, -158.0, 21.0 + 0.3 / 111.2, 0.3)
+    far = (0, -158.0, 21.0 + 0.6 / 111.2, 0.6)
+    assert A.near_ok(-158.0, 21.0, near, tangent=(0.0, 1.0))
+    assert not A.near_ok(-158.0, 21.0, far, tangent=(0.0, 1.0))
+    # the angle rule's own value: |cos| 0.6 is "inland enough", 0.8 runs along the coast
+    s6, c6 = math.sqrt(1 - 0.6 ** 2), 0.6
+    s8, c8 = math.sqrt(1 - 0.8 ** 2), 0.8
+    assert A.near_ok(-158.0, 21.0, far, tangent=(s6, c6))
+    assert not A.near_ok(-158.0, 21.0, far, tangent=(s8, c8))
+
+
+def test_fill_holes_gives_short_zone_less_stretches_their_neighbours_zone():
+    n = 40                                                          # 40 points 0.1 km apart
+    x = np.arange(n) * (0.1 / 111.2)
+    y = np.zeros(n)
+    start = np.zeros(n, bool)
+    start[0] = True
+    skip = np.zeros(n, bool)
+    z = np.zeros(n, int)
+    z[10:15] = -1                                                   # a 0.6-km hole inside zone 0: filled
+    z[25:] = 3
+    z[20:25] = -1                                                   # a hole between zones 0 and 3: kept
+    got = A.fill_holes(z, x, y, start, skip)
+    assert (got[10:15] == 0).all() and (got[20:25] == -1).all() and got[25] == 3
+    long = np.zeros(n, int)
+    long[5:16] = -1                                                 # 1.1 km: kept
+    assert (A.fill_holes(long, x, y, start, skip)[5:16] == -1).all()
+    st2 = start.copy()
+    st2[12] = True                                                  # a new line starts inside the hole: kept
+    assert (A.fill_holes(z, x, y, st2, skip)[10:15] == -1).any()
+    sk2 = skip.copy()
+    sk2[15] = True                                                  # the hole ends at a cell-line point: kept
+    assert (A.fill_holes(z, x, y, start, sk2)[10:15] == -1).all()
+    assert (z[10:15] == -1).all()                                   # the input is not changed
+
+
+def test_sheltered_kaneohe_bay_and_its_open_neighbours():
+    pts = [(21.433, -157.807, True),     # Heeia, inside the reef
+           (21.460, -157.842, True),     # Kahaluu
+           (21.457, -157.740, False),    # Mokapu's North Beach, the open ocean
+           (21.397, -157.727, False),    # Kailua Beach
+           (21.550, -157.850, False),    # Kaaawa, north of Kualoa Point
+           (21.640, -158.065, False)]    # Waimea Bay
+    la = np.array([p[0] for p in pts])
+    lo = np.array([p[1] for p in pts])
+    assert A.sheltered(lo, la).tolist() == [p[2] for p in pts]
+    assert not A.sheltered(lo, la, areas=[]).any()
+
+
+def test_open_sea_wants_wide_water_near_the_shore_but_not_far_out():
+    # a coast along 21 N facing south; a band of land with a 2-km gap straight out (a bay mouth) at 10-12 km: the
+    # straight line passes the gap, the lines 2.5 km to either side do not
+    x, y, nx, ny = np.array([-158.0]), np.array([21.0]), np.array([0.0]), np.array([-1.0])
+    def band(at_km, gap_km, kx=1.0):
+        k = math.cos(math.radians(21.0)) * 111.2
+        return _Grid(lambda lo, la: (la > 21.0) | ((la < 21.0 - at_km / 111.2) & (la > 21.0 - (at_km + 2) / 111.2)
+                                                   & (np.abs(lo + 158.0) * k > gap_km / 2)))
+    assert not A.open_sea(band(10, 2), x, y, nx, ny, fan=0)[0]
+    assert A.open_sea(band(10, 2), x, y, nx, ny, fan=0, wide=())[0]
+    # the same 2-km gap 30 km out (an island chain's channel): open; 22 km out: not (the window ends at WIDE_TO_KM)
+    assert A.open_sea(band(30, 2), x, y, nx, ny, fan=0)[0]
+    assert not A.open_sea(band(22, 2), x, y, nx, ny, fan=0)[0]
+    # rocks 1.5-3.5 km to either side at 10-12 km out: the 2.5-km lines meet them, so not open
+    k = math.cos(math.radians(21.0)) * 111.2
+    rocks = _Grid(lambda lo, la: (la > 21.0) | ((la < 21.0 - 10 / 111.2) & (la > 21.0 - 12 / 111.2)
+                                                & (np.abs(lo + 158.0) * k > 1.5) & (np.abs(lo + 158.0) * k < 3.5)))
+    assert not A.open_sea(rocks, x, y, nx, ny, fan=0)[0]
+    # a 12-km-wide mouth at 10 km: open (the 5-km lines pass)
+    assert A.open_sea(band(10, 12), x, y, nx, ny, fan=0)[0]
+    # nothing nearer than 10 km is looked at sideways: a band ending 3 km to the side at 3-5 km out stays open
+    near = _Grid(lambda lo, la: (la > 21.0) | ((la < 21.0 - 3 / 111.2) & (la > 21.0 - 5 / 111.2)
+                                               & ((lo + 158.0) * math.cos(math.radians(21.0)) * 111.2 > 3)))
+    assert A.open_sea(near, x, y, nx, ny, fan=0)[0]
+
+
+def test_open_sea_looks_from_ray_first_km_and_every_fan_step():
+    x, y, nx, ny = np.array([-158.0]), np.array([21.0]), np.array([0.0]), np.array([-1.0])
+    # a 2-km lagoon: the barrier at 2-4 km stops every line
+    lag = _Grid(lambda lo, la: (la > 21.0) | ((la < 21.0 - 2 / 111.2) & (la > 21.0 - 4 / 111.2)))
+    assert not A.open_sea(lag, x, y, nx, ny, wide=())[0]
+    # a wall straight out and on every side but a wedge 25 degrees east of south: open only by stepping the fan
+    def wedge(lo, la):
+        k = math.cos(math.radians(21.0)) * 111.2
+        dx, dy = (lo + 158.0) * k, (la - 21.0) * 111.2
+        r = np.hypot(dx, dy)
+        b = np.degrees(np.arctan2(dx, -dy))                       # 0 = south, positive = east of south
+        return (la > 21.0) | ((r > 3) & (r < 6) & ~((b > 22) & (b < 28)))
+    assert A.open_sea(_Grid(wedge), x, y, nx, ny, wide=())[0]
+    assert not A.open_sea(_Grid(wedge), x, y, nx, ny, wide=(), fstep=10)[0]
+
+
+def test_classify_open_tests_every_fifth_point(monkeypatch):
+    # G59 re-check survivor: OPEN_EVERY
+    n = 23
+    x = -158.0 + np.arange(n) * (0.1 / 104.0)
+    y = np.full(n, 21.0)
+    start = np.zeros(n, bool)
+    start[0] = True
+    seen = []
+    def fake(land, xs, ys, nx, ny):
+        seen.append(len(xs))
+        return np.ones(len(xs), bool)
+    monkeypatch.setattr(A, "open_sea", fake)
+    got = A.classify_open(None, x, y, start, np.zeros(n, bool), np.zeros(n, int), 1)
+    assert seen == [5] and got.all()
+
+
+def test_tangents_look_three_points_each_way():
+    # G59 re-check survivor: TANGENT_PTS (a corner 4 points ahead must not tilt the direction)
+    x = np.concatenate((-158.0 + np.arange(10) * 0.001, np.full(10, -158.0 + 9 * 0.001)))
+    y = np.concatenate((np.full(10, 21.0), 21.0 + np.arange(1, 11) * 0.001))
+    start = np.zeros(20, bool)
+    start[0] = True
+    tx, ty = A.tangents(x, y, start)
+    assert tx[5] == 1.0 and ty[5] == 0.0
+    assert ty[15] == 1.0
+
+
+def test_even_out_never_fills_a_gap_beside_an_ineligible_point():
+    # G59 re-check survivor: the eligibility cut (a closed gap that touches coast outside every zone stays closed)
+    n = 51
+    x = -158.0 + np.arange(n) * (0.1 / 104.0)
+    y = np.full(n, 21.0)
+    start = np.zeros(n, bool)
+    start[0] = True
+    flag = np.zeros(n, bool)
+    flag[:21] = True
+    flag[30:] = True
+    elig = np.ones(n, bool)
+    elig[24:27] = False
+    assert not A.even_out(flag, x, y, start, elig)[21:30].any()
+    elig[:] = True                                                  # with every point eligible the 0.9-km gap fills
+    assert A.even_out(flag, x, y, start, elig)[21:30].all()
+
+
+def test_near_ok_samples_the_water_at_a_fifth_of_the_way():
+    # G59 re-check survivor: NEAR_WATER_T (a strait in the first fifth of the way is seen)
+    d = 1.4
+    k = math.cos(math.radians(21.0)) * 111.2
+    q = (0, -158.0 + d / k, 21.0, d)
+    def water(lons, lats):
+        f = (np.asarray(lons) + 158.0) * k / d
+        return (f > 0.15) & (f < 0.25)
+    assert not A.near_ok(-158.0, 21.0, q, water=water)
+    assert A.near_ok(-158.0, 21.0, q, water=lambda lo, la: np.zeros(np.shape(lo), bool))
+
+
+def test_land_counts_shore_cells_only_when_asked():
+    # G59 re-check survivor: the shore bit (a spit narrower than a raster cell still stops a line)
+    z = np.zeros(0)
+    land = A.Land(lambda name: ((z, z, z, z), None, (np.array([-157.9973]), np.array([21.0012]))))
+    assert land.at([-157.9973], [21.0012]).tolist() == [True]
+    assert land.at([-157.9973], [21.0012], shore=False).tolist() == [False]
+    assert land.at([-157.95], [21.05]).tolist() == [False]
+
+
 def _edges(rings):
     """decode_coast-style edges (edge = vertex j -> vertex i) of closed rings given without the closing point."""
     xi, yi, xj, yj = [], [], [], []

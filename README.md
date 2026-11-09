@@ -2508,8 +2508,16 @@ and sha256). Only the OPEN coast is drawn (owner's decision: the site is for sur
 in a lagoon or on the Intracoastal Waterway; the product's text says when it also applies to nearby water): a shore
 point counts when a straight line from it, within 60 degrees of straight out to sea, runs 100 km over water without
 touching land, so the open sea and the Great Lakes' open shores are kept and bays, sounds, lagoons, harbours and the
-Intracoastal Waterway are left out. A zone with no open coast (Chesapeake Bay, Puget Sound, Long Island Sound, SF Bay,
-Texas's mainland coastal zones, Lake Champlain) gets no line. 392 zones, 6,258 lines, 450 KB. Rebuild
+Intracoastal Waterway are left out. A bay whose mouth lines up with the shore (SF Bay seen from Berkeley, Hampton
+Roads, Pamlico Sound) also fails a second test: lines 2.5 and 5 km to either side of the open line must be over water
+too from 10 to 25 km out (island chains farther out, such as the Channel Islands off Ventura, keep their gaps). Wide
+bays still pass both tests and keep a line (Green Bay, Cape Cod Bay, Saginaw Bay, the Chesapeake's mouth). No land
+test can see a barrier reef, so reef-sheltered water is listed by hand (`SHELTERED`: Kaneohe Bay inside its reef).
+A shore point just outside NWS's coarse zone polygon (GSHHG's headlands lie 0.05-0.6 km outside them) joins the zone
+whose edge is within 0.5 km whatever the direction, and a zone-less stretch under 1 km between two points of one zone
+takes that zone, so rocky coasts keep their line (Poipu, Hapuna, Kona). A zone with no open coast (Chesapeake Bay,
+Puget Sound, Long Island Sound, SF Bay, Texas's mainland coastal zones) gets no line; Lake Champlain and Lake St Clair
+products draw nothing. Islets outside every NWS zone are not outlined. 361 zones, 3,383 lines, 425 KB. Rebuild
 when NWS publishes a new zone file (a few times a year): bump `ZONES_FILE` / `ZONES_SHA256`, run the tool, then
 `--check`. A zone missing from the file gets no outline (counted in `/healthz`).
 

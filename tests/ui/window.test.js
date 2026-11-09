@@ -624,6 +624,17 @@ test('G16 re-review: a transport failure removes the loading placeholder and nam
   assert.deepEqual(d.win.localStorage.read('allshore.settings.v1'), { tz: '', unit: 'Metric' });
 });
 
+test('a land point\'s render=full answer (no table, an om_url) is not seeded: scripts load it the browser\'s way (G60 A-10, J19)', async () => {
+  const POINT = 'pt_21450N_158000W';
+  const c = boot({ search: '?station=' + POINT + '&render=full', initial: { inline: true, station: POINT, kind: 'weather', model: 'GFS',
+    om_url: 'https://api.open-meteo.com/v1/forecast?latitude=21.45', error: 'Weather needs JavaScript in this browser', swan_available: false } });
+  await settle();
+  assert.equal(c.fs_.calls.length, 1, 'asked the server like any first view');
+  assert.equal(c.fs_.param(c.fs_.last(), 'station'), POINT);
+  assert.equal(c.doc.getElementById('fwError').hidden, true, 'the no-script text is not shown');
+  assert.equal(c.app.loader.cache.size, 0, 'the no-script answer is never kept');
+});
+
 test('PR C: the first load takes the <head>\'s early response when the query matches (no second request), only once', async () => {
   let release; const p = new Promise((res) => { release = res; });
   const q = 'station=51201&tz=&unit=US&model=GFS&compact=1';

@@ -19,6 +19,7 @@ import collections
 import json
 import math
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from array import array
 from datetime import datetime, timedelta, timezone
@@ -143,6 +144,18 @@ def om_url(lat, lon):
             f"&past_days={OM_PAST_DAYS}&wind_speed_unit=ms")
 
 
+ELEV_RANGE_M = (-500.0, 9000.0)                               # the Location line's elevation: a real place's
+
+
+def _elevation(v):
+    """Open-Meteo's elevation for the Location line: a finite number of metres on Earth, else none (G60 A-3: the
+    answer is the visitor's; a forged value must not make a 300-digit line or an error)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    v = float(v)
+    return v if math.isfinite(v) and ELEV_RANGE_M[0] <= v <= ELEV_RANGE_M[1] else None
+
+
 def parse_open_meteo(raw):
     """Open-Meteo's answer -> {"times": [naive UTC], "elev": m, "lat", "lon" (the answer's grid point),
     "m": {model: {var: array('d') NaN = none}}}."""
@@ -156,7 +169,7 @@ def parse_open_meteo(raw):
     n = len(times)
     if n > OM_MAX_HOURS:                                      # refused before 48 columns are built from it
         raise WeatherError("Open-Meteo answer too long")
-    out = {"times": times, "elev": doc.get("elevation"), "lat": doc.get("latitude"), "lon": doc.get("longitude"),
+    out = {"times": times, "elev": _elevation(doc.get("elevation")), "lat": doc.get("latitude"), "lon": doc.get("longitude"),
            "m": {}}
     for model, name in OM_NAME.items():
         cols = {}
@@ -336,6 +349,8 @@ def nws_type(weather_value):
         if not isinstance(w, dict) or not w.get("weather"):
             continue
         k = str(w["weather"])
+        if k.endswith("fog") or k in ("haze", "smoke", "dust", "blowing_dust", "blowing_sand", "volcanic_ash"):
+            continue                                          # not precipitation (G60 A-6: freezing_fog is no ice)
         if "thunder" in k:
             kinds.add("t")
         if "freezing" in k or "sleet" in k or "ice" in k:
@@ -452,6 +467,10 @@ class WeatherService:
     def runs(self):
         """{model: run init (naive UTC) or None}, plus the cache-key tuple."""
         inits, key = {}, []
+        due = [n for model in OM_MODELS for n in OM_META_NAMES[model] if self._meta_due(n)]
+        if len(due) > 1:                                      # read the due files side by side (G60 A-7: five reads
+            with ThreadPoolExecutor(max_workers=len(due)) as pool:   # in a row could hold a request ~5 timeouts)
+                list(pool.map(self._meta_init, due))
         for model in OM_MODELS:
             first = None
             for name in OM_META_NAMES[model]:
@@ -461,6 +480,11 @@ class WeatherService:
                     first = ep
             inits[model] = None if first is None else datetime.fromtimestamp(first, timezone.utc).replace(tzinfo=None)
         return inits, tuple(key)
+
+    def _meta_due(self, name):
+        with self._lock:
+            m = self._meta.get(name)
+            return not (m and self.mono() - m["at"] < META_TTL_S)
 
     def _meta_init(self, name):
         t = self.mono()

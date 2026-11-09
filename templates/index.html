@@ -737,7 +737,7 @@
     .fw-meta .wx-credit { font-size: .8rem; margin-top: 2px; }
     #forecastTable td.wx-type { font-weight: 600; }
     #forecastTable td.wx-rain { color: #1565c0; } #forecastTable td.wx-snow { color: #6a3fb5; } #forecastTable td.wx-mix { color: #ad1457; }
-    #forecastTable td.wx-ice { color: #00838f; } #forecastTable td.wx-thunder { color: #b45309; }
+    #forecastTable td.wx-ice { color: #006e78; } #forecastTable td.wx-thunder { color: #9a4508; }
     .fw-resize:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
     /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
     .forecast-win.fw-front { z-index: 2100; }
@@ -5206,7 +5206,7 @@
           if (cur !== asked && d && d.table_html) return { ok: false, cancel: true };   // another forecast was opened meanwhile: it stays (G22 R-A6)
           if (d && d.table_html) return { ok: true, open: function () { open(id); } };
           if (d && d.final) refusedIds[id] = true;
-          return { ok: false, message: (d && d.error) || 'No forecast there.' };
+          return { ok: false, message: (d && d.error) || 'No forecast there.', retry: !(d && d.final) };   // a passing failure: the same point may answer later (G60 B-4)
         });
       }
       function open(id) {

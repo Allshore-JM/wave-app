@@ -301,6 +301,7 @@
   var WEATHER_API = '/api/forecast/weather', OM_HOST = 'https://api.open-meteo.com/';
   var OM_BODY_MAX = 1200000, OM_TIMEOUT_MS = 20000, OM_HELD_MAX = 8, OM_HELD_MS = 30 * 60 * 1000;
   var OM_BUSY = 'Weather is busy right now; try again in a moment', OM_DOWN = 'Weather temporarily unavailable';
+  var POST_AGAIN = [502, 503, 504, 520, 521, 522, 523, 524];          // the POST asked once more on these (G60 B-2)
   function needsOm(d) {
     return !!d && typeof d === 'object' && typeof d.om_url === 'string' && !d.table_html && !d.error;
   }
@@ -426,14 +427,31 @@
       });
     }
     // d: the /api/forecast answer; q: its query. -> the weather answer, or d with the error to show (Retry).
+    // the POST asks for the model the server answered with: a tab it could not serve (NWS without a grid here, or a
+    // tab kept from another point) came back as GFS with its Open-Meteo request (G60 A-1)
+    function postQuery(q, model) {
+      if (typeof model !== 'string' || !model) return q;
+      var p = new URLSearchParams(q);
+      if ((p.get('model') || 'GFS') === model) return q;
+      p.set('model', model); return p.toString();
+    }
     function fillWeather(d, q, signal) {
       if (!needsOm(d)) return Promise.resolve(d);
       return omText(d, signal).then(function (text) {
-        return deps.fetch(WEATHER_API + '?' + q, { method: 'POST', body: text, signal: signal,
-          headers: { 'Content-Type': 'text/plain' } }).then(function (r) {
-          if (!r.ok && r.status !== 400 && r.status !== 413) throw omFail(false);
-          return r.json();
-        }).then(function (w) {
+        var url = WEATHER_API + '?' + postQuery(q, d.model);
+        function send(again) {
+          return deps.fetch(url, { method: 'POST', body: text, signal: signal, headers: { 'Content-Type': 'text/plain' } })
+            .then(function (r) {
+              // a gateway's passing error (Render / Cloudflare) is asked once more, quietly, with the held text (G60 B-2)
+              if (again && POST_AGAIN.indexOf(r.status) >= 0) return send(false);
+              if (!r.ok && r.status !== 400 && r.status !== 413) throw omFail(false);
+              return r.json();
+            }, function (e) {
+              if (again && !(signal && signal.aborted) && !(e && e.name === 'AbortError')) return send(false);
+              throw e;
+            });
+        }
+        return send(true).then(function (w) {
           if (!w || typeof w !== 'object') throw omFail(false);
           if (w.error && !w.table_html && !w.busy) omHeld.delete(d.om_url);    // refused: never offered again (busy: kept)
           return w;
@@ -1536,7 +1554,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, needsOm: needsOm, WEATHER_API: WEATHER_API, OM_BUSY: OM_BUSY, OM_DOWN: OM_DOWN, OM_BODY_MAX: OM_BODY_MAX, OM_HELD_MAX: OM_HELD_MAX, OM_HELD_MS: OM_HELD_MS, OM_TIMEOUT_MS: OM_TIMEOUT_MS, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
+      createLoader: createLoader, needsOm: needsOm, WEATHER_API: WEATHER_API, OM_BUSY: OM_BUSY, OM_DOWN: OM_DOWN, OM_BODY_MAX: OM_BODY_MAX, OM_HELD_MAX: OM_HELD_MAX, OM_HELD_MS: OM_HELD_MS, OM_TIMEOUT_MS: OM_TIMEOUT_MS, POST_AGAIN: POST_AGAIN, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,

@@ -1077,6 +1077,21 @@ test('Forecast point: the tool waits for the answer of the page; a refusal is sa
   assert.equal(E.s.msg, '');
 });
 
+test('Forecast point: a passing failure (busy, unreachable) asks for the same point again, a final refusal for another (G60 B-4)', async () => {
+  let resolve = null, reject = null;
+  const E = makeEnv({ answer: () => new Promise((res, rej) => { resolve = res; reject = rej; }) });
+  E.pick('point'); E.clickAt(21.5, -158.0);
+  resolve({ ok: false, message: 'Weather is busy right now; try again in a moment', retry: true }); await E.settle();
+  assert.match(E.body(), /<div class="tools-hint">Click the same point again in a moment, or another one\.<\/div>$/);
+  assert.doesNotMatch(E.body(), /Click another point/);
+  E.clickAt(21.5, -158.0);
+  resolve({ ok: false, message: 'No model data here.' }); await E.settle();
+  assert.match(E.body(), /<div class="tools-hint">Click another point on the sea\.<\/div>$/, 'final: another point');
+  E.clickAt(21.5, -158.0);
+  reject(new Error('offline')); await E.settle();
+  assert.match(E.body(), /Could not reach the server.*Click the same point again in a moment, or another one\./);
+});
+
 test('Forecast point: closed or switched while a point is being checked: nothing opens, nothing is said', async () => {
   let resolve = null, opened = 0;
   const E = makeEnv({ answer: () => new Promise((res) => { resolve = res; }) });

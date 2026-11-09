@@ -509,7 +509,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.30.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.30.2"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -827,15 +827,17 @@ def _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_r
 
 POINTS = point_forecast.PointSource(_points_root, _points_fetch)
 
-# ---- Weather at land forecast points (plan section 91): Open-Meteo (GFS, ECMWF IFS, DWD ICON, ECMWF AIFS in one call per
-# point and model run) and the NWS grid forecast at US points. LAND_WEATHER=1 turns it on (unset: a land click is
-# refused as before). The fetches run in the request (one Open-Meteo call per new point per model run) behind the
-# shared build cap, never in the background.
+# ---- Weather at land forecast points (plan section 91): Open-Meteo (GFS, ECMWF IFS, DWD ICON, ECMWF AIFS) and the NWS
+# grid forecast at US points. LAND_WEATHER=1 turns it on (unset: a land click is refused as before). Open-Meteo's
+# forecast is asked by the VISITOR'S BROWSER (section 91c: its free limit is per IP, Render's outbound address is
+# shared) and handed back by POST /api/forecast/weather; the server reads only Open-Meteo's run metadata and the NWS,
+# in the request, behind the shared build cap, never in the background.
 _WEATHER_HTTP = requests.Session()     # one attempt per object (no retry adapter)
 _WEATHER_TIMEOUT = (5, 15)             # connect, read
 _WEATHER_MAX_S = 20                    # one object, in all
 WEATHER_BUSY = "Weather is busy right now; try again in a moment"
 WEATHER_DOWN = "Weather temporarily unavailable"
+WEATHER_NEEDS_JS = "Weather needs JavaScript in this browser"   # the no-script page (render=full) of a land point
 WEATHER_CREDIT = {
     "open-meteo": ('Weather: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a> '
                    '(<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>;'
@@ -4768,10 +4770,15 @@ def _weather_graph(lrows, unit, lat, lon, tz_name, show_gust):
     return gd
 
 
-def _weather_payload(out, station, tz, unit, model):
+def _weather_payload(out, station, tz, unit, model, om=None):
     """The answer for a forecast point on land (plan section 91): the weather table of `model` (GFS, ECMWF, ICON,
     AIFS from Open-Meteo; NWS at US points), its Summary, graphs and the model bar's choices. Failing to read the
-    weather is a passing error (Retry), never final."""
+    weather is a passing error (Retry), never final.
+
+    Open-Meteo's models (section 91c): its free limit is per IP and the server's address is shared on Render, so the
+    visitor's browser asks it. Without `om` the answer carries no rows but `om_url` (the request to make) and `om_key`
+    (the models' runs: the browser keeps an answer while it stays); the browser then POSTs Open-Meteo's answer text as
+    `om` (/api/forecast/weather), checked here before anything is built from it. Never cached: it is the visitor's."""
     lat, lon = point_forecast.parse_point_id(station)
     tz_name, zone = _weather_zone(tz, lat, lon)
     offered = [m for m in WEATHER_MODELS if m != "NWS" or weather_sources.nws_box(lat, lon)]
@@ -4782,15 +4789,29 @@ def _weather_payload(out, station, tz, unit, model):
                 "swan_available": False, "nwps_available": False, "gfsb_available": False, "error": None})
     for k in ("split", "split_note", "final", "reason"):
         out.pop(k, None)
+    doc = None
+    if model != "NWS":
+        if om is None:                                         # the browser asks Open-Meteo, then POSTs it back
+            out["om_url"] = weather_sources.om_url(lat, lon)
+            out["om_key"] = WEATHER.om_key()
+            return out
+        try:
+            doc = weather_sources.check_open_meteo(weather_sources.parse_open_meteo(om), lat, lon)
+        except Exception as exc:                               # not Open-Meteo's answer for this point: nothing built
+            WEATHER.refused(str(exc))
+            out["error"] = WEATHER_DOWN
+            return out
     if _POINT_BUILDS.stuck(_POINT_BUILD_WAIT_S) or not _POINT_BUILDS.acquire(timeout=_POINT_BUILD_WAIT_S):
         out["error"], out["busy"] = WEATHER_BUSY, True
         return out
     try:
-        table = WEATHER.table(model, lat, lon)
-        if table is None and model == "NWS":                  # the NWS has no grid here after all
-            offered = out["weather_models"] = [m for m in offered if m != "NWS"]
-            model = out["model"] = "GFS"
-            table = WEATHER.table(model, lat, lon)
+        table = WEATHER.table(model, lat, lon, om=doc)
+        if table is None and model == "NWS":                  # the NWS has no grid here after all: GFS, from the browser
+            out["weather_models"] = [m for m in offered if m != "NWS"]
+            out["model"] = "GFS"
+            out["om_url"] = weather_sources.om_url(lat, lon)
+            out["om_key"] = WEATHER.om_key()
+            return out
     except weather_sources.WeatherBusy:
         out["error"], out["busy"] = WEATHER_BUSY, True
         return out
@@ -4889,7 +4910,7 @@ def _sky_for(rows, lat, lon, tz_name):
 
 
 def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str = "GFS", *,
-                             compact: bool = False) -> dict:
+                             compact: bool = False, om: bytes | None = None) -> dict:
     """Shared, cached forecast computation for both the homepage and /api/forecast.
 
     The parser underneath (parse_bull for GFS, parse_swan for the PacIOOS SWAN
@@ -4937,7 +4958,7 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
             station, tz or None)
         slots = (point or {}).get("_slots")
         if rows is None and point and point.get("reason") == "land" and _land_weather_on():
-            return _weather_payload(out, station, tz, unit, model)   # land: the weather (plan section 91)
+            return _weather_payload(out, station, tz, unit, model, om)   # land: the weather (plan section 91)
         if rows is None:
             out["point"] = None
             if parse_error == POINT_BUSY:
@@ -5129,6 +5150,41 @@ def api_forecast():
         })
 
 
+# Open-Meteo's answer for a land point, fetched by the visitor's browser (plan section 91c), at most this many bytes
+WEATHER_POST_MAX = weather_sources.OM_MAX_BYTES
+
+
+@app.route("/api/forecast/weather", methods=["POST"])
+def api_forecast_weather():
+    """A land point's weather built from the Open-Meteo answer the visitor's browser fetched (plan section 91c): the
+    query is /api/forecast's, the body Open-Meteo's answer text. The point must be a forecast point on land with an
+    Open-Meteo model; the answer is checked (its place, hours, values) and never cached or logged (it is the
+    visitor's own). Anything else answers as the GET would, without rows."""
+    station = (request.args.get("station") or "").strip()
+    tz = request.args.get("tz", "")
+    unit = request.args.get("unit", "US") or "US"
+    model = request.args.get("model", "") or "GFS"
+    compact = request.args.get("compact") == "1"
+    length = request.content_length
+    if not point_forecast.is_point_id(station) or model not in weather_sources.OM_MODELS or not _land_weather_on():
+        return jsonify({"station": station, "error": "Not a land forecast point", "final": True}), 400
+    if length is None or length > WEATHER_POST_MAX:
+        return jsonify({"station": station, "error": WEATHER_DOWN}), 413
+    body = request.stream.read(WEATHER_POST_MAX + 1)
+    if len(body) > WEATHER_POST_MAX:
+        return jsonify({"station": station, "error": WEATHER_DOWN}), 413
+    try:
+        out = compute_forecast_payload(station, tz or None, unit, model, compact=compact, om=body)
+    except Exception as exc:  # always return JSON the client can render
+        logger.warning("weather build failed for %s: %r", station, exc)
+        return jsonify({"station": station, "error": WEATHER_DOWN, "table_html": None})
+    if out.get("kind") != "weather":                           # the sea after all: the swell answer, as the GET's
+        return jsonify(out)
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     stations = get_station_list()
@@ -5175,6 +5231,10 @@ def index():
                                            selected_model, compact=True)
         # the inline answer read the NWPS pointer: the page's bar, select and lists follow ITS judgement, never the one
         # made before the read (G41 re-check F-2)
+        # a land point: the browser asks Open-Meteo (section 91c), so the no-script page cannot; not final: with
+        # scripts on, Retry takes the browser's path
+        if payload.get("om_url") and not payload.get("table_html"):
+            payload["error"] = WEATHER_NEEDS_JS
         selected_model = payload.get("model", selected_model)
         nwps_available = payload.get("nwps_available", nwps_available)
         gfsb_available = payload.get("gfsb_available", gfsb_available)
@@ -5220,7 +5280,7 @@ def index():
                               "error": payload["error"], "model": payload["model"],
                               "wind_complete": payload.get("wind_complete", True)})
         for k in ("point", "final", "busy", "reason", "summary_html", "nwps_age_hours", "swan_age_hours",
-                  "split", "split_note", "kind", "weather_models", "weather"):                             # a point's
+                  "split", "split_note", "kind", "weather_models", "weather", "om_url"):                   # a point's
                                             # own keys (a refusal is final: no Retry), the Summary view, the run's age
             if payload.get(k) is not None:
                 initial_state[k] = payload[k]

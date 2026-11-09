@@ -1778,7 +1778,7 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
-## Weather at land forecast points (plan section 91, UI asset 1.30.0)
+## Weather at land forecast points (plan sections 91 and 91c, UI asset 1.30.2)
 
 With `LAND_WEATHER=1` a Forecast-point click on land (beyond the 300-m shore band) opens a WEATHER table instead of the
 refusal "land". Sea points, sheltered water, water without model data, stations and every swell table are unchanged;
@@ -1787,8 +1787,10 @@ with the variable unset the site behaves exactly as before.
 - **Sources.** Open-Meteo (open-meteo.com, CC BY 4.0; its free tier is for non-commercial use) for four models in ONE
   call per point and model run: GFS (`gfs_global`), ECMWF IFS 0.25 (`ecmwf_ifs025`), DWD ICON (`icon_global`) and ECMWF
   AIFS (`ecmwf_aifs025_single`). At US points also the NOAA National Weather Service grid forecast (api.weather.gov
-  `/points` -> `forecastGridData`, public domain). The click's coordinates go to Open-Meteo / NWS; the visitor's address
-  does not (the server asks).
+  `/points` -> `forecastGridData`, public domain). Since section 91c the VISITOR'S BROWSER asks Open-Meteo (its free
+  limit is counted per IP address, and the site server's address on Render is shared with other customers: a test
+  server was refused "Daily API request limit exceeded" after ~50 of its own calls). So Open-Meteo sees the visitor's
+  address and the clicked point; the NWS is still asked by the server (the click's coordinates only).
 - **Rows at each model's own steps** (no filled-in hours): GFS hourly to +120 h then 3-hourly; ECMWF 3-hourly to +144 h
   then 6-hourly; ICON hourly to +78 h then 3-hourly to +180 h; AIFS 6-hourly (no gusts: the model has none); NWS at
   its own intervals (~7 days). A row's precipitation is the sum since the previous row; "24-h" is the sum of the 24 hours
@@ -1801,12 +1803,23 @@ with the variable unset the site behaves exactly as before.
 - **Model tabs**: GFS | ECMWF | ICON | AIFS (| NWS at US points), offered by the server per answer. The weather tabs
   are asked for only at points with land weather on (the loader's `normalise` and the head's early rule agree; pinned
   by `tests/ui/early.test.js`); at a station or a sea point a weather tab answers GFS.
-- **Cache and limits.** One Open-Meteo answer per point is kept, keyed by the four models' run times (read from
-  Open-Meteo's `meta.json` every 10 minutes), so a new model run is asked once. A site-wide budget keeps the counted
-  calls under Open-Meteo's limits (300 a minute, 8,000 a UTC day; one call counts ~6 by its weighting); over budget,
-  or after a 429, the window says "Weather is busy" with Retry (never cached). An unreachable source says "Weather
-  temporarily unavailable" with Retry; the swell side never changes. `/healthz` gives a `weather` key (today's
-  counted calls, cache sizes, last error), never part of `ok`.
+- **The browser's route (section 91c).** `GET /api/forecast` for a land point and an Open-Meteo model answers no rows
+  but `om_url` (the exact Open-Meteo request: the four models, the variables, GMT, 16 days + 1 before, m/s) and
+  `om_key` (every model's run, from Open-Meteo's `meta.json`, which the server still reads every 10 minutes: it has no
+  CORS header and no rate limit). The page (`static_ui/forecast.js`, `fillWeather`) fetches `om_url` without
+  credentials (20-s deadline, only from `https://api.open-meteo.com/`, at most 1.2 MB) and POSTs the text to
+  `POST /api/forecast/weather?station=&tz=&unit=&model=&compact=` (body at most 1.2 MB, else 413; a `pt_` point with an
+  Open-Meteo model and the flag on, else 400). The server parses and CHECKS the answer before building anything: its
+  grid point within 0.3 degrees of the click, hours one apart and at most 18 days, every value inside physical bounds
+  (temperature -90..60 C, wind 0..120 m/s, precipitation 0..500 mm ...), some temperature. A refused answer says
+  "Weather temporarily unavailable" with Retry. The built answer is never cached on the server and the body is never
+  logged (it is the visitor's own; a made-up answer can only show on the sender's own screen). The page keeps up to
+  8 points' Open-Meteo answers for 30 minutes while `om_key` stays the same, so model tabs, units, zones and Retry
+  ask Open-Meteo once; a new model run asks again. Open-Meteo refusing the visitor (429) says "Weather is busy right
+  now; try again in a moment"; no answer, a slow one or one the server refuses says "Weather temporarily
+  unavailable". The page without scripts (`render=full`) says "Weather needs JavaScript in this browser". An
+  ad-blocker or firewall that blocks api.open-meteo.com shows the same "unavailable". `/healthz` gives a `weather`
+  key (answers built and refused, metadata ages, NWS calls, last error), never part of `ok`.
 - **Overlay.** The overlay panel never compares a weather table with a model run (its run note ignores a cycle line
   starting "Weather").
 - **Rollback**: unset `LAND_WEATHER` (the land refusal returns at once).

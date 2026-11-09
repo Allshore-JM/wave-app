@@ -32,10 +32,10 @@ function stub() {
   const fetch = (url, o) => new Promise((res, rej) => {
     const c = { url, o: o || {}, signal: o && o.signal, aborted: false };
     const resp = (status, text, len) => ({ ok: !status || status < 400, status: status || 200,
-      headers: { get: (k) => (k === 'content-length' && len != null ? String(len) : null) },
+      headers: { get: (k) => (k === 'content-length' && len != null ? String(len) : (c.hdrs && c.hdrs[k] != null ? String(c.hdrs[k]) : null)) },
       text: () => Promise.resolve(text), json: () => Promise.resolve(JSON.parse(text)) });
     c.json = (d, status) => res(resp(status, JSON.stringify(d)));
-    c.text = (t, status, len) => res(resp(status, t, len));
+    c.text = (t, status, len, hdrs) => { c.hdrs = hdrs; res(resp(status, t, len)); };
     c.fail = () => rej(new TypeError('Failed to fetch'));
     if (c.signal) {
       const abort = () => { c.aborted = true; rej(Object.assign(new Error('aborted'), { name: 'AbortError' })); };
@@ -56,9 +56,11 @@ function ui() { const r = { applied: [], busy: [], errors: [] }; r.ui = { apply:
 function setup(over) {
   const F = load(fakeWindow()), I = F._internals, f = stub(), u = ui(), timers = fakeTimers(), clock = { t: 1000 };
   const st = Object.assign({ station: POINT, tz: '', unit: 'US', model: 'GFS', view: 'Table' }, over || {});
+  const waits = [], hold = { on: false, list: [] };
+  const wait = (ms) => { waits.push(ms); return hold.on ? new Promise((res) => hold.list.push(res)) : Promise.resolve(); };
   const L = I.createLoader({ fetch: f.fetch, now: () => clock.t, replaceState: () => {}, swanStations: [], ui: u.ui,
-    landWeather: true, setTimer: timers.set, clearTimer: timers.clear }, st);
-  return { I, f, u, timers, clock, L, st };
+    landWeather: true, setTimer: timers.set, clearTimer: timers.clear, wait }, st);
+  return { I, f, u, timers, clock, L, st, waits, hold };
 }
 // one whole land load: the GET, Open-Meteo, the POST
 async function landLoad(t, next, getOver, postOver) {
@@ -194,6 +196,7 @@ test('a gateway error or a dropped connection on the POST is asked once more, qu
     t.f.last().json(weatherAnswer()); const d = await p;
     assert.equal(d.table_html, weatherAnswer().table_html);
     assert.equal(t.u.errors.filter((e) => e[0]).length, 0, 'nothing shown on the way');
+    assert.deepEqual(t.waits, [t.I.POST_PAUSE_MS], 'a short pause before the second POST (re-check F-4): ' + how);
   }
   // only once: a second failure shows the error; a plain 500 is not asked again
   for (const [a, b, posts] of [[502, 502, 2], ['net', 'net', 2], [500, null, 1]]) {
@@ -206,6 +209,49 @@ test('a gateway error or a dropped connection on the POST is asked once more, qu
     assert.equal(t.f.kinds().filter((k) => k === 'post').length, posts);
     assert.equal(d.error, t.I.OM_DOWN);
   }
+});
+
+test('the pause before the second POST: Retry-After within 0.8-3 s; an abort during the pause sends nothing (G60 re-check F-4)', async () => {
+  for (const [ra, ms] of [[2, 2000], [10, 3000], [0.1, 800], ['Wed, 21 Oct 2026 07:28:00 GMT', 800], ['', 800], [null, 800]]) {
+    const t = setup();
+    const { p } = await landLoad(t); t.f.last().text(OM_TEXT); await settle();
+    t.f.last().text('busy', 503, null, ra === null ? {} : { 'Retry-After': ra }); await settle();
+    assert.deepEqual(t.waits, [ms], 'Retry-After ' + ra);
+    t.f.last().json(weatherAnswer()); await p;
+  }
+  const t = setup(); t.hold.on = true;
+  const { p } = await landLoad(t); t.f.last().text(OM_TEXT); await settle();
+  t.f.last().text('busy', 502); await settle();
+  assert.equal(t.hold.list.length, 1, 'waiting');
+  t.L.load({ station: 'pt_40000N_105000W' }); await settle();                  // another point while the pause runs
+  t.hold.list[0](); await settle();
+  assert.equal(t.f.kinds().filter((k) => k === 'post').length, 1, 'no second POST for the superseded load');
+  assert.equal(await p, null);
+});
+
+test('an answer for another model (NWS answered as GFS) is kept under that model too: the GFS tab needs no request (G60 re-check F-2)', async () => {
+  const t = setup();
+  const { p } = await landLoad(t, { model: 'NWS' }, { model: 'GFS' });
+  t.f.last().text(OM_TEXT); await settle();
+  t.f.last().json(weatherAnswer()); await p;
+  const n = t.f.calls.length;
+  const d = await t.L.load({ model: 'GFS' });
+  assert.equal(t.f.calls.length, n, 'served from the cache');
+  assert.equal(d.table_html, weatherAnswer().table_html);
+  const d2 = await t.L.load({ model: 'NWS' });                                 // the NWS tab again: the same answer, no request
+  assert.equal(t.f.calls.length, n); assert.equal(d2.model, 'GFS');
+  // the point tool's prefetch keeps it under both keys as well
+  const t2 = setup();
+  const pp = t2.L.prefetch({ model: 'NWS' }); await settle();
+  t2.f.last().json(getAnswer({ model: 'GFS' })); await settle();
+  t2.f.last().text(OM_TEXT); await settle(); t2.f.last().json(weatherAnswer()); await pp;
+  assert.ok(t2.L.cache.has([POINT, '', 'US', 'GFS'].join('|')) && t2.L.cache.has([POINT, '', 'US', 'NWS'].join('|')));
+  // a failed build is kept under neither
+  const t3 = setup();
+  const p3 = t3.L.load({ model: 'NWS' }); await settle();
+  t3.f.last().json(getAnswer({ model: 'GFS' })); await settle();
+  t3.f.last().text(OM_TEXT); await settle(); t3.f.last().json({ error: 'Weather temporarily unavailable', model: 'GFS' }); await p3;
+  assert.equal(t3.L.cache.size, 0);
 });
 
 test('a refused POST (the server would not build it) is shown with Retry and the held answer is dropped', async () => {

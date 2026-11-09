@@ -121,10 +121,12 @@ def test_the_elevation_must_be_a_real_place(value, want):
 @pytest.mark.parametrize("entries, want", [
     ([{"weather": "freezing_fog"}], ""), ([{"weather": "ice_fog"}], ""), ([{"weather": "fog"}], ""),
     ([{"weather": "haze"}], ""), ([{"weather": "freezing_fog"}, {"weather": "rain"}], "Rain"),
+    ([{"weather": "freezing_spray"}], ""), ([{"weather": "ice_crystals"}], ""),
+    ([{"weather": "freezing_spray"}, {"weather": "rain"}], "Rain"),
     ([{"weather": "freezing_rain"}], "Ice"), ([{"weather": "ice_pellets"}], "Ice"),
     ([{"weather": "snow_showers"}, {"weather": "rain"}], "Mix"), ([{"weather": "thunderstorms"}], "Thunder")])
 def test_nws_type_leaves_fog_out(entries, want):
-    """G60 A-6: fog and haze are not precipitation; freezing fog is no ice."""
+    """G60 A-6 + re-check F-3: fog, freezing spray and ice crystals are no precipitation."""
     assert W.nws_type(entries) == want
 
 
@@ -755,3 +757,29 @@ def test_a_sea_point_asked_with_a_weather_tab_answers_gfs(A, monkeypatch):
     for m in ("ECMWF", "ICON", "AIFS", "NWS"):
         out = A.compute_forecast_payload(POINT, None, "US", m, compact=True)
         assert out["model"] == "GFS" and "kind" not in out
+
+
+def test_type_colours_pass_aa_on_every_row_tint():
+    """G60 B-5 + re-check F-1: each type colour >= 4.5:1 on the precipitation band under every row tint the table
+    paints (night, hover, night hover, the now row), read from the template itself."""
+    import re
+    from pathlib import Path
+    css = Path(__file__).resolve().parents[1].joinpath("templates", "index.html").read_text(encoding="utf-8")
+    cols = dict(re.findall(r"td\.wx-(rain|snow|mix|ice|thunder) \{ color: (#[0-9a-f]{6}); \}", css))
+    assert sorted(cols) == ["ice", "mix", "rain", "snow", "thunder"]
+    tints = [re.search(sel + r" \{ --tint: rgba\((\d+),(\d+),(\d+),([.\d]+)\); \}", css)
+             for sel in (r"tr\.sky-night", r"tbody tr\.sky-night:hover", r"tr\.now-row", r"tbody tr:hover")]
+    assert all(tints)
+    band = (0xEA, 0xF2, 0xFB)
+
+    def lum(c):
+        v = [x / 255 for x in c]
+        v = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in v]
+        return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+
+    backs = [band] + [tuple(b * (1 - float(m[4])) + int(m[i]) * float(m[4]) for i, b in zip((1, 2, 3), band)) for m in tints]
+    for name, h in cols.items():
+        c = tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+        for bg in backs:
+            a, b = lum(c), lum(bg)
+            assert (max(a, b) + 0.05) / (min(a, b) + 0.05) >= 4.5, (name, h, bg)

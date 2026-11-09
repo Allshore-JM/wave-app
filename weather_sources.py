@@ -42,30 +42,12 @@ OM_VARS = ("temperature_2m", "dew_point_2m", "relative_humidity_2m", "cloud_cove
            "showers", "snowfall", "weather_code", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m")
 OM_DAYS = 16
 OM_PAST_DAYS = 1                                              # so the first row's 24-h total is complete
-# Open-Meteo counts a request with more than 10 variables or more than 2 weeks as fractional extra calls (its pricing
-# page): 12 variables x 4 models over 17 days ~ 5.8 calls.
-OM_COST = math.ceil(len(OM_VARS) * len(OM_MODELS) / 10 * (OM_DAYS + OM_PAST_DAYS) / 14)
-OM_DAILY_LIMIT = 8000                                         # counted calls a UTC day (the free tier: 10,000)
-OM_PER_MIN = 300                                              # counted calls a minute (the free tier: 600)
-OM_MAX_BYTES = 1_000_000
+OM_MAX_BYTES = 1_200_000                                      # an answer the browser hands over (17 days: ~92 KB)
+OM_MAX_HOURS = (OM_DAYS + OM_PAST_DAYS + 1) * 24              # the hours an answer may hold
+OM_NEAR_DEG = 0.3                                             # the answer's grid point within this of the click
 META_MAX_BYTES = 64_000
 META_TTL_S = 600                                              # a model's run is read again after ten minutes
 META_KEEP_S = 6 * 3600                                        # a failed read keeps the last run this long
-FAIL_TTL_S = 60                                               # a failed forecast call is not repeated sooner
-BLOCK_S = 60                                                  # Open-Meteo said 429: nobody asks for a minute
-BLOCK_LONG_S = {"hourly": 600, "daily": 1800}                 # ... or longer when its words name a longer limit
-
-
-def block_for(detail):
-    """How long nobody asks Open-Meteo after a 429 whose body says `detail` (its "reason": "Minutely API request
-    limit exceeded ...", "Hourly ...", "Daily ..."). Unknown words: a minute. The daily limit is asked again every 30
-    minutes, never all day (a shared address's count can fall when the others stop)."""
-    low = (detail or "").lower()
-    for word, secs in BLOCK_LONG_S.items():
-        if word in low:
-            return secs
-    return BLOCK_S
-OM_CACHE_POINTS = 32
 
 NWS_POINT_TTL_S = 24 * 3600
 NWS_GRID_TTL_S = 30 * 60
@@ -152,8 +134,18 @@ def _t(s):
     return datetime.strptime(s[:16], "%Y-%m-%dT%H:%M")
 
 
+def om_url(lat, lon):
+    """The one Open-Meteo forecast request for a point: the four models, OM_VARS, hourly in GMT, OM_DAYS days plus
+    OM_PAST_DAYS before (so the first row's 24-h total is whole), wind in m/s. Asked by the visitor's browser
+    (plan section 91c): the free tier's limit is per IP, and the site server's address is shared on Render."""
+    return (f"{OM_FORECAST}?latitude={round(lat, 3)}&longitude={round(lon, 3)}&hourly={','.join(OM_VARS)}"
+            f"&models={','.join(OM_NAME[m] for m in OM_MODELS)}&timezone=GMT&forecast_days={OM_DAYS}"
+            f"&past_days={OM_PAST_DAYS}&wind_speed_unit=ms")
+
+
 def parse_open_meteo(raw):
-    """Open-Meteo's answer -> {"times": [naive UTC], "elev": m, "m": {model: {var: array('d') NaN = none}}}."""
+    """Open-Meteo's answer -> {"times": [naive UTC], "elev": m, "lat", "lon" (the answer's grid point),
+    "m": {model: {var: array('d') NaN = none}}}."""
     doc = json.loads(raw)
     if not isinstance(doc, dict) or doc.get("error"):
         raise WeatherError((doc or {}).get("reason") or "Open-Meteo answered without data")
@@ -162,7 +154,10 @@ def parse_open_meteo(raw):
     if not times:
         raise WeatherError("Open-Meteo answered without hours")
     n = len(times)
-    out = {"times": times, "elev": doc.get("elevation"), "m": {}}
+    if n > OM_MAX_HOURS:                                      # refused before 48 columns are built from it
+        raise WeatherError("Open-Meteo answer too long")
+    out = {"times": times, "elev": doc.get("elevation"), "lat": doc.get("latitude"), "lon": doc.get("longitude"),
+           "m": {}}
     for model, name in OM_NAME.items():
         cols = {}
         for v in OM_VARS:
@@ -172,6 +167,46 @@ def parse_open_meteo(raw):
             cols[v] = array("d", (float("nan") if x is None else float(x) for x in a))
         out["m"][model] = cols
     return out
+
+
+# Physical bounds of each variable (Open-Meteo's units: C, %, mm, cm of snow, m/s, degrees, WMO code). A value
+# outside them, or a non-number, refuses the whole answer: it came from the visitor's browser (plan section 91c).
+OM_BOUNDS = {"temperature_2m": (-90, 60), "dew_point_2m": (-100, 40), "relative_humidity_2m": (0, 100),
+             "cloud_cover": (0, 100), "precipitation": (0, 500), "rain": (0, 500), "showers": (0, 500),
+             "snowfall": (0, 200), "weather_code": (0, 99), "wind_speed_10m": (0, 120),
+             "wind_direction_10m": (0, 360), "wind_gusts_10m": (0, 120)}
+
+
+def check_open_meteo(doc, lat, lon):
+    """Refuse (WeatherError) an answer that is not Open-Meteo's for this point: its grid point more than OM_NEAR_DEG
+    from the click, hours not one apart / ascending or more than OM_MAX_HOURS, a value out of OM_BOUNDS, or no model
+    with a temperature. A parsed answer passes unchanged."""
+    try:
+        alat, alon = float(doc.get("lat")), float(doc.get("lon"))
+    except (TypeError, ValueError):
+        raise WeatherError("Open-Meteo answer without its position") from None
+    dlon = abs((alon - lon + 180.0) % 360.0 - 180.0)
+    if not (math.isfinite(alat) and math.isfinite(alon)) or abs(alat - lat) > OM_NEAR_DEG or dlon > OM_NEAR_DEG:
+        raise WeatherError("Open-Meteo answer for another place")
+    times = doc["times"]
+    if len(times) > OM_MAX_HOURS:
+        raise WeatherError("Open-Meteo answer too long")
+    for a, b in zip(times, times[1:]):
+        if b - a != timedelta(hours=1):
+            raise WeatherError("Open-Meteo hours not hourly")
+    any_temp = False
+    for model, cols in doc["m"].items():
+        for var, (lo, hi) in OM_BOUNDS.items():
+            for x in cols[var]:
+                if x != x:                                    # NaN = none
+                    continue
+                if not (lo <= x <= hi):
+                    raise WeatherError(f"Open-Meteo {var} out of bounds")
+        if any(x == x for x in cols["temperature_2m"]):
+            any_temp = True
+    if not any_temp:
+        raise WeatherError("Open-Meteo answer without temperatures")
+    return doc
 
 
 def om_rows(doc, model, init, now):
@@ -368,23 +403,20 @@ def nws_rows(grid, now):
 # ----------------------------------------------------------------------------- the service
 
 class WeatherService:
-    """Open-Meteo and NWS answers for land points, cached. One Open-Meteo call per point per model run (the cache key
-    carries every model's run from Open-Meteo's metadata, read again every ten minutes); NWS grids 30 minutes."""
+    """The weather of land points (plan section 91). Open-Meteo's forecast is asked by the visitor's browser and handed
+    to the server (section 91c: its free limit is per IP, the server's address is shared); the server reads only
+    Open-Meteo's metadata (each model's run, every ten minutes; not rate-limited) and the NWS grids (30 minutes)."""
 
     def __init__(self, fetch, now=time.time, mono=time.monotonic):
         self.fetch, self.now, self.mono = fetch, now, mono
         self._lock = threading.Lock()
         self._keylocks = {}
         self._meta = {}                                       # name -> {"at": mono, "ok": mono, "init": epoch}
-        self._om = collections.OrderedDict()                  # (lat, lon) -> {"runs": tuple, "doc": parsed}
-        self._fail = {}                                       # (lat, lon) -> mono of the last failure
-        self._blocked = 0.0                                   # mono until which Open-Meteo is not asked
         self._nws_pts = collections.OrderedDict()             # (lat, lon) -> (mono, grid url or None, place)
         self._nws_grid = collections.OrderedDict()            # url -> (mono, grid properties)
-        self._day = (None, 0.0)
-        self.om_bucket = _bucket(OM_PER_MIN)
         self.nws_bucket = _bucket(NWS_PER_MIN)
-        self.stats = {"om_calls": 0, "om_cached": 0, "nws_calls": 0, "busy": 0, "errors": 0, "last_error": None}
+        self.stats = {"om_built": 0, "om_refused": 0, "meta_reads": 0, "nws_calls": 0, "busy": 0, "errors": 0,
+                      "last_error": None}
 
     # ---- helpers
     def _klock(self, key):
@@ -402,27 +434,19 @@ class WeatherService:
             self.stats["errors"] += 1
             self.stats["last_error"] = msg[:200]
 
+    def refused(self, reason):
+        """An Open-Meteo answer handed in by a browser was refused (section 91c): counted, the reason kept (never the
+        body: it is the visitor's own)."""
+        with self._lock:
+            self.stats["om_refused"] += 1
+            self.stats["last_error"] = ("refused: " + str(reason))[:200]
+
     def reset_after_fork(self):
         self._lock = threading.Lock()
         self._keylocks = {}
-        for b in (self.om_bucket, self.nws_bucket):
+        for b in (self.nws_bucket,):
             if b is not None and hasattr(b, "_reset_lock"):
                 b._reset_lock()
-
-    def _budget(self, cost):
-        """Take `cost` counted calls from the minute bucket and the day's count, or raise WeatherBusy."""
-        today = datetime.fromtimestamp(self.now(), timezone.utc).date()
-        with self._lock:
-            day, used = self._day
-            if day != today:
-                day, used = today, 0.0
-            if used + cost > OM_DAILY_LIMIT:
-                self.stats["busy"] += 1
-                raise WeatherBusy("daily")
-            if self.om_bucket is not None and not self.om_bucket.take(cost):
-                self.stats["busy"] += 1
-                raise WeatherBusy("minute")
-            self._day = (day, used + cost)
 
     # ---- Open-Meteo
     def runs(self):
@@ -447,6 +471,8 @@ class WeatherService:
             if m:
                 m["at"] = t                                   # one reader at a time asks again
         try:
+            with self._lock:
+                self.stats["meta_reads"] += 1
             raw = self.fetch(OM_META.format(name), META_MAX_BYTES, OM_HEADERS)
             init = int(json.loads(raw)["last_run_initialisation_time"])
         except Exception as exc:
@@ -460,52 +486,6 @@ class WeatherService:
         with self._lock:
             self._meta[name] = {"at": t, "ok": t, "init": init}
         return init
-
-    def open_meteo(self, lat, lon):
-        """The parsed Open-Meteo answer for the point (cached per model run); raises WeatherError / WeatherBusy."""
-        key = (round(lat, 3), round(lon, 3))
-        inits, runs = self.runs()
-        with self._klock(key):
-            t = self.mono()
-            with self._lock:
-                hit = self._om.get(key)
-                if hit and hit["runs"] == runs and None not in runs:
-                    self._om.move_to_end(key)
-                    self.stats["om_cached"] += 1
-                    return hit["doc"], inits
-                if hit and None in runs and t - hit["at"] < META_TTL_S * 3:
-                    return hit["doc"], inits                  # runs unknown: a recent answer stands
-                if t < self._blocked:                         # before the failure memory: a 429 is "busy"
-                    self.stats["busy"] += 1
-                    raise WeatherBusy("blocked")
-                failed = self._fail.get(key)
-                if failed is not None and t - failed < FAIL_TTL_S:
-                    raise WeatherError("recent failure")
-            self._budget(OM_COST)
-            url = (f"{OM_FORECAST}?latitude={key[0]}&longitude={key[1]}&hourly={','.join(OM_VARS)}"
-                   f"&models={','.join(OM_NAME[m] for m in OM_MODELS)}&timezone=GMT&forecast_days={OM_DAYS}"
-                   f"&past_days={OM_PAST_DAYS}&wind_speed_unit=ms")
-            try:
-                with self._lock:
-                    self.stats["om_calls"] += 1
-                doc = parse_open_meteo(self.fetch(url, OM_MAX_BYTES, OM_HEADERS))
-            except Exception as exc:
-                status = getattr(exc, "status", None)
-                with self._lock:
-                    self._fail[key] = self.mono()
-                    if status == 429:
-                        self._blocked = self.mono() + block_for(getattr(exc, "detail", ""))
-                self._err(f"open-meteo {key}: {exc}")
-                if status == 429:
-                    raise WeatherBusy("429") from exc
-                raise WeatherError(str(exc)) from exc
-            with self._lock:
-                self._fail.pop(key, None)
-                self._om[key] = {"runs": runs, "doc": doc, "at": self.mono()}
-                self._om.move_to_end(key)
-                while len(self._om) > OM_CACHE_POINTS:
-                    self._om.popitem(last=False)
-            return doc, inits
 
     # ---- NWS
     def _nws_get(self, url):
@@ -566,8 +546,14 @@ class WeatherService:
             return grid
 
     # ---- the table
-    def table(self, model, lat, lon, now=None):
-        """{"model", "run" (naive UTC or None), "rows", "elev", "source"} for the point, or None (NWS abroad)."""
+    def om_key(self):
+        """Every model's run (each metadata file read) as one string: the browser keeps an Open-Meteo answer while this
+        stays the same (section 91c)."""
+        return "-".join("x" if ep is None else str(ep) for ep in self.runs()[1])
+
+    def table(self, model, lat, lon, now=None, om=None):
+        """{"model", "run" (naive UTC or None), "rows", "elev", "source"} for the point, or None (NWS abroad).
+        Open-Meteo's models need `om`: the answer the visitor's browser fetched, parsed and checked (section 91c)."""
         now = now or datetime.now(timezone.utc).replace(tzinfo=None)
         if model == "NWS":
             grid = self.nws_grid(lat, lon)
@@ -580,14 +566,21 @@ class WeatherService:
                 pass
             elev = (grid.get("elevation") or {}).get("value")
             return {"model": "NWS", "run": run, "rows": nws_rows(grid, now), "elev": elev, "source": "nws"}
-        doc, inits = self.open_meteo(lat, lon)
-        rows = om_rows(doc, model, inits.get(model), now)
+        if om is None:
+            raise WeatherError("no Open-Meteo answer")
+        inits, _ = self.runs()
+        rows = om_rows(om, model, inits.get(model), now)
         if not rows:
+            with self._lock:
+                self.stats["om_refused"] += 1
             raise WeatherError(f"no {model} rows")
+        with self._lock:
+            self.stats["om_built"] += 1
+        doc = om
         return {"model": model, "run": inits.get(model), "rows": rows, "elev": doc.get("elev"), "source": "open-meteo"}
 
     def health(self):
+        t = self.mono()
         with self._lock:
-            day, used = self._day
-            return dict(self.stats, day_used=round(used, 1), day_limit=OM_DAILY_LIMIT, cached_points=len(self._om),
-                        nws_grids=len(self._nws_grid), blocked_s=max(0, round(self._blocked - self.mono())))
+            meta = {n: (None if m.get("ok") is None else round(t - m["ok"])) for n, m in self._meta.items()}
+            return dict(self.stats, nws_grids=len(self._nws_grid), meta_age_s=meta)

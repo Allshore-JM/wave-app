@@ -294,6 +294,16 @@
   // A "busy" answer (the server's build slots are taken: forecast points share them with the tide and wind windows) is
   // asked again quietly BUSY_TRIES times, BUSY_WAIT_MS apart, before it is shown with Retry (G28 re-check R1-N1).
   var BUSY_TRIES = 5, BUSY_WAIT_MS = 4000;
+  // Land weather from the visitor's browser (plan section 91c): Open-Meteo's free limit is per IP and the site server's
+  // address is shared, so the browser asks Open-Meteo itself (the URL comes from /api/forecast as om_url) and POSTs the
+  // answer to WEATHER_API, where the server checks it and builds the table. The answer is held for the tab (OM_HELD_MAX
+  // points, OM_HELD_MS) while the models' runs (om_key) stay the same: model tabs, units, zones and Retry reuse it.
+  var WEATHER_API = '/api/forecast/weather', OM_HOST = 'https://api.open-meteo.com/';
+  var OM_BODY_MAX = 1200000, OM_TIMEOUT_MS = 20000, OM_HELD_MAX = 8, OM_HELD_MS = 30 * 60 * 1000;
+  var OM_BUSY = 'Weather is busy right now; try again in a moment', OM_DOWN = 'Weather temporarily unavailable';
+  function needsOm(d) {
+    return !!d && typeof d === 'object' && typeof d.om_url === 'string' && !d.table_html && !d.error;
+  }
   function ttlOf(d) { return d && (d.wind_complete === false || d.split_note) ? GAP_TTL_MS : CACHE_TTL_MS; }
   // The open GFS table follows the new run by itself (section 77d, owner 2026-11-02): a GFS answer with a split note
   // (the prior run's table while the new run's analysis runs, or NOAA's split meanwhile) is asked for again quietly,
@@ -381,6 +391,60 @@
       });
     }
     function wake() { var w = watch; if (w && w.waiting) fire(w); }
+    // ---- land weather: the browser asks Open-Meteo, the server builds the table (section 91c) ----
+    var omHeld = new Map();                           // om_url -> { key: om_key, text, ts }
+    var setT = deps.setTimer || function (f, ms) { return setTimeout(f, ms); };
+    var clearT = deps.clearTimer || function (t) { clearTimeout(t); };
+    function omFail(busy) { var e = new Error(busy ? 'busy' : 'down'); e.omBusy = !!busy; e.omFail = true; return e; }
+    function omText(d, signal) {
+      var h = omHeld.get(d.om_url), now = deps.now();
+      if (h && h.key === d.om_key && now - h.ts < OM_HELD_MS) return Promise.resolve(h.text);
+      if (d.om_url.indexOf(OM_HOST) !== 0) return Promise.reject(omFail(false));   // never another host
+      var c = new AbortController(), timedOut = false;
+      var timer = setT(function () { timedOut = true; c.abort(); }, OM_TIMEOUT_MS);
+      function off() { c.abort(); }
+      if (signal) { if (signal.aborted) c.abort(); else signal.addEventListener('abort', off); }
+      function done() { clearT(timer); if (signal) signal.removeEventListener('abort', off); }
+      return deps.fetch(d.om_url, { signal: c.signal, credentials: 'omit' }).then(function (r) {
+        if (r.status === 429) throw omFail(true);                             // the visitor's own Open-Meteo limit
+        if (!r.ok) throw omFail(false);
+        var len = Number(r.headers && r.headers.get ? r.headers.get('content-length') : NaN);
+        if (len > OM_BODY_MAX) throw omFail(false);
+        return r.text();
+      }).then(function (text) {
+        done();
+        if (typeof text !== 'string' || !text || text.length > OM_BODY_MAX) throw omFail(false);
+        omHeld.delete(d.om_url);
+        omHeld.set(d.om_url, { key: d.om_key, text: text, ts: deps.now() });
+        while (omHeld.size > OM_HELD_MAX) omHeld.delete(omHeld.keys().next().value);
+        return text;
+      }, function (err) {
+        done();
+        if (err && err.omFail) throw err;
+        if (err && err.name === 'AbortError' && !timedOut) throw err;          // the load was superseded
+        throw omFail(false);                                                   // no answer, or too slow
+      });
+    }
+    // d: the /api/forecast answer; q: its query. -> the weather answer, or d with the error to show (Retry).
+    function fillWeather(d, q, signal) {
+      if (!needsOm(d)) return Promise.resolve(d);
+      return omText(d, signal).then(function (text) {
+        return deps.fetch(WEATHER_API + '?' + q, { method: 'POST', body: text, signal: signal,
+          headers: { 'Content-Type': 'text/plain' } }).then(function (r) {
+          if (!r.ok && r.status !== 400 && r.status !== 413) throw omFail(false);
+          return r.json();
+        }).then(function (w) {
+          if (!w || typeof w !== 'object') throw omFail(false);
+          if (w.error && !w.table_html && !w.busy) omHeld.delete(d.om_url);    // refused: never offered again (busy: kept)
+          return w;
+        });
+      }).catch(function (err) {
+        if (err && err.name === 'AbortError' && !err.omFail) throw err;
+        var out = Object.assign({}, d, { error: err && err.omBusy ? OM_BUSY : OM_DOWN });
+        delete out.om_url;
+        return out;
+      });
+    }
     function apply(d, quiet) {
       follow(d);
       if (d && typeof d.model === 'string') state.model = modelOf(d.model);   // the server's echo is authoritative
@@ -405,6 +469,8 @@
         return (first && early ? early : deps.fetch(API + '?' + q, { signal: c.signal })).then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.json();
+        }).then(function (d) {
+          return my === seq ? fillWeather(d, q, c.signal) : null;              // a land point: Open-Meteo, then the table
         }).then(function (d) {
           if (my !== seq) return null;
           if (d && typeof d === 'object' && d.busy && tries < BUSY_TRIES) {    // quietly again (the spinner stays)
@@ -435,10 +501,13 @@
       var s = normalise(Object.assign({}, state, next || {})), key = keyOf(s), hit = cache.get(key), now = deps.now();
       if (hit && now - hit.ts < (hit.ttl || CACHE_TTL_MS)) return Promise.resolve(hit.d);
       var tries = 0;
+      var q = queryFor(s);
       function ask() {
-        return deps.fetch(API + '?' + queryFor(s), {}).then(function (r) {
+        return deps.fetch(API + '?' + q, {}).then(function (r) {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.json();
+        }).then(function (d) {
+          return fillWeather(d, q);                                            // a land click: Open-Meteo, then the table
         }).then(function (d) {
           if (d && typeof d === 'object' && d.busy && tries < BUSY_TRIES) { tries += 1; return wait(BUSY_WAIT_MS).then(ask); }
           return d;
@@ -1428,7 +1497,7 @@
     syncSelects();
     setTableMode(tableMode);                                                     // the buttons show the tab's preference before the first forecast
     setView(state.view);
-    if (initial.inline) {
+    if (initial.inline && !initial.om_url) {          // a land point's inline answer has no table (section 91c): load it
       loader.seed({ table_html: initial.error ? null : (els.table.innerHTML.trim() || null), graph_data: initial.graph_data || null, graph_header: initial.graph_header || null,
         error: initial.error || null, model: initial.model, swan_available: initial.swan_available, nwps_available: initial.nwps_available, nwps_age_hours: initial.nwps_age_hours, swan_age_hours: initial.swan_age_hours, wind_complete: initial.wind_complete,
         gfsb_available: initial.gfsb_available, split: initial.split, split_note: initial.split_note,   // the bar and the note follow the server's inline answer (G48 B P2-1 / P2-2)
@@ -1467,7 +1536,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
+      createLoader: createLoader, needsOm: needsOm, WEATHER_API: WEATHER_API, OM_BUSY: OM_BUSY, OM_DOWN: OM_DOWN, OM_BODY_MAX: OM_BODY_MAX, OM_HELD_MAX: OM_HELD_MAX, OM_HELD_MS: OM_HELD_MS, OM_TIMEOUT_MS: OM_TIMEOUT_MS, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,

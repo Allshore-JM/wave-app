@@ -1074,6 +1074,16 @@
       },
       beforeMode: function (m) { if (m === 'min' && fw && fw.mode !== 'min') holdPlace(); },
       onResize: function () { if (state.view === 'Graph') graphs.resize(); else placeSticky(); } });
+    // A table narrower than the window stretches with it, so the Date column's width follows the window's. The window
+    // can change width with no resize of its own: after a reload with it open, its box settles once the map's corner
+    // controls are measured, after the table was measured (found at section 91's test-site check: the frozen Time
+    // column covered 15.6 px of a weather table's Temp column at 1280 px, 8.6 px of a swell table's first column at
+    // 1920). So the frozen columns are measured again whenever the table's box changes size; the measure moves only
+    // the sticky cells (a style property, no layout size), so it cannot feed back into the observer.
+    var RO = win.ResizeObserver;
+    if (typeof RO === 'function' && els.table) {
+      try { new RO(function () { if (!els.table.hidden) placeSticky(); }).observe(els.table); } catch (e) {}
+    }
     var canvases = ['heightChart', 'periodChart', 'directionChart'].map($);
     var graphs = createForecastGraphs({ host: els.graphs, boxes: canvases.map(function (c) { return c.parentNode; }), canvases: canvases, rangeBar: els.rangeBar,
       loadChartJs: opts.loadChartJs || function () { return win.Chart ? Promise.resolve() : Promise.reject(new Error('Chart.js unavailable')); },

@@ -79,8 +79,8 @@ def _headline(event, props):
     """The NWS headline part that names this product. One NWSheadline often joins every hazard of the segment
     ("COASTAL FLOOD ADVISORY ... ...HIGH SURF ADVISORY ..."): the part naming the event is kept, else the whole line,
     else the API's own headline ("High Surf Advisory issued ... by NWS ...")."""
-    params = props.get("parameters") or {}
-    heads = params.get("NWSheadline")
+    params = props.get("parameters")
+    heads = params.get("NWSheadline") if isinstance(params, dict) else None
     line = heads[0] if isinstance(heads, list) and heads and isinstance(heads[0], str) else ""
     parts = [x.strip(" .") for x in line.split("...")]
     parts = [x for x in parts if x]
@@ -96,12 +96,15 @@ def _headline(event, props):
 
 def _zone_ids(props):
     out = []
-    for u in props.get("affectedZones") or []:
+    urls = props.get("affectedZones")
+    for u in urls if isinstance(urls, list) else []:
         if isinstance(u, str):
             z = u.rstrip("/").rsplit("/", 1)[-1]
             if z not in out:
                 out.append(z)
-    for z in ((props.get("geocode") or {}).get("UGC") or []):
+    geo = props.get("geocode")
+    ugc = geo.get("UGC") if isinstance(geo, dict) else None
+    for z in ugc if isinstance(ugc, list) else []:
         if isinstance(z, str) and z not in out:
             out.append(z)
     return out
@@ -110,7 +113,8 @@ def _zone_ids(props):
 def parse(doc, coast_zones, now):
     """The NWS answer (GeoJSON FeatureCollection) -> (alerts, stats). An alert is kept when its event is a coastal
     product, its status Actual, it is not a Cancel, it has not ended, nothing in the answer replaces it, and at least
-    one of its zones has a coastline. ValueError for an answer that is not a feature collection."""
+    one of its zones has a coastline. ValueError for an answer that is not a feature collection; a malformed feature
+    is counted as "other" and left out, never failing the read (G59 F5)."""
     if not isinstance(doc, dict) or not isinstance(doc.get("features"), list):
         raise ValueError("alerts: not a feature collection")
     stats = {"listed": len(doc["features"]), "kept": 0, "ended": 0, "replaced": 0, "cancel": 0, "other": 0,
@@ -122,53 +126,67 @@ def parse(doc, coast_zones, now):
         if not isinstance(p, dict):
             stats["other"] += 1
             continue
-        for ref in p.get("references") or []:
+        refs = p.get("references")
+        for ref in refs if isinstance(refs, list) else []:
             if isinstance(ref, dict) and isinstance(ref.get("identifier"), str):
                 replaced.add(ref["identifier"])
         props_list.append(p)
     alerts = []
     for p in props_list:
-        cls = EVENTS.get(p.get("event"))
-        if cls is None or p.get("status") != "Actual":
+        try:
+            alert = _alert(p, coast_zones, now, replaced, stats)
+        except Exception as exc:          # one malformed feature never fails the read
+            logger.warning("coastal alerts: feature left out: %s: %s", type(exc).__name__, str(exc)[:200])
             stats["other"] += 1
             continue
-        if p.get("messageType") == "Cancel":
-            stats["cancel"] += 1
-            continue
-        if p.get("id") in replaced:
-            stats["replaced"] += 1
-            continue
-        sent = _epoch(p.get("sent"))
-        effective = _epoch(p.get("effective")) or sent
-        onset = _epoch(p.get("onset")) or effective
-        ends = _epoch(p.get("ends"))
-        expires = _epoch(p.get("expires"))
-        end = ends or expires
-        if end is None or onset is None or end <= now:
-            stats["ended"] += 1
-            continue
-        zones = _zone_ids(p)
-        kept = [z for z in zones if z in coast_zones]
-        if not kept:
-            for z in zones:
-                if z not in stats["no_coast"] and len(stats["no_coast"]) < 50:
-                    stats["no_coast"].append(z)
-            stats["other"] += 1
-            continue
-        headline = _headline(p["event"], p)
-        alerts.append({
-            "id": p.get("id") if isinstance(p.get("id"), str) else "",
-            "event": p["event"], "cls": cls,
-            "sent": sent, "onset": onset, "ends": ends, "expires": expires,
-            "office": _text(p.get("senderName"), 120),
-            "headline": _text(headline, 600),
-            "description": _text(p.get("description")),
-            "instruction": _text(p.get("instruction")),
-            "zones": kept,
-        })
+        if alert is not None:
+            alerts.append(alert)
     alerts.sort(key=lambda a: (-RANK[a["cls"]], a["onset"] or 0, a["event"], a["id"]))
     stats["kept"] = len(alerts)
     return alerts, stats
+
+
+def _alert(p, coast_zones, now, replaced, stats):
+    """One feature's properties -> an alert dict, or None (counted in stats)."""
+    event = p.get("event")
+    cls = EVENTS.get(event) if isinstance(event, str) else None
+    if cls is None or p.get("status") != "Actual":
+        stats["other"] += 1
+        return None
+    if p.get("messageType") == "Cancel":
+        stats["cancel"] += 1
+        return None
+    pid = p.get("id")
+    if isinstance(pid, str) and pid in replaced:
+        stats["replaced"] += 1
+        return None
+    sent = _epoch(p.get("sent"))
+    effective = _epoch(p.get("effective")) or sent
+    onset = _epoch(p.get("onset")) or effective
+    ends = _epoch(p.get("ends"))
+    expires = _epoch(p.get("expires"))
+    end = ends or expires
+    if end is None or onset is None or end <= now:
+        stats["ended"] += 1
+        return None
+    zones = _zone_ids(p)
+    kept = [z for z in zones if z in coast_zones]
+    if not kept:
+        for z in zones:
+            if z not in stats["no_coast"] and len(stats["no_coast"]) < 50:
+                stats["no_coast"].append(z)
+        stats["other"] += 1
+        return None
+    return {
+        "id": pid if isinstance(pid, str) else "",
+        "event": event, "cls": cls,
+        "sent": sent, "onset": onset, "ends": ends, "expires": expires,
+        "office": _text(p.get("senderName"), 120),
+        "headline": _text(_headline(event, p), 600),
+        "description": _text(p.get("description")),
+        "instruction": _text(p.get("instruction")),
+        "zones": kept,
+    }
 
 
 class AlertService:
@@ -280,7 +298,9 @@ class AlertService:
         body = {"format": FORMAT, "state": state, "updated": int(ts) if ts else None, "alerts": alerts,
                 "zones": zones}
         payload = json.dumps(body, separators=(",", ":"), sort_keys=True)
-        etag = hashlib.md5(payload.encode("utf-8")).hexdigest()
+        # the read time ("updated") is left out of the tag: an unchanged list answers 304 (G59 F8)
+        same = {k: v for k, v in body.items() if k != "updated"}
+        etag = hashlib.md5(json.dumps(same, separators=(",", ":"), sort_keys=True).encode("utf-8")).hexdigest()
         with self.lock:
             self._payload = (key, payload, etag)
         return payload, etag

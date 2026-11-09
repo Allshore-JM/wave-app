@@ -530,6 +530,21 @@
     .lc-point { background: #fff; border: 2px solid #d6007a; }
     .lc-tide { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 100% 100% no-repeat; border: 0; width: 13px; height: 13px; }
     .lc-wind { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M10 3.5 L14.5 10 L11.3 9.2 L11.3 16.5 L8.7 16.5 L8.7 9.2 L5.5 10 Z' fill='%232f9e44'/%3E%3C/svg%3E") center / 100% 100% no-repeat; border: 0; width: 13px; height: 13px; }
+    /* coastal hazards (plan section 90): a short stretch of coastline in the warning / advisory / pending colours */
+    .lc-alert { border-radius: 2px; height: 5px; width: 14px; border: 1px solid rgba(0,0,0,.55);
+                background: linear-gradient(90deg, #e03131 0 34%, #f76707 34% 67%, #fab005 67% 100%); }
+    /* the products on a zone (static_ui/alerts.js): text only, scrolled inside Leaflet's popup */
+    .alert-popup .leaflet-popup-content { margin: 10px 12px; font-size: 12.5px; line-height: 1.35; }
+    .alert-pop-zone { font-weight: 700; margin-bottom: 6px; color: #1d2b4f; }
+    .alert-item { border-left: 4px solid #868e96; padding: 2px 0 6px 8px; margin-bottom: 8px; }
+    .alert-ev { font-weight: 700; }
+    .alert-when { color: #343a40; }
+    .alert-head { font-weight: 600; margin-top: 4px; }
+    .alert-desc, .alert-instr { white-space: pre-line; margin-top: 4px; }
+    .alert-instr { font-style: italic; }
+    .alert-src { color: #6c757d; font-size: 11.5px; margin-top: 4px; }
+    .alert-link { display: inline-block; margin-top: 2px; }
+    @media (any-pointer: coarse) { .alert-link { padding: 10px 0; } }
     /* the live list's state under "Live buoys" (static_ui/livelist.js): loading / cached list / loading more / retrying,
        and the tide and wind layers' (their lists' and the wind feed's state; never a zoom hint: owner, 2026-10-10).
        On its own line, and with no width of its own (it wraps under
@@ -1440,12 +1455,13 @@
             live: saved.live !== false,
             points: saved.points !== false,
             tides: saved.tides !== false,
-            wind: saved.wind !== false
+            wind: saved.wind !== false,
+            alerts: saved.alerts !== false
           };
         }
       } catch(e) {}
 
-      return { forecast: true, live: true, points: true, tides: true, wind: true };
+      return { forecast: true, live: true, points: true, tides: true, wind: true, alerts: true };
     }
 
     function saveLayerVisibility() {
@@ -1456,7 +1472,8 @@
           live: map.hasLayer(liveBuoyLayer),
           points: map.hasLayer(pointLayer),
           tides: map.hasLayer(tideLayer),
-          wind: map.hasLayer(windLayer)
+          wind: map.hasLayer(windLayer),
+          alerts: ALERTS_ON ? map.hasLayer(alertLayer) : initialLayerVisibility.alerts
         })
       );
     }
@@ -1498,6 +1515,7 @@
     const COARSE_TOL = 8;
     const coarseQuery = window.matchMedia ? window.matchMedia('(any-pointer: coarse)') : null;
     function coarsePointer() { return !!(coarseQuery && coarseQuery.matches); }
+    const LINE_RANK = 1e6;
     function nearestPath(r, point, e) {
       const click = !!e && (e.type === 'click' || e.type === 'preclick');
       let best = null, bd = Infinity;
@@ -1505,7 +1523,8 @@
         const l = o.layer;
         if (!l.options.interactive || !l._containsPoint(point)) continue;
         if (click && r._map._draggableMoved(l)) continue;
-        const d = l._point ? point.distanceTo(l._point) : Infinity;
+        // a dot: its centre's distance; a coastal-hazard line (plan section 90): after every dot, then by its own distance
+        const d = l._point ? point.distanceTo(l._point) : (l._lineDistance ? LINE_RANK + l._lineDistance(point) : Infinity);
         if (d <= bd) { bd = d; best = l; }
       }
       return best;
@@ -1591,6 +1610,11 @@
     // refreshed in place every 5 minutes (static_ui/winds.js), a window with the last 24 hours (openWindStation).
     const windLayer = L.layerGroup();
     if (initialLayerVisibility.wind) windLayer.addTo(map);
+    // NWS coastal hazards (plan section 90): the affected zones' coastlines from zoom 5, coloured by the product in
+    // force (static_ui/alerts.js). COASTAL_ALERTS=0 on the server leaves the layer out of the legend.
+    const ALERTS_ON = {{ coastal_alerts|tojson }};
+    const alertLayer = L.layerGroup();
+    if (ALERTS_ON && initialLayerVisibility.alerts) alertLayer.addTo(map);
 
     if (initialLayerVisibility.forecast) {
       forecastLayer.addTo(map);
@@ -1610,7 +1634,8 @@
         '<span class="lc-dot lc-live"></span>Live buoys<span class="lc-note" data-live-note aria-hidden="true"></span>': liveBuoyLayer,
         '<span class="lc-dot lc-point"></span>My points': pointLayer,
         '<span class="lc-dot lc-tide"></span>Tide stations<span class="lc-note" data-tide-note aria-hidden="true"></span>': tideLayer,
-        '<span class="lc-dot lc-wind"></span>Wind stations<span class="lc-note" data-wind-note aria-hidden="true"></span>': windLayer
+        '<span class="lc-dot lc-wind"></span>Wind stations<span class="lc-note" data-wind-note aria-hidden="true"></span>': windLayer{% if coastal_alerts %},
+        '<span class="lc-dot lc-alert"></span>Coastal hazards<span class="lc-note" data-alerts-note aria-hidden="true"></span>': alertLayer{% endif %}
       },
       {
         collapsed: false
@@ -1647,6 +1672,16 @@
         measureTopRight();
       }
     }
+    // The coastal hazards' note likewise (their list's state: loading / unavailable; plan section 90).
+    let alertsNoteText = '';
+    function paintAlertsNote() {
+      syncLegendNote();
+      const el = document.querySelector('.leaflet-control-layers [data-alerts-note]');
+      if (el && el.textContent !== alertsNoteText) {
+        el.textContent = alertsNoteText;
+        measureTopRight();
+      }
+    }
     // The legend's key button (plan section 54): while any legend note exists, a dot on the key and the notes in its label
     // ("Legend · Live buoys: loading…"), so a closed legend still says something is going on.
     function syncLegendNote() {
@@ -1654,7 +1689,7 @@
       if (!btn) return;
       // the live note only while its layer is on (the tide and wind notes are cleared with theirs: G37 F3)
       const live = map.hasLayer(liveBuoyLayer) ? liveNoteText : '';
-      const notes = [['Live buoys', live], ['Tide stations', tideNoteText], ['Wind stations', windNoteText]]
+      const notes = [['Live buoys', live], ['Tide stations', tideNoteText], ['Wind stations', windNoteText], ['Coastal hazards', alertsNoteText]]
         .filter(function (n) { return n[1]; }).map(function (n) { return n[0] + ': ' + n[1]; });
       const tip = notes.length ? 'Legend · ' + notes.join('; ') : 'Legend';
       if (btn.getAttribute('data-tip') !== tip) { btn.setAttribute('data-tip', tip); btn.setAttribute('aria-label', tip); }
@@ -1663,7 +1698,7 @@
     }
     if (typeof layersControl._update === 'function') {
       const lcUpdate = layersControl._update;
-      layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintLiveNote(); return r; };
+      layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintAlertsNote(); paintLiveNote(); return r; };
     }
 
     map.on('overlayadd', saveLayerVisibility);
@@ -5380,6 +5415,28 @@
       });
     })();
   </script>
+{% if coastal_alerts %}
+  <!-- NWS coastal hazards on the coastline (static_ui/alerts.js, plan section 90). -->
+  <script src="/ui/alerts.js?v={{ ui_asset_version }}"></script>
+  <script>
+    (function initAlerts() {
+      if (!window.AllshoreAlerts) return;
+      try {
+        window.AllshoreAlerts.create(map, {
+          layer: alertLayer, renderer: mapRenderer, coarse: coarsePointer, tip: textTip,
+          onNote: function (t) { alertsNoteText = t; paintAlertsNote(); },
+          // a running map tool takes the click (the station markers' rule)
+          tool: function (e) {
+            if (!(window.AllshoreTools && window.AllshoreTools.active())) return false;
+            window.AllshoreTools.click(e.latlng, e.originalEvent);
+            return true;
+          },
+          waitFor: function () { return window.__allshoreOverlayWait || null; }   // the overlay's first picture first
+        });
+      } catch (e) { console.error('alerts', e); }
+    })();
+  </script>
+{% endif %}
   <!-- Cloudflare Web Analytics (cookieless page-view/visit counting) -->
   <script defer src="https://static.cloudflareinsights.com/beacon.min.js" data-cf-beacon='{"token": "5cb8e83a86034ae2a3980001b33c0b31"}'></script>
   <!-- End Cloudflare Web Analytics -->

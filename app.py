@@ -27,6 +27,7 @@ import chain_tls
 import cwa_tls
 import wind_keyed
 import wind_sources
+import alert_sources
 
 app = Flask(__name__)
 
@@ -507,12 +508,12 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.28.9"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.29.2"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
               "winds.js": "application/javascript", "basemap.js": "application/javascript",
-              "places.js": "application/javascript"}
+              "places.js": "application/javascript", "alerts.js": "application/javascript"}
 
 
 @app.route("/ui/<name>")
@@ -3791,6 +3792,47 @@ def _swan_health():
     return out
 
 
+# ---------------------------------------------------------------- Coastal hazards (plan section 90)
+# NWS coastal products (High Surf, Rip Current, Beach Hazards, Coastal / Lakeshore Flood, Storm Surge) read in the
+# background every two minutes (alert_sources.AlertService) and drawn on the map along each named zone's coastline
+# (alert_coast.json, tools/alerts/build_alert_coast.py). COASTAL_ALERTS=0 switches the layer off.
+COASTAL_ALERTS = os.environ.get("COASTAL_ALERTS", "1") != "0"
+_ALERTS_HTTP = requests.Session()        # one attempt per read, no retry adapter (the next read is two minutes away)
+ALERTS = alert_sources.AlertService(os.path.join(os.path.dirname(os.path.abspath(__file__)), "alert_coast.json"))
+
+
+def _alerts_fetch():
+    """The NWS answer's bytes: at most 4 MB within 30 s, one attempt."""
+    return _capped_get(alert_sources.URL, alert_sources.MAX_BYTES, alert_sources.HEADERS, (5, 20), 30,
+                       session=_ALERTS_HTTP)
+
+
+def _alerts_tick():
+    """One pass of the live scheduler: a background read when the held list is due. True when one was started."""
+    if not COASTAL_ALERTS:
+        return False
+    return ALERTS.start(_alerts_fetch)
+
+
+def _alerts_health():
+    """For /healthz (reported, never part of `ok`)."""
+    if not COASTAL_ALERTS:
+        return {"enabled": False}
+    return dict(ALERTS.health(), enabled=True)
+
+
+@app.route("/api/alerts/coastal")
+def api_alerts_coastal():
+    """The coastal hazards in force or pending and the coastlines of the zones they name (alert_sources.served). Never
+    waits for NWS: right after a start the answer says "loading" and the page asks again."""
+    if not COASTAL_ALERTS:
+        abort(404)
+    if LIVE_BACKGROUND:
+        _alerts_tick()
+    payload, etag = ALERTS.served()
+    return _json_cached_bytes(payload, etag, 60, {"CDN-Cache-Control": "no-store"})
+
+
 def parse_swan(station_id: str, target_tz_name: str | None = None):
     """Cached SWAN bulletin retrieval, mirroring parse_bull()'s contract.
 
@@ -4857,6 +4899,7 @@ def index():
         icon_version=ICON_VERSION,
         coast_base=_coast_base(),
         places_base=_places_base(),
+        coastal_alerts=COASTAL_ALERTS,              # the coastal hazards layer (plan section 90)
         geo_base=_geo_base(),
         retired_stations=sorted(BLANK_STATIONS),            # a stored default among them opens like none (G35 B-8)
         site_origin=SITE_ORIGIN,
@@ -6606,6 +6649,10 @@ def _live_tick(providers=None):
         _gspec_tick()                             # the GFS spectral table fetched in the background (plan section 77)
     except Exception as exc:
         logger.warning("GFS spectral: scheduler pass failed: %s", exc)
+    try:
+        _alerts_tick()                            # the NWS coastal hazards read in the background (plan section 90)
+    except Exception as exc:
+        logger.warning("coastal alerts: scheduler pass failed: %s", exc)
     warm = _live_warm(providers)
     with _LIVE_BG_LOCK:
         _LIVE_BG["ticks"] += 1
@@ -6729,6 +6776,7 @@ def _live_after_fork():
     global _GSPEC_LOCK
     _GSPEC_LOCK = threading.Lock()                # the GFS spectral table (plan section 77)
     _GSPEC["thread"] = None
+    ALERTS.after_fork()                           # the coastal hazards' lock and reader (plan section 90)
     _WINDS_LOCK = threading.Lock()              # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()
@@ -6850,6 +6898,7 @@ def healthz():
         "tls": _tls_health(),                     # section 57: the trust list in use; reported only
         "nwps": _nwps_health(),                   # section 59: the NWPS tables' pointer; reported only
         "swan": _swan_health(),                   # section 64: the SWAN tables' publish times; reported only
+        "alerts": _alerts_health(),               # section 90: the NWS coastal hazards; reported only
     }
     resp = jsonify(body)
     resp.status_code = 200 if ok else 503

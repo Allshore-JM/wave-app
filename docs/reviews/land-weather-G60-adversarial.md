@@ -212,3 +212,31 @@ reviewed feat/land-weather @ ca83ebe (UI 1.30.2). Reports: scratch `g60/a/g60-a-
 ### Owner awareness
 - In southern Canada, northern Mexico, the Bahamas and Chukotka the NWS tab is still offered. Pressing it shows the GFS
   table with GFS lit, because api.weather.gov has no grid there.
+
+## Re-check of the fix round (one fresh reviewer, Fable)
+
+Scope: `git diff ca83ebe..741d91c` and the test site at c89a7c2 (UI 1.30.3). Result: **0 P0, 0 P1, 0 P2, 4 P3**. Every claim
+of the fix round held (R1-R9). Of 25 mutants, 19 were killed and 6 were equivalent. No secrets or stray files.
+
+| Id | Finding | Outcome |
+|---|---|---|
+| F-1 | The type colours passed AA on the plain band but not under the now-row and hover tints | Fixed: rain #11549f, snow #653cac, mix #a41353, ice #005d66, thunder #8b3e07, at least 4.62:1 on the band under every tint; a test reads the colours and tints from the template |
+| F-2 | An NWS press answered as GFS was cached under the NWS key only, so the GFS tab asked again | Fixed: `keep()` also files the answer under the model it carries; a failed build is kept under neither |
+| F-3 | freezing_spray and ice_crystals read as "Ice"; the skip list held entries that never matched | Fixed: `NWS_NOT_PRECIP`, the dead entries removed |
+| F-4 | The quiet second POST went out at once and ignored Retry-After | Fixed: 0.8 s, or Retry-After clamped to 0.8-3 s; a load superseded during the pause sends nothing |
+
+The fix round: 3a50c1b (UI 1.30.4) and the golden in its own commit, 51b02b0. One existing test changed on purpose: the
+section-64 SWAN test now expects the GFS answer to be served from the cache (no request). Suites: pytest 2,833 passed + 1
+skipped (only the four golden checks failed before the re-capture). Node UI 631 and overlay 616 passed. Mutants of the
+fix round: 9 of 9 client mutants killed (no pause, Retry-After ignored, no cap, no floor, abort ignored, the drop
+without a pause, no second key, a failed build kept, the wrong second key).
+
+Live on the test site (test @ a6df59d, 1.30.4 served from 22:43:37 UTC, the same bytes as the repo, 1.30.3 answering
+404), headless Chrome with trusted clicks:
+- Served colours: the five new values.
+- A 502 with Retry-After 2: the second POST went out 2,056 ms after the first, and the table drew (194 rows, one
+  Open-Meteo fetch).
+- A 503 with no header: 823 ms.
+- Montreal NWS, answered as GFS: ECMWF needed one GET and one POST (the Open-Meteo text was reused). GFS after that
+  needed **0** requests.
+- The console showed only the two injected errors. Test-origin storage was emptied and the browser stopped.

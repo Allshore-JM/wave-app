@@ -9,11 +9,15 @@ lakeoutlines-v1: the lines the map's coastline clip and the wind layer's lake ou
    A zone can be stored as several rows (pieces split by a river); every piece counts for its zone.
 2. Every coastline point (the GSHHG edges densified every STEP degrees, in ring order) is given to the zone whose
    polygon holds it. A point outside every zone (just offshore of a zone drawn to the shore, or on water NWS leaves
-   out) joins the zone whose OUTER edge (an edge no other zone row shares: the coast, or a border) lies within NEAR_KM.
-3. Consecutive points of one zone make a line; lines are simplified (Douglas-Peucker, TOL degrees), lines shorter
+   out) joins the zone whose OUTER edge (an edge no other zone row shares: the coast, or a border) passes nearest,
+   within NEAR_KM, unless the way there crosses water (a foreign shore across a strait or a river) or runs along
+   the coast (the coast going on past the zone's end at a border).
+3. Only the OPEN coast is kept (owner, 2026-11-08: a surf site; hazards belong on the shore that faces the open sea
+   or a Great Lake, never on a lagoon, sound, bay or the Intracoastal Waterway): a point stays when at least one
+   straight line from it, within FAN_DEG of straight out to sea, runs OPEN_KM over water without touching land.
+   Short gaps and short pieces are evened out (GAP_KM, OPEN_MIN_KM).
+4. Consecutive points of one zone make a line; lines are simplified (Douglas-Peucker, TOL degrees), lines shorter
    than MIN_KM dropped, and each line stored as a Google encoded polyline (precision 5, lat / lon pairs).
-
-A zone's line includes the shores of bays and lagoons inside it (the zone's coast, as NWS draws the zone).
 
 Output: alert_coast.json at the repository root: {"format": "alert-coast-v1", "zones_file", "zones_sha256", "coast",
 "built_utc", "rules", "zones": {"HIZ007": {"name", "cwa", "lines": ["<encoded>", ...]}}}. A zone missing from it gets
@@ -44,14 +48,31 @@ ZONES_FILE = "z_16ap26"                       # NWS public forecast zones, effec
 ZONES_URL = "https://www.weather.gov/source/gis/Shapefiles/WSOM/" + ZONES_FILE + ".zip"
 ZONES_SHA256 = "010dc5eab64b6e326c969e252bd016f56a037b0444df8303658707bca4cc7fd8"
 COAST_BASE = "https://models.allshoresurf.com/static/coast"
-COAST_SETS = ("v1", "lakeoutlines-v1")        # the sea coast; lakes of 100 km2 and more (the Great Lakes among them)
+# the sea coast; lakes of 100 km2 and more (the Great Lakes among them); the Great Lakes' smaller islands (lakes-v1:
+# only its rings lakeoutlines-v1 does not hold, see lake_islands)
+COAST_SETS = ("v1", "lakeoutlines-v1", "lakes-v1")
+SEAWARD = {"v1": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}    # water on the right of a ring's direction (+1) or left
 UA = {"User-Agent": "allshoresurf.com coastal hazards tool (https://allshoresurf.com)"}
 # states and territories with a sea or Great Lakes coast (NWS state codes; MP Northern Marianas, AS American Samoa)
 COASTAL = frozenset("AK AL AS CA CT DC DE FL GA GU HI IL IN LA MA MD ME MI MN MP MS NC NH NJ NY OH OR PA PR RI SC TX "
-                    "VA VI WA WI".split())
+                    "VA VI VT WA WI".split())
 STEP = 0.001        # coastline points this far apart (deg, ~100 m)
 NEAR_KM = 1.5       # an offshore point joins a zone whose outer edge is this close
+NEAR_ALONG = 0.7    # ... unless the way there runs along the coast (|cos| of the angle with the coast above this)
+NEAR_WATER_T = (0.2, 0.4, 0.6, 0.8)   # ... or crosses water at one of these fractions of the way
 GRID = 0.005        # the near rule's lookup grid (deg)
+LAND_RES = 0.005    # the land raster the open-sea test reads (deg, ~500 m)
+NEAR_RES = 0.001    # the land raster the near rule's water test reads (deg, ~100 m)
+NEAR_END_KM = 0.15  # the water test looks only at points this far from both ends (the raster's error near a shore)
+OPEN_KM = 100.0     # open coast: a line this long reaches out over water ...
+FAN_DEG = 60        # ... within this angle of straight out to sea
+FAN_STEP = 5        # (lines tried every FAN_STEP degrees)
+RAY_FIRST_KM = 0.8  # the first sample of a line (past the shore's own raster cell)
+RAY_STEP_KM = 0.45  # sample spacing along a line
+OPEN_EVERY = 5      # every 5th coast point is tested; the rest take the nearest tested point's answer
+TANGENT_PTS = 3     # the coast's direction at a point: from the points this many before and after it
+GAP_KM = 1.0        # a stretch judged closed, shorter than this, between open stretches: open (a jetty, a cove)
+OPEN_MIN_KM = 1.0   # an open stretch shorter than this: closed (a speck inside a lagoon)
 TOL = 0.0005        # Douglas-Peucker tolerance (deg, ~50 m)
 MIN_KM = 0.3        # shorter pieces are dropped (a speck the near rule caught)
 Q = 1e6             # zone vertices compared at this precision (the shapefile shares edges exactly)
@@ -143,9 +164,10 @@ def edge_counts(shapes):
 
 
 def near_map(pieces, cnt):
-    """{grid cell: {zone index}} along every coastal zone row's OUTER edges (used by one row only), densified."""
+    """The coastal zone rows' OUTER edges (edges used by one row only) as a lookup: (segs, cells). segs: m x 5 array
+    (zone index, x0, y0, x1, y1); cells: {grid cell: [segment index]} for every GRID cell a segment passes."""
     import numpy as np
-    out = {}
+    segs, cells = [], {}
     for zi, rings in pieces:
         for r in rings:
             keep, keys = _edge_keys(r)
@@ -155,27 +177,46 @@ def near_map(pieces, cnt):
                     continue
                 x0, y0 = r[k]
                 x1, y1 = r[k + 1]
+                si = len(segs)
+                segs.append((zi, x0, y0, x1, y1))
                 n = max(1, int(math.ceil(math.hypot(x1 - x0, y1 - y0) / (GRID / 2))))
                 t = np.linspace(0.0, 1.0, n + 1)
                 gx = np.floor((x0 + (x1 - x0) * t + 180) / GRID).astype(int)
                 gy = np.floor((y0 + (y1 - y0) * t + 90) / GRID).astype(int)
                 for cell in set(zip(gx.tolist(), gy.tolist())):
-                    out.setdefault(cell, set()).add(zi)
-    return out
+                    cells.setdefault(cell, []).append(si)
+    return np.array(segs, float).reshape(-1, 5), cells
 
 
-def near_zone(nmap, x, y, km=NEAR_KM):
-    """The zone (lowest index) whose outer edge passes nearest (x, y), searched ring by ring out to km; None."""
+def near_zone(near, x, y, km=NEAR_KM):
+    """The zone whose outer edge passes nearest (x, y) (true distance, km), within km: (zone index, qx, qy, d km),
+    (qx, qy) the nearest point of that edge; ties go to the lower zone index. None when no outer edge is that close."""
+    import numpy as np
+    segs, cells = near
+    k = max(0.05, math.cos(math.radians(y)))
     gx, gy = int((x + 180) // GRID), int((y + 90) // GRID)
-    reach = int(km / (111.2 * GRID)) + 1
-    for r in range(reach + 1):
-        found = set()
-        for dx in range(-r, r + 1):
-            for dy in ((-r, r) if abs(dx) != r else range(-r, r + 1)):
-                found |= nmap.get((gx + dx, gy + dy), set())
-        if found:
-            return min(found)
-    return None
+    rx, ry = int(km / (111.2 * k * GRID)) + 1, int(km / (111.2 * GRID)) + 1
+    idx = set()
+    for dx in range(-rx, rx + 1):
+        for dy in range(-ry, ry + 1):
+            idx.update(cells.get((gx + dx, gy + dy), ()))
+    if not idx:
+        return None
+    S = segs[sorted(idx)]
+    ax, ay = (S[:, 1] - x) * k * 111.2, (S[:, 2] - y) * 111.2
+    bx, by = (S[:, 3] - x) * k * 111.2, (S[:, 4] - y) * 111.2
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    t = np.where(L2 > 0, np.clip(-(ax * dx + ay * dy) / np.where(L2 > 0, L2, 1), 0, 1), 0)
+    d = np.hypot(ax + t * dx, ay + t * dy)
+    best = d.min()
+    if best > km:
+        return None
+    cand = np.flatnonzero(d <= best + 1e-9)
+    j = cand[np.argmin(S[cand, 0])]
+    qx = S[j, 1] + t[j] * (S[j, 3] - S[j, 1])
+    qy = S[j, 2] + t[j] * (S[j, 4] - S[j, 2])
+    return int(S[j, 0]), float(qx), float(qy), float(d[j])
 
 
 # ---------------------------------------------------------------- the coastline
@@ -197,6 +238,250 @@ def coast_index(set_name, cache):
 
 def coast_cell(set_name, cell, cache):
     return _cache_get(f"{COAST_BASE}/{set_name}/f/{cell}.bin", os.path.join(cache, "coast_" + set_name, cell + ".bin"))
+
+
+def ring_starts(edges):
+    """Where each closed ring of a cell's edges begins (an edge whose first vertex is not the last one's end)."""
+    import numpy as np
+    xi, yi, xj, yj = edges
+    if not len(xi):
+        return np.zeros(0, int)
+    joins = (np.abs(xj[1:] - xi[:-1]) < EPS) & (np.abs(yj[1:] - yi[:-1]) < EPS)
+    return np.flatnonzero(np.concatenate(([True], ~joins)))
+
+
+def _undirected(e, a, b):
+    import numpy as np
+    xi, yi, xj, yj = (v[a:b] for v in e)
+    p = np.round(np.stack([xi, yi], 1) * 1e4).astype(np.int64)
+    q = np.round(np.stack([xj, yj], 1) * 1e4).astype(np.int64)
+    f = (p[:, 0] < q[:, 0]) | ((p[:, 0] == q[:, 0]) & (p[:, 1] < q[:, 1]))
+    lo, hi = np.where(f[:, None], p, q), np.where(f[:, None], q, p)
+    return set(map(tuple, np.concatenate([lo, hi], 1).tolist()))
+
+
+def lake_islands(lakes, outlines):
+    """The Great Lakes' smaller islands: the rings of lakes-v1 (the Great Lakes water set, with its 139 islands) that
+    share no edge with lakeoutlines-v1 (which holds the lakes and their islands of 100 km2 and more). A ring of
+    lakes-v1 is either wholly in lakeoutlines-v1 or wholly not (checked on every Great Lakes cell, 2026-11-08)."""
+    import numpy as np
+    if lakes is None or not len(lakes[0]):
+        return None
+    have = _undirected(outlines, 0, len(outlines[0])) if outlines is not None and len(outlines[0]) else set()
+    st = list(ring_starts(lakes)) + [len(lakes[0])]
+    keep = np.zeros(len(lakes[0]), bool)
+    for a, b in zip(st[:-1], st[1:]):
+        if not (_undirected(lakes, a, b) & have):
+            keep[a:b] = True
+    return tuple(v[keep] for v in lakes)
+
+
+def raster(edges, la, lo, res=LAND_RES, size=5):
+    """Even-odd fill of a 5-degree cell's rings on the size-degree square at (la, lo) (row 0 = the south edge), on a
+    grid of res-degree cells, by cell centre, with land_parity's half-open crossing rule. -> n x n bool."""
+    import numpy as np
+    n = int(round(size / res))
+    out = np.zeros((n, n), bool)
+    if edges is None or not len(edges[0]):
+        return out
+    xi, yi, xj, yj = edges
+    ymin, ymax = np.minimum(yi, yj), np.maximum(yi, yj)
+    r0 = np.clip(np.ceil((ymin - la) / res - 0.5), 0, n).astype(np.int64)
+    r1 = np.clip(np.ceil((ymax - la) / res - 0.5), 0, n).astype(np.int64)
+    cnt = r1 - r0
+    m = cnt > 0
+    xi, yi, xj, yj, r0, cnt = xi[m], yi[m], xj[m], yj[m], r0[m], cnt[m]
+    if not cnt.size:
+        return out
+    e = np.repeat(np.arange(cnt.size), cnt)
+    rows = r0[e] + (np.arange(e.size) - np.repeat(np.cumsum(cnt) - cnt, cnt))
+    yc = la + (rows + 0.5) * res
+    x = xi[e] + (xj[e] - xi[e]) * (yc - yi[e]) / (yj[e] - yi[e])
+    k = np.clip(np.ceil((x - lo) / res - 0.5), 0, n).astype(np.int64)
+    T = np.zeros((n, n + 1), np.int32)
+    np.add.at(T, (rows, k), 1)
+    R = np.cumsum(T[:, ::-1], axis=1)[:, ::-1]                       # crossings east of each cell centre
+    return (R[:, 1:] & 1).astype(bool)
+
+
+class Land:
+    """Land on a LAND_RES raster, 5-degree cell by cell, built as asked: GSHHG land (lakes count as land in coast v1)
+    less the lakes (lakeoutlines-v1, the Great Lakes' smaller islands back as land). Bit 1: land by the polygons;
+    bit 2: a cell the coastline passes through (counted as land by the open-sea test, so a barrier island or a spit
+    narrower than a raster cell still stops a line). load(cell name) -> (land edges, lake edges, (x, y) of the cell's
+    coastline points), None for what is not there."""
+
+    def __init__(self, load, res=LAND_RES):
+        self.load, self.res, self.cells = load, res, {}
+
+    def cell(self, la, lo):
+        import numpy as np
+        g = self.cells.get((la, lo))
+        if g is None:
+            land, lake, pts = self.load(f"{la}_{lo}")
+            n = int(round(5 / self.res))
+            poly = raster(land, la, lo, self.res) & ~raster(lake, la, lo, self.res)
+            g = poly.astype(np.uint8)
+            if pts is not None and len(pts[0]):
+                c = np.floor((pts[0] - lo) / self.res).astype(int)
+                r = np.floor((pts[1] - la) / self.res).astype(int)
+                ok = (c >= 0) & (c < n) & (r >= 0) & (r < n)
+                g[r[ok], c[ok]] |= 2
+            self.cells[(la, lo)] = g
+        return g
+
+    def at(self, lon, lat, shore=True):
+        """bool array: land at (lon, lat); shore=True also counts the cells the coastline passes through."""
+        import numpy as np
+        lon = (np.asarray(lon, float) + 180) % 360 - 180
+        lat = np.asarray(lat, float)
+        la = (np.floor(lat / 5) * 5).astype(int)
+        lo = (np.floor(lon / 5) * 5).astype(int)
+        code = (la + 90) * 1000 + (lo + 180)
+        out = np.zeros(lon.shape, bool)
+        mask = 3 if shore else 1
+        for c in np.unique(code):
+            m = code == c
+            L, O = int(c // 1000) - 90, int(c % 1000) - 180
+            if L >= 85 or L < -90:
+                continue
+            g = self.cell(L, O)
+            n = g.shape[0]
+            r = np.clip(((lat[m] - L) / self.res).astype(int), 0, n - 1)
+            k = np.clip(((lon[m] - O) / self.res).astype(int), 0, n - 1)
+            out[m] = (g[r, k] & mask) > 0
+        return out
+
+
+class FineLand:
+    """Land on a NEAR_RES raster in 1-degree tiles (the near rule's water test: a 500-m cell is too coarse beside a
+    shore). load: as Land's (only the edges are read). water(lon, lat) -> bool array."""
+
+    def __init__(self, load, res=NEAR_RES):
+        self.load, self.res, self.tiles, self.src = load, res, {}, {}
+
+    def tile(self, la, lo):
+        g = self.tiles.get((la, lo))
+        if g is None:
+            c5 = (la // 5 * 5, lo // 5 * 5)
+            if c5 not in self.src:
+                land, lake, _pts = self.load(f"{c5[0]}_{c5[1]}")
+                self.src[c5] = (land, lake)
+            land, lake = self.src[c5]
+            g = raster(land, la, lo, self.res, 1) & ~raster(lake, la, lo, self.res, 1)
+            self.tiles[(la, lo)] = g
+        return g
+
+    def water(self, lon, lat):
+        import numpy as np
+        lon = (np.asarray(lon, float) + 180) % 360 - 180
+        lat = np.asarray(lat, float)
+        la, lo = np.floor(lat).astype(int), np.floor(lon).astype(int)
+        out = np.ones(lon.shape, bool)
+        code = (la + 90) * 1000 + (lo + 180)
+        for c in np.unique(code):
+            m = code == c
+            L, O = int(c // 1000) - 90, int(c % 1000) - 180
+            if L >= 85 or L < -90:
+                continue
+            g = self.tile(L, O)
+            n = g.shape[0]
+            r = np.clip(((lat[m] - L) / self.res).astype(int), 0, n - 1)
+            k = np.clip(((lon[m] - O) / self.res).astype(int), 0, n - 1)
+            out[m] = ~g[r, k]
+        return out
+
+
+def tangents(x, y, start, pts=TANGENT_PTS):
+    """The coast's direction at each point (unit, km east / km north): from the point pts before to the point pts
+    after it, never across a ring's start."""
+    import numpy as np
+    if not x.size:
+        return np.zeros(0), np.zeros(0)
+    i = np.arange(x.size)
+    first = start.copy()
+    first[0] = True
+    last = np.concatenate((first[1:], [True]))
+    r0 = np.maximum.accumulate(np.where(first, i, 0))
+    r1 = np.minimum.accumulate(np.where(last, i, x.size - 1)[::-1])[::-1]
+    a = np.maximum(i - pts, r0)
+    b = np.minimum(i + pts, r1)
+    k = np.cos(np.radians(y))
+    tx, ty = (x[b] - x[a]) * k, y[b] - y[a]
+    L = np.hypot(tx, ty)
+    L[L == 0] = 1
+    return tx / L, ty / L
+
+
+def open_sea(land, x, y, nx, ny, reach=OPEN_KM, fan=FAN_DEG, fstep=FAN_STEP):
+    """bool per point: a straight line from it, within fan degrees of (nx, ny) (unit, km east / north: out to sea),
+    runs reach km without touching land (land.at, shore cells counted). The straight-out line is tried first."""
+    import numpy as np
+    out = np.zeros(x.size, bool)
+    d = np.arange(RAY_FIRST_KM, reach + 1e-9, RAY_STEP_KM)
+    angs = [0]
+    for a in range(fstep, fan + 1, fstep):
+        angs += [a, -a]
+    k = np.maximum(0.05, np.cos(np.radians(y)))
+    for a in angs:
+        act = np.flatnonzero(~out)
+        if not act.size:
+            break
+        ca, sa = math.cos(math.radians(a)), math.sin(math.radians(a))
+        ex, ey = nx[act] * ca - ny[act] * sa, nx[act] * sa + ny[act] * ca
+        for b in range(0, act.size, 2000):
+            s = act[b:b + 2000]
+            lon = x[s, None] + d[None, :] * ex[b:b + 2000, None] / (111.2 * k[s, None])
+            lat = y[s, None] + d[None, :] * ey[b:b + 2000, None] / 111.2
+            out[s[~land.at(lon, lat).any(axis=1)]] = True
+    return out
+
+
+def even_out(flag, x, y, start, elig, gap=GAP_KM, short=OPEN_MIN_KM):
+    """Smooth the open / closed answers along each ring (eligible points only; the others break a stretch): a closed
+    stretch shorter than gap km with open on both sides becomes open; then an open stretch shorter than short km
+    becomes closed. -> a new bool array."""
+    import numpy as np
+    flag = flag.copy()
+    if not x.size:
+        return flag
+    k = np.cos(np.radians(y))
+    seg = np.concatenate(([0.0], 111.2 * np.hypot(np.diff(x) * k[1:], np.diff(y))))
+    for value, limit in ((False, gap), (True, short)):
+        cut = start.copy()
+        cut[0] = True
+        cut[1:] |= (flag[1:] != flag[:-1]) | (elig[1:] != elig[:-1])
+        b = list(np.flatnonzero(cut)) + [x.size]
+        for a, e in zip(b[:-1], b[1:]):
+            if not elig[a] or bool(flag[a]) != value:
+                continue
+            if float(seg[a + 1:e].sum()) >= limit:
+                continue
+            if not value:
+                before = a > 0 and not start[a] and elig[a - 1] and flag[a - 1]
+                after = e < x.size and not start[e] and elig[e] and flag[e]
+                if before and after:
+                    flag[a:e] = True
+            else:
+                flag[a:e] = False
+    return flag
+
+
+def classify_open(land, x, y, start, skip, zone, sign, every=OPEN_EVERY):
+    """bool per point: open coast. open_sea on every every-th eligible point (a zone's, not on a cell line), the rest
+    take the nearest tested point's answer, then even_out. sign: SEAWARD of the set (+1: water on the right)."""
+    import numpy as np
+    elig = (zone >= 0) & ~skip
+    out = np.zeros(x.size, bool)
+    idx = np.flatnonzero(elig)
+    if not idx.size:
+        return out
+    tx, ty = tangents(x, y, start)
+    test = idx[::every]
+    got = open_sea(land, x[test], y[test], sign * ty[test], -sign * tx[test])
+    pos = np.clip(np.round(np.arange(idx.size) / every).astype(int), 0, test.size - 1)
+    out[idx] = got[pos]
+    return even_out(out, x, y, start, elig)
 
 
 def densify(edges, step=STEP):
@@ -221,8 +506,31 @@ def densify(edges, step=STEP):
     return x, y, start, on_line[rep]
 
 
-def assign(x, y, skip, pieces, paths, boxes, nmap):
-    """Each point's zone index (-1: none). A point inside two rows (they never overlap in NWS's file) takes the first."""
+def near_ok(x, y, q, tangent=None, water=None):
+    """May coast point (x, y) join the zone whose outer edge passes at q = (zone, qx, qy, d km)? Not when the way to
+    the edge runs along the coast (|cos| of its angle with tangent = (tx, ty) above NEAR_ALONG: the coast goes on
+    past the zone's end, a border on the shore) or crosses water (water(lons, lats) at NEAR_WATER_T of the way: a
+    shore across a strait, a river or a lake). Within 50 m the edge is taken as is."""
+    import numpy as np
+    _zi, qx, qy, d = q
+    if d <= 0.05:
+        return True
+    k = max(0.05, math.cos(math.radians(y)))
+    ux, uy = (qx - x) * k * 111.2 / d, (qy - y) * 111.2 / d
+    if tangent is not None and abs(ux * tangent[0] + uy * tangent[1]) > NEAR_ALONG:
+        return False
+    if water is not None:
+        t = np.array(NEAR_WATER_T)
+        t = t[(t * d >= NEAR_END_KM) & ((1 - t) * d >= NEAR_END_KM)]
+        if t.size and water(x + (qx - x) * t, y + (qy - y) * t).any():
+            return False
+    return True
+
+
+def assign(x, y, skip, pieces, paths, boxes, near, start=None, water=None):
+    """Each point's zone index (-1: none). A point inside two rows (they never overlap in NWS's file) takes the first.
+    A point outside every row takes the nearest outer edge's zone when near_ok (start: the ring starts, for the
+    coast's direction; water: lons, lats -> bool; None skips that test)."""
     import numpy as np
     zone = np.full(x.size, -1)
     if not x.size:
@@ -234,10 +542,14 @@ def assign(x, y, skip, pieces, paths, boxes, nmap):
         idx = np.flatnonzero(m)
         if idx.size:
             zone[idx[paths[pi].contains_points(np.stack([x[idx], y[idx]], 1))]] = pieces[pi][0]
-    for k in np.flatnonzero((zone < 0) & ~skip):
-        z = near_zone(nmap, float(x[k]), float(y[k]))
-        if z is not None:
-            zone[k] = z
+    rest = np.flatnonzero((zone < 0) & ~skip)
+    if rest.size:
+        tx, ty = tangents(x, y, start) if start is not None else (None, None)
+        for k in rest:
+            q = near_zone(near, float(x[k]), float(y[k]))
+            if q is not None and near_ok(float(x[k]), float(y[k]), q,
+                                         None if tx is None else (tx[k], ty[k]), water):
+                zone[k] = q[0]
     return zone
 
 
@@ -389,42 +701,79 @@ def build(zip_bytes, cache, log=print):
         paths.append(Path(verts, codes))
         boxes.append((verts[:, 0].min(), verts[:, 0].max(), verts[:, 1].min(), verts[:, 1].max()))
     boxes = np.array(boxes)
-    nmap = near_map(pieces, cnt)
+    near = near_map(pieces, cnt)
     log(f"{len(rows)} zone rows in the file, {len(pieces)} rows / {len(ids)} zones in coastal states, "
-        f"{len(nmap)} near cells")
+        f"{len(near[0])} outer edges")
+    index = {s: coast_index(s, cache) for s in COAST_SETS}
+    coast_ids = {s: index[s]["tier1"].get("sha256") for s in COAST_SETS}
+    memo = {}
+
+    def edges(set_name, cell):
+        """The cell's edges of a coast set (lakes-v1: its islands only); None when the set has nothing there."""
+        key = (set_name, cell)
+        if key not in memo:
+            e = None
+            if cell in index[set_name]["tier1"]["cells"]:
+                e = decode_coast(coast_cell(set_name, cell, cache))
+                if set_name == "lakes-v1":
+                    e = lake_islands(e, edges("lakeoutlines-v1", cell))
+            memo[key] = e
+        return memo[key]
+
+    def load(cell):
+        land = edges("v1", cell)
+        lakes = [e for e in (edges("lakeoutlines-v1", cell), edges("lakes-v1", cell)) if e is not None]
+        lake = tuple(np.concatenate(v) for v in zip(*lakes)) if lakes else None
+        px, py = [], []
+        for e in (land, lake):
+            if e is not None and len(e[0]):
+                x, y, _st, sk = densify(e)
+                px.append(x[~sk])
+                py.append(y[~sk])
+        return land, lake, ((np.concatenate(px), np.concatenate(py)) if px else None)
+
+    land = Land(load)
+    water = FineLand(load).water
+
     cells = set()
     for w, e, s, n in boxes:
         for la in range(int(math.floor(s / 5)) * 5, int(math.floor(n / 5)) * 5 + 1, 5):
             for lo in range(int(math.floor(w / 5)) * 5, int(math.floor(e / 5)) * 5 + 1, 5):
                 cells.add(f"{min(la, 85)}_{(lo + 180) % 360 - 180}")
     lines = collections.defaultdict(list)
-    coast_ids = {}
-    points = 0
+    points = assigned = kept = 0
     for set_name in COAST_SETS:
-        idx = coast_index(set_name, cache)
-        coast_ids[set_name] = idx["tier1"].get("sha256")
-        have = idx["tier1"]["cells"]
         for cell in sorted(cells):
-            if cell not in have:
+            e = edges(set_name, cell)
+            if e is None or not len(e[0]):
                 continue
-            x, y, start, skip = densify(decode_coast(coast_cell(set_name, cell, cache)))
+            x, y, start, skip = densify(e)
             points += x.size
-            zone = assign(x, y, skip, pieces, paths, boxes, nmap)
+            zone = assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water)
+            assigned += int((zone >= 0).sum())
+            zone = np.where(classify_open(land, x, y, start, skip, zone, SEAWARD[set_name]), zone, -1)
+            kept += int((zone >= 0).sum())
             for zi, P in runs(x, y, start, skip, zone):
                 P = simplify(P)
                 if length_km(P) >= MIN_KM:
                     lines[ids[zi]].append(P)
-    log(f"{points} coast points, {len(lines)} zones with a coastline")
+    log(f"{points} coast points, {assigned} in a zone, {kept} on the open coast; {len(lines)} zones with a coastline; "
+        f"{len(land.cells)} land cells")
     out = {}
     for zid in sorted(lines):
         out[zid] = dict(meta[zid], lines=[encode(P) for P in lines[zid]])
     return out, coast_ids
 
 
+RULES = {"step_deg": STEP, "near_km": NEAR_KM, "near_along": NEAR_ALONG, "tol_deg": TOL, "min_km": MIN_KM,
+         "open_km": OPEN_KM, "fan_deg": FAN_DEG, "land_res_deg": LAND_RES, "gap_km": GAP_KM,
+         "open_min_km": OPEN_MIN_KM}
+
+
 def write(zones, coast_ids, zones_sha, path=OUT):
     doc = {"format": FORMAT, "zones_file": ZONES_FILE, "zones_sha256": zones_sha, "coast": coast_ids,
            "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-           "rules": {"step_deg": STEP, "near_km": NEAR_KM, "tol_deg": TOL, "min_km": MIN_KM},
+           "rules": RULES,
            "zones": zones}
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(doc, f, separators=(",", ":"), sort_keys=True)
@@ -441,11 +790,26 @@ PROBES = [
     ("HIZ033", 21.2760, -157.8270, 0.5),    # Waikiki, Honolulu Metro
     ("CAZ354", 34.2740, -119.2900, 0.6),    # Ventura pier, Ventura County Beaches
     ("ORZ103", 44.6330, -124.0610, 0.6),    # Newport, Central Coast of Oregon
+    ("FLZ747", 28.3200, -80.6070, 0.5),     # Cocoa Beach, the ocean beach of the Southern Brevard Barrier Islands
+    ("NCZ205", 35.2500, -75.5200, 0.6),     # Cape Hatteras, the ocean side of Hatteras Island
 ]
-# (zone, lat, lon): the zone must NOT draw a line near this point (another zone's shore)
+# (zone, lat, lon, km): the zone must NOT draw a line within km of this point (another zone's shore, a foreign
+# shore across water, the coast past a border: G59 F1)
 FAR_PROBES = [
-    ("HIZ007", 21.2760, -157.8270),         # Waikiki is not North Shore
-    ("HIZ033", 21.6418, -158.0660),         # Waimea is not Honolulu Metro
+    ("HIZ007", 21.2760, -157.8270, 5.0),    # Waikiki is not North Shore
+    ("HIZ033", 21.6418, -158.0660, 5.0),    # Waimea is not Honolulu Metro
+    ("MIZ076", 42.3170, -83.0400, 1.0),     # Windsor, Ontario, across the Detroit River
+    ("NYZ007", 44.1500, -76.3000, 1.0),     # Wolfe Island, Ontario
+    ("WAZ310", 49.0200, -123.1000, 1.0),    # Tsawwassen, British Columbia
+    ("MEZ030", 44.8780, -66.9650, 1.0),     # Campobello Island, New Brunswick
+    ("VIZ001", 18.3890, -64.7200, 1.0),     # Great Thatch, British Virgin Islands
+    ("TXZ455", 25.9350, -97.1440, 1.0),     # Playa Bagdad, Tamaulipas, past the Rio Grande
+    ("CAZ043", 32.5100, -117.1240, 1.0),    # Playas de Tijuana, past the border
+]
+# (lat, lon, km): no zone may draw a line within km of this point (a lagoon, a harbour: not the open coast)
+NO_LINE = [
+    (28.3600, -80.7250, 0.5),               # the Indian River Lagoon's mainland shore at Cocoa, Florida
+    (21.3700, -157.9700, 0.5),              # Pearl Harbor, Oahu
 ]
 
 
@@ -475,8 +839,8 @@ def check(doc, log=print):
     if doc.get("format") != FORMAT:
         probs.append("format")
     zones = doc.get("zones") or {}
-    if not 550 <= len(zones) <= 900:
-        probs.append(f"{len(zones)} zones (expected 550-900)")
+    if not 330 <= len(zones) <= 500:
+        probs.append(f"{len(zones)} zones (expected 330-500)")
     pts = 0
     decoded = {}
     for zid, z in zones.items():
@@ -504,9 +868,13 @@ def check(doc, log=print):
         d = nearest_km(decoded[zid], lat, lon)
         if d > km:
             probs.append(f"probe {zid} {lat},{lon}: nearest line {d:.2f} km (limit {km})")
-    for zid, lat, lon in FAR_PROBES:
-        if zid in decoded and nearest_km(decoded[zid], lat, lon) < 5:
-            probs.append(f"far probe {zid} {lat},{lon}: a line within 5 km")
+    for zid, lat, lon, km in FAR_PROBES:
+        if zid in decoded and nearest_km(decoded[zid], lat, lon) < km:
+            probs.append(f"far probe {zid} {lat},{lon}: a line within {km} km")
+    for lat, lon, km in NO_LINE:
+        hit = [zid for zid, ls in decoded.items() if nearest_km(ls, lat, lon) < km]
+        if hit:
+            probs.append(f"no-line probe {lat},{lon}: {', '.join(sorted(hit))} within {km} km")
     by_state = collections.Counter(zid[:2] for zid in zones)
     log(f"{len(zones)} zones, {pts} points; by state: {dict(sorted(by_state.items()))}")
     return probs

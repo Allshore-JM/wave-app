@@ -322,8 +322,8 @@
       s.model = modelOf(s.model);
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
       if (s.model === 'NWPS' && deps.nwpsStations && deps.nwpsStations.indexOf(s.station) < 0) s.model = 'GFS';
-      if (s.model === 'GFSB' && !(deps.gfsbOn && !isPointId(s.station))) s.model = 'GFS';
-      if (WEATHER_MODELS.indexOf(s.model) >= 0 && !(deps.landWeather && isPointId(s.station))) s.model = 'GFS';   // weather tabs: land points only (§91; a point at sea answers its swell table, GFS)   // NOAA's split only where ours is the default (§77; the server answers GFS for a lake station)
+      if (s.model === 'GFSB' && !(deps.gfsbOn && !isPointId(s.station))) s.model = 'GFS';   // NOAA's split only where ours is the default (§77; the server answers GFS for a lake station)
+      if (WEATHER_MODELS.indexOf(s.model) >= 0 && !(deps.landWeather && isPointId(s.station))) s.model = 'GFS';   // weather tabs: land points only (§91; a point at sea answers its swell table, GFS)
       return s;
     }
     function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
@@ -1052,8 +1052,8 @@
     }
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [], nwpsStations = initial.nwps_stations || [];
-    var gfsbOn = initial.gfsb_on === true;
-    var landWeather = initial.land_weather === true;                            // land points answer the weather (§91)                                      // the spectral split is the GFS table here (§77)
+    var gfsbOn = initial.gfsb_on === true;                                      // the spectral split is the GFS table here (§77)
+    var landWeather = initial.land_weather === true;                            // land points answer the weather (§91)
     var search = (win.location && win.location.search) || '', dflt = readJson(local, DEFAULT_KEY);
     if (typeof dflt.id !== 'string' || !DEFAULT_ID.test(dflt.id.trim())) dflt = null;
     var state = resolveInitialState(search, readJson(local, SETTINGS_KEY), initial, dflt);

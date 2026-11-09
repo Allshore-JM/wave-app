@@ -49,3 +49,21 @@ Equivalent survivors: J05, M05, M23.
 1. The client: tag `prod-pre-radarsnow` at the production head; overlay 2.26.1.
 2. At least 6 hours later, the job: tag `prod-pre-radarsnow-job`; the first typed slots read back against
    NOAA's files.
+
+## The job push (2026-11-09)
+- Owner: "proceed with the radar job push". Tag `prod-pre-radarsnow-job` @ 7a5b9cd; `Live-Buoy-Update` fast-forwarded
+  7a5b9cd..8ab928e at 03:55 UTC. The site restarted; the 51201 and 51003 pages are byte-identical to the capture before the push.
+- The first typed slot, 202611090350, was written at 03:56:32 UTC. The pointer's five MRMS regions carry `types: "rms"`, and
+  each of their entries carries `ty: "rms"`. Europe, Japan and Taiwan stay untyped.
+- Read-back of the published slot against NOAA's own SeamlessHSR, PrecipFlag and Model_WetBulbTemp files: an independent
+  eccodes decode and an independent type rule, with the wet-bulb hour the job could see when it wrote the slot.
+  - The fine-tier cells: 15,359,696 pixels over 61 cells in the five regions, 0 wrong, 0 wrong types.
+  - The overview: 423,300 pixels, 0 wrong.
+  - The rule was exercised: the US held 24,096 snow and 53,499 mix pixels; Alaska 57,558 snow and 3,683 mix.
+  - Script: the scratchpad's r89p/pubcheck.py.
+- Objects per slot: 173-187, unchanged (the types ride in the same files).
+- The radar tick took 45 s, against a 12-minute limit.
+- All 13 workflow runs on 8ab928e succeeded: tests, coast-build and every publisher.
+- Production browser (overlay 2.26.1), Alaska at zoom 6: the hover reads "24 dBZ · light snow" and "18 dBZ · light mix
+  (estimated)". The panel shows the Snow and Mix bars. No console errors.
+- Rollback: re-push `prod-pre-radarsnow-job`. The live client draws untyped frames as before.

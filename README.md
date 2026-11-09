@@ -2487,7 +2487,7 @@ other side of the world: their feeds wait up to 8 s to connect and 25 s in all (
 wind) shows the shortest averaging period. Env switches `WIND_WIS2=0`, `WIND_HKO=0`, `WIND_SMN=0`;
 `WIND_WIS2_PER_REFRESH` (nodes a refresh, default 2).
 
-## Coastal hazards (plan section 90, UI asset 1.29.1)
+## Coastal hazards (plan section 90, UI asset 1.29.2)
 
 The map outlines the stretch of coastline under an active NWS coastal hazard product, coloured by the product.
 
@@ -2504,15 +2504,22 @@ at its onset without asking the server.
 **The coastline of each zone** (`alert_coast.json`, built by `tools/alerts/build_alert_coast.py`). NWS coastal products
 name forecast zones (HIZ007 "Oahu North Shore"), not lines. The tool gives each zone the GSHHG coastline it covers (the
 site's own coast sets, `static/coast/v1` + `lakeoutlines-v1`), taken from NWS's public zone shapefile (pinned by name
-and sha256). 682 zones, 12,644 lines, 1.85 MB. A zone's line includes the shores of bays and lagoons inside it. Rebuild
+and sha256). Only the OPEN coast is drawn (owner's decision: the site is for surf, and a rip current does not happen
+in a lagoon or on the Intracoastal Waterway; the product's text says when it also applies to nearby water): a shore
+point counts when a straight line from it, within 60 degrees of straight out to sea, runs 100 km over water without
+touching land, so the open sea and the Great Lakes' open shores are kept and bays, sounds, lagoons, harbours and the
+Intracoastal Waterway are left out. A zone with no open coast (Chesapeake Bay, Puget Sound, Long Island Sound, SF Bay,
+Texas's mainland coastal zones, Lake Champlain) gets no line. 392 zones, 6,258 lines, 450 KB. Rebuild
 when NWS publishes a new zone file (a few times a year): bump `ZONES_FILE` / `ZONES_SHA256`, run the tool, then
 `--check`. A zone missing from the file gets no outline (counted in `/healthz`).
 
 **Server** (`alert_sources.py`, app.py): one request to `/alerts/active` every 2 minutes from the background tick (the
-site's User-Agent; never on a visitor's request), the last good answer kept through failures for 30 minutes.
-Cancellations, tests and products replaced by a newer one are dropped; a product past its end is dropped at serve time.
+site's User-Agent; a visitor never waits for NWS: a request can at most start the background read), the last good
+answer kept through failures for 30 minutes. Cancellations, tests and products replaced by a newer one are dropped; a
+product past its end is dropped at serve time; a malformed product is left out, never failing the read.
 `/api/alerts/coastal` answers `{format "coastal-alerts-v1", state, updated, alerts [...], zones {id: {name, tz,
-lines}}}` with only the zones the products name; `public, max-age=60` + ETag, never edge-cached. `/healthz` key
+lines}}}` with only the zones the products name; `public, max-age=60` + ETag (of the products and zones, not the
+read time, so an unchanged list answers 304), never edge-cached. `/healthz` key
 `alerts`. `COASTAL_ALERTS=0` switches the layer off (no route, no legend entry, no script).
 
 **Page** (`static_ui/alerts.js`): the legend entry "Coastal hazards" (on by default, remembered for the tab with the
@@ -2522,7 +2529,9 @@ where two zones' lines meet, a click goes to the line nearest the pointer (the m
 then by their own distance); a click or tap opens the zone's products (the popup fits a 375-px phone) (text only: the product, when it is in effect in the zone's own time, the
 headline, description, instruction, the issuing office and a link to NWS's forecast for a forecast zone); a hover label
 on mouse screens; a running map tool takes the click instead. The page asks again every 2 minutes while the layer is
-shown and the tab visible (`loading…` / `unavailable` in the legend note), and draws every world copy in view. Credit
+shown and the tab visible (`loading…` / `unavailable` in the legend note; also after the layer is switched off and
+on again), redraws the lines only when the answer changed, and draws every world copy in view. An open popup follows
+the minute re-judge (a product coming into force or ending) and closes when its zone has no product left. Credit
 "Alerts: NWS".
 
 **Limits**: US only; zone edges at river mouths and harbours can leave short gaps or stubs; a product is drawn on its

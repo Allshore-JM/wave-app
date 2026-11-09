@@ -142,6 +142,42 @@ def test_bad_times_are_left_out(coast):
     assert alerts[0]["onset"] == alerts[0]["sent"]                             # an onset without an offset is ignored
 
 
+def test_ends_win_over_an_earlier_expiry(coast):
+    # G59 F6: NWS often lets a product's message expire before the hazard ends (a Beach Hazards Statement expiring
+    # tonight, ending in two days): the hazard's end decides
+    doc = collection(feature(id="k", expires="2026-11-08T12:00:00-10:00", ends="2026-11-10T18:00:00-10:00"))
+    (a,), stats = S.parse(doc, coast, NOW)
+    assert a["id"] == "k" and stats["ended"] == 0
+
+
+@pytest.mark.parametrize("bad", [
+    {"event": ["High Surf Advisory"]},                  # unhashable
+    {"id": {"x": 1}},
+    {"affectedZones": 7},
+    {"geocode": ["HIZ006"]},
+    {"parameters": ["NWSheadline"]},
+    {"references": 5},
+    {"description": {"text": "x"}},
+])
+def test_one_malformed_feature_never_fails_the_read(bad, coast):
+    # G59 F5: a malformed feature is left out (or read as far as it goes); the others stay
+    doc = collection(feature(id="good"), feature(**dict({"id": "odd"}, **bad)))
+    alerts, stats = S.parse(doc, coast, NOW)
+    assert "good" in [a["id"] for a in alerts] and stats["listed"] == 2
+
+
+def test_an_exception_in_one_feature_is_counted(coast, monkeypatch):
+    real = S._zone_ids
+
+    def boom(p):
+        if p.get("id") == "odd":
+            raise RuntimeError("bad")
+        return real(p)
+    monkeypatch.setattr(S, "_zone_ids", boom)
+    alerts, stats = S.parse(collection(feature(id="good"), feature(id="odd")), coast, NOW)
+    assert [a["id"] for a in alerts] == ["good"] and stats["other"] == 1 and stats["kept"] == 1
+
+
 def test_the_url_names_every_product():
     assert S.URL.startswith("https://api.weather.gov/alerts/active?status=actual&event=")
     for ev in S.EVENTS:
@@ -219,7 +255,12 @@ def test_payload_and_etag_are_reused_until_something_changes():
     svc.clock.t = NOW + 130
     svc.refresh(answer())
     p3, e3 = svc.served()
-    assert p3 == p1.replace('"updated":%d' % NOW, '"updated":%d' % (NOW + 130)) and e3 != e1
+    assert p3 == p1.replace('"updated":%d' % NOW, '"updated":%d' % (NOW + 130))
+    assert e3 == e1                    # the same products: the same tag, so the page gets a 304 (G59 F8)
+    doc = fixture()
+    doc["features"] = doc["features"][1:]
+    svc.refresh(answer(doc))
+    assert svc.served()[1] != e1       # a product gone: a new tag
 
 
 def test_due_rules():
@@ -337,7 +378,7 @@ def test_healthz_reports_the_alerts(client):
     A, svc, c = client
     svc.refresh(shifted_answer(svc.clock.t))
     h = c.get("/healthz").get_json()["alerts"]
-    assert h["enabled"] is True and h["alerts"] == 10 and h["last_error"] is None and h["coast_zones"] > 600
+    assert h["enabled"] is True and h["alerts"] == 10 and h["last_error"] is None and h["coast_zones"] > 330
 
 
 def test_tests_never_reach_nws():

@@ -160,12 +160,13 @@
     return box;
   }
 
-  // A checked answer -> {state, alerts, byZone: {id: [alert]}, zones: {id: {name, tz, key, lines}}}, or null.
-  // Zones whose encoded lines did not change since the last answer keep their decoded points.
+  // A checked answer -> {state, alerts, byZone: {id: [alert]}, zones: {id: {name, tz, key, lines}}, sig, fresh}, or null.
+  // Zones whose encoded lines did not change since the last answer keep their decoded points; `fresh` counts the zones
+  // decoded anew and `sig` names the answer's products and zones, so an unchanged answer redraws nothing (G59 F8).
   function takeAnswer(j, prevZones) {
     if (!j || j.format !== FORMAT || typeof j.state !== 'string' || !Array.isArray(j.alerts) ||
         !j.zones || typeof j.zones !== 'object' || Array.isArray(j.zones)) return null;
-    var zones = {}, byZone = {}, alerts = [];
+    var zones = {}, byZone = {}, alerts = [], fresh = 0;
     Object.keys(j.zones).forEach(function (id) {
       var z = j.zones[id];
       if (!z || !Array.isArray(z.lines)) return;
@@ -175,7 +176,7 @@
       if (prev && prev.key === key) { zones[id] = { name: name, tz: tz, key: key, lines: prev.lines }; return; }
       var lines = [];
       z.lines.forEach(function (s) { var p = decodePolyline(s); if (p) lines.push(p); });
-      if (lines.length) zones[id] = { name: name, tz: tz, key: key, lines: lines };
+      if (lines.length) { zones[id] = { name: name, tz: tz, key: key, lines: lines }; fresh++; }
     });
     j.alerts.forEach(function (a) {
       if (!a || typeof a.event !== 'string' || !Object.prototype.hasOwnProperty.call(RANK, a.cls) || !Array.isArray(a.zones)) return;
@@ -185,7 +186,9 @@
         (byZone[z] = byZone[z] || []).push(a);
       });
     });
-    return { state: j.state, alerts: alerts, byZone: byZone, zones: zones };
+    var sig = j.state + '|' + JSON.stringify(alerts) + '|' +
+      Object.keys(zones).sort().map(function (id) { return id + ':' + zones[id].name + ':' + zones[id].tz; }).join(',');
+    return { state: j.state, alerts: alerts, byZone: byZone, zones: zones, sig: sig, fresh: fresh };
   }
 
   // Calls start once the promise `waitFor()` returns has settled (the overlay's first picture), at once without one,
@@ -223,6 +226,7 @@
     });
     var data = null, started = false, fetching = false, lastFetch = -Infinity, dueAt = 0;
     var fetchTimer = null, tickTimer = null, note = '', drawnSig = '', creditOn = false, popup = null, popupZone = null;
+    var popupSig = '';
     var drawn = [];                                   // {zone, line, halo}
 
     function nowS() { return Math.floor(nowMs() / 1000); }
@@ -236,7 +240,23 @@
     }
     function closePopup() {
       if (popup && map.closePopup) map.closePopup(popup);
-      popup = null; popupZone = null;
+      popup = null; popupZone = null; popupSig = '';
+    }
+    // What an open popup shows: the answer, and which of the zone's products are in force or pending now.
+    function popSig(z, t) {
+      return data.sig + '#' + popupOrder(data.byZone[z], t).map(function (a) {
+        return String(a.id || a.event) + ':' + (inForce(a, t) ? 1 : 0) + ':' + (onsetOf(a) > t ? 1 : 0);
+      }).join(',');
+    }
+    // An open popup follows the minute re-judge and new answers (a pending product coming into force, one ending, a
+    // new text); rebuilt only when what it shows changed, so its scroll stays put otherwise (G59 F9).
+    function refreshPopup() {
+      if (!popup || !popupZone) return;
+      if (!data || !data.byZone[popupZone]) { closePopup(); return; }
+      var t = nowS(), sg = popSig(popupZone, t);
+      if (sg === popupSig) return;
+      popupSig = sg;
+      popup.setContent(buildPopup(doc, popupZone, data.zones[popupZone], data.byZone[popupZone], t));
     }
     function clearLines() {
       if (drawn.length) layer.clearLayers();
@@ -254,6 +274,7 @@
                          maxHeight: Math.max(160, Math.min(340, size.y - 90)), autoPanPadding: [16, 16] })
         .setLatLng(latlng).setContent(content).openOn(map);
       popupZone = zone;
+      popupSig = popSig(zone, nowS());
     }
 
     function draw(force) {
@@ -326,17 +347,20 @@
         fetching = false;
         var d = takeAnswer(j, data && data.zones);
         if (!d) { failed(); return; }
+        var same = !!data && d.sig === data.sig && !d.fresh;
         data = d;
         if (d.state === 'loading') { setNote(noteIfOn('loading…')); schedule(LOADING_RETRY_MS); }
         else if (d.state === 'ok') { setNote(''); schedule(REFRESH_MS); }
         else { setNote(noteIfOn('unavailable')); schedule(FAIL_RETRY_MS); }
-        draw(true);
+        draw(!same);                                   // an unchanged answer rebuilds no line (G59 F8)
+        refreshPopup();
       }, function () { fetching = false; failed(); });
     }
     function tick() {
       tickTimer = null;
       if (!wanted()) return;
       draw(false);
+      refreshPopup();
       tickTimer = T.set(tick, TICK_MS);
     }
 
@@ -359,10 +383,13 @@
       if (!data || nowMs() >= dueAt) {
         if (!data && !note) setNote('loading…');
         load();
+      } else if (!fetchTimer) {
+        schedule(Math.max(0, dueAt - nowMs()));      // the layer back on (or shown again) before the next ask (G59 F3)
       }
     }
 
     map.on('moveend zoomend', sync);
+    map.on('popupclose', function (e) { if (e && e.popup && e.popup === popup) { popup = null; popupZone = null; popupSig = ''; } });
     map.on('overlayadd overlayremove', function (e) { if (e && e.layer === layer) sync(); });
     if (doc && doc.addEventListener) doc.addEventListener('visibilitychange', sync);
     var whenReady = opts.whenReady || function (start) {

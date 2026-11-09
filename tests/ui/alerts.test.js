@@ -176,7 +176,7 @@ function fakeL() {
   class Popup {
     constructor(o) { this.o = o; }
     setLatLng(ll) { this.ll = ll; return this; }
-    setContent(c) { this.c = c; return this; }
+    setContent(c) { this.c = c; this.n = (this.n || 0) + 1; return this; }
     openOn(m) { m.opened = this; return this; }
   }
   return { Polyline: Path, polyline: (ll, o) => new Path(ll, o), popup: (o) => new Popup(o) };
@@ -393,4 +393,87 @@ test('a click opens the zone\'s products; a running map tool takes it instead; t
   r2.coarse = true;
   r2.start(); await settle();
   assert.ok(r2.layer.items.every((l) => !l.tip));
+});
+
+test('the layer off and on again within 2 minutes on a still map: still asked every 2 minutes (G59 F3)', async () => {
+  const r = rig();
+  r.start(); await settle();
+  r.clk.advance(30000); await settle();
+  r.map.layers.clear(); r.map.fire('overlayremove', { layer: r.layer }); await settle();
+  r.clk.advance(5000); await settle();
+  r.map.layers.add(r.layer); r.map.fire('overlayadd', { layer: r.layer }); await settle();
+  assert.equal(r.calls.length, 1, 'not due yet: nothing asked at once');
+  assert.equal(r.A.state().fetchTimer, true, 'but the next ask is planned');
+  r.clk.advance(I.REFRESH_MS - 35000); await settle();
+  assert.equal(r.calls.length, 2, 'asked when due, with no move of the map');
+  for (let i = 0; i < 3; i++) { r.clk.advance(I.REFRESH_MS); await settle(); }
+  assert.equal(r.calls.length, 5);
+});
+
+test('an unchanged answer redraws nothing; a changed one redraws (G59 F8)', async () => {
+  const r = rig();
+  r.start(); await settle();
+  const before = r.layer.items.slice();
+  r.clk.advance(I.REFRESH_MS); await settle();
+  assert.equal(r.calls.length, 2);
+  assert.equal(r.layer.items.length, before.length);
+  assert.ok(r.layer.items.every((x, i) => x === before[i]), 'the same line objects: nothing rebuilt');
+  const fewer = Object.assign({}, SERVED, { alerts: SERVED.alerts.slice(1) });
+  r.reply = () => answer(fewer);
+  r.clk.advance(I.REFRESH_MS); await settle();
+  assert.ok(!r.layer.items.every((x, i) => x === before[i]), 'a product gone: redrawn');
+  const text = JSON.parse(JSON.stringify(fewer));
+  text.alerts[0].description = 'a new text';
+  r.reply = () => answer(text);
+  const mid = r.layer.items.slice();
+  r.clk.advance(I.REFRESH_MS); await settle();
+  assert.ok(!r.layer.items.every((x, i) => x === mid[i]), 'a new text (hover labels and popups): redrawn');
+  const moved = JSON.parse(JSON.stringify(text));
+  const zid = Object.keys(moved.zones).find((z) => moved.zones[z].lines.length > 1);
+  moved.zones[zid].lines = moved.zones[zid].lines.slice(0, 1);
+  r.reply = () => answer(moved);
+  const mid2 = r.layer.items.slice();
+  r.clk.advance(I.REFRESH_MS); await settle();
+  assert.ok(!r.layer.items.every((x, i) => x === mid2[i]), 'a zone with new lines (same name): redrawn');
+});
+
+test('an open popup follows the minute re-judge and closes when its zone has no product left (G59 F9, F6)', async () => {
+  const r = rig();
+  r.map.west = -170; r.map.east = -60;
+  r.start(); await settle();
+  r.reply = () => new Promise(() => {});                   // the server never answers again
+  const line = (zone) => r.layer.items.find((l) => l.options.interactive && l.ll === r.A.state().data.zones[zone].lines[0]);
+  line('CAZ103').handlers.click({ latlng: { lat: 40.8, lng: -124.2 } });
+  const pop = r.map.opened;
+  assert.ok(texts(pop.c).join(' ').includes('(not yet in effect)'));
+  const n0 = pop.n;
+  r.clk.advance(I.TICK_MS); await settle();
+  assert.equal(pop.n, n0, 'nothing changed: not rebuilt (its scroll stays)');
+  const onset = Date.UTC(2026, 10, 9, 18, 0) / 1000;
+  r.clk.advance((onset - NOW) * 1000); await settle();
+  assert.ok(pop.n > n0, 'rebuilt at the onset');
+  assert.ok(!texts(pop.c).join(' ').includes('(not yet in effect)'));
+  assert.equal(r.A.state().popupZone, 'CAZ103');
+  const r2 = rig();
+  r2.map.west = -170; r2.map.east = -60;
+  r2.start(); await settle();
+  r2.reply = () => new Promise(() => {});
+  const l2 = r2.layer.items.find((l) => l.options.interactive && l.ll === r2.A.state().data.zones.ORZ103.lines[0]);
+  l2.handlers.click({ latlng: { lat: 44.6, lng: -124.1 } });
+  assert.equal(r2.A.state().popupZone, 'ORZ103');
+  const closed = r2.map.closed;
+  r2.clk.advance((Date.UTC(2026, 10, 9, 6, 0) / 1000 - NOW) * 1000 + I.TICK_MS); await settle();
+  assert.equal(r2.A.state().popupZone, null, 'the products of the zone ended: the popup closes');
+  assert.ok(r2.map.closed > closed);
+  r2.map.fire('popupclose', { popup: {} });
+  r.map.fire('popupclose', { popup: r.map.opened });
+  assert.equal(r.A.state().popupZone, null, 'closed by the visitor: forgotten');
+});
+
+test('the zone link only for a whole forecast zone id', () => {
+  const doc = fakeDoc();
+  const list = SERVED.alerts.filter((a) => a.zones.includes('ORZ103'));
+  const has = (id) => texts(I.buildPopup(doc, id, SERVED.zones.ORZ103, list, NOW)).includes('NWS forecast for this zone');
+  assert.ok(has('ORZ103'));
+  assert.ok(!has('xORZ103') && !has('ORZ1034') && !has('ORC103'));
 });

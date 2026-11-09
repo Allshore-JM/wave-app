@@ -509,7 +509,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.30.2"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.30.3"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -5163,7 +5163,7 @@ def api_forecast_weather():
     station = (request.args.get("station") or "").strip()
     tz = request.args.get("tz", "")
     unit = request.args.get("unit", "US") or "US"
-    model = request.args.get("model", "") or "GFS"
+    model = (request.args.get("model", "") or "GFS").strip().upper()   # as the GET resolves it (G60 A-2)
     compact = request.args.get("compact") == "1"
     length = request.content_length
     if not point_forecast.is_point_id(station) or model not in weather_sources.OM_MODELS or not _land_weather_on():

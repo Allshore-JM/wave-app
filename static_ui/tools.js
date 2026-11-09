@@ -1317,17 +1317,18 @@
         var asked = typeof to === 'function' ? to(at, ev) : null;
         if (!asked || typeof asked.then !== 'function') { stop(); return; }   // the page opened it itself
         var gen = s.gen;
-        s.busy = true; s.msg = ''; render();
+        s.busy = true; s.msg = ''; s.retry = false; render();
         asked.then(function (r) {
           if (gen !== s.gen || s.tool !== 'point') return;                    // the tool was closed or restarted meanwhile: nothing opens
           s.busy = false;
           if (r && r.cancel) { stop(); return; }                               // the visitor opened something else meanwhile (G22 R-A6)
           if (r && r.ok) { var inBar = barEl.contains(doc.activeElement); stop(); if (typeof r.open === 'function') r.open(); if (inBar) focusTools(); return; }
+          s.retry = !!(r && r.retry);
           s.msg = (r && r.message) || (opts.landWeather ? 'No forecast there. Try another point.' : 'No forecast there. Try another point on the sea.'); render();
         }, function (err) {
           if (gen !== s.gen || s.tool !== 'point') return;
           var http = err && /^HTTP \d+/.exec(String(err.message || ''));       // the server answered, with an error (G22 R-B6)
-          s.busy = false;
+          s.busy = false; s.retry = true;
           s.msg = http ? 'The forecast server could not answer (' + http[0] + '). Try again in a moment.'
             : 'Could not reach the server. Check the connection and try again.';
           render();
@@ -1419,6 +1420,8 @@
       if (s.msg) lines.push({ t: s.msg, cls: 'tools-big tools-msg', folded: true });
       // with land weather on (plan section 91) a point on land answers its weather: the prompt names no sea
       var where = opts.landWeather ? [' another point.', ' where you want a forecast.'] : [' another point on the sea.', ' the sea where you want a forecast.'];
+      // a passing failure (busy, unreachable): the same point may answer in a moment (G60 B-4: not "another point")
+      if (s.msg && s.retry) where = [' the same point again in a moment, or another one.', where[1]];
       lines.push({ t: (s.msg ? verb + where[0] : verb + where[1]), cls: s.msg ? 'tools-hint' : 'tools-big' });
       if (!s.msg) lines.push({ t: 'Its table and graphs open with the coordinates, and the point is kept under My points if this browser allows it.', cls: 'tools-hint' });
       return lines;

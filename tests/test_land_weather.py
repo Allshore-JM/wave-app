@@ -3,6 +3,7 @@ payload, the browser-side Open-Meteo route, the model rules and the flag. Fixtur
 (tests/capture_weather_fixtures.py). Since section 91c the server never asks Open-Meteo's forecast: the visitor's
 browser does and POSTs the answer to /api/forecast/weather, where it is checked and built."""
 import json
+import threading
 import math
 import os
 import sys
@@ -107,6 +108,26 @@ def test_open_meteo_answer_parsed(doc):
     assert all(math.isnan(x) for x in doc["m"]["AIFS"]["wind_gusts_10m"])
 
 
+@pytest.mark.parametrize("value, want", [(207, 207.0), (-12.5, -12.5), (float("nan"), None), (float("inf"), None),
+                                         (1e300, None), (-600, None), (9100, None), (True, None), ("207", None), (None, None)])
+def test_the_elevation_must_be_a_real_place(value, want):
+    """G60 A-3: the answer is the visitor's; a forged elevation must not make a huge Location line or an error."""
+    doc = json.loads(raw("om_oahu.json"))
+    doc["elevation"] = value
+    got = W.parse_open_meteo(json.dumps(doc))["elev"]
+    assert got == want
+
+
+@pytest.mark.parametrize("entries, want", [
+    ([{"weather": "freezing_fog"}], ""), ([{"weather": "ice_fog"}], ""), ([{"weather": "fog"}], ""),
+    ([{"weather": "haze"}], ""), ([{"weather": "freezing_fog"}, {"weather": "rain"}], "Rain"),
+    ([{"weather": "freezing_rain"}], "Ice"), ([{"weather": "ice_pellets"}], "Ice"),
+    ([{"weather": "snow_showers"}, {"weather": "rain"}], "Mix"), ([{"weather": "thunderstorms"}], "Thunder")])
+def test_nws_type_leaves_fog_out(entries, want):
+    """G60 A-6: fog and haze are not precipitation; freezing fog is no ice."""
+    assert W.nws_type(entries) == want
+
+
 def test_open_meteo_refusal_and_empty_answers():
     with pytest.raises(W.WeatherError):
         W.parse_open_meteo(b'{"error": true, "reason": "Parameter models invalid"}')
@@ -157,6 +178,19 @@ def test_hours_must_be_hourly_and_not_too_many(hourly):
     long = [f"2026-10-{1 + i // 24:02d}T{i % 24:02d}:00" for i in range(W.OM_MAX_HOURS + 1)]
     with pytest.raises(W.WeatherError, match="too long"):
         W.parse_open_meteo(json.dumps({"latitude": 21.5, "longitude": -158.0, "hourly": {"time": long}}).encode())
+
+
+@pytest.mark.parametrize("how", ["duplicate", "gap"])
+def test_a_repeated_or_missing_hour_is_refused(hourly, how):
+    """G60 A-10 (M13): the hours must step by exactly one hour, not merely never go back."""
+    ts = [datetime.fromisoformat(x) for x in hourly["time"]]
+    if how == "duplicate":
+        ts[11] = ts[10]
+    else:
+        ts = ts[:11] + [x + timedelta(hours=1) for x in ts[11:]]
+    times = [x.strftime("%Y-%m-%dT%H:%M") for x in ts]
+    with pytest.raises(W.WeatherError, match="hourly"):
+        W.check_open_meteo(W.parse_open_meteo(om_body(time=times)), *OAHU)
 
 
 @pytest.mark.parametrize("var, value", [
@@ -276,6 +310,32 @@ def test_nws_rows_from_the_grid():
     assert checked >= 5
 
 
+def test_nws_steps_follow_the_grid():
+    """G60 A-10 (M26): hourly to +36 h, then 3-hourly to +72 h, then 6-hourly."""
+    start = datetime(2026, 11, 9, 17)
+    assert W.nws_step_h(start, start) == 1 and W.nws_step_h(start, start + timedelta(hours=35)) == 1
+    t36 = start + timedelta(hours=36)                                   # 05Z: not on a 3-hour mark
+    assert W.nws_step_h(start, t36) is None
+    assert W.nws_step_h(start, start + timedelta(hours=37)) == 3        # 06Z
+    assert W.nws_step_h(start, start + timedelta(hours=73)) == 6        # 18Z
+    assert W.nws_step_h(start, start + timedelta(hours=74)) is None     # 19Z: not on a 6-hour mark
+    rows = W.nws_rows(grid(), start)
+    assert all(r["step"] == 1 for r in rows if r["t"] < start + timedelta(hours=36))
+    assert {r["step"] for r in rows if r["t"] >= start + timedelta(hours=72)} <= {6}
+
+
+def test_nws_24h_total_waits_for_24_hours_of_blocks():
+    """G60 A-10 (M24): no 24-h total until the blocks cover the 24 hours before the row."""
+    g = grid()
+    rows = W.nws_rows(g, datetime(2026, 11, 9, 17))
+    first = min(W._iso(v["validTime"].split("/")[0]) for v in g["quantitativePrecipitation"]["values"]
+                if v["value"] is not None)
+    early = [r for r in rows if r["t"] - timedelta(hours=24) < first]
+    late = [r for r in rows if r["t"] - timedelta(hours=24) >= first]
+    assert early and all(r["p24"] is None for r in early)
+    assert late and all(r["p24"] is not None for r in late)
+
+
 def test_nws_outside_its_grids_is_none():
     s = service()
     assert s.table("NWS", 48.85, 2.35) is None                     # the box test: never asked
@@ -322,9 +382,40 @@ def test_om_key_follows_the_runs():
     assert s.om_key() == "-".join([str(ep + 6 * 3600)] * n)
 
 
+def test_due_metadata_files_are_read_side_by_side():
+    """G60 A-7: the five files due at once are read in parallel, so a slow Open-Meteo holds a request one
+    timeout, not five."""
+    gate = threading.Barrier(sum(len(v) for v in W.OM_META_NAMES.values()), timeout=5)
+
+    class Slow(Fake):
+        def __call__(self, url, max_bytes, headers=None):
+            if "/static/meta.json" in url:
+                gate.wait()                                      # every read must be in flight together
+            return super().__call__(url, max_bytes, headers)
+    s = service(Slow())
+    ep = int(INIT.replace(tzinfo=timezone.utc).timestamp())
+    assert s.runs()[0]["GFS"] == INIT and s.om_key().startswith(str(ep))
+
+
 def test_om_key_without_metadata():
     s = service(Fake(init=None))
     assert s.om_key() == "-".join(["x"] * sum(len(v) for v in W.OM_META_NAMES.values()))
+
+
+def test_a_failed_metadata_read_keeps_the_last_run_six_hours():
+    """G60 A-10 (M28, claim C4): a failed read keeps the last good run for META_KEEP_S, then lets it go."""
+    fake = Fake()
+    s = service(fake)
+    ep = int(INIT.replace(tzinfo=timezone.utc).timestamp())
+    n = sum(len(v) for v in W.OM_META_NAMES.values())
+    assert s.om_key() == "-".join([str(ep)] * n)
+    fake.init = None                                             # Open-Meteo's metadata now fails
+    s._mono[0] += W.META_TTL_S + 1                               # read again: failed, the run kept
+    assert s.om_key() == "-".join([str(ep)] * n)
+    s._mono[0] += 3600                                           # an hour on: still kept
+    assert s.om_key() == "-".join([str(ep)] * n)
+    s._mono[0] += W.META_KEEP_S                                  # past six hours since the good read: let go
+    assert s.om_key() == "-".join(["x"] * n)
 
 
 def test_a_refused_answer_is_counted_without_its_body():
@@ -420,6 +511,48 @@ def test_weather_payload_metric_and_aifs(A):
     assert out["model"] == "AIFS" and "&deg;C" in th and "(mm)" in th and "(km/h)" in th
     assert "Gust" not in th and out["graph_data"]["gust"] is None
     assert out["graph_header"]["location"] == "21.450N 158.000W (elevation 207 m)"
+
+
+def _cells(th):
+    import re
+    head = th[:th.index("<tbody")]
+    cols = len(re.findall(r'<th scope="col"', head)) + 3                  # + Date, Time, Sun/Moon
+    rows = [re.findall(r"<td[^>]*>(.*?)</td>", r, re.S)
+            for r in re.findall(r'<tr class="sky-[^"]*"[^>]*>(.*?)</tr>', th, re.S)]
+    return cols, rows
+
+
+@pytest.mark.parametrize("model", ["GFS", "AIFS"])
+def test_weather_cells_are_the_models_values(A, model):
+    """G60 A-10 (M36, M38, M52): every row has the header's cells; temperatures, humidity, cloud and wind read back
+    from the answer by an independent conversion."""
+    out = A._weather_payload(blank(), POINT, None, "US", model, raw("om_oahu.json"))
+    cols, cells = _cells(out["table_html"])
+    rows = W.om_rows(W.parse_open_meteo(raw("om_oahu.json")), model, INIT, NOW)
+    assert len(cells) == len(rows) and all(len(c) == cols for c in cells)
+    gust = model != "AIFS"
+    assert cols == (13 if gust else 12)
+    f = lambda c: "" if c is None else str(round(c * 9 / 5 + 32))      # noqa: E731
+    mph = lambda v: "" if v is None else str(int(round(v * 2.23694)))  # noqa: E731
+    pct = lambda v: "" if v is None else str(int(round(v)))            # noqa: E731
+    for r, c in zip(rows, cells):
+        assert (c[2], c[3], c[4], c[5]) == (f(r["temp"]), f(r["dew"]), pct(r["rh"]), pct(r["cloud"]))
+        assert c[9] == mph(r["wind"])
+        if gust:
+            assert c[10] == mph(r["gust"])
+    metric = A._weather_payload(blank(), POINT, None, "Metric", model, raw("om_oahu.json"))
+    _, mc = _cells(metric["table_html"])
+    kmh = lambda v: "" if v is None else str(int(round(v * 3.6)))      # noqa: E731
+    for r, c in zip(rows, mc):
+        assert c[2] == ("" if r["temp"] is None else str(round(r["temp"]))) and c[9] == kmh(r["wind"])
+
+
+def test_weather_models_abroad_are_the_four(A):
+    """G60 A-10 (M40): outside the NWS boxes the tabs are the four Open-Meteo models, whatever was asked."""
+    paris = "pt_48850N_2350E"
+    for m in ("GFS", "ECMWF", "ICON", "AIFS"):
+        out = A._weather_payload(dict(blank(), station=paris), paris, None, "US", m)
+        assert out["weather_models"] == ["GFS", "ECMWF", "ICON", "AIFS"] and out["model"] == m
 
 
 def test_weather_payload_nws(A):
@@ -556,6 +689,14 @@ def test_post_needs_a_point_and_an_open_meteo_model(A, station, model):
     assert r.status_code == 400 and r.get_json()["final"] is True
 
 
+@pytest.mark.parametrize("model", ["icon", " ICON", "Icon "])
+def test_post_reads_the_model_as_the_get_does(A, monkeypatch, model):
+    """G60 A-2: the GET resolves 'icon' to ICON; the POST must not refuse it."""
+    monkeypatch.setattr(A, "point_forecast_data", land_refusal)
+    r = post(A, raw("om_oahu.json"), model=model.replace(" ", "%20"))
+    assert r.status_code == 200 and r.get_json()["model"] == "ICON"
+
+
 def test_post_with_the_flag_off(A, monkeypatch):
     monkeypatch.setenv("LAND_WEATHER", "")
     assert post(A, raw("om_oahu.json")).status_code == 400
@@ -604,3 +745,13 @@ def test_page_state_names_the_flag(A, monkeypatch):
     monkeypatch.setenv("LAND_WEATHER", "")
     html = A.app.test_client().get("/?station=51201").get_data(as_text=True)
     assert '"land_weather": false' in html
+
+
+def test_a_sea_point_asked_with_a_weather_tab_answers_gfs(A, monkeypatch):
+    """G60 A-10 (M46, claim C3): a weather tab at a point on the sea gets its swell table, echoed as GFS (the page
+    would otherwise press a hidden tab)."""
+    monkeypatch.setattr(A, "point_forecast_data",
+                        lambda s, tz=None: ((None, None, None, None, None, A.POINT_BUSY), None))
+    for m in ("ECMWF", "ICON", "AIFS", "NWS"):
+        out = A.compute_forecast_payload(POINT, None, "US", m, compact=True)
+        assert out["model"] == "GFS" and "kind" not in out

@@ -89,10 +89,23 @@ test('a land point: the GET, then Open-Meteo from the browser, then the POST of 
   assert.equal(t.f.calls.length, 3, 'the same view again: from the cache, nothing asked');
 });
 
+test('the NWS tab where the server falls back to GFS: the POST asks for the model the server answered with (G60 A-1)', async () => {
+  const t = setup();
+  const { p } = await landLoad(t, { model: 'NWS' }, { model: 'GFS' });
+  assert.equal(new URLSearchParams(t.f.calls[0].url.split('?')[1]).get('model'), 'NWS');
+  t.f.last().text(OM_TEXT); await settle();
+  const post = new URLSearchParams(t.f.last().url.split('?')[1]);
+  assert.equal(t.f.last().o.method, 'POST');
+  assert.equal(post.get('model'), 'GFS', 'never the NWS the server refuses on the POST');
+  assert.equal(post.get('station'), POINT);
+  t.f.last().json(weatherAnswer()); const d = await p;
+  assert.equal(d.table_html, weatherAnswer().table_html);
+});
+
 test('another tab, unit or Retry reuses the held Open-Meteo answer; a new model run asks Open-Meteo again', async () => {
   const t = setup();
   const { p: p } = await landLoad(t); t.f.last().text(OM_TEXT); await settle(); t.f.last().json(weatherAnswer()); await p;
-  const { p: p2 } = await landLoad(t, { model: 'ECMWF' });
+  const { p: p2 } = await landLoad(t, { model: 'ECMWF' }, { model: 'ECMWF' });
   assert.deepEqual(t.f.kinds().slice(3), ['get', 'post'], 'no second Open-Meteo request for the same runs');
   assert.equal(t.f.last().o.body, OM_TEXT);
   assert.equal(new URLSearchParams(t.f.last().url.split('?')[1]).get('model'), 'ECMWF');
@@ -101,7 +114,7 @@ test('another tab, unit or Retry reuses the held Open-Meteo answer; a new model 
   assert.deepEqual(t.f.kinds().slice(5), ['get', 'om'], 'a new run (om_key) asks Open-Meteo again');
   t.f.last().text(OM_TEXT + ' '); await settle(); t.f.last().json(weatherAnswer()); await p3;
   t.clock.t += I_held(t) + 1;
-  const { p: p4 } = await landLoad(t, { model: 'AIFS' }, { om_key: 'k2' });
+  const { p: p4 } = await landLoad(t, { model: 'AIFS' }, { om_key: 'k2', model: 'AIFS' });
   assert.equal(t.f.kinds().slice(-1)[0], 'om', 'held no longer than OM_HELD_MS');
   t.f.last().text(OM_TEXT); await settle(); t.f.last().json(weatherAnswer()); await p4;
 });
@@ -167,6 +180,32 @@ test('a newer load aborts the Open-Meteo request; a late POST of a superseded lo
   assert.equal(post.aborted, true, 'the POST is aborted with its load');
   t2.f.last().json({ station: '46001', table_html: '<table></table>', model: 'GFS', error: null }); await q2; await q1;
   assert.deepEqual(t2.u.applied.map((a) => a[0].station), ['46001']);
+});
+
+test('a gateway error or a dropped connection on the POST is asked once more, quietly, with the same text (G60 B-2)', async () => {
+  for (const how of [502, 503, 504, 520, 524, 'net']) {
+    const t = setup();
+    const { p } = await landLoad(t); t.f.last().text(OM_TEXT); await settle();
+    const first = t.f.last();
+    if (how === 'net') first.fail(); else first.text('<html>bad gateway</html>', how);
+    await settle();
+    assert.deepEqual(t.f.kinds(), ['get', 'om', 'post', 'post'], 'one more POST, no second Open-Meteo request: ' + how);
+    assert.equal(t.f.last().o.body, OM_TEXT); assert.equal(t.f.last().url, first.url);
+    t.f.last().json(weatherAnswer()); const d = await p;
+    assert.equal(d.table_html, weatherAnswer().table_html);
+    assert.equal(t.u.errors.filter((e) => e[0]).length, 0, 'nothing shown on the way');
+  }
+  // only once: a second failure shows the error; a plain 500 is not asked again
+  for (const [a, b, posts] of [[502, 502, 2], ['net', 'net', 2], [500, null, 1]]) {
+    const t = setup();
+    const { p } = await landLoad(t); t.f.last().text(OM_TEXT); await settle();
+    if (a === 'net') t.f.last().fail(); else t.f.last().text('x', a);
+    await settle();
+    if (b !== null) { if (b === 'net') t.f.last().fail(); else t.f.last().text('x', b); }
+    const d = await p;
+    assert.equal(t.f.kinds().filter((k) => k === 'post').length, posts);
+    assert.equal(d.error, t.I.OM_DOWN);
+  }
 });
 
 test('a refused POST (the server would not build it) is shown with Retry and the held answer is dropped', async () => {

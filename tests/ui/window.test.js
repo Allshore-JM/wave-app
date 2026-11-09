@@ -1873,6 +1873,18 @@ test('weather (section 91): a land point\'s answer shows GFS with the offered we
   assert.equal(seen[0].kind, 'weather'); assert.equal(seen[0].ok, true, 'a land point\'s weather is a forecast on screen (the page keeps the point)');
 });
 
+test('weather (section 91): one offered model is no choice: the bar stays hidden; a weather answer never shows the swell buttons', async () => {
+  const b = wxBoot();
+  const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);
+  await settle();
+  b.fs_.last().release(wxPayload({ weather_models: ['GFS'] })); await settle();
+  assert.equal(bar.hidden, true, 'GFS alone: nothing to choose');
+  b.app.loader.load({ unit: 'Metric' }); await settle();
+  b.fs_.last().release(wxPayload({ swan_available: true, nwps_available: true, gfsb_available: true })); await settle();
+  assert.equal(bar.hidden, false);
+  ['SWAN', 'NWPS', 'GFSB'].forEach((m) => assert.equal(btn(m).hidden, true, m + ' never beside a weather table'));
+});
+
 test('weather (section 91): a tab asks for its model at the point; the echo presses it; NWS shows where the answer offers it', async () => {
   const b = wxBoot();
   const bar = b.doc.getElementById('modelBar'), btn = (m) => bar.querySelectorAll('[data-model]').find((x) => x.getAttribute('data-model') === m);

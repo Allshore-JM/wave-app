@@ -17,7 +17,9 @@ const RAW0 = html.slice(html.indexOf('\n', a) + 1, b).replace('{{ initial_state.
   .replace('{{ retired_stations|tojson }}', JSON.stringify(['44062', '46088']));
 assert.ok(RAW0.includes('{{ initial_state.gfsb_on|tojson }}'), 'the head reads whether NOAA\'s split is offered (section 77)');
 // the page with (gfsb true) and without the spectral split as the GFS table (section 77): the head's rule for GFSB
-const block = (geo, gfsb) => RAW0.replace('{{ initial_state.gfsb_on|tojson }}', JSON.stringify(gfsb === true))
+assert.ok(RAW0.includes('{{ initial_state.land_weather|tojson }}'), 'the head reads whether land points answer the weather (section 91)');
+const block = (geo, gfsb, wx) => RAW0.replace('{{ initial_state.gfsb_on|tojson }}', JSON.stringify(gfsb === true))
+  .replace('{{ initial_state.land_weather|tojson }}', JSON.stringify(wx === true))
   .replace('{{ geo_base|tojson }}', JSON.stringify(geo || ''));
 const BLOCK = block('');
 const SRC = fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'forecast.js'), 'utf8');
@@ -37,7 +39,7 @@ function runHead(search, stored, storage, opts) {
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
     localStorage: storage || { getItem: (k) => (k in keys && keys[k] !== undefined ? (typeof keys[k] === 'string' ? keys[k] : JSON.stringify(keys[k])) : null) },
     fetch: (u, o) => { urls.push(u); fetches.push([u, o]); if (opts.geoAnswer && u === (opts.geo || '') + '/') return opts.geoAnswer(); return Promise.resolve({}); } };
-  vm.runInNewContext(block(opts.geo, opts.gfsb), ctx);
+  vm.runInNewContext(block(opts.geo, opts.gfsb, opts.wx), ctx);
   return { get early() { return ctx.window.__early.forecast; }, urls, fetches, timers, ctx, w: ctx.window.__early,
     fire: (ms) => timers.filter((t) => t.ms === ms).forEach((t) => t.fn()) };
 }
@@ -64,18 +66,23 @@ const CASES = [
   ['?station=51209&model=SWAN', undefined], ['?station=51209&model=NWPS', undefined], ['?station=52212&model=SWAN', undefined],
   ['?station=51201&model=GFSB', undefined], ['?station=46001&model=gfsb', { unit: 'Metric' }], ['?station=pt_21667N_158054W&model=GFSB', undefined],   // NOAA's split (section 77)
   ['?station=52202&model=GFSB&tz=UTC', undefined], ['?station=45007&model=GFSB', undefined], ['?station=51201&model=%20gfsb%20', undefined],
+  // land points' weather tabs (section 91): points only, only with land weather on
+  ['?station=pt_21450N_158000W&model=ECMWF', undefined], ['?station=pt_21450N_158000W&model=nws', { unit: 'Metric' }],
+  ['?station=pt_21450N_158000W&model=%20aifs%20&tz=UTC', undefined], ['?station=pt_21450N_158000W&model=ICON', undefined],
+  ['?station=51201&model=ECMWF', undefined], ['?station=46001&model=icon', undefined], ['?station=pt_21450N_158000W&model=HRRR', undefined],
 ];
 
 test('the head asks for exactly the query of the module\'s first load, for every address / saved-settings combination', () => {
-  for (const gfsb of [false, true]) for (const [search, stored] of CASES) {   // the page with and without NOAA's split beside ours (section 77)
-    const h = runHead(search, stored, undefined, { gfsb });
+  for (const wx of [false, true]) for (const gfsb of [false, true]) for (const [search, stored] of CASES) {   // with and without NOAA's split beside ours (section 77), land weather (section 91)
+    const h = runHead(search, stored, undefined, { gfsb, wx });
     let st = {}; try { st = typeof stored === 'string' ? JSON.parse(stored) : (stored || {}); } catch (e) { st = {}; }
     const s0 = I.resolveInitialState(search, st, server(search));
     if (s0.model === 'SWAN' && SWAN.indexOf(s0.station) < 0) s0.model = 'GFS';     // the loader's normalise()
     if (s0.model === 'NWPS' && NWPS.indexOf(s0.station) < 0) s0.model = 'GFS';
     if (s0.model === 'GFSB' && !(gfsb && !w.AllshoreForecast.isPointId(s0.station))) s0.model = 'GFS';
+    if (I.WEATHER_MODELS.indexOf(s0.model) >= 0 && !(wx && w.AllshoreForecast.isPointId(s0.station))) s0.model = 'GFS';
     const want = I.queryFor(s0);
-    assert.equal(h.early.q, want, search + ' / ' + JSON.stringify(stored) + ' / gfsb ' + gfsb);
+    assert.equal(h.early.q, want, search + ' / ' + JSON.stringify(stored) + ' / gfsb ' + gfsb + ' / wx ' + wx);
     assert.deepEqual(h.urls, ['/api/forecast?' + want]);
   }
   assert.ok(runHead('?station=51201&model=GFSB', undefined, undefined, { gfsb: true }).early.q.includes('model=GFSB'), 'with the flag the head asks GFSB');

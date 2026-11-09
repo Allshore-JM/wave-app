@@ -63,7 +63,10 @@
   // for a Great Lakes station whatever is asked). GFSB = "GFS (Bulletin)": NOAA's own swell split of the GFS run,
   // offered where the site's own split of the station's spectra is the GFS table (plan section 77; the server says
   // when: gfsb_on, gfsb_available).
-  var MODELS = ['GFS', 'SWAN', 'NWPS', 'GFSB'];
+  // ECMWF / ICON / AIFS / NWS: the weather tabs of a forecast point on land (plan section 91; GFS is the first tab
+  // there too). The server judges land; the page keeps them only for a point (pt_ ids) where land weather is on.
+  var WEATHER_MODELS = ['ECMWF', 'ICON', 'AIFS', 'NWS'];
+  var MODELS = ['GFS', 'SWAN', 'NWPS', 'GFSB'].concat(WEATHER_MODELS);
   function modelOf(v) { var m = typeof v === 'string' ? v.trim().toUpperCase() : ''; return MODELS.indexOf(m) >= 0 ? m : 'GFS'; }
   function resolveInitialState(search, stored, server, dflt) {
     var p = new URLSearchParams(search || ''), st = stored || {}, sv = server || {};
@@ -249,6 +252,7 @@
   function shortCycle(model, header) {
     var c = header && header.cycle ? String(header.cycle) : '';
     if (!c) return model || '';
+    if (/^Weather\b/.test(c)) return c;                                    // a land point's weather table (plan section 91)
     if (model === 'SWAN') { var m = /updated\s+(.*)$/i.exec(c); return 'SWAN · updated ' + (m ? m[1] : c); }
     if (model === 'GLWU') return 'GLWU · run ' + c.replace(/^NOAA GLWU\s+/, '');
     if (model === 'NWPS') return 'NWPS · run ' + c.replace(/^NOAA NWPS\s+/, '');
@@ -318,7 +322,8 @@
       s.model = modelOf(s.model);
       if (s.model === 'SWAN' && deps.swanStations && deps.swanStations.indexOf(s.station) < 0) s.model = 'GFS';
       if (s.model === 'NWPS' && deps.nwpsStations && deps.nwpsStations.indexOf(s.station) < 0) s.model = 'GFS';
-      if (s.model === 'GFSB' && !(deps.gfsbOn && !isPointId(s.station))) s.model = 'GFS';   // NOAA's split only where ours is the default (§77; the server answers GFS for a lake station)
+      if (s.model === 'GFSB' && !(deps.gfsbOn && !isPointId(s.station))) s.model = 'GFS';
+      if (WEATHER_MODELS.indexOf(s.model) >= 0 && !(deps.landWeather && isPointId(s.station))) s.model = 'GFS';   // weather tabs: land points only (§91; a point at sea answers its swell table, GFS)   // NOAA's split only where ours is the default (§77; the server answers GFS for a lake station)
       return s;
     }
     function sync() { if (deps.replaceState) deps.replaceState(urlFor(state, deps.saved ? deps.saved() : null)); }
@@ -523,9 +528,11 @@
     for (var j = lo; j <= hi; j++) { var dd = Math.abs(j - value); if (dd < bestD && hasRow(datasets, j)) { best = j; bestD = dd; } }
     return best;
   }
+  var WEATHER_SERIES = ['temp', 'dew', 'precip', 'p24', 'wind', 'gust'];
   function slotted(gd) {                                                       // some slot holds no row in any series
-    var keys = ALL_SWELLS.concat(['combined']), n = gd && gd.labels ? gd.labels.length : 0;
-    var sets = keys.map(function (k) { return { data: (gd.height || {})[k] || [] }; });
+    var n = gd && gd.labels ? gd.labels.length : 0, sets;
+    if (gd && gd.kind === 'weather') sets = WEATHER_SERIES.map(function (k) { return { data: gd[k] || [] }; });   // a land point's weather (§91)
+    else sets = ALL_SWELLS.concat(['combined']).map(function (k) { return { data: (gd.height || {})[k] || [] }; });
     for (var j = 0; j < n; j++) if (!hasRow(sets, j)) return true;
     return false;
   }
@@ -602,6 +609,45 @@
     } };
   }
   function dirTick(v) { return Number.isFinite(v) && v >= 0 && v <= 360 && v % 45 === 0 ? COMPASS[v / 45] : ''; }
+  var COMPASS16 = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  function compass16(deg) { return Number.isFinite(deg) ? COMPASS16[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16] : ''; }
+  // A tooltip line: the value with its unit; a direction with its compass point.
+  function weatherLabel(c) {
+    var ds = c && c.dataset ? c.dataset : {}, v = c ? c.raw : null;
+    if (v === null || v === undefined || !Number.isFinite(+v)) return '';
+    if (ds.isDir) return ds.label + ': ' + Math.round(+v) + '\u00b0 ' + compass16(+v);
+    return ds.label + ': ' + (c.formattedValue != null ? c.formattedValue : v) + (ds.unit ? ' ' + ds.unit : '');
+  }
+  var WX = { temp: '#B23A48', dew: '#7E8C9A', bar: 'rgba(21,101,192,0.55)', p24: '#0D47A1', wind: '#37474F', gust: '#90A4AE', dir: '#6D4C41' };
+  // The three weather charts of a land point (plan section 91): [title, datasets, y scale, extra scales] each.
+  // Temperature and dew point; each row's precipitation as bars with the running 24-h total; wind and gusts with the
+  // direction (from) as dots on a 0-360 axis at the right. Lines join a model's rows across the empty hourly slots
+  // between its steps (the rows themselves are the model's own steps: nothing is invented between them).
+  function weatherSpecs(gd) {
+    var u = gd && gd.units ? gd.units : {}, tU = u.temp || '\u00b0F', pU = u.precip || 'in', wU = u.wind || 'mph';
+    function line(label, data, color, unit, extra) {
+      return Object.assign({ label: label, data: data || [], borderColor: color, backgroundColor: color, showLine: true, spanGaps: true,
+        borderWidth: 2, pointRadius: 1.4, unit: unit }, extra || {});
+    }
+    var hasGust = Array.isArray(gd.gust) && gd.gust.some(function (v) { return v !== null && v !== undefined; });
+    var wind = [line('Wind', gd.wind, WX.wind, wU)];
+    if (hasGust) wind.push(line('Gust', gd.gust, WX.gust, wU, { borderDash: [5, 3] }));
+    wind.push({ label: 'Direction (from)', data: gd.dir || [], borderColor: WX.dir, backgroundColor: WX.dir, showLine: false, spanGaps: false,
+      pointRadius: 2, yAxisID: 'yDir', isDir: true });
+    var pMax = pU === 'in' ? 0.1 : 2;                                          // a dry week still gets a readable axis
+    return [
+      ['Temperature', [line('Temperature', gd.temp, WX.temp, tU), line('Dew point', gd.dew, WX.dew, tU, { borderDash: [4, 3], borderWidth: 1.6 })],
+        { grace: '8%', title: { display: true, text: 'Temperature (' + tU + ')' } }, null],
+      ['Precipitation', [
+        { type: 'bar', label: 'Precipitation (row step)', data: gd.precip || [], backgroundColor: WX.bar, borderColor: WX.bar, borderWidth: 0,
+          barPercentage: 1, categoryPercentage: 1, unit: pU, order: 2 },
+        line('24-h total', gd.p24, WX.p24, pU, { borderWidth: 1.6, pointRadius: 0, order: 1 })],
+        { beginAtZero: true, min: 0, suggestedMax: pMax, title: { display: true, text: 'Precipitation (' + pU + ')' } }, null],
+      ['Wind', wind, { beginAtZero: true, min: 0, grace: '8%', title: { display: true, text: 'Wind (' + wU + ')' } },
+        { yDir: { position: 'right', min: 0, max: 360, grid: { drawOnChartArea: false }, ticks: { stepSize: 45, callback: function (v) { return dirTick(+v); } },
+          title: { display: true, text: 'Direction (from)' } } }]
+    ];
+  }
 
   function createForecastGraphs(deps) {
     var charts = [], data = null, dirty = true, ac = null, rendering = null;
@@ -629,6 +675,14 @@
         // one line of legend above the plot (it used to wrap under it and eat the plot height)
         plugins: { legend: { position: 'top', align: 'start', labels: { usePointStyle: true, boxWidth: 8, boxHeight: 6, padding: 8, font: { size: 11 } } }, tooltip: { mode: mode === ROW_MODE ? ROW_MODE : 'nearest', intersect: false }, decimation: { enabled: false } },
         animation: false };
+      if (gd.kind === 'weather') {                                              // a land point's weather (plan section 91)
+        return weatherSpecs(gd).map(function (sp, i) {
+          var o = Object.assign({}, common, { plugins: Object.assign({}, common.plugins, { title: { display: false, text: sp[0] },
+            tooltip: Object.assign({}, common.plugins.tooltip, { callbacks: { label: weatherLabel } }) }),
+            scales: Object.assign({ x: xAxis, y: Object.assign({ grid: { display: true, color: 'rgba(0,0,0,0.08)' }, border: { color: 'rgba(0,0,0,0.2)' } }, sp[2]) }, sp[3] || {}) });
+          return new Chart(deps.canvases[i].getContext('2d'), { type: 'line', data: { labels: gd.labels, datasets: sp[1] }, plugins: plugins, options: o });
+        });
+      }
       var keys = swellKeys(gd);
       var hArr = keys.concat(['combined']).map(function (k) { return gd.height[k]; });
       var hMax = padMax(maxAcross(hArr), 0.05); if (!Number.isFinite(hMax)) hMax = 1; var hStep = heightStep(hMax); hMax = niceCeil(hMax, hStep);
@@ -998,7 +1052,8 @@
     }
     var session = opts.storage || safeStorage('sessionStorage'), local = opts.settings || safeStorage('localStorage');
     var initial = opts.initial || {}, swanStations = initial.swan_stations || [], nwpsStations = initial.nwps_stations || [];
-    var gfsbOn = initial.gfsb_on === true;                                      // the spectral split is the GFS table here (§77)
+    var gfsbOn = initial.gfsb_on === true;
+    var landWeather = initial.land_weather === true;                            // land points answer the weather (§91)                                      // the spectral split is the GFS table here (§77)
     var search = (win.location && win.location.search) || '', dflt = readJson(local, DEFAULT_KEY);
     if (typeof dflt.id !== 'string' || !DEFAULT_ID.test(dflt.id.trim())) dflt = null;
     var state = resolveInitialState(search, readJson(local, SETTINGS_KEY), initial, dflt);
@@ -1052,32 +1107,43 @@
     // The model bar: GFS plus the station's other model(s), the one on screen pressed; hidden where there is none. With no
     // answer (a failed load) the server's last answer for the station decides, else the station lists, so the way back
     // to GFS stays (G41 B-4) and a choice the server withdrew does not come back (G41 re-check F-4).
+    function weatherList(d) { return d && d.kind === 'weather' ? (Array.isArray(d.weather_models) ? d.weather_models.slice() : []) : null; }
     var lastAvail = typeof initial.swan_available === 'boolean' && typeof initial.nwps_available === 'boolean' && initial.station
-      ? { station: initial.station, swan: initial.swan_available, nwps: initial.nwps_available, gfsb: initial.gfsb_available === true } : null;   // G48 A P4-2
+      ? { station: initial.station, swan: initial.swan_available, nwps: initial.nwps_available, gfsb: initial.gfsb_available === true,
+          weather: weatherList(initial) } : null;   // G48 A P4-2
     function syncBar(d, st) {
       if (!els.modelBar) return;
       if (d && typeof d.swan_available === 'boolean' && typeof d.nwps_available === 'boolean') {
-        lastAvail = { station: st.station, swan: d.swan_available, nwps: d.nwps_available, gfsb: d.gfsb_available === true };
+        lastAvail = { station: st.station, swan: d.swan_available, nwps: d.nwps_available, gfsb: d.gfsb_available === true, weather: weatherList(d) };
       }
       var known = !d && lastAvail && lastAvail.station === st.station ? lastAvail : null;
       var swan = d && typeof d.swan_available === 'boolean' ? d.swan_available : known ? known.swan : swanStations.indexOf(st.station) >= 0;
       var nwps = d && typeof d.nwps_available === 'boolean' ? d.nwps_available : known ? known.nwps : nwpsStations.indexOf(st.station) >= 0;
       // NOAA's own split beside ours (plan section 77): the answer says; with none, the page's flag and the station kind
       var gfsb = d && typeof d.gfsb_available === 'boolean' ? d.gfsb_available : known ? known.gfsb : (gfsbOn && !isPointId(st.station));
-      els.modelBar.hidden = !(swan || nwps || gfsb); pressed(els.modelBar, 'data-model', st.model);
+      // a land point's weather tabs (plan section 91): the answer's list, else the station's last answer
+      var wx = d ? weatherList(d) : known ? known.weather : null;
+      if (wx) { swan = nwps = gfsb = false; }
+      els.modelBar.hidden = !(swan || nwps || gfsb || (wx && wx.length > 1)); pressed(els.modelBar, 'data-model', st.model);
       Array.prototype.forEach.call(els.modelBar.querySelectorAll('[data-model]'), function (b) {
-        var m = b.getAttribute('data-model'); b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps) || (m === 'GFSB' && !gfsb);
+        var m = b.getAttribute('data-model');
+        b.hidden = (m === 'SWAN' && !swan) || (m === 'NWPS' && !nwps) || (m === 'GFSB' && !gfsb)
+          || (WEATHER_MODELS.indexOf(m) >= 0 && !(wx && wx.indexOf(m) >= 0));
       });
     }
-    function setMeta(h, tail) {
+    function setMeta(h, tail, wx) {
       var m = els.meta; if (!m) return;
       clearNode(m);
       if (!h) return;
-      [['Cycle : ', String(h.cycle == null ? '' : h.cycle) + (tail || '')], ['Location : ', h.location], ['Time Zone: ', zoneLabel(h.tz)]].forEach(function (pair, i) {
+      var pairs = [['Cycle : ', String(h.cycle == null ? '' : h.cycle) + (tail || '')], ['Location : ', h.location], ['Time Zone: ', zoneLabel(h.tz)]];
+      if (wx && wx.total != null && wx.total !== '') pairs.push(['Total precipitation: ', String(wx.total) + ' ' + String(wx.total_unit || '') + ' (whole forecast)']);
+      pairs.forEach(function (pair, i) {
         if (i) m.appendChild(doc.createTextNode('  |  '));
         var b = doc.createElement('strong'); b.textContent = pair[0]; m.appendChild(b);
         m.appendChild(doc.createTextNode(String(pair[1] == null ? '' : pair[1])));
       });
+      // the weather's source and licence (plan section 91): the server's own fixed credit line with its links
+      if (wx && typeof wx.credit === 'string' && wx.credit) { var c = doc.createElement('div'); c.className = 'wx-credit'; c.innerHTML = wx.credit; m.appendChild(c); }
     }
     // A line of news for the visitor in the window (a point that could not be kept, G22 B-3; a removed default or
     // favorites, G35 B-8): shown until another station or point is on screen. Several for the station on screen are kept,
@@ -1111,7 +1177,7 @@
       setTimer: opts.setTimer || function (fn, ms) { return win.setTimeout ? win.setTimeout(fn, ms) : setTimeout(fn, ms); },
       clearTimer: opts.clearTimer || function (id) { if (win.clearTimeout) win.clearTimeout(id); else clearTimeout(id); },
       hidden: function () { return !!doc.hidden; },
-      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations, nwpsStations: nwpsStations, gfsbOn: gfsbOn,
+      replaceState: function (url) { if (holdUrl && !loader.started()) return; holdUrl = false; try { win.history.replaceState(null, '', url); } catch (e) {} }, swanStations: swanStations, nwpsStations: nwpsStations, gfsbOn: gfsbOn, landWeather: landWeather,
       ui: { busy: function (on) { if (els.busy) els.busy.hidden = !on; els.body.setAttribute('aria-busy', on ? 'true' : 'false'); },
             error: showError,
             clear: function () {                                              // a failed load leaves nothing of the last forecast (G22 B-7, R-A9, R-A10)
@@ -1142,7 +1208,7 @@
               if (noteFor !== null && noteFor !== st.station) note(null);
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = els.old ? cyc + ageNote : cyc;
-              setMeta(d.graph_header, oldNote + splitNote);                       // the split note whole on the meta line too (§77c: the bar can cut it on phones)
+              setMeta(d.graph_header, oldNote + splitNote, d.kind === 'weather' ? d.weather : null);                       // the split note whole on the meta line too (§77c: the bar can cut it on phones)
               var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
               // a model switch at the same station keeps the table's time position (the first row showing under the frozen
               // header stays the first row, by its time): read before the new table replaces the old one
@@ -1172,7 +1238,7 @@
               // ok: a forecast is on screen (a refused point - land, busy - is not; the page saves a new point only then)
               // final: the answer will not change (a point on land, sheltered water, no model data: the star cannot keep it)
               try { doc.dispatchEvent(new CustomEvent('allshore:forecast', { detail: { station: st.station, tz: d.tz_label || '', model: st.model, view: state.view,
-                quiet: !!quiet, ok: !!d.table_html, point: d.point || null, final: !!d.final, reason: d.reason || null,
+                quiet: !!quiet, ok: !!d.table_html, kind: d.kind || 'swell', point: d.point || null, final: !!d.final, reason: d.reason || null,
                 lat: typeof d.lat === 'number' && isFinite(d.lat) ? d.lat : null, lon: typeof d.lon === 'number' && isFinite(d.lon) ? d.lon : null } })); } catch (e) {}
             } }, saved: function () { return readJson(local, SETTINGS_KEY); } }, state);
     // a table waiting for its new run (section 77d) is asked for again the moment the tab is shown
@@ -1386,6 +1452,7 @@
     getMode: function () { return app ? app.window.mode : null; },
     getState: function () { return app ? Object.assign({}, app.state) : null; },
     _internals: {
+      weatherSpecs: weatherSpecs, weatherLabel: weatherLabel, compass16: compass16, WEATHER_MODELS: WEATHER_MODELS,
       SETTINGS_KEY: SETTINGS_KEY, DEFAULT_KEY: DEFAULT_KEY, DEFAULT_ID: DEFAULT_ID, WINDOW_KEY: WINDOW_KEY, RANGE_KEY: RANGE_KEY, CACHE_MAX: CACHE_MAX, CACHE_TTL_MS: CACHE_TTL_MS, MIN_SIZE: MIN_SIZE, PHONE_QUERY: PHONE_QUERY,
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,

@@ -49,6 +49,7 @@
         var p = new URLSearchParams(location.search), st = {}, swan = {{ initial_state.swan_stations|tojson }};
         var nwps = {{ initial_state.nwps_stations|tojson }};
         var GFSB = {{ initial_state.gfsb_on|tojson }};                            // NOAA's split beside ours (section 77)
+        var WX = {{ initial_state.land_weather|tojson }};                         // land points' weather tabs (section 91)
         var GEO = {{ geo_base|tojson }};
         var RETIRED = {{ retired_stations|tojson }};                              // removed for a blank bulletin (section 52 C)
         if (p.get('render') === 'full') return;
@@ -62,7 +63,8 @@
         function model(station) {
           var m = (p.get('model') || 'GFS').trim().toUpperCase();
           return m === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : m === 'NWPS' && nwps.indexOf(station) >= 0 ? 'NWPS'
-            : m === 'GFSB' && GFSB && station.indexOf('pt_') !== 0 ? 'GFSB' : 'GFS';     // the loader's normalise() (section 77)
+            : m === 'GFSB' && GFSB && station.indexOf('pt_') !== 0 ? 'GFSB'
+            : WX && station.indexOf('pt_') === 0 && ['ECMWF', 'ICON', 'AIFS', 'NWS'].indexOf(m) >= 0 ? m : 'GFS';   // the loader's normalise() (sections 77, 91)
         }
         function start(station) {
           var q = new URLSearchParams({
@@ -732,6 +734,10 @@
     .forecast-win #forecastMeta { padding-top: 8px; }
     #forecastTable > .text-muted { padding: 8px 10px; }
     .fw-meta { color: #5a6b7a; font-size: .85rem; margin-bottom: 6px; }
+    .fw-meta .wx-credit { font-size: .8rem; margin-top: 2px; }
+    #forecastTable td.wx-type { font-weight: 600; }
+    #forecastTable td.wx-rain { color: #1565c0; } #forecastTable td.wx-snow { color: #6a3fb5; } #forecastTable td.wx-mix { color: #ad1457; }
+    #forecastTable td.wx-ice { color: #00838f; } #forecastTable td.wx-thunder { color: #b45309; }
     .fw-resize:focus-visible { outline: 2px solid #1d6fd6; outline-offset: -2px; }
     /* the window touched last is on top: the forecast window over the live-buoy window (z 2000) once touched */
     .forecast-win.fw-front { z-index: 2100; }
@@ -1134,11 +1140,15 @@
           <button type="button" class="btn btn-outline-secondary{% if selected_view != 'Graph' %} active{% endif %}" data-view="Table" aria-pressed="{{ 'false' if selected_view == 'Graph' else 'true' }}">Table</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_view == 'Graph' %} active{% endif %}" data-view="Graph" aria-pressed="{{ 'true' if selected_view == 'Graph' else 'false' }}">Graph</button>
         </div>
-        <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not (swan_available or nwps_available or gfsb_available) %} hidden{% endif %}>
-          <button type="button" class="btn btn-outline-secondary{% if selected_model not in ('SWAN', 'NWPS', 'GFSB') %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model in ('SWAN', 'NWPS', 'GFSB') else 'true' }}">GFS</button>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not (swan_available or nwps_available or gfsb_available or weather_models) %} hidden{% endif %}>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model not in ('SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'NWS') %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model in ('SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'NWS') else 'true' }}">GFS</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'GFSB' %} active{% endif %}" data-model="GFSB" aria-pressed="{{ 'true' if selected_model == 'GFSB' else 'false' }}"{% if not gfsb_available %} hidden{% endif %} title="NOAA's bulletin: its own swell split of the same GFS run (the GFS table splits the swells from the station's spectra itself)">GFS (Bulletin)</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}"{% if not swan_available %} hidden{% endif %}>SWAN</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'NWPS' %} active{% endif %}" data-model="NWPS" aria-pressed="{{ 'true' if selected_model == 'NWPS' else 'false' }}"{% if not nwps_available %} hidden{% endif %} title="NOAA NWPS: the National Weather Service's nearshore SWAN model">NWPS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'ECMWF' %} active{% endif %}" data-model="ECMWF" aria-pressed="{{ 'true' if selected_model == 'ECMWF' else 'false' }}"{% if not (weather_models and 'ECMWF' in weather_models) %} hidden{% endif %} title="ECMWF IFS: the European centre's weather model">ECMWF</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'ICON' %} active{% endif %}" data-model="ICON" aria-pressed="{{ 'true' if selected_model == 'ICON' else 'false' }}"{% if not (weather_models and 'ICON' in weather_models) %} hidden{% endif %} title="DWD ICON: the German weather service's model">ICON</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'AIFS' %} active{% endif %}" data-model="AIFS" aria-pressed="{{ 'true' if selected_model == 'AIFS' else 'false' }}"{% if not (weather_models and 'AIFS' in weather_models) %} hidden{% endif %} title="ECMWF AIFS: the European centre's AI weather model">AIFS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'NWS' %} active{% endif %}" data-model="NWS" aria-pressed="{{ 'true' if selected_model == 'NWS' else 'false' }}"{% if not (weather_models and 'NWS' in weather_models) %} hidden{% endif %} title="NOAA National Weather Service: its forecasters' grid (US only)">NWS</button>
         </div>
         <div class="btn-group btn-group-sm" role="group" aria-label="Table mode" id="modeBar" hidden>
           <button type="button" class="btn btn-outline-secondary active" data-mode="detailed" aria-pressed="true">Detailed</button>
@@ -1155,12 +1165,13 @@
             <option value="Table" {% if selected_view != 'Graph' %}selected{% endif %}>Table</option>
             <option value="Graph" {% if selected_view == 'Graph' %}selected{% endif %}>Graph</option>
           </select>
-          {% if swan_available or nwps_available or gfsb_available %}
+          {% if swan_available or nwps_available or gfsb_available or weather_models %}
           <select class="form-select form-select-sm" name="model" form="controlForm" aria-label="Model">
             <option value="GFS" {% if selected_model == 'GFS' %}selected{% endif %}>GFS</option>
             {% if gfsb_available %}<option value="GFSB" {% if selected_model == 'GFSB' %}selected{% endif %}>GFS (Bulletin)</option>{% endif %}
             {% if swan_available %}<option value="SWAN" {% if selected_model == 'SWAN' %}selected{% endif %}>SWAN</option>{% endif %}
             {% if nwps_available %}<option value="NWPS" {% if selected_model == 'NWPS' %}selected{% endif %}>NWPS</option>{% endif %}
+            {% for m in (weather_models or []) %}{% if m != 'GFS' %}<option value="{{ m }}" {% if selected_model == m %}selected{% endif %}>{{ m }}</option>{% endif %}{% endfor %}
           </select>
           {% endif %}
         </noscript>
@@ -1168,7 +1179,7 @@
       <div id="fwNote" class="fw-note" role="status" hidden></div>
       <div id="fwBody" class="fw-body" tabindex="0" aria-busy="false">
         <div id="fwError" class="alert alert-warning py-2 mb-2"{% if not error %} hidden{% endif %}>{{ error or '' }}</div>
-        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }}{{ old_run_note }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% endif %}</div>
+        <div id="forecastMeta" class="fw-meta">{% if graph_header %}<strong>Cycle : </strong>{{ graph_header.cycle }}{{ old_run_note }} &nbsp;|&nbsp; <strong>Location : </strong>{{ graph_header.location }} &nbsp;|&nbsp; <strong>Time Zone: </strong>{{ graph_header.tz|zone_label }}{% if weather_info %} &nbsp;|&nbsp; <strong>Total precipitation: </strong>{{ weather_info.total }} {{ weather_info.total_unit }} (whole forecast)<div class="wx-credit">{{ weather_info.credit|safe }}</div>{% endif %}{% endif %}</div>
 
         <div id="forecastTable"{% if selected_view == 'Graph' %} hidden{% endif %}>
           {% if table_html %}{{ table_html|safe }}{% endif %}
@@ -5003,6 +5014,7 @@
         for (var i = 0; i < els.length; i++) if (els[i]) txt += ' ' + (els[i].textContent || '');
         var m = /Cycle\s*:\s*([^|\n]*)/.exec(txt);
         if (!m) return null;
+        if (/^\s*Weather\b/.test(m[1])) return null;                 // a land point's weather table: no wave run (section 91)
         if (/NWPS/.test(m[1])) return { model: 'NWPS' };              // before SWAN: "NOAA NWPS" is a SWAN model too
         if (/SWAN/.test(m[1])) return { model: 'SWAN' };
         if (/GLWU/.test(m[1])) return { model: 'GLWU' };
@@ -5364,6 +5376,7 @@
       // the Forecast point tool (plan section 31): its click opens a forecast for that point
       // ... only where a points bucket is set: elsewhere every click would be refused (G22 R-A18)
       onPoint: {{ 'true' if points_enabled else 'false' }} && window.__allshorePoints ? function (ll) { return window.__allshorePoints.add(ll); } : null,
+      landWeather: {{ initial_state.land_weather|tojson }},             // a point on land answers its weather (plan section 91)
       // an expanded window that covers the tool bar is minimised when a tool starts and whenever the bar grows (owner,
       // G20 and its re-review); a window opened later stays until the bar grows again
       onLayout: function (bar, grew) {

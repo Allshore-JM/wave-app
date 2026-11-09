@@ -1323,7 +1323,7 @@
           s.busy = false;
           if (r && r.cancel) { stop(); return; }                               // the visitor opened something else meanwhile (G22 R-A6)
           if (r && r.ok) { var inBar = barEl.contains(doc.activeElement); stop(); if (typeof r.open === 'function') r.open(); if (inBar) focusTools(); return; }
-          s.msg = (r && r.message) || 'No forecast there. Try another point on the sea.'; render();
+          s.msg = (r && r.message) || (opts.landWeather ? 'No forecast there. Try another point.' : 'No forecast there. Try another point on the sea.'); render();
         }, function (err) {
           if (gen !== s.gen || s.tool !== 'point') return;
           var http = err && /^HTTP \d+/.exec(String(err.message || ''));       // the server answered, with an error (G22 R-B6)
@@ -1417,7 +1417,9 @@
       if (s.busy) return [{ t: 'Checking that point…', cls: 'tools-big' }];      // folded, the title says it (once)
       var lines = [];
       if (s.msg) lines.push({ t: s.msg, cls: 'tools-big tools-msg', folded: true });
-      lines.push({ t: (s.msg ? verb + ' another point on the sea.' : verb + ' the sea where you want a forecast.'), cls: s.msg ? 'tools-hint' : 'tools-big' });
+      // with land weather on (plan section 91) a point on land answers its weather: the prompt names no sea
+      var where = opts.landWeather ? [' another point.', ' where you want a forecast.'] : [' another point on the sea.', ' the sea where you want a forecast.'];
+      lines.push({ t: (s.msg ? verb + where[0] : verb + where[1]), cls: s.msg ? 'tools-hint' : 'tools-big' });
       if (!s.msg) lines.push({ t: 'Its table and graphs open with the coordinates, and the point is kept under My points if this browser allows it.', cls: 'tools-hint' });
       return lines;
     }

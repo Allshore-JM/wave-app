@@ -164,7 +164,7 @@ function buildPage(win) {
   el('button', 'fwMin', header); el('button', 'fwMax', header);
   const toolbar = el('div', 'fwToolbar', w);
   const viewBar = el('div', 'viewBar', toolbar); ['Table', 'Graph'].forEach((v) => el('button', null, viewBar, { 'data-view': v }));
-  const modelBar = el('div', 'modelBar', toolbar); ['GFS', 'SWAN', 'NWPS', 'GFSB'].forEach((v) => el('button', null, modelBar, { 'data-model': v }));   // GFSB last here (position pins); the page has it second
+  const modelBar = el('div', 'modelBar', toolbar); ['GFS', 'SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'NWS'].forEach((v) => el('button', null, modelBar, { 'data-model': v }));   // GFSB fourth here (position pins); the page has it second; the weather tabs after (section 91)
   const modeBar = el('div', 'modeBar', toolbar); modeBar.hidden = true; ['detailed', 'summary'].forEach((v) => el('button', null, modeBar, { 'data-mode': v }));
   const rangeBar = el('div', 'rangeBar', toolbar); ['0', '7', '3'].forEach((v) => el('button', null, rangeBar, { 'data-days': v }));
   el('div', 'fwNote', w).hidden = true;             // between the toolbar and the body, as the page (test-site check V7-3)

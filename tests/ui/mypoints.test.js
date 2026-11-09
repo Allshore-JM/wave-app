@@ -156,7 +156,7 @@ test('a refusal (land, sheltered water, no data): nothing opens, nothing is kept
     const asked = b.P.add({ lat: 21.5, lng: -158.0 }); await settle();
     b.last().release(REFUSED('pt_21500N_158000W', reason, error)); await settle();
     const r = await asked;
-    assert.deepEqual([r.ok, r.message], [false, error]);
+    assert.deepEqual([r.ok, r.message, r.retry], [false, error, false], 'final: another point (G60 B-4)');
   }
   assert.equal(b.station(), '51201'); assert.deepEqual(b.stored(), []);
   assert.deepEqual(b.stationEvents(), [], 'no window opened');
@@ -173,7 +173,8 @@ test('a refusal (land, sheltered water, no data): nothing opens, nothing is kept
   // a busy server and a failure are NOT final: the point may be tried again and kept
   const busy = b.P.add({ lat: 22.5, lng: -158.0 }); await settle();
   for (let k = 0; k <= b.F._internals.BUSY_TRIES; k++) { b.last().release(BUSY('pt_22500N_158000W')); await settle(); }   // retried quietly first
-  assert.equal((await busy).ok, false); assert.equal(b.P.refused('pt_22500N_158000W'), false);
+  const rb = await busy; assert.equal(rb.ok, false); assert.equal(rb.retry, true, 'not final: the same point again (G60 B-4)');
+  assert.equal(b.P.refused('pt_22500N_158000W'), false);
   const down = b.P.add({ lat: 22.6, lng: -158.0 }); await settle(); b.last().fail();
   await assert.rejects(down, 'a network failure rejects: the tool says it could not reach the server');
 });

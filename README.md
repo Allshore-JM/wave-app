@@ -1778,6 +1778,39 @@ reading; `app.py` (`point_forecast_data`) puts the service's limits around it.
 - **Ids**: `static_ui/forecast.js` `pointId` follows `point_forecast.point_id` exactly; `tests/fixtures/point_ids.json`
   (522 inputs) is checked against both.
 
+## Weather at land forecast points (plan section 91, UI asset 1.30.0)
+
+With `LAND_WEATHER=1` a Forecast-point click on land (beyond the 300-m shore band) opens a WEATHER table instead of the
+refusal "land". Sea points, sheltered water, water without model data, stations and every swell table are unchanged;
+with the variable unset the site behaves exactly as before.
+
+- **Sources.** Open-Meteo (open-meteo.com, CC BY 4.0; its free tier is for non-commercial use) for four models in ONE
+  call per point and model run: GFS (`gfs_global`), ECMWF IFS 0.25 (`ecmwf_ifs025`), DWD ICON (`icon_global`) and ECMWF
+  AIFS (`ecmwf_aifs025_single`). At US points also the NOAA National Weather Service grid forecast (api.weather.gov
+  `/points` -> `forecastGridData`, public domain). The click's coordinates go to Open-Meteo / NWS; the visitor's address
+  does not (the server asks).
+- **Rows at each model's own steps** (no filled-in hours): GFS hourly to +120 h then 3-hourly; ECMWF 3-hourly to +144 h
+  then 6-hourly; ICON hourly to +78 h then 3-hourly to +180 h; AIFS 6-hourly (no gusts: the model has none); NWS at
+  its own intervals (~7 days). A row's precipitation is the sum since the previous row; "24-h" is the sum of the 24 hours
+  ending at the row; the type (rain, snow, mix, ice, thunder) comes from the weather codes in the step, blank under
+  0.1 mm. The meta line gives the whole forecast's total and the source's credit.
+- **Columns**: Date, Time, Temp, Dew pt, Humidity, Cloud, Precip, 24-h, Type, Wind, Gust, Dir, Sun/Moon; units by the
+  site's switch (°F / in / mph or °C / mm / km/h). Summary: per day the high / low, precipitation, the most frequent
+  type, peak wind and gust, mean cloud, sunrise / sunset and the moon. Graph: temperature with dew point,
+  precipitation bars with the 24-h line, wind and gust with the direction on its own 0-360 axis.
+- **Model tabs**: GFS | ECMWF | ICON | AIFS (| NWS at US points), offered by the server per answer. The weather tabs
+  are asked for only at points with land weather on (the loader's `normalise` and the head's early rule agree; pinned
+  by `tests/ui/early.test.js`); at a station or a sea point a weather tab answers GFS.
+- **Cache and limits.** One Open-Meteo answer per point is kept, keyed by the four models' run times (read from
+  Open-Meteo's `meta.json` every 10 minutes), so a new model run is asked once. A site-wide budget keeps the counted
+  calls under Open-Meteo's limits (300 a minute, 8,000 a UTC day; one call counts ~6 by its weighting); over budget,
+  or after a 429, the window says "Weather is busy" with Retry (never cached). An unreachable source says "Weather
+  temporarily unavailable" with Retry; the swell side never changes. `/healthz` gives a `weather` key (today's
+  counted calls, cache sizes, last error), never part of `ok`.
+- **Overlay.** The overlay panel never compares a weather table with a model run (its run note ignores a cycle line
+  starting "Weather").
+- **Rollback**: unset `LAND_WEATHER` (the land refusal returns at once).
+
 ## The sky in the forecast table and graphs (plan section 35, UI asset 1.16.8)
 
 The window's table and graphs know the real sun and moon at the station (`sky.py`, PyEphem; `requirements.txt`

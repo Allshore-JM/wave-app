@@ -79,9 +79,10 @@ def coast_cache(tmp_path, cells):
         (d / (name + ".bin")).write_bytes(buf)
         have[name] = [len(buf), sum(len(r) for r in rings)]
     (d / "index.json").write_text(json.dumps({"tier1": {"cells": have, "sha256": "test"}}))
-    lk = tmp_path / "coast_lakeoutlines-v1"
-    lk.mkdir()
-    (lk / "index.json").write_text(json.dumps({"tier1": {"cells": {}, "sha256": "lakes"}}))
+    for name, sha in (("lakeoutlines-v1", "lakes"), ("lakes-v1", "great")):
+        lk = tmp_path / ("coast_" + name)
+        lk.mkdir()
+        (lk / "index.json").write_text(json.dumps({"tier1": {"cells": {}, "sha256": sha}}))
     return str(tmp_path)
 
 
@@ -199,10 +200,138 @@ def test_simplify_keeps_ends_and_corners():
     assert S.tolist() == [[0, 0], [1, 0], [1, 1]]
 
 
+def _near(edges):
+    """A near lookup from {zone index: [(x0, y0, x1, y1)]} (every edge an outer edge)."""
+    pieces = [(zi, [np.array([(a, b), (c, d)])]) for zi, es in edges.items() for a, b, c, d in es]
+    cnt = A.edge_counts([rings for _zi, rings in pieces])
+    return A.near_map(pieces, cnt)
+
+
 def test_near_zone_finds_the_closest_outer_edge():
-    nmap = {(int((-158.0 + 180) // A.GRID), int((21.0 + 90) // A.GRID)): {4}}
-    assert A.near_zone(nmap, -158.0 + 0.004, 21.0 + 0.002) == 4      # 0.5 km away
-    assert A.near_zone(nmap, -158.0 + 0.04, 21.0) is None            # 4 km away
+    near = _near({4: [(-158.0, 21.0, -158.0, 21.01)]})
+    q = A.near_zone(near, -158.0 + 0.004, 21.005)                    # 0.42 km east of the edge
+    assert q[0] == 4 and q[1] == pytest.approx(-158.0) and q[2] == pytest.approx(21.005)
+    assert q[3] == pytest.approx(0.004 * 111.2 * math.cos(math.radians(21.005)), rel=1e-3)
+    assert A.near_zone(near, -158.0 + 0.04, 21.005) is None          # 4 km away
+
+
+def test_near_zone_takes_the_nearest_zone_not_the_lowest_id():
+    # G59 F2: the old rule searched square rings of grid cells and took the lowest zone id among the first ring found
+    near = _near({1: [(-158.0, 21.0, -158.0, 21.01)], 2: [(-157.99, 21.0, -157.99, 21.01)]})
+    assert A.near_zone(near, -157.9915, 21.005)[0] == 2              # 0.16 km from zone 2, 0.88 km from zone 1
+    assert A.near_zone(near, -157.9985, 21.005)[0] == 1
+    k = math.cos(math.radians(21.005))                               # the reach is km, not grid cells
+    assert A.near_zone(near, -158.0 - 1.45 / (111.2 * k), 21.005) is not None
+    assert A.near_zone(near, -158.0 - 1.55 / (111.2 * k), 21.005) is None
+
+
+def test_near_ok_refuses_a_way_along_the_coast_or_across_water():
+    q = (0, -158.0, 21.01, 1.112)                                    # the edge 1.11 km due north
+    assert A.near_ok(-158.0, 21.0, q, tangent=(1.0, 0.0))            # coast runs east-west: straight inland, fine
+    assert not A.near_ok(-158.0, 21.0, q, tangent=(0.0, 1.0))        # coast runs north: the way follows the coast
+    assert not A.near_ok(-158.0, 21.0, q, tangent=(1.0, 0.0), water=lambda lo, la: la > 21.004)
+    assert A.near_ok(-158.0, 21.0, q, tangent=(1.0, 0.0), water=lambda lo, la: np.zeros(len(lo), bool))
+    # within NEAR_END_KM of either end the water test does not look (the raster's error beside a shore)
+    seen = []
+    A.near_ok(-158.0, 21.0, q, water=lambda lo, la: seen.extend(la.tolist()) or np.zeros(len(lo), bool))
+    assert seen and all(21.0013 < v < 21.0087 for v in seen)
+    seen.clear()
+    assert A.near_ok(-158.0, 21.0, (0, -158.0, 21.0018, 0.2), water=lambda lo, la: seen.extend(la) or lo > 0)
+    assert not seen                                                  # a 0.2-km way: nothing far enough from both ends
+    assert A.near_ok(-158.0, 21.0, (0, -158.0, 21.0002, 0.022), tangent=(0.0, 1.0))   # within 50 m: as is
+
+
+def _edges(rings):
+    """decode_coast-style edges (edge = vertex j -> vertex i) of closed rings given without the closing point."""
+    xi, yi, xj, yj = [], [], [], []
+    for r in rings:
+        r = np.asarray(r, float)
+        nxt = np.roll(r, -1, axis=0)
+        xj += r[:, 0].tolist()
+        yj += r[:, 1].tolist()
+        xi += nxt[:, 0].tolist()
+        yi += nxt[:, 1].tolist()
+    return tuple(np.array(v) for v in (xi, yi, xj, yj))
+
+
+def test_raster_fills_rings_even_odd_with_holes():
+    # a 1-degree square ring with a 0.2-degree square hole (reversed), inside cell 20_-160
+    outer = [(-159.0, 21.0), (-158.0, 21.0), (-158.0, 22.0), (-159.0, 22.0)]
+    hole = [(-158.6, 21.4), (-158.6, 21.6), (-158.4, 21.6), (-158.4, 21.4)]
+    e = _edges([outer, hole])
+    g = A.raster(e, 20, -160, res=0.05)
+
+    def at(lat, lon):
+        return bool(g[int((lat - 20) / 0.05), int((lon + 160) / 0.05)])
+    assert at(21.2, -158.8) and at(21.9, -158.1)
+    assert not at(21.5, -158.5) and not at(20.9, -158.5) and not at(21.5, -157.9)
+    assert g.sum() == 20 * 20 - 4 * 4
+    t = A.raster(e, 21, -159, res=0.05, size=1)                      # a 1-degree tile of it
+    assert t.shape == (20, 20) and t.sum() == 20 * 20 - 16
+
+
+def test_lake_islands_keeps_only_rings_the_outlines_lack():
+    lake = [(-83.0, 45.0), (-82.0, 45.0), (-82.0, 46.0), (-83.0, 46.0)]
+    big = [(-82.8, 45.2), (-82.8, 45.4), (-82.6, 45.4), (-82.6, 45.2)]     # an island lakeoutlines holds too
+    small = [(-82.3, 45.7), (-82.3, 45.72), (-82.28, 45.72), (-82.28, 45.7)]
+    got = A.lake_islands(_edges([lake, big, small]), _edges([lake, big]))
+    assert len(got[0]) == 4 and np.allclose(sorted(got[0]), sorted(_edges([small])[0]))
+    assert A.lake_islands(None, _edges([lake])) is None
+    assert len(A.lake_islands(_edges([small]), None)[0]) == 4
+
+
+class _Grid:
+    """A Land stand-in: land where f(lon, lat)."""
+    def __init__(self, f):
+        self.f = f
+
+    def at(self, lon, lat, shore=True):
+        return self.f(np.asarray(lon), np.asarray(lat))
+
+
+def test_open_sea_needs_one_long_line_out_to_sea_within_the_fan():
+    # a coast along 21 N facing south; a lagoon shore facing south across a 5-km lagoon to a barrier island
+    x, y, nx, ny = np.array([-158.0]), np.array([21.0]), np.array([0.0]), np.array([-1.0])
+    assert A.open_sea(_Grid(lambda lo, la: la > 21.0), x, y, nx, ny)[0]
+    barrier = _Grid(lambda lo, la: (la > 21.0) | ((la < 20.955) & (la > 20.94)))
+    assert not A.open_sea(barrier, x, y, nx, ny)[0]
+    # the barrier ends 3 km east: a line within 60 degrees of straight out escapes past it
+    gap = _Grid(lambda lo, la: (la > 21.0) | ((la < 20.955) & (la > 20.94) & (lo < -157.97)))
+    assert A.open_sea(gap, x, y, nx, ny)[0]
+    assert not A.open_sea(gap, x, y, nx, ny, fan=0)[0]
+    # 99 km of water, then land: not open; 101 km: open
+    assert not A.open_sea(_Grid(lambda lo, la: (la > 21.0) | (la < 21.0 - 99.0 / 111.2)), x, y, nx, ny, fan=0)[0]
+    assert A.open_sea(_Grid(lambda lo, la: (la > 21.0) | (la < 21.0 - 101.0 / 111.2)), x, y, nx, ny, fan=0)[0]
+
+
+def test_even_out_fills_short_gaps_and_drops_short_pieces():
+    n = 60                                                          # 60 points 0.1 km apart along the equator
+    x = np.arange(n) * (0.1 / 111.2)
+    y = np.zeros(n)
+    start = np.zeros(n, bool)
+    start[0] = True
+    elig = np.ones(n, bool)
+    f = np.ones(n, bool)
+    f[10:15] = False                                                # a 0.5-km closed gap between open: filled
+    f[30:] = False                                                  # a 3-km closed stretch: kept ...
+    f[52:56] = True                                                 # ... with a 0.4-km open speck in it: dropped
+    got = A.even_out(f, x, y, start, elig)
+    assert got[:30].all() and not got[30:].any()
+    # a gap beside an ineligible point is not filled
+    e2 = elig.copy()
+    e2[16] = False
+    f2 = np.ones(n, bool)
+    f2[12:16] = False
+    assert not A.even_out(f2, x, y, start, e2)[12:16].any()
+
+
+def test_tangents_never_cross_a_ring_start():
+    x = np.array([0, 1, 2, 3, 10, 10, 10], float) * 0.001
+    y = np.array([0, 0, 0, 0, 0, 1, 2], float) * 0.001
+    start = np.array([1, 0, 0, 0, 1, 0, 0], bool)
+    tx, ty = A.tangents(x, y, start, pts=3)
+    assert np.allclose(tx[:4], 1) and np.allclose(ty[:4], 0)
+    assert np.allclose(tx[4:], 0) and np.allclose(ty[4:], 1)
 
 
 # ---------------------------------------------------------------- the whole build
@@ -210,7 +339,7 @@ def test_build_cuts_the_island_coast_by_zone(tmp_path):
     cache = coast_cache(tmp_path, {"20_-160": [ISLAND]})
     zones, coast_ids = A.build(shapefile_zip(island_zones()), cache, log=lambda *a: None)
     assert set(zones) == {"HIZ001", "HIZ002"}               # CO003 is not a coastal state
-    assert coast_ids == {"v1": "test", "lakeoutlines-v1": "lakes"}
+    assert coast_ids == {"v1": "test", "lakeoutlines-v1": "lakes", "lakes-v1": "great"}
     north = [np.array(A.decode(s)) for s in zones["HIZ001"]["lines"]]
     south = [np.array(A.decode(s)) for s in zones["HIZ002"]["lines"]]
     assert len(north) == 1                                  # the split between its two rows does not cut the line
@@ -251,7 +380,7 @@ def committed():
 
 def test_committed_file_passes_its_check(committed):
     assert committed["zones_file"] == A.ZONES_FILE and committed["zones_sha256"] == A.ZONES_SHA256
-    assert committed["rules"] == {"step_deg": A.STEP, "near_km": A.NEAR_KM, "tol_deg": A.TOL, "min_km": A.MIN_KM}
+    assert committed["rules"] == A.RULES
     assert A.check(committed, log=lambda *a: None) == []
 
 

@@ -342,6 +342,12 @@ def _at(series, t):
     return None
 
 
+# NWS `weather` values that are no precipitation but hold a word the type rule matches ("freezing", "ice"): freezing
+# spray is sea spray freezing on ships, ice crystals are diamond dust. (The other obscurations, haze / smoke / dust /
+# sand / ash, hold none of those words.) Every value ending in "fog" is skipped too.
+NWS_NOT_PRECIP = ("freezing_spray", "ice_crystals")
+
+
 def nws_type(weather_value):
     """The NWS `weather` entries at a time -> 'Thunder' / 'Ice' / 'Mix' / 'Snow' / 'Rain' / ''."""
     kinds = set()
@@ -349,8 +355,8 @@ def nws_type(weather_value):
         if not isinstance(w, dict) or not w.get("weather"):
             continue
         k = str(w["weather"])
-        if k.endswith("fog") or k in ("haze", "smoke", "dust", "blowing_dust", "blowing_sand", "volcanic_ash"):
-            continue                                          # not precipitation (G60 A-6: freezing_fog is no ice)
+        if k.endswith("fog") or k in NWS_NOT_PRECIP:
+            continue                                          # not precipitation (G60 A-6, re-check F-3)
         if "thunder" in k:
             kinds.add("t")
         if "freezing" in k or "sleet" in k or "ice" in k:

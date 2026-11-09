@@ -1601,10 +1601,12 @@ test('section 64: the SWAN list follows the answers like the NWPS one, and a sta
   b.fs_.last().release(payload({ station: '52202', model: 'GFS', swan_available: false, nwps_available: true })); await settle();
   assert.equal(btn('SWAN').hidden, true); assert.equal(btn('NWPS').hidden, false);
   assert.equal(b.doc.getElementById('fwOld').hidden, true, 'a GFS answer carries no SWAN age');
-  const swanAsked = b.fs_.calls.filter((c) => b.fs_.param(c, 'model') === 'SWAN').length;
+  const swanAsked = b.fs_.calls.filter((c) => b.fs_.param(c, 'model') === 'SWAN').length, nAsked = b.fs_.calls.length;
   b.app.loader.load({ model: 'SWAN' }); await settle();
   assert.equal(b.fs_.calls.filter((c) => b.fs_.param(c, 'model') === 'SWAN').length, swanAsked, 'withdrawn: SWAN is not asked');
-  assert.equal(b.fs_.param(b.fs_.last(), 'model'), 'GFS');
+  // the GFS answer to the SWAN request is kept under GFS too (G60 re-check F-2): the press is served from it
+  assert.equal(b.fs_.calls.length, nAsked, 'no request: the GFS answer is in hand');
+  assert.equal(btn('GFS').getAttribute('aria-pressed'), 'true');
   b.app.loader.load({ unit: 'US' }); await settle();                                  // a new request (the GFS answer was cached)
   b.fs_.last().release(payload({ station: '52202', model: 'GFS', swan_available: true, nwps_available: true })); await settle();
   assert.equal(btn('SWAN').hidden, false, 'PacIOOS is back: the list follows the answer');

@@ -81,3 +81,49 @@ Suites at aed57f0: pytest 2,757 passed + 1 skipped; Node UI 613, overlay 616.
 - With the point tool on, a click on a station marker (a wind flag) uses the marker's position (the section-31/39 rule).
 - NWS's elevation differs from Open-Meteo's (564 vs 679 ft at central Oahu); NWS's precipitation covers about 3 days.
 - ECMWF / AIFS can be on an older run than GFS / ICON; each model's run time is shown.
+
+## Section 91c: the visitor's browser asks Open-Meteo (2026-11-09)
+
+### What changed
+The owner chose to have the visitor's browser ask Open-Meteo, because its free limit is per IP and Render's outbound
+address is shared. The server no longer calls Open-Meteo's forecast at all.
+- `GET /api/forecast` for a land point with an Open-Meteo model answers `om_url` and `om_key` with no rows.
+- The page fetches `om_url` itself and POSTs the text to `POST /api/forecast/weather`.
+- The server checks the body (place, hours, length, physical bounds, some temperature, a 1.2-MB cap) and builds the
+  same table, Summary and graphs. Nothing is cached or logged.
+- Commits 2613447 (code, UI 1.30.2) and 79dba4d (golden) on feat/land-weather; test @ 0a5d3f2.
+- Suites: full pytest 2,781 passed + 1 skipped; UI Node 625. Mutants: 26 of 27 killed. The survivor is the
+  Content-Length check, which the capped read just below backs up, so it behaves the same.
+
+### Test site (UI 1.30.2 served from 20:52 UTC, forecast.js = the commit)
+- **The route** (`lw91/v91c_api.py`): for Oahu, Denver, the Alps and Alice Springs:
+  - the GET gives `om_url` and no rows;
+  - the text fetched from `om_url` on this laptop and POSTed back gives 16 tables (4 points x 4 models);
+  - each table matches my own read of that same text: 0 mismatches (values, step sums, 24-h totals, AIFS without
+    gusts, each model's own steps);
+  - NWS is served as before;
+  - every answer carries `Cache-Control: no-store`.
+- **Refusals:**
+  - an NWS model or a station: 400, final;
+  - another place's answer, or garbage: "Weather temporarily unavailable";
+  - 1.3 MB: 413;
+  - a sea point: its swell table (as designed);
+  - `render=full`: "Weather needs JavaScript in this browser".
+- `/healthz` weather: `om_built` 16, `om_refused` 2, meta.json read; the server made no Open-Meteo forecast calls.
+- **The page's requests** (`v/v91c_net.js`, headless Chrome):
+  - one Open-Meteo fetch for the point, reused for the four tabs, Metric and UTC;
+  - one POST per new table;
+  - none for a station or a sea point;
+  - no console problems.
+- Desktop 1280x800, phone 375x812, the point tool (land -> weather through the prefetch path, sea -> swell) and the
+  smoke run all pass as in step 4.
+- **Failure paths** (`v/v91c_fail.js`, DevTools on api.open-meteo.com):
+  - a refused connection: "Weather temporarily unavailable" + Retry;
+  - a 429: "Weather is busy right now; try again in a moment" + Retry;
+  - Retry with Open-Meteo answering: the table.
+- **A model tab pressed, then at once another station** (`v/v91c_race.js`, 0 / 150 / 400 ms): the station's table stays
+  every time; the late weather answer never lands.
+- The test site's storage was emptied and the browser stopped.
+
+### Deviation
+- The planned tooltip with Open-Meteo's own reason on a 429 is not built; the message alone is shown.

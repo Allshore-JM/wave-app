@@ -59,6 +59,7 @@ COASTAL = frozenset("AK AL AS CA CT DC DE FL GA GU HI IL IN LA MA MD ME MI MN MP
 STEP = 0.001        # coastline points this far apart (deg, ~100 m)
 NEAR_KM = 1.5       # an offshore point joins a zone whose outer edge is this close
 NEAR_ALONG = 0.7    # ... unless the way there runs along the coast (|cos| of the angle with the coast above this)
+NEAR_SHORE_KM = 0.5  # ... a test only past this distance: nearer, the edge is the zone's own shore (G59 re-check R1)
 NEAR_WATER_T = (0.2, 0.4, 0.6, 0.8)   # ... or crosses water at one of these fractions of the way
 GRID = 0.005        # the near rule's lookup grid (deg)
 LAND_RES = 0.005    # the land raster the open-sea test reads (deg, ~500 m)
@@ -73,6 +74,17 @@ OPEN_EVERY = 5      # every 5th coast point is tested; the rest take the nearest
 TANGENT_PTS = 3     # the coast's direction at a point: from the points this many before and after it
 GAP_KM = 1.0        # a stretch judged closed, shorter than this, between open stretches: open (a jetty, a cove)
 OPEN_MIN_KM = 1.0   # an open stretch shorter than this: closed (a speck inside a lagoon)
+HOLE_KM = 1.0       # zone-less shore shorter than this between two points of one zone: that zone's (G59 re-check R1)
+WIDE_FROM_KM = 10.0  # the width test: from this far out ...
+WIDE_TO_KM = 25.0    # ... to this far (a bay's mouth, a lagoon's inlet; island chains farther out keep their gaps) ...
+WIDE_KM = (2.5, 5.0)  # ... the line also has open water this far to either side (G59 re-check R2)
+# Sheltered water no coastline file can show (a barrier reef is not land in GSHHG): coast points inside these
+# polygons ((lat, lon) vertices) are never open coast.
+SHELTERED = [
+    ("Kaneohe Bay inside its barrier reef, Oahu",
+     [(21.455, -157.768), (21.525, -157.828), (21.535, -157.850), (21.400, -157.870), (21.400, -157.775),
+      (21.430, -157.758)]),
+]
 TOL = 0.0005        # Douglas-Peucker tolerance (deg, ~50 m)
 MIN_KM = 0.3        # shorter pieces are dropped (a speck the near rule caught)
 Q = 1e6             # zone vertices compared at this precision (the shapefile shares edges exactly)
@@ -413,12 +425,18 @@ def tangents(x, y, start, pts=TANGENT_PTS):
     return tx / L, ty / L
 
 
-def open_sea(land, x, y, nx, ny, reach=OPEN_KM, fan=FAN_DEG, fstep=FAN_STEP):
+def open_sea(land, x, y, nx, ny, reach=OPEN_KM, fan=FAN_DEG, fstep=FAN_STEP, wide=WIDE_KM, wide_from=WIDE_FROM_KM,
+             wide_to=WIDE_TO_KM):
     """bool per point: a straight line from it, within fan degrees of (nx, ny) (unit, km east / north: out to sea),
-    runs reach km without touching land (land.at, shore cells counted). The straight-out line is tried first."""
+    runs reach km without touching land (land.at, shore cells counted), and from wide_from to wide_to km out the
+    lines parallel to it at each of the wide distances on either side do too (open water is wide: a bay's mouth or a
+    lagoon's inlet in line with the shore is not; the gaps of an island chain farther out still count). The
+    straight-out line is tried first."""
     import numpy as np
     out = np.zeros(x.size, bool)
     d = np.arange(RAY_FIRST_KM, reach + 1e-9, RAY_STEP_KM)
+    far = d[(d >= wide_from) & (d <= wide_to)]
+    offs = [o for w in wide for o in (w, -w)] if far.size else []
     angs = [0]
     for a in range(fstep, fan + 1, fstep):
         angs += [a, -a]
@@ -431,9 +449,19 @@ def open_sea(land, x, y, nx, ny, reach=OPEN_KM, fan=FAN_DEG, fstep=FAN_STEP):
         ex, ey = nx[act] * ca - ny[act] * sa, nx[act] * sa + ny[act] * ca
         for b in range(0, act.size, 2000):
             s = act[b:b + 2000]
-            lon = x[s, None] + d[None, :] * ex[b:b + 2000, None] / (111.2 * k[s, None])
-            lat = y[s, None] + d[None, :] * ey[b:b + 2000, None] / 111.2
-            out[s[~land.at(lon, lat).any(axis=1)]] = True
+            cx, cy = ex[b:b + 2000, None], ey[b:b + 2000, None]
+            ks = 111.2 * k[s, None]
+            lon = x[s, None] + d[None, :] * cx / ks
+            lat = y[s, None] + d[None, :] * cy / 111.2
+            ok = ~land.at(lon, lat).any(axis=1)
+            for o in offs:
+                if not ok.any():
+                    break
+                # the parallel line o km to the left of the ray (perpendicular (-ey, ex))
+                lon = x[s, None] + (far[None, :] * cx - o * cy) / ks
+                lat = y[s, None] + (far[None, :] * cy + o * cx) / 111.2
+                ok &= ~land.at(lon, lat).any(axis=1)
+            out[s[ok]] = True
     return out
 
 
@@ -465,6 +493,45 @@ def even_out(flag, x, y, start, elig, gap=GAP_KM, short=OPEN_MIN_KM):
             else:
                 flag[a:e] = False
     return flag
+
+
+def sheltered(x, y, areas=None):
+    """bool per point: inside one of the SHELTERED polygons."""
+    import numpy as np
+    from matplotlib.path import Path
+    out = np.zeros(x.size, bool)
+    for _name, poly in (SHELTERED if areas is None else areas):
+        P = np.array([(lo, la) for la, lo in poly])
+        m = (x >= P[:, 0].min()) & (x <= P[:, 0].max()) & (y >= P[:, 1].min()) & (y <= P[:, 1].max())
+        if m.any():
+            idx = np.flatnonzero(m)
+            out[idx[Path(P).contains_points(np.stack([x[idx], y[idx]], 1))]] = True
+    return out
+
+
+def fill_holes(zone, x, y, start, skip, hole=HOLE_KM):
+    """Zone-less shore points (not a cell line) in a stretch shorter than hole km between two points of one zone, on
+    one line of a ring: that zone (a headland GSHHG draws a little outside NWS's polygon, not another zone's shore).
+    -> a new zone array."""
+    import numpy as np
+    zone = zone.copy()
+    n = x.size
+    if not n:
+        return zone
+    k = np.cos(np.radians(y))
+    seg = np.concatenate(([0.0], 111.2 * np.hypot(np.diff(x) * k[1:], np.diff(y))))
+    neg = (zone < 0) & ~skip
+    cut = start.copy()
+    cut[0] = True
+    cut[1:] |= neg[1:] != neg[:-1]
+    b = list(np.flatnonzero(cut)) + [n]
+    for a, e in zip(b[:-1], b[1:]):
+        if not neg[a] or a == 0 or start[a] or e >= n or start[e] or skip[a - 1] or skip[e]:
+            continue
+        if zone[a - 1] < 0 or zone[a - 1] != zone[e] or float(seg[a:e + 1].sum()) >= hole:
+            continue
+        zone[a:e] = zone[a - 1]
+    return zone
 
 
 def classify_open(land, x, y, start, skip, zone, sign, every=OPEN_EVERY):
@@ -510,14 +577,16 @@ def near_ok(x, y, q, tangent=None, water=None):
     """May coast point (x, y) join the zone whose outer edge passes at q = (zone, qx, qy, d km)? Not when the way to
     the edge runs along the coast (|cos| of its angle with tangent = (tx, ty) above NEAR_ALONG: the coast goes on
     past the zone's end, a border on the shore) or crosses water (water(lons, lats) at NEAR_WATER_T of the way: a
-    shore across a strait, a river or a lake). Within 50 m the edge is taken as is."""
+    shore across a strait, a river or a lake). Within 50 m the edge is taken as is; the along-coast test only past
+    NEAR_SHORE_KM (nearer, the edge is the zone's own shore: on a rocky coast GSHHG's headlands lie a few hundred
+    metres outside NWS's coarser polygon, and the way to it runs along the coast)."""
     import numpy as np
     _zi, qx, qy, d = q
     if d <= 0.05:
         return True
     k = max(0.05, math.cos(math.radians(y)))
     ux, uy = (qx - x) * k * 111.2 / d, (qy - y) * 111.2 / d
-    if tangent is not None and abs(ux * tangent[0] + uy * tangent[1]) > NEAR_ALONG:
+    if tangent is not None and d > NEAR_SHORE_KM and abs(ux * tangent[0] + uy * tangent[1]) > NEAR_ALONG:
         return False
     if water is not None:
         t = np.array(NEAR_WATER_T)
@@ -749,7 +818,9 @@ def build(zip_bytes, cache, log=print):
                 continue
             x, y, start, skip = densify(e)
             points += x.size
-            zone = assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water)
+            zone = fill_holes(assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water),
+                              x, y, start, skip)
+            zone[sheltered(x, y)] = -1
             assigned += int((zone >= 0).sum())
             zone = np.where(classify_open(land, x, y, start, skip, zone, SEAWARD[set_name]), zone, -1)
             kept += int((zone >= 0).sum())
@@ -767,7 +838,9 @@ def build(zip_bytes, cache, log=print):
 
 RULES = {"step_deg": STEP, "near_km": NEAR_KM, "near_along": NEAR_ALONG, "tol_deg": TOL, "min_km": MIN_KM,
          "open_km": OPEN_KM, "fan_deg": FAN_DEG, "land_res_deg": LAND_RES, "gap_km": GAP_KM,
-         "open_min_km": OPEN_MIN_KM}
+         "open_min_km": OPEN_MIN_KM, "near_shore_km": NEAR_SHORE_KM, "hole_km": HOLE_KM,
+         "wide_from_km": WIDE_FROM_KM, "wide_to_km": WIDE_TO_KM, "wide_km": list(WIDE_KM),
+         "sheltered": [n for n, _p in SHELTERED]}
 
 
 def write(zones, coast_ids, zones_sha, path=OUT):
@@ -792,6 +865,19 @@ PROBES = [
     ("ORZ103", 44.6330, -124.0610, 0.6),    # Newport, Central Coast of Oregon
     ("FLZ747", 28.3200, -80.6070, 0.5),     # Cocoa Beach, the ocean beach of the Southern Brevard Barrier Islands
     ("NCZ205", 35.2500, -75.5200, 0.6),     # Cape Hatteras, the ocean side of Hatteras Island
+    # G59 re-check R1: open beaches whose headlands lie outside NWS's coarse polygons
+    ("HIZ031", 21.8745, -159.4590, 0.5),    # Poipu, Kauai South
+    ("HIZ026", 19.9930, -155.8250, 0.6),    # Hapuna, Kohala
+    ("HIZ023", 19.6180, -155.9880, 0.5),    # Kona Banyans
+    ("HIZ037", 21.1700, -156.9000, 0.5),    # Molokai's north cliffs
+    ("HIZ047", 20.8620, -156.1500, 0.6),    # Keanae, Windward Haleakala
+    ("PRZ007", 17.9660, -66.6150, 0.6),     # Ponce La Guancha
+    ("MIZ005", 46.6100, -87.4300, 0.5),     # Presque Isle, Marquette (Lake Superior)
+    ("NCZ205", 35.6500, -75.4880, 0.6),     # Pea Island
+    ("RIZ007", 41.4550, -71.3150, 0.5),     # Newport's Ocean Drive
+    # the width test and the reef list keep these
+    ("HIZ009", 21.4570, -157.7400, 0.5),    # Mokapu's North Beach, outside Kaneohe Bay's reef
+    ("CAZ087", 33.3450, -118.3250, 0.7),    # Avalon, Catalina (the mainland lies 35 km off)
 ]
 # (zone, lat, lon, km): the zone must NOT draw a line within km of this point (another zone's shore, a foreign
 # shore across water, the coast past a border: G59 F1)
@@ -810,6 +896,14 @@ FAR_PROBES = [
 NO_LINE = [
     (28.3600, -80.7250, 0.5),               # the Indian River Lagoon's mainland shore at Cocoa, Florida
     (21.3700, -157.9700, 0.5),              # Pearl Harbor, Oahu
+    # G59 re-check R2: bays whose mouths line up with the shore (the width test) and Kaneohe Bay's reef (SHELTERED)
+    (37.8840, -122.3150, 1.0),              # Berkeley, San Francisco Bay
+    (37.8550, -122.4300, 1.0),              # Sausalito
+    (36.9770, -76.3990, 1.0),               # Newport News, Hampton Roads
+    (41.0230, -73.5200, 1.0),               # Stamford, Long Island Sound
+    (35.4660, -76.9830, 1.0),               # the Pamlico River
+    (21.4330, -157.8070, 1.0),              # Heeia, inside Kaneohe Bay's reef
+    (21.4600, -157.8420, 1.0),              # Kahaluu, inside Kaneohe Bay's reef
 ]
 
 

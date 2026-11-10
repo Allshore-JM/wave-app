@@ -1,8 +1,11 @@
 """NOAA NWPS access (plan section 59): the NWS offices' nearshore SWAN runs on NOMADS, their point spectra files.
 
-  <BASE>/<region>.<YYYYMMDD>/<office>/<HH>/CG1/nwps.t<HH>z.spc2d_<id>_CG1.<office>.txt   a point's 2-D spectra,
+  <BASE>/<region>.<YYYYMMDD>/<office>/<HH>/CG1/nwps.t<HH>z.spc2d_<id>_cg1.<office>.txt   a point's 2-D spectra,
                                                                                             hourly 0..144 h (~1 MB)
-  <BASE>/<region>.<YYYYMMDD>/<office>/<HH>/CG1/<office>_nwps_CG1_<YYYYMMDD>_<HH>00.grib2    the office's wide grid
+  <BASE>/<region>.<YYYYMMDD>/<office>/<HH>/CG1/nwps.t<HH>z.cg1.<office>.grib2              the office's wide grid
+Until 2026-11-09 the names were spc2d_<id>_CG1.<office>.txt and <office>_nwps_CG1_<YYYYMMDD>_<HH>00.grib2 (NOAA's
+renaming, seen first on the 2026-11-09 12Z runs); both forms are accepted, and a station's file is fetched by the name
+the listing gives (the point id can be lower case too: spc2d_ffia2_cg1.ajk.txt).
 Regions ar (Alaska), er (East), pr (Pacific), sr (South), wr (West); 36 offices publish NWPS (OFFICES; 35 held our
 stations on 2026-10-28). Runs are
 started by the office's forecasters: one to eight a day, irregular hours, posted 1-8 h after the cycle they are named
@@ -50,12 +53,19 @@ def cycle_dir(region, day, office, hh):
     return f"{day_dir(region, day)}/{office}/{hh:02d}"
 
 
-def spc_url(region, day, office, hh, sid):
-    return f"{cycle_dir(region, day, office, hh)}/CG1/nwps.t{hh:02d}z.spc2d_{sid}_CG1.{office}.txt"
+def spc_url(region, day, office, hh, sid, name=None):
+    """A station's spectra file: by the name the listing gave (`name`), else the current naming."""
+    return f"{cycle_dir(region, day, office, hh)}/CG1/" + (name or f"nwps.t{hh:02d}z.spc2d_{sid.lower()}_cg1.{office}.txt")
 
 
 def grib_name(office, day, hh):
+    """The office's wide grid as named until 2026-11-09."""
     return f"{office}_nwps_CG1_{day:%Y%m%d}_{hh:02d}00.grib2"
+
+
+def grib_names(office, day, hh):
+    """Every name the office's wide grid has had: the one before 2026-11-09 and the current one."""
+    return (grib_name(office, day, hh), f"nwps.t{hh:02d}z.cg1.{office}.grib2")
 
 
 def parse_listing(text):
@@ -84,7 +94,8 @@ def cycles(region, day, office, req=None):
 
 
 def spectra_listing(region, day, office, hh, req=None):
-    """{station id: (modified, size)} of the CG1 spectra files of one cycle, plus the grib's time under "" (None = absent)."""
+    """{station id: (modified, size, file name)} of the CG1 spectra files of one cycle, plus the grib's under ""
+    (None = absent). Station ids are upper case whatever the file name's case; both of NOAA's namings are read."""
     try:
         entries = listing(f"{cycle_dir(region, day, office, hh)}/CG1/", req)
     except Throttled:
@@ -93,11 +104,11 @@ def spectra_listing(region, day, office, hh, req=None):
         return None
     out = {}
     for name, when, size in entries:
-        m = re.fullmatch(rf"nwps\.t{hh:02d}z\.spc2d_([A-Za-z0-9]+)_CG1\.{office}\.txt", name)
+        m = re.fullmatch(rf"nwps\.t{hh:02d}z\.spc2d_([A-Za-z0-9]+)_(?:CG1|cg1)\.{office}\.txt", name)
         if m:
-            out[m.group(1)] = (when, size)
-        elif name == grib_name(office, day, hh):
-            out[""] = (when, size)
+            out[m.group(1).upper()] = (when, size, name)
+        elif name in grib_names(office, day, hh):
+            out[""] = (when, size, name)
     return out
 
 

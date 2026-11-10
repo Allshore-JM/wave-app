@@ -1,4 +1,4 @@
-"""Reader for SWAN standard 2-D spectral files (plan section 59): NOAA NWPS's point spectra `nwps.tHHz.spc2d_<id>_CG1.<office>.txt`.
+"""Reader for SWAN standard 2-D spectral files (plan section 59): NOAA NWPS's point spectra `nwps.tHHz.spc2d_<id>_cg1.<office>.txt`.
 
 The file: a `SWAN   1` magic line, `$` comments, `TIME` / `LONLAT` (one location) / `AFREQ` (absolute frequencies, Hz)
 / `NDIR` (spectral nautical directions = waves FROM, degrees clockwise from north) / `QUANT` (one quantity, VaDens in

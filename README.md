@@ -870,7 +870,9 @@ equal what the site read from NOMADS's `.spec`.
 
 NOAA NWPS is the National Weather Service offices' nearshore SWAN model. Each office runs it 1-8 times a day (when
 its forecasters start a run) to +144 h and publishes hourly 2-D wave spectra at named points on NOMADS
-(`com/nwps/prod/<region>.<date>/<office>/<HH>/CG1/nwps.tHHz.spc2d_<id>_CG1.<office>.txt`). At 112 forecast
+(`com/nwps/prod/<region>.<date>/<office>/<HH>/CG1/nwps.tHHz.spc2d_<id>_cg1.<office>.txt`; until 2026-11-09 the
+names were `spc2d_<id>_CG1.<office>.txt` and `<office>_nwps_CG1_<date>_<HH>00.grib2`, now `nwps.tHHz.cg1.<office>.grib2`:
+the job reads both and fetches each file by the name NOAA lists). At 112 forecast
 stations (`nwps_stations.json`: the office's point within 25 km of NDBC's buoy, the nearest office when two publish
 it; built by `tools/build_nwps_stations.py`) the forecast window offers a model button **GFS | NWPS**; GFS-Wave opens
 first.

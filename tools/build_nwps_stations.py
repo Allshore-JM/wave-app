@@ -80,7 +80,8 @@ def survey(stations, now=None, log=print):
         hits = [sid for sid in files if sid and sid.upper() in stations]
         log(f"{office}: run {day:%Y%m%d}{hh:02d}, {len(files) - (1 if '' in files else 0)} spectra files, {len(hits)} of ours")
         for sid in hits:
-            found.setdefault(sid.upper(), []).append((office, region, day, hh, N.spc_url(region, day, office, hh, sid)))
+            found.setdefault(sid.upper(), []).append((office, region, day, hh,
+                                                      N.spc_url(region, day, office, hh, sid, files[sid][2])))
     return found
 
 

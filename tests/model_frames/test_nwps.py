@@ -211,9 +211,42 @@ def test_listing_parser_on_the_real_page():
     assert all(not n.startswith("/") for n in names)
     when = dict((n, t) for n, t, _ in files)["nwps.t00z.spc2d_51003_CG1.hfo.txt"]
     assert when.year == 2026 and when.tzinfo is not None
-    assert N.spc_url("pr", datetime(2026, 10, 28).date(), "hfo", 0, "51003").endswith(
+    assert N.spc_url("pr", datetime(2026, 10, 28).date(), "hfo", 0, "51003",
+                     "nwps.t00z.spc2d_51003_CG1.hfo.txt").endswith(
         "/pr.20261028/hfo/00/CG1/nwps.t00z.spc2d_51003_CG1.hfo.txt")
     assert N.grib_name("hfo", datetime(2026, 10, 28).date(), 0) == "hfo_nwps_CG1_20261028_0000.grib2"
+
+
+def _cycle(page, region, day, office, hh):
+    """spectra_listing over one captured CG1 page."""
+    return N.spectra_listing(region, datetime.strptime(day, "%Y%m%d").date(), office, hh,
+                             lambda url, rng=None: (200, fixture(page)))
+
+
+def test_listing_both_namings_and_the_file_by_its_listed_name():
+    """NOAA renamed the files on 2026-11-09: spc2d_<id>_cg1.<office>.txt and nwps.tHHz.cg1.<office>.grib2. Both namings
+    give the station and the grid; each station's file is fetched by the name the listing gave."""
+    old = _cycle("listing_CG1.html", "pr", "20261028", "hfo", 0)
+    assert set(old) == {"51003", ""}
+    assert old["51003"][2] == "nwps.t00z.spc2d_51003_CG1.hfo.txt"
+    assert old[""][2] == "hfo_nwps_CG1_20261028_0000.grib2"
+    new = _cycle("listing_cg1_new.html", "pr", "20261110", "hfo", 12)
+    assert set(new) == {"51003", ""}
+    assert new["51003"][2] == "nwps.t12z.spc2d_51003_cg1.hfo.txt"
+    assert new[""][2] == "nwps.t12z.cg1.hfo.grib2"
+    assert new["51003"][0].year == 2026 and new["51003"][0].tzinfo is not None
+    day = datetime(2026, 11, 10).date()
+    assert N.spc_url("pr", day, "hfo", 12, "51003", new["51003"][2]).endswith(
+        "/pr.20261110/hfo/12/CG1/nwps.t12z.spc2d_51003_cg1.hfo.txt")
+    assert N.spc_url("pr", day, "hfo", 12, "51003").endswith("/CG1/nwps.t12z.spc2d_51003_cg1.hfo.txt")
+    # a point id NOAA now writes in lower case is listed upper case, and fetched by its own name
+    ajk = _cycle("listing_cg1_new_ajk.html", "ar", "20261110", "ajk", 12)
+    assert {"46083", "46085", "FFIA2", ""} <= set(ajk)
+    assert ajk["FFIA2"][2] == "nwps.t12z.spc2d_ffia2_cg1.ajk.txt"
+    # other files in the directory (rip probability, run-up) are not stations; another office's names are not ours
+    assert not any("ripprob" in v[2] or "runup" in v[2] for v in new.values())
+    assert _cycle("listing_cg1_new.html", "pr", "20261110", "gum", 12) == {}
+    assert N.grib_names("hfo", day, 12) == ("hfo_nwps_CG1_20261110_1200.grib2", "nwps.t12z.cg1.hfo.grib2")
 
 
 def test_head_info_reads_position_and_data_flag():

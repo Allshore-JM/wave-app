@@ -70,14 +70,23 @@ class FakeNoaa:
         v = runs[run]
         if not cg1:
             return 200, page([("CG1/", v["posted"], "-")])
-        files = [(f"nwps.t{hh}z.spc2d_{sid}_CG1.{office}.txt", v["posted"], "961K") for sid in v["sids"]]
+        if v.get("names") == "new":        # NOAA's naming from 2026-11-09 on
+            files = [(f"nwps.t{hh}z.spc2d_{sid.lower()}_cg1.{office}.txt", v["posted"], "961K") for sid in v["sids"]]
+            grib = f"nwps.t{hh}z.cg1.{office}.grib2"
+        else:
+            files = [(f"nwps.t{hh}z.spc2d_{sid}_CG1.{office}.txt", v["posted"], "961K") for sid in v["sids"]]
+            grib = f"{office}_nwps_CG1_{day}_{hh}00.grib2"
         if v.get("grib", True):
-            files.append((f"{office}_nwps_CG1_{day}_{hh}00.grib2", v["posted"], "94M"))
+            files.append((grib, v["posted"], "94M"))
         if not name:
             return 200, page(files)
-        sid = re.search(r"spc2d_([A-Za-z0-9]+)_CG1", name)
-        if not sid or sid.group(1) not in v["sids"]:
+        listed = {f[0] for f in files}
+        if name not in listed:                  # only the names the listing gives are served (NOMADS is case-exact)
             raise N.NotReady(url)
+        m = re.search(r"spc2d_([A-Za-z0-9]+)_(?:CG1|cg1)", name)
+        if not m or m.group(1).upper() not in v["sids"]:
+            raise N.NotReady(url)
+        sid = re.match(r"(\w+)", m.group(1).upper())      # the station id, upper case as the job keys it
         if (office, sid.group(1)) in self.transport:
             raise N.TransportError(f"{url}: HTTP 500 after 4 tries")    # what the real request() raises
         if (office, sid.group(1)) in self.missing:
@@ -146,6 +155,30 @@ def test_publishes_every_office_station_files_then_index_then_pointer():
     idx = st.get_json(J.index_key("mtr", "2026102812"))
     body = st.client.objects[J.station_key("mtr", "2026102812", "46026")]["body"]
     assert idx["stations"]["46026"] == {"bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
+
+
+def test_noaas_new_file_names_publish_the_same_documents():
+    """NOAA renamed the NWPS files on 2026-11-09 (spc2d_<id>_cg1.<office>.txt, nwps.tHHz.cg1.<office>.grib2): the job
+    finds the run and fetches each station by its new name; the documents are the ones the old names gave. Before the
+    fix no run was found and every office went stale."""
+    runs = runs_basic()
+    st_old, st_new = store(), store()
+    assert go([], FakeNoaa(runs), st_old) == 0
+    new = {k: dict(v, names="new") for k, v in runs.items()}
+    noaa = FakeNoaa(new)
+    assert go([], noaa, st_new) == 0
+    assert any(c.endswith("/CG1/nwps.t00z.spc2d_51003_cg1.hfo.txt") for c in noaa.calls)
+    assert not any("_CG1." in c for c in noaa.calls)
+    for office, run, sid in (("hfo", "2026102800", "51003"), ("mtr", "2026102812", "46026"), ("mtr", "2026102812", "46012")):
+        a, b = st_old.get_json(J.station_key(office, run, sid)), st_new.get_json(J.station_key(office, run, sid))
+        a.pop("built_utc"), b.pop("built_utc")
+        assert a == b
+    assert st_new.get_json(Pub.latest_key(J.PREFIX))["offices"]["mtr"]["stations"] == ["46012", "46026"]
+    # a run whose grid is not listed yet under either name is still being written: not taken
+    unsettled = {("hfo", "2026102800"): dict(new[("hfo", "2026102800")], grib=False)}
+    st = seeded("hfo", "2026102700")
+    assert go(["--office", "hfo"], FakeNoaa(unsettled), st) == 3
+    assert st.get_json(Pub.latest_key(J.PREFIX))["offices"]["hfo"]["run"] == "2026102700"
 
 
 def test_already_live_publishes_nothing_but_a_heartbeat_once_an_hour():

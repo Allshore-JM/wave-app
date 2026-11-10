@@ -129,7 +129,7 @@ def candidate(office, region, now, request=None, after="", deadline=None):
             files = N.spectra_listing(region, day, office, hh, request)
             if not files or "" not in files:
                 continue                              # no CG1 grib yet: the run is still being written
-            newest = max(t for t, _ in files.values())
+            newest = max(v[0] for v in files.values())
             if (now - newest).total_seconds() < SETTLE_S:
                 continue
             return day, hh, files
@@ -184,7 +184,7 @@ def build_office(office, region, day, hh, files, stations, request, deadline):
             left[sid] = "no spectra file in this run"
             continue
         try:
-            _status, body = request(N.spc_url(region, day, office, hh, sid))
+            _status, body = request(N.spc_url(region, day, office, hh, sid, files[sid][2]))
         except N.Throttled:
             raise
         except N.NotReady:

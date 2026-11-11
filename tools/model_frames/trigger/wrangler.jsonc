@@ -25,8 +25,8 @@
     // dispatched at minute 5 of each hour only: the daily SST day needs no 10-minute polling (worker.js)
     "GH_HOURLY": "model-sst.yml",
     // GitHub's free plan runs 20 jobs at once across the whole account: a workflow is held to its next minute (10 min
-    // later) while 8 or more of this repository's runs are running or queued, leaving the rest for other repositories
-    "GH_MAX_ACTIVE": "8"
+    // later) while 12 or more of this repository's runs are running or queued, leaving the rest for other repositories
+    "GH_MAX_ACTIVE": "12"
   },
   "observability": { "enabled": true }
 }

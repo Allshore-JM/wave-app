@@ -288,14 +288,14 @@ test("scheduled: one minute's tick logs what went, what waited and why", async (
   assert.match(logs[2], /^nothing due/);
 });
 
-test("the deployed configuration: every minute, ten workflows spread, radar pinned to :x5, a cap of 8", () => {
+test("the deployed configuration: every minute, ten workflows spread, radar pinned to :x5, a cap of 12", () => {
   const cfg = readFileSync(new URL("./wrangler.jsonc", import.meta.url), "utf8");
   const v = (k) => (cfg.match(new RegExp(`"${k}":\\s*"([^"]*)"`)) || [])[1];
   assert.match(cfg, /"crons":\s*\["[*] [*] [*] [*] [*]"\]/);
   const env = { GH_WORKFLOW: v("GH_WORKFLOW"), GH_PERIOD: v("GH_PERIOD"), GH_MINUTE: v("GH_MINUTE"), GH_HOURLY: v("GH_HOURLY"), GH_MAX_ACTIVE: v("GH_MAX_ACTIVE") };
   assert.equal(env.GH_WORKFLOW, TEN);
   assert.equal(periodOf(env), 10);
-  assert.equal(maxActive(env), 8);
+  assert.equal(maxActive(env), 12);
   const m = minutesOf(env);
   assert.equal(m.get("model-radar.yml"), 5);
   assert.equal(new Set(m.values()).size, 10);                     // one workflow per minute

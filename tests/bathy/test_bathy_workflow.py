@@ -69,3 +69,8 @@ def test_the_build_writes_its_numbers_to_the_summary_and_keeps_the_exit_code():
     build = _steps(_text())["Build and check"]
     assert "/usr/bin/time -v" in build and 'exit "$rc"' in build and "|| rc=$?" in build
     assert '--gebco gebco_2026_geotiff.zip' in build
+
+
+def test_the_temporary_dry_run_workflow_is_gone():
+    """Step 2's runner measurement (plan section 93b) was temporary: it must not stay on the default branch."""
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "bathy-dryrun.yml"))

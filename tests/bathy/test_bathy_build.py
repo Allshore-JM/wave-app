@@ -23,11 +23,11 @@ import build_bathy as B  # noqa: E402
 
 # ---------------------------------------------------------------- the water rule on its own
 
-def _pack(m):
-    return T.pack_bits(m)
+def _sea(masks):
+    return W.sea_from_masks(masks)
 
 
-def test_sea_masks_join_across_the_right_and_lower_edges():
+def test_sea_joins_across_the_right_and_lower_edges():
     n = 8
     # block (0,0): a channel along row 3 reaching its right edge, no deep water; a pond at (6,1)
     low00 = np.zeros((n, n), bool)
@@ -44,19 +44,14 @@ def test_sea_masks_join_across_the_right_and_lower_edges():
     deep11 = np.zeros((n, n), bool)
     deep11[5, 4] = True
     none = np.zeros((n, n), bool)
-    blocks = {(0, 0): (_pack(low00), _pack(none), n), (1, 0): (_pack(low10), _pack(none), n),
-              (1, 1): (_pack(low11), _pack(deep11), n)}
-    sea = W.sea_masks(blocks)
-    s00 = T.unpack_bits(sea[(0, 0)], (n, n))
-    s10 = T.unpack_bits(sea[(1, 0)], (n, n))
-    s11 = T.unpack_bits(sea[(1, 1)], (n, n))
-    assert np.array_equal(s00, low00 & ~(np.arange(n)[:, None] == 6))      # the channel, not the pond
-    assert np.array_equal(s10, low10)
-    assert np.array_equal(s11, low11)
-    assert not s00[6, 1]
+    sea = _sea({(0, 0): (low00, none), (1, 0): (low10, none), (1, 1): (low11, deep11)})
+    assert np.array_equal(sea[(0, 0)], low00 & ~(np.arange(n)[:, None] == 6))      # the channel, not the pond
+    assert np.array_equal(sea[(1, 0)], low10)
+    assert np.array_equal(sea[(1, 1)], low11)
+    assert not sea[(0, 0)][6, 1]
 
 
-def test_sea_masks_do_not_join_diagonally_or_through_a_gap():
+def test_sea_does_not_join_diagonally_or_through_a_gap():
     n = 4
     a = np.zeros((n, n), bool)
     a[3, 3] = True                           # touches block (1,1) only at a corner
@@ -66,18 +61,16 @@ def test_sea_masks_do_not_join_diagonally_or_through_a_gap():
     deep[0, 0] = True
     c = np.zeros((n, n), bool)
     c[1, 0] = True                           # right neighbour of a, but on another row than a's low pixel
-    blocks = {(0, 0): (_pack(a), _pack(np.zeros((n, n), bool)), n), (1, 1): (_pack(b), _pack(deep), n),
-              (1, 0): (_pack(c), _pack(c), n)}
-    sea = W.sea_masks(blocks)
-    assert not T.unpack_bits(sea[(0, 0)], (n, n)).any()
-    assert T.unpack_bits(sea[(1, 1)], (n, n))[0, 0]
-    assert T.unpack_bits(sea[(1, 0)], (n, n))[1, 0]
+    sea = _sea({(0, 0): (a, np.zeros((n, n), bool)), (1, 1): (b, deep), (1, 0): (c, c)})
+    assert not sea[(0, 0)].any()
+    assert sea[(1, 1)][0, 0]
+    assert sea[(1, 0)][1, 0]
     # inside one block too: a low pixel touching the sea only at a corner stays dry (4-neighbour joins)
     low = np.zeros((n, n), bool)
     low[0, 0] = low[1, 1] = True
     deep = np.zeros((n, n), bool)
     deep[0, 0] = True
-    got = T.unpack_bits(W.sea_masks({(0, 0): (_pack(low), _pack(deep), n)})[(0, 0)], (n, n))
+    got = _sea({(0, 0): (low, deep)})[(0, 0)]
     assert got[0, 0] and not got[1, 1]
 
 
@@ -87,30 +80,103 @@ def test_deep_outside_the_low_mask_seeds_nothing():
     low[0, 0] = True
     deep = np.zeros((n, n), bool)
     deep[3, 3] = True                        # deep but not low (a bad input): never a seed
-    sea = W.sea_masks({(0, 0): (_pack(low), _pack(deep), n)})
-    assert not T.unpack_bits(sea[(0, 0)], (n, n)).any()
+    assert not _sea({(0, 0): (low, deep)})[(0, 0)].any()
+
+
+def test_a_label_joined_twice_through_two_edges_is_one_sea():
+    """A ring of low pixels crossing four blocks, sea seeded in one corner only: every piece of the ring is sea (the
+    union-find must carry a join made on one edge to the labels met on another)."""
+    n = 6
+    blocks = {}
+    for bx in (0, 1):
+        for by in (0, 1):
+            low = np.zeros((n, n), bool)
+            blocks[(bx, by)] = [low, np.zeros((n, n), bool)]
+    # the ring: row 2 across the top pair, row 2 across the bottom pair, column 2 down the left pair, column 3 down
+    # the right pair
+    for bx in (0, 1):
+        blocks[(bx, 0)][0][2, :] = True
+        blocks[(bx, 1)][0][2, :] = True
+    for by in (0, 1):
+        blocks[(0, by)][0][:, 2] = True
+        blocks[(1, by)][0][:, 3] = True
+    blocks[(1, 1)][1][2, 5] = True
+    sea = _sea({k: tuple(v) for k, v in blocks.items()})
+    for k, (low, _) in blocks.items():
+        assert np.array_equal(sea[k], low), k
+
+
+def test_sea_of_refuses_a_block_whose_labels_changed():
+    low = np.zeros((4, 4), bool)
+    low[0, 0] = True
+    keep = W.sea_masks({(0, 0): W.summarise(low, low)})[(0, 0)]
+    low[3, 3] = True                          # a second label: the numbering no longer matches
+    with pytest.raises(ValueError):
+        W.sea_of(low, keep)
+
+
+def test_low_and_deep_codes_follow_the_stored_codes():
+    """The rule is decided on stored codes: a depth that rounds to the MHHW code is low, one code above is not."""
+    mhhw = 0.4
+    lc = W.low_code(mhhw)
+    assert W.low_of(np.array([lc]), mhhw)[0] and not W.low_of(np.array([lc - 1]), mhhw)[0]
+    assert T.DECODE[lc] == pytest.approx(-mhhw, abs=0.006)
+    dc = W.deep_code()
+    assert W.deep_of(np.array([dc + 1]))[0] and not W.deep_of(np.array([dc]))[0]
+    assert T.DECODE[dc] == pytest.approx(S.DEEP_M, abs=0.006)
+    assert not W.low_of(np.array([0]), mhhw)[0]                    # no data is never low
 
 
 def test_sea_around_places_the_neighbours_margins():
     n, m = 6, 2
-    sea = {(5 + dx, 5 + dy): _pack(np.ones((n, n), bool)) for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
-    out = W.sea_around((5, 5), sea, n, m)
+    sea = {(5 + dx, 5 + dy): np.ones((n, n), bool) for dx in (-1, 0, 1) for dy in (-1, 0, 1)}
+    out = W.sea_around((5, 5), sea.get, n, m)
     assert out.shape == (n + 2 * m, n + 2 * m) and out.all()
     del sea[(6, 5)]                                         # the right neighbour missing -> its margin stays dry
-    out = W.sea_around((5, 5), sea, n, m)
+    out = W.sea_around((5, 5), sea.get, n, m)
     assert not out[m:m + n, m + n:].any() and out[m:m + n, :m + n].all()
     # the margin is the neighbour's EDGE, not its far side
     left = np.zeros((n, n), bool)
     left[:, n - 1] = True                                   # only the left neighbour's last column is sea
-    sea = {(5, 5): _pack(np.zeros((n, n), bool)), (4, 5): _pack(left)}
-    out = W.sea_around((5, 5), sea, n, m)
+    sea = {(5, 5): np.zeros((n, n), bool), (4, 5): left}
+    out = W.sea_around((5, 5), sea.get, n, m)
     assert out[m:m + n, m - 1].all() and not out[m:m + n, 0].any()
+    # corners: the upper-left neighbour's lower-right corner, nothing else of it
+    ul = np.zeros((n, n), bool)
+    ul[n - 1, n - 1] = True
+    out = W.sea_around((5, 5), {(4, 4): ul}.get, n, m)
+    assert out[m - 1, m - 1] and out.sum() == 1
 
 
-def test_pool_any():
-    m = np.zeros((4, 4), bool)
-    m[1, 1] = True
-    assert W.pool_any(m).tolist() == [[True, False], [False, False]]
+def test_the_coarse_any_pool_is_gone():
+    """G61a P2-1: connectivity is decided at full resolution only."""
+    assert not hasattr(W, "pool_any")
+
+
+def _brute_sea(low, deep):
+    """An independent reference: label the whole region at once (4-neighbour) and keep the labels holding deep."""
+    from scipy import ndimage
+    lab, _ = ndimage.label(low)
+    seeds = np.unique(lab[deep & low])
+    seeds = seeds[seeds > 0]
+    return np.isin(lab, seeds) & (lab > 0)
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_blocks_give_the_same_sea_as_the_whole_region(seed):
+    rng = np.random.default_rng(seed)
+    n, nb = 16, 3
+    low = rng.random((n * nb, n * nb)) < 0.55
+    deep = low & (rng.random(low.shape) < 0.01)
+    masks = {}
+    for bx in range(nb):
+        for by in range(nb):
+            sl = (slice(by * n, by * n + n), slice(bx * n, bx * n + n))
+            masks[(bx, by)] = (low[sl], deep[sl])
+    sea = _sea(masks)
+    want = _brute_sea(low, deep)
+    for (bx, by), s in sea.items():
+        assert np.array_equal(s, want[by * n:by * n + n, bx * n:bx * n + n]), (seed, bx, by)
 
 
 # ---------------------------------------------------------------- the VRT footprint parser
@@ -359,6 +425,14 @@ class FakeStore:
         o = self.objects.get(key)
         return None if o is None else json.loads(o[0].decode("utf-8"))
 
+    def list_keys(self, prefix):
+        return sorted(k for k in self.objects if k.startswith(prefix))
+
+    def delete_keys(self, keys, what="keys"):
+        for k in keys:
+            self.objects.pop(k, None)
+            self.order.append("del " + k)
+
 
 def test_upload_writes_files_then_licence_then_index_then_regions(region):
     st = FakeStore()
@@ -391,6 +465,7 @@ def test_upload_refuses_a_different_build_under_the_same_version(region):
     assert B.upload(region["out"], store=st, log_fn=msgs.append) is False
     assert st.order == [] and any("refusing" in m for m in msgs)
     assert B.upload(region["out"], store=st, replace=True, log_fn=msgs.append)
+    assert st.order[0] == "del " + pre + "index.json"
     assert st.get_json(pre + "index.json")["digest"] == region["index"]["digest"]
 
 
@@ -417,22 +492,36 @@ def _write_gebco(path, west, east, south, north, res=1 / 64):
         d.write(e, 1)
 
 
+def _far_land(path):
+    """A coast-v1 land file whose only land is far from the test grids (the build reads no network)."""
+    import build_coast as C
+    q = C.Q
+    ix = np.round(np.array([10.0, 11.0, 11.0, 10.0]) * q).astype(np.int64)
+    iy = np.round(np.array([40.0, 40.0, 41.0, 41.0]) * q).astype(np.int64)
+    with open(path, "wb") as f:
+        f.write(C.encode_file([[(ix, iy)]], 30, q))
+    return path
+
+
 def test_gebco_builds_zoom_7_and_wraps_at_the_date_line(tmp_path, monkeypatch):
     gdir = tmp_path / "gebco"
     gdir.mkdir()
     _write_gebco(str(gdir / "east.tif"), 174.375, 180.0, -5.625, 5.625)
     _write_gebco(str(gdir / "west.tif"), -180.0, -174.375, -5.625, 5.625)
     monkeypatch.setitem(S.REGIONS, "gebco", dict(S.REGIONS["gebco"], zmin=5))
+    monkeypatch.setattr(S, "GEBCO_QUADRANTS", {(174, -6), (-180, -6)})
+    land = _far_land(str(tmp_path / "land.bin"))
+    B.land_pieces.cache_clear()
     out_root = str(tmp_path / "out")
     jobs = []
     real = B.gebco_tile
     monkeypatch.setattr(B, "gebco_tile", lambda args: jobs.append(args) or real(args))
-    idx = B.build("gebco", out_root, version=1, workers=0, gebco=str(gdir))
+    idx = B.build("gebco", out_root, version=1, workers=0, gebco=str(gdir), land=land)
     # every zoom-7 tile is read once, from the file that holds its centre (a tile touching a file's edge from
     # outside is not asked of that file: its read would be empty, or partial, and could replace the right one)
-    keys = [(x, y) for (_, _, x, y) in jobs]
+    keys = [(x, y) for (_, _, _, x, y) in jobs]
     assert len(keys) == len(set(keys)) and {x for (x, _) in keys} == {0, 1, 126, 127}
-    for (path, _, x, y) in jobs:
+    for (path, _, _, x, y) in jobs:
         c0 = T.xy_to_lonlat(*T.tile_bounds(7, x, y)[:2])
         c1 = T.xy_to_lonlat(*T.tile_bounds(7, x, y)[2:])
         assert ("east" in path) == ((c0[0] + c1[0]) / 2 > 0), (path, x, y)

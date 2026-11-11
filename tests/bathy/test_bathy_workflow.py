@@ -2,6 +2,10 @@
 when asked, secrets only in the upload step, the inputs checked before anything runs, certifi's trust list everywhere."""
 import os
 import re
+import shutil
+import subprocess
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WF = os.path.join(ROOT, ".github", "workflows", "bathy-build.yml")
@@ -32,7 +36,8 @@ def test_tests_on_push_build_only_on_dispatch():
 def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     steps = _steps(_text())
     check = steps["Check the inputs"]
-    assert "hawaii|marianas|samoa|prvi|gebco)" in check and "*[!0-9]*" in check
+    assert "hawaii|marianas|samoa|prvi|gebco)" in check
+    assert '[[ "$VERSION" =~ ^[1-9][0-9]*$ ]]' in check
     up = steps["Upload to R2"]
     assert "if: github.event.inputs.upload == 'true'" in up
     assert '[ "$REPLACE" = "true" ] && CMD+=(--replace)' in up
@@ -41,6 +46,34 @@ def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     sys.path.insert(0, os.path.join(ROOT, "tools", "bathy"))
     import bathy_sources as S
     assert set(re.search(r"case \"\$REGION\" in ([a-z|]+)\)", check).group(1).split("|")) == set(S.REGIONS)
+
+
+def test_upload_and_replace_are_tick_boxes_and_only_builds_wait_for_each_other():
+    """G61a: the two switches are booleans (a typed "True" can never mean yes or no by accident); the concurrency group
+    sits on the build job, so the push-triggered tests never queue behind an hour-long build."""
+    text = _text()
+    for name in ("upload", "replace"):
+        block = re.search(r"\n      %s:\n((?:        [^\n]*\n)+)" % name, text).group(1)
+        assert "type: boolean" in block and "default: false" in block, name
+    head, build = text.split("\n  build:\n", 1)
+    assert "concurrency:" not in head and "group: bathy-build" in build
+
+
+def _version_check():
+    line = [l.strip() for l in _steps(_text())["Check the inputs"].splitlines() if "VERSION" in l and "=~" in l]
+    assert len(line) == 1
+    return line[0]
+
+
+@pytest.mark.parametrize("version, ok", [("1", True), ("3", True), ("12", True), ("0", False), ("01", False),
+                                         ("1a", False), ("", False), ("-1", False), ("1 2", False), ("1.0", False)])
+def test_the_version_check_runs_as_written(version, ok):
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("no bash here")
+    rc = subprocess.run([bash, "-c", _version_check()], env=dict(os.environ, VERSION=version),
+                        capture_output=True).returncode
+    assert (rc == 0) == ok, (version, rc)
 
 
 def test_secrets_only_in_the_upload_step():

@@ -59,6 +59,17 @@ REGIONS = {
 
 GEBCO_URL = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/geotiff/gebco_2026_geotiff.zip"
 
+# GEBCO's quadrant GeoTIFFs: (west, south) corners; the build refuses a zip missing any of them (a 90 x 90 degree hole).
+GEBCO_QUADRANTS = {(w, s) for w in (-180, -90, 0, 90) for s in (-90, 0)}
+
+# GEBCO's elevations are relative to sea level everywhere, so land and lake beds below sea level (Qattara, the Dead Sea,
+# the Caspian, Baikal's bed) would read as sea depth (G61a P2-2). Its water is therefore also outside GSHHG's land
+# (level 1, lakes inside it count as land), from the site's own published coast-v1 overview (~1 km), pinned by hash.
+LAND = dict(url="https://models.allshoresurf.com/static/coast/v1/world-i.bin",
+            sha256="aabbff516107953c42915a11c70941682030ee3aecc29b0d0456d33b3ef9cebc",
+            name="GSHHG 2.3.7 shorelines (land mask for GEBCO)",
+            credit="Wessel, P., and W. H. F. Smith (1996), GSHHG", licence="LGPL 3")
+
 DEEP_M = 20.0          # water deeper than this seeds "the open sea" for the connectivity rule
 SANE_M = 12000.0       # |elevation| beyond this is a fill value
 

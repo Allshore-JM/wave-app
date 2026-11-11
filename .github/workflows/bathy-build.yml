@@ -2,7 +2,8 @@
 # dispatch: the tests, then one region built from its sources (NOAA's coastal lidar bucket over /vsis3/, read by window;
 # region "gebco" from the GEBCO 2026 GeoTIFF zip, downloaded first), checked, and (only when `upload` is true) published
 # to the frames bucket under static/bathy/<region>/v<version>/ (files, LICENSE.txt, index.json last), then the region's
-# line in static/bathy/regions.json. A different build under the same version is refused unless `replace` is true.
+# line in static/bathy/regions.json. A different build under the same version, and pointing regions.json back to an older
+# version, are refused unless `replace` is true.
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: bathy-build
 on:
@@ -18,14 +19,13 @@ on:
         description: "the region's data version (static/bathy/<region>/v<N>)"
         default: "1"
       upload:
-        description: "publish to R2 (true/false)"
-        default: "false"
+        description: "publish to R2"
+        type: boolean
+        default: false
       replace:
-        description: "overwrite a DIFFERENT build under the same version (true/false; objects are immutable for a year)"
-        default: "false"
-concurrency:
-  group: bathy-build
-  cancel-in-progress: false
+        description: "overwrite a DIFFERENT build under the same version, or point regions.json back to an older version"
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -42,6 +42,9 @@ jobs:
   build:
     if: github.event_name == 'workflow_dispatch'
     needs: tests
+    concurrency:                           # builds one at a time; the push-triggered tests never wait behind one
+      group: bathy-build
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
@@ -57,7 +60,7 @@ jobs:
           VERSION: ${{ github.event.inputs.version }}
         run: |
           case "$REGION" in hawaii|marianas|samoa|prvi|gebco) ;; *) echo "region must be hawaii, marianas, samoa, prvi or gebco"; exit 2;; esac
-          case "$VERSION" in ''|*[!0-9]*) echo "version must be a whole number"; exit 2;; esac
+          [[ "$VERSION" =~ ^[1-9][0-9]*$ ]] || { echo "version must be a whole number from 1, no leading zero"; exit 2; }
           nproc; df -h . | tail -1
       - name: Download GEBCO 2026 (region gebco)
         if: github.event.inputs.region == 'gebco'

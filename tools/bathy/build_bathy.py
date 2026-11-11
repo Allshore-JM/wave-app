@@ -1,7 +1,7 @@
 """Build, check and publish the bathymetry tiles of one region (plan section 93b).
 
     python tools/bathy/build_bathy.py build  --region hawaii --out build/bathy [--version 1] [--box lon0,lat0,lon1,lat1]
-    python tools/bathy/build_bathy.py build  --region gebco  --out build/bathy --gebco gebco_2026_geotiff.zip
+    python tools/bathy/build_bathy.py build  --region gebco  --out build/bathy --gebco gebco_2026_geotiff.zip [--land f]
     python tools/bathy/build_bathy.py check  build/bathy/hawaii/v1
     python tools/bathy/build_bathy.py upload build/bathy/hawaii/v1 [--replace]     (R2_* environment, as coast-build)
 
@@ -10,22 +10,27 @@ finest zoom (`zmax`, the finest source's) down to `zmin`:
 
 1. The region is cut in BLOCKS: one tile of zoom zmax - 3 each, i.e. 8 x 8 tiles (2,048 px) at zmax. Only blocks under a
    source's footprint are read. Each block is read once (GDAL warp to EPSG:3857, the pixel grid of zoom zmax, 8 pixels of
-   margin on every side, "average" resampling), merged best first, and kept on local disk as depth codes.
-2. The water rule (tools/bathy/bathy_water.py) joins every block's low areas across block edges and keeps those reaching water
-   deeper than 20 m.
+   margin on every side, "average" resampling), merged best first (the lowest source id wins), and kept on local disk as
+   depth codes.
+2. The water rule (tools/bathy/bathy_water.py), on those stored codes at zmax: a pixel is water when it is at or below
+   the region's mean higher high water and 4-connected to water deeper than 20 m. Each block is labelled on its own and
+   the labels are joined across block edges, so the result is that of labelling the whole region at full resolution.
 3. Each block is cut into its tiles at zmax, zmax - 1, zmax - 2 and zmax - 3 (halving: a coarse pixel is water when 2 of
    its 4 are; its depth their mean). The margin gives every tile its one-pixel apron from the same read, so neighbouring
    tiles agree on their shared edge.
 4. Coarser zooms down to zmin are built from the zmax - 3 tiles, their aprons from the neighbouring tiles of their zoom.
 
-GEBCO (region "gebco", zooms 0-7) is read from the GEBCO GeoTIFF set (the zip as published, members extracted one at a
-time): zoom 7 tiles straight from the grid (water = elevation below 0; the site masks land with GSHHG), coarser by
-halving. Every GEBCO pixel carries the "coarse" flag.
+GEBCO (region "gebco", zooms 0-7) is read from the GEBCO GeoTIFF set (the zip as published; its eight quadrants are
+required, then extracted one at a time): zoom 7 tiles straight from the grid, water = elevation below 0 AND outside GSHHG's
+land (bathy_sources.LAND: the site's own coast-v1 overview, pinned by hash; lakes inside the land are land), so land and
+lake beds below sea level (the Dead Sea, the Caspian) never read as sea depth. Coarser zooms by halving. Every GEBCO pixel
+carries the "coarse" flag.
 
 The output directory holds t/<z>/<x>/<y>.png, idx/<x>_<y>.bin (per zoom-10 tile: one bit per tile at each zoom from 11 to
-zmax), index.json (sources, presence of zooms <= 10, the zoom-10 table, counts, a digest of every file) and LICENSE.txt.
-`upload` publishes it under static/bathy/<region>/v<N>/ (files, LICENSE, then index.json; refuses a different build
-under the same version) and then records the region in static/bathy/regions.json.
+zmax), index.json (sources, presence of zooms <= 10, the zoom-10 table, counts, a digest of every data file and the
+licence) and LICENSE.txt. `upload` publishes it under static/bathy/<region>/v<N>/ (files, LICENSE, then index.json) and then
+records the region in static/bathy/regions.json. Without --replace it refuses a different build under the same version and
+pointing regions.json back to an older version; `check` refuses an empty build.
 """
 import argparse
 import functools
@@ -111,18 +116,25 @@ def region_config(name, box=None, local=None):
             s["local"] = local[sid]
         s["gdal"] = S.gdal_path(s)
         srcs.append(s)
+    srcs.sort(key=lambda s: s["id"])          # best first = the lowest id first, whatever order the region lists them in
     reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in srcs))
+    if not 0 <= reg["zmin"] <= reg["zmax"]:
+        raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
     if box:
         b = reg["box"]
         reg["box"] = (max(b[0], box[0]), max(b[1], box[1]), min(b[2], box[2]), min(b[3], box[3]))
     return reg
 
 
-def _https_text(url, timeout=60):
+def _https_bytes(url, timeout=60):
     import certifi
     ctx = ssl.create_default_context(cafile=certifi.where())
     with urllib.request.urlopen(url, context=ctx, timeout=timeout) as r:
-        return r.read().decode("utf-8")
+        return r.read()
+
+
+def _https_text(url, timeout=60):
+    return _https_bytes(url, timeout).decode("utf-8")
 
 
 def vrt_rects(text):
@@ -182,8 +194,11 @@ def read_field(reg, key):
         with rasterio.open(s["gdal"]) as d:
             kw = dict(crs="EPSG:3857", transform=from_bounds(*b, size, size), width=size, height=size,
                       resampling=Resampling.average, nodata=np.nan, dtype="float32")
-            if d.nodata is not None:
-                kw["src_nodata"] = d.nodata
+            nodata = d.nodata if d.nodata is not None else s.get("nodata")
+            if nodata is None:
+                raise ValueError("%s declares no nodata value: name it in bathy_sources (a fill value would read as a "
+                                 "depth)" % s["key"])
+            kw["src_nodata"] = nodata
             with WarpedVRT(d, **kw) as v:
                 a = v.read(1)
         a[~(np.abs(a) < S.SANE_M)] = np.nan
@@ -199,17 +214,44 @@ def _work_path(reg, key):
 
 
 def pass1(args):
-    """Read one block, keep it on disk, return its coarse low / deep masks (bit-packed), or None when it holds no water."""
+    """Read one block, keep it on disk as depth codes, return the summary of its low areas at the finest zoom
+    (bathy_water.summarise), or None when its core holds no low pixel."""
     reg, key = args
     elev, src_id = read_field(reg, key)
+    code = T.encode_depth(-elev)
     px = T.TILE * 2 ** BLOCK_LEVELS
-    core = elev[MARGIN:MARGIN + px, MARGIN:MARGIN + px]
-    low = np.isfinite(core) & (core <= reg["mhhw"])
+    core = code[MARGIN:MARGIN + px, MARGIN:MARGIN + px]
+    low = W.low_of(core, reg["mhhw"])
     if not low.any():
-        return key, None, None
-    deep = np.isfinite(core) & (core < -S.DEEP_M)
-    np.savez_compressed(_work_path(reg, key), code=T.encode_depth(-elev), src=src_id)
-    return key, T.pack_bits(W.pool_any(low)), T.pack_bits(W.pool_any(deep))
+        return key, None
+    np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
+    return key, W.summarise(low, W.deep_of(core))
+
+
+def _sea_path(reg, key):
+    return os.path.join(reg["work"], "s_%d_%d.npy" % key)
+
+
+def pass_sea(args):
+    """The block's sea mask at the finest zoom (its low areas labelled again, mapped through `keep`), kept on disk for
+    its own tiles and its neighbours' aprons."""
+    reg, key, keep = args
+    px = T.TILE * 2 ** BLOCK_LEVELS
+    with np.load(_work_path(reg, key)) as f:
+        core = f["code"][MARGIN:MARGIN + px, MARGIN:MARGIN + px]
+    np.save(_sea_path(reg, key), T.pack_bits(W.sea_of(W.low_of(core, reg["mhhw"]), keep)))
+    return key
+
+
+def _sea_get(reg):
+    px = T.TILE * 2 ** BLOCK_LEVELS
+
+    def get(key):
+        p = _sea_path(reg, key)
+        if not os.path.exists(p):
+            return None
+        return T.unpack_bits(np.load(p).tobytes(), (px, px))
+    return get
 
 
 # ---------------------------------------------------------------- pass 2: cut the blocks into tiles
@@ -232,18 +274,16 @@ def save_core(work, z, x, y, depth256, src256):
 
 
 def pass2(args):
-    """Water from the joined sea mask, then the block's tiles at zmax .. zmax - 3. Returns the tiles written."""
-    reg, key, sea_packed = args
+    """Water = low and joined to the sea (its own and its neighbours' finest-zoom sea masks for the margin), then the
+    block's tiles at zmax .. zmax - 3. Returns the tiles written."""
+    reg, key = args
     z = reg["zmax"]
     px = T.TILE * 2 ** BLOCK_LEVELS
-    size = px + 2 * MARGIN
     with np.load(_work_path(reg, key)) as f:
         code, src = f["code"], f["src"]
-    elev = -T.DECODE[code]
-    n = size // 2
-    sea = T.unpack_bits(sea_packed, (n, n)).repeat(2, axis=0).repeat(2, axis=1)
-    wet = np.isfinite(elev) & (elev <= reg["mhhw"]) & sea
-    depth = np.where(wet, -elev, np.nan).astype(np.float32)
+    sea = W.sea_around(key, _sea_get(reg), px, MARGIN)
+    wet = W.low_of(code, reg["mhhw"]) & sea
+    depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
     src = np.where(wet, src, 0).astype(np.uint8)
     written = []
     m, k = MARGIN, 2 ** BLOCK_LEVELS
@@ -252,7 +292,7 @@ def pass2(args):
             for i in range(k):
                 y0, x0 = m - 1 + T.TILE * j, m - 1 + T.TILE * i
                 sub = depth[y0:y0 + T.SIDE, x0:x0 + T.SIDE]
-                if np.isfinite(sub[1:-1, 1:-1]).any():
+                if z >= reg["zmin"] and np.isfinite(sub[1:-1, 1:-1]).any():   # never below the region's zmin
                     x, y = key[0] * k + i, key[1] * k + j
                     write_tile(reg["out"], z, x, y, sub, src[y0:y0 + T.SIDE, x0:x0 + T.SIDE])
                     written.append((z, x, y))
@@ -354,9 +394,78 @@ def gebco_files(path, work):
             yield dst, True
 
 
+def gebco_corners(path):
+    """(west, south) of every GeoTIFF in the GEBCO set, read from the headers only (a zip's members through /vsizip/, so
+    nothing is extracted). A list: a duplicated quadrant shows as two entries."""
+    import rasterio
+    if os.path.isdir(path):
+        names = [os.path.join(path, n) for n in sorted(os.listdir(path)) if n.lower().endswith(".tif")]
+    else:
+        with zipfile.ZipFile(path) as z:
+            base = "/vsizip/" + os.path.abspath(path).replace(os.sep, "/") + "/"
+            names = [base + i.filename for i in z.infolist() if i.filename.lower().endswith(".tif")]
+    corners = []
+    for n in names:
+        with rasterio.open(n) as d:
+            corners.append((int(round(d.bounds.left)), int(round(d.bounds.bottom))))
+    return corners
+
+
+def land_file(path, work):
+    """The GSHHG land overview (coast-v1, bathy_sources.LAND): a given local file, else downloaded; checked by hash."""
+    if not path:
+        path = os.path.join(work, "land-world-i.bin")
+        if not os.path.exists(path):
+            with open(path, "wb") as f:
+                f.write(_https_bytes(S.LAND["url"]))
+        got = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        if got != S.LAND["sha256"]:
+            raise ValueError("the land overview's hash %s is not the pinned %s" % (got[:16], S.LAND["sha256"][:16]))
+    return path
+
+
+@functools.lru_cache(maxsize=2)
+def land_pieces(path):
+    """(bbox float64 (n, 4) lon0, lat0, lon1, lat1; rings per piece as (lon, lat) float64 arrays) of a coast-v1 file."""
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), "coast"))
+    import build_coast as C
+    d = C.decode_file(open(path, "rb").read())
+    q = float(d["q"])
+    boxes, rings = [], []
+    for p in d["pieces"]:
+        boxes.append([v / q for v in p["b"]])
+        rings.append([(ix / q, iy / q) for ix, iy in p["rings"]])
+    return np.array(boxes, np.float64).reshape(-1, 4), rings
+
+
+def _merc(lon, lat):
+    lat = np.clip(lat, -85.0511287798, 85.0511287798)
+    return T.R * np.radians(lon), T.R * np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+
+
+def land_mask(path, z, x, y, px=T.TILE):
+    """bool (px, px): True where a pixel of tile z/x/y lies on GSHHG land (a lake inside the land counts as land)."""
+    from PIL import Image, ImageDraw
+    boxes, rings = land_pieces(path)
+    x0, y0, x1, y1 = T.tile_bounds(z, x, y)
+    lon0, lat0 = T.xy_to_lonlat(x0, y0)
+    lon1, lat1 = T.xy_to_lonlat(x1, y1)
+    hit = np.flatnonzero((boxes[:, 0] <= lon1) & (boxes[:, 2] >= lon0) & (boxes[:, 1] <= lat1) & (boxes[:, 3] >= lat0))
+    img = Image.new("L", (px, px), 0)
+    if hit.size:
+        draw = ImageDraw.Draw(img)
+        res = (x1 - x0) / px
+        for i in hit:
+            for lon, lat in rings[i]:
+                mx, my = _merc(lon, lat)
+                pts = list(zip(((mx - x0) / res).tolist(), ((y1 - my) / res).tolist()))
+                draw.polygon(pts, fill=1)
+    return np.asarray(img, np.uint8) > 0
+
+
 def gebco_tile(args):
-    """One zoom-7 GEBCO core (256 px) from one GeoTIFF: water = elevation below 0."""
-    path, work, x, y = args
+    """One zoom-7 GEBCO core (256 px) from one GeoTIFF: water = elevation below 0 and not on GSHHG land."""
+    path, work, land, x, y = args
     import rasterio
     from rasterio.enums import Resampling
     from rasterio.transform import from_bounds
@@ -370,6 +479,8 @@ def gebco_tile(args):
             a = v.read(1)
     a[~(np.abs(a) < S.SANE_M)] = np.nan
     wet = np.isfinite(a) & (a < 0)
+    if wet.any():
+        wet &= ~land_mask(land, 7, x, y)
     if not wet.any():
         return None
     depth = np.where(wet, -a, np.nan).astype(np.float32)
@@ -378,10 +489,14 @@ def gebco_tile(args):
     return (x, y)
 
 
-def build_gebco(reg, gebco, workers):
+def build_gebco(reg, gebco, workers, land=None):
     import rasterio
     z = 7
     written = []
+    land = land_file(land, reg["work"])
+    corners = gebco_corners(gebco)
+    if sorted(corners) != sorted(S.GEBCO_QUADRANTS):
+        raise ValueError("the GEBCO set holds the quadrants %s, not the eight expected" % sorted(corners))
     for path, extracted in gebco_files(gebco, reg["work"]):
         with rasterio.open(path) as d:
             b = d.bounds
@@ -393,7 +508,7 @@ def build_gebco(reg, gebco, workers):
                 c1 = T.xy_to_lonlat(*T.tile_bounds(z, x, y)[2:])
                 cl, ct = (c0[0] + c1[0]) / 2, (c0[1] + c1[1]) / 2
                 if b.left <= cl < b.right and b.bottom <= ct < b.top:     # the tile's centre decides its file
-                    jobs.append((path, reg["work"], x, y))
+                    jobs.append((path, reg["work"], land, x, y))
         with pool(workers) as ex:
             done = [r for r in ex.map(gebco_tile, jobs, chunksize=8) if r]
         log("gebco %s: %d of %d tiles with water" % (os.path.basename(path), len(done), len(jobs)))
@@ -406,7 +521,7 @@ def build_gebco(reg, gebco, workers):
 
 # ---------------------------------------------------------------- build
 
-def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=None, keep_work=False):
+def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=None, keep_work=False, land=None):
     gdal_env()
     t0 = time.time()
     reg = region_config(name, box=box, local=local)
@@ -424,23 +539,22 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
     if name == "gebco":
         if not gebco:
             raise SystemExit("--gebco <zip or directory> is needed for the gebco region")
-        written = build_gebco(reg, gebco, workers)
+        written = build_gebco(reg, gebco, workers, land=land)
     else:
         keys = block_keys(reg)
         log("%s: %d blocks of zoom %d to read (zmax %d)" % (name, len(keys), reg["zmax"] - BLOCK_LEVELS, reg["zmax"]))
         blocks = {}
         with pool(workers) as ex:
-            for key, low, deep in ex.map(pass1, [(reg, k) for k in keys], chunksize=1):
-                if low is not None:
-                    n = T.TILE * 2 ** (BLOCK_LEVELS - 1)
-                    blocks[key] = (low, deep, n)
-        log("pass 1: %d blocks hold water (%.0f s)" % (len(blocks), time.time() - t0))
-        sea = W.sea_masks(blocks)
-        n = T.TILE * 2 ** (BLOCK_LEVELS - 1)
-        jobs = [(reg, k, T.pack_bits(W.sea_around(k, sea, n, MARGIN // 2))) for k in sorted(blocks)]
+            for key, summary in ex.map(pass1, [(reg, k) for k in keys], chunksize=1):
+                if summary is not None:
+                    blocks[key] = summary
+        log("pass 1: %d blocks hold low ground (%.0f s)" % (len(blocks), time.time() - t0))
+        keep = W.sea_masks(blocks)
+        with pool(workers) as ex:
+            list(ex.map(pass_sea, [(reg, k, keep[k]) for k in sorted(blocks)], chunksize=1))
         written = []
         with pool(workers) as ex:
-            for w in ex.map(pass2, jobs, chunksize=1):
+            for w in ex.map(pass2, [(reg, k) for k in sorted(blocks)], chunksize=1):
                 written += w
         log("pass 2: %d tiles at zooms %d-%d (%.0f s)" % (len(written), reg["zmax"] - BLOCK_LEVELS, reg["zmax"],
                                                          time.time() - t0))
@@ -505,21 +619,19 @@ def presence(found, zmin, zmax):
 
 
 def file_digest(out):
-    """sha256 over every data file (relative path + its sha256), sorted. Returns (hex, count, bytes)."""
+    """sha256 over every data file and LICENSE.txt (relative path + its sha256), sorted. Returns (hex, count, bytes):
+    count and bytes are the data files' (t/ and idx/)."""
     h = hashlib.sha256()
     count = size = 0
-    rel = []
-    for sub in ("t", "idx"):
-        root = os.path.join(out, sub)
-        for dp, _, fs in os.walk(root):
-            for f in fs:
-                p = os.path.join(dp, f)
-                rel.append(os.path.relpath(p, out).replace(os.sep, "/"))
-    for r in sorted(rel):
-        data = open(os.path.join(out, r), "rb").read()
+    for r in data_files(out) + ["LICENSE.txt"]:
+        p = os.path.join(out, r)
+        if not os.path.exists(p):
+            continue
+        data = open(p, "rb").read()
         h.update(r.encode() + b"\0" + hashlib.sha256(data).digest())
-        count += 1
-        size += len(data)
+        if r != "LICENSE.txt":
+            count += 1
+            size += len(data)
     return h.hexdigest(), count, size
 
 
@@ -531,6 +643,8 @@ def write_index(reg, out, version):
         for (x, y), data in idx.items():
             with open(os.path.join(out, "idx", "%d_%d.bin" % (x, y)), "wb") as f:
                 f.write(data)
+    with open(os.path.join(out, "LICENSE.txt"), "w", encoding="utf-8") as f:
+        f.write(licence_text(reg))
     digest, count, size = file_digest(out)
     sources = {str(s["id"]): {k: s[k] for k in ("name", "year", "res_m", "datum", "licence", "credit")}
                for s in reg["srcs"]}
@@ -545,8 +659,6 @@ def write_index(reg, out, version):
     }
     with open(os.path.join(out, "index.json"), "w") as f:
         json.dump(index, f, indent=1, sort_keys=True)
-    with open(os.path.join(out, "LICENSE.txt"), "w", encoding="utf-8") as f:
-        f.write(licence_text(reg))
     return index
 
 
@@ -558,6 +670,9 @@ def licence_text(reg):
     for s in reg["srcs"]:
         lines += ["- %s (%s), %s; vertical datum %s. %s. Licence: %s." % (
             s["name"], s["year"], "%d m grid" % s["res_m"], s["datum"], s["credit"], s["licence"])]
+    if reg["name"] == "gebco":
+        lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
+            S.LAND["name"], S.LAND["credit"], S.LAND["licence"])]
     return "\n".join(lines) + "\n"
 
 
@@ -579,6 +694,8 @@ def check(out, log_fn=print):
         if not (index["zmin"] <= z <= index["zmax"]):
             problems.append("zoom %d outside %d-%d" % (z, index["zmin"], index["zmax"]))
         for (x, y) in tiles:
+            if not (0 <= x < 2 ** z and 0 <= y < 2 ** z):
+                problems.append("%d/%d/%d: outside the zoom's tile range" % (z, x, y))
             p = tile_path(out, z, x, y)
             try:
                 code, sf = T.unpack_tile(open(p, "rb").read())
@@ -610,6 +727,8 @@ def check(out, log_fn=print):
         problems.append("digest / count / bytes differ from the index")
     if not os.path.exists(os.path.join(out, "LICENSE.txt")):
         problems.append("no LICENSE.txt")
+    if not found:
+        problems.append("no tiles: an empty build is never published")
     for p in problems[:50]:
         log_fn("PROBLEM " + p)
     log_fn("check %s v%s: %d tiles %s, %.1f MB, %d problems" % (
@@ -640,17 +759,28 @@ def data_files(out):
 
 def upload(out, store=None, replace=False, workers=16, log_fn=print):
     """Publish a built directory: data files, LICENSE.txt, index.json last; then the region's line in regions.json.
-    A different build under the same version is refused unless replace=True. Returns True on success."""
+
+    Refused without replace=True: a DIFFERENT build under the same version, and pointing regions.json back to an OLDER
+    version than the one it names (a rollback is deliberate). A replace first deletes the old build's index.json (no
+    client reads the half-written mix as a whole build), then writes the new files, deletes the old build's files the
+    new one does not have, and writes the new index.json last. Returns True on success."""
     index = json.load(open(os.path.join(out, "index.json")))
     store = store or r2()
-    prefix = "%s/%s/v%d" % (PREFIX, index["region"], index["version"])
+    name, version = index["region"], index["version"]
+    prefix = "%s/%s/v%d" % (PREFIX, name, version)
+    regions = store.get_json(REGIONS_KEY) or {"format": "bathy-regions-v1", "regions": {}}
+    live = (regions.get("regions") or {}).get(name) or {}
+    if isinstance(live.get("v"), int) and live["v"] > version and not replace:
+        log_fn("refusing: regions.json names %s v%d; pointing it back to v%d needs --replace" % (name, live["v"], version))
+        return False
     have = store.get_json(prefix + "/index.json")
     if have is not None and have.get("digest") != index["digest"]:
         if not replace:
             log_fn("refusing: %s/ already holds a different build (%s, this %s); use a new --version, or --replace"
                    % (prefix, str(have.get("digest"))[:16], index["digest"][:16]))
             return False
-        log_fn("REPLACING a different build under %s/" % prefix)
+        log_fn("REPLACING a different build under %s/: its index.json goes first" % prefix)
+        store.delete_keys([prefix + "/index.json"], prefix)
     same = have is not None and have.get("digest") == index["digest"]
     files = [] if same else data_files(out)
 
@@ -658,15 +788,19 @@ def upload(out, store=None, replace=False, workers=16, log_fn=print):
         ct = "image/png" if rel.endswith(".png") else "application/octet-stream"
         store.put(prefix + "/" + rel, open(os.path.join(out, rel), "rb").read(), ct, IMMUTABLE)
 
-    if same:
-        log_fn("%s/ already holds this build (%s): only regions.json is written" % (prefix, index["digest"][:16]))
-    else:
+    if not same:
         done = 0
-        with ThreadPoolExecutor(workers) as pool:
-            for _ in pool.map(put, files):
+        with ThreadPoolExecutor(workers) as ex:
+            for _ in ex.map(put, files):
                 done += 1
                 if done % 5000 == 0:
                     log_fn("uploaded %d/%d" % (done, len(files)))
+        if have is not None:
+            keep = {prefix + "/" + r for r in files} | {prefix + "/LICENSE.txt", prefix + "/index.json"}
+            extra = sorted(k for k in store.list_keys(prefix + "/") if k not in keep)
+            if extra:
+                store.delete_keys(extra, prefix)
+                log_fn("deleted %d files of the replaced build" % len(extra))
         store.put(prefix + "/LICENSE.txt", open(os.path.join(out, "LICENSE.txt"), "rb").read(),
                   "text/plain; charset=utf-8", IMMUTABLE)
         store.put(prefix + "/index.json", open(os.path.join(out, "index.json"), "rb").read(), "application/json",
@@ -674,21 +808,36 @@ def upload(out, store=None, replace=False, workers=16, log_fn=print):
     back = store.get_json(prefix + "/index.json")
     if not back or back.get("digest") != index["digest"]:
         raise RuntimeError("index.json read back does not match the upload")
-    regions = store.get_json(REGIONS_KEY) or {"format": "bathy-regions-v1", "regions": {}}
-    reg = S.REGIONS[index["region"]]
-    regions["regions"][index["region"]] = {
-        "v": index["version"], "box": index["box"], "zmin": index["zmin"], "zmax": index["zmax"],
+    reg = S.REGIONS[name]
+    regions.setdefault("regions", {})[name] = {
+        "v": version, "box": index["box"], "zmin": index["zmin"], "zmax": index["zmax"],
         "prio": reg["prio"], "digest": index["digest"][:16], "built": index["built_utc"]}
     regions["updated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     store.put(REGIONS_KEY, json.dumps(regions, indent=1, sort_keys=True).encode(), "application/json", POINTER)
-    if (store.get_json(REGIONS_KEY) or {}).get("regions", {}).get(index["region"], {}).get("v") != index["version"]:
+    if (store.get_json(REGIONS_KEY) or {}).get("regions", {}).get(name, {}).get("v") != version:
         raise RuntimeError("regions.json read back does not name this version")
-    log_fn("published %d files + LICENSE.txt + index.json under %s/ (digest %s); regions.json updated"
-           % (len(files), prefix, index["digest"][:16]))
+    if same:
+        log_fn("%s/ already holds this build (%s): only regions.json was written" % (prefix, index["digest"][:16]))
+    else:
+        log_fn("published %d files + LICENSE.txt + index.json under %s/ (digest %s); regions.json updated"
+               % (len(files), prefix, index["digest"][:16]))
     return True
 
 
 # ---------------------------------------------------------------- command line
+
+def join_box(argv):
+    """"--box -158.1,21.6,..." -> "--box=-158.1,21.6,...": argparse would take a value starting with "-" for an option."""
+    out, i = [], 0
+    while i < len(argv):
+        if argv[i] == "--box" and i + 1 < len(argv):
+            out.append("--box=" + argv[i + 1])
+            i += 2
+        else:
+            out.append(argv[i])
+            i += 1
+    return out
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -700,17 +849,18 @@ def main(argv=None):
     b.add_argument("--box", help="lon0,lat0,lon1,lat1: build only this part (dry runs)")
     b.add_argument("--workers", type=int)
     b.add_argument("--gebco", help="the GEBCO GeoTIFF zip or a directory of its GeoTIFFs (region gebco)")
+    b.add_argument("--land", help="a local copy of the GSHHG land overview (region gebco; default: downloaded)")
     b.add_argument("--keep-work", action="store_true")
     c = sub.add_parser("check")
     c.add_argument("dir")
     u = sub.add_parser("upload")
     u.add_argument("dir")
     u.add_argument("--replace", action="store_true")
-    a = ap.parse_args(argv)
+    a = ap.parse_args(join_box(sys.argv[1:] if argv is None else list(argv)))
     if a.cmd == "build":
         box = tuple(float(v) for v in a.box.split(",")) if a.box else None
         index = build(a.region, a.out, version=a.version, box=box, workers=a.workers, gebco=a.gebco,
-                      keep_work=a.keep_work)
+                      keep_work=a.keep_work, land=a.land)
         return 1 if check(os.path.join(a.out, a.region, "v%d" % a.version)) else (0 if index["count"] else 1)
     if a.cmd == "check":
         return 1 if check(a.dir) else 0

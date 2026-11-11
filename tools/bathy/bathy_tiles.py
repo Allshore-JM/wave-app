@@ -35,6 +35,7 @@ C1, C2, C3 = 41001, 62001, 65401     # the last code of each step range
 DEPTH_MIN, DEPTH_MAX = -10.0, 11000.0
 
 SRC_BITS = 0x1F
+PNG_SIG = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))   # the PNG signature
 FLAG_FILLED, FLAG_BLENDED, FLAG_COARSE = 0x20, 0x40, 0x80
 
 
@@ -129,7 +130,14 @@ def pack_tile(code, srcflag):
 
 
 def unpack_tile(png):
-    """PNG bytes -> (codes uint16 258 x 258, source/flags uint8 258 x 258). Raises ValueError on a bad file."""
+    """PNG bytes -> (codes uint16 258 x 258, source/flags uint8 258 x 258). Raises ValueError on a bad file, also on a
+    PNG the site's own decoder (overlay.js parsePng: 8-bit grey, not interlaced) would refuse."""
+    head = bytes(png[:29])
+    if len(head) < 29 or head[:8] != PNG_SIG or head[12:16] != b"IHDR":
+        raise ValueError("not a PNG")
+    if head[24] != 8 or head[25] != 0 or head[28] != 0:
+        raise ValueError("not an 8-bit grey, non-interlaced PNG (bit depth %d, colour type %d, interlace %d)"
+                         % (head[24], head[25], head[28]))
     im = Image.open(io.BytesIO(png))
     if im.mode != "L" or im.size != (SIDE, ROWS):
         raise ValueError("not a bathymetry tile: mode %s size %s" % (im.mode, im.size))

@@ -126,10 +126,15 @@ def region_config(name, box=None, local=None):
     return reg
 
 
+# A named client: the frame host's edge refuses Python's default "Python-urllib" user agent (HTTP 403).
+USER_AGENT = "allshoresurf-bathy-build/1.0"
+
+
 def _https_bytes(url, timeout=60):
     import certifi
     ctx = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(url, context=ctx, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, context=ctx, timeout=timeout) as r:
         return r.read()
 
 

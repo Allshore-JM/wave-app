@@ -577,3 +577,33 @@ def test_check_refuses_a_tile_outside_its_zooms_range(built, tmp_path):
     msgs = []
     assert B.check(out, log_fn=msgs.append) > 0
     assert any("outside the zoom's tile range" in m for m in msgs)
+
+
+def test_downloads_send_a_named_user_agent(monkeypatch):
+    """The frame host's edge answers 403 to Python's default user agent: bathy-build #10 (GEBCO, 2026-11-11) failed
+    fetching the land mask (static/coast/v1/world-i.bin) that way. Every builder download names its client."""
+    import urllib.request
+    import build_bathy as B
+    seen = []
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    def fake(req, context=None, timeout=None):
+        seen.append(req)
+        return Answer()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+    assert B._https_bytes(S.LAND["url"]) == b"ok"
+    assert B._https_text("https://example.invalid/x.vrt") == "ok"
+    for req in seen:
+        assert isinstance(req, urllib.request.Request)
+        ua = req.get_header("User-agent")
+        assert ua == B.USER_AGENT and "urllib" not in ua.lower()

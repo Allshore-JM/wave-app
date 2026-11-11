@@ -1442,6 +1442,46 @@ when three or more are, linking `/notice/radar` (NOAA named at its request, OPER
 data is edited, Taiwan's provider, data set and licence, what was changed). A region one slot behind the shown frame (Taiwan's file lands a tick
 later) says nothing; further behind, the panel says which time it shows.
 
+### Bathymetry tiles (plan section 93b, the builder)
+
+`tools/bathy/build_bathy.py` builds the data tiles of the Bathymetry layer, one REGION at a time, by hand (the sources change
+yearly; nothing is scheduled). Stage 1's regions (`tools/bathy/bathy_sources.py`): `hawaii`, `marianas` (Guam + CNMI),
+`samoa`, `prvi` (Puerto Rico + USVI) from NOAA NCEI's CUDEM 1/9 arc-second topobathy grids (~3 m, to zoom 15), and `gebco`
+(the GEBCO 2026 grid under everything, zooms 0-7). Every source is on a local mean-sea-level datum (checked 2026-11-11), so
+depths are below mean sea level with no offsets.
+
+- **Reading.** CUDEM is read by window through GDAL over `/vsis3/noaa-nos-coastal-lidar-pds/` (unsigned; its own VRT), never
+  downloaded whole. GDAL's HTTP uses certifi's list (plan section 57). GEBCO comes from its GeoTIFF zip, members extracted one
+  at a time.
+- **Tiles.** Web-mercator data tiles, 256 px plus a one-pixel apron, ONE 8-bit grey PNG of 258 x 774 px: rows 0-257 the depth
+  code's high byte, 258-515 its low byte, 516-773 the source id (bits 0-4) and flags (0x20 filled, 0x40 blended, 0x80 coarse).
+  The site's existing 8-bit grey decoder reads it unchanged.
+- **Depth code** (16 bits): 0 = land / no data; 1 + (d + 10) x 100 for -10 to 400 m (1-cm steps); then 0.1-m steps to 2,500
+  m; then 2.5-m steps to 11,000 m (the plan's 1-m steps beyond 2,500 m do not fit 16 bits; 2.5 m does). Negative = above mean
+  sea level (reef flats).
+- **Water.** A pixel is water when its elevation is at or below the region's mean higher high water AND it connects to water
+  deeper than 20 m (4-neighbour, joined across block edges). Inland ponds and quarries drop out; walled fishponds follow
+  the data. A coarser tile's pixel is water when 2 of its 4 are (their mean depth).
+- **Build.** Blocks of one zoom-(zmax-3) tile with an 8-px margin, read and merged best first in a process pool, cut into
+  tiles at zmax..zmax-3 with aprons from the same read (neighbouring tiles agree on their shared edge); coarser zooms down
+  to the region's zmin (8) from those, aprons from the neighbour tiles.
+- **Layout.** `static/bathy/regions.json` (the pointer, max-age 300: each region's version, box, zooms, priority, digest);
+  `static/bathy/<region>/vN/` with `t/<z>/<x>/<y>.png`, `idx/<x10>_<y10>.bin` (per zoom-10 tile: one bit per tile at each
+  zoom from 11 to zmax), `index.json` (written last: sources with year, resolution, datum, licence and credit; presence of
+  zooms <= 10; counts; a digest of every file) and `LICENSE.txt`. Objects immutable. A rebuild = a new version; `upload`
+  refuses a different build under an existing version unless `--replace`; the same build again only rewrites regions.json.
+- **Running.** Locally (tests, a box): `python -I tools/bathy/build_bathy.py build --region hawaii --out build/bathy --box
+  -158.3,21.2,-157.6,21.75` then `check build/bathy/hawaii/v1`. A real region: the `bathy-build` workflow (Actions: run
+  workflow; inputs region, version, upload, replace). The R2 keys live only in GitHub. A first run with `upload` false shows
+  the build's time, memory, disk and counts in the summary.
+- **Measured.** A Hawaii box (Oahu's north shore) 427 tiles, 14 MB, 61 s on this laptop; tiles read back against the CUDEM
+  grid with an independent reader: median error 3 mm, p95 under 4.3 cm (the merge averages a 3-m grid into each pixel).
+
+Deviations from the plan's text, on record: the depth code above 2,500 m (2.5-m steps); the feather between sources and the
+tile-edge parity rule wait for stage 1b (stage 1a has one source per region, so no seams between sources); GEBCO's "filled"
+flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
+bundle GDAL) instead of the publishers' micromamba environment.
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

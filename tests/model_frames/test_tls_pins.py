@@ -182,4 +182,5 @@ def test_no_workflow_downloads_or_installs_around_the_pins():
             assert pin == PIN, (n, pin)
         assert not re.search(r"(?m)^[^#\n]*\b(REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|SSL_CERT_FILE|SSL_CERT_DIR|AWS_CA_BUNDLE)\b",
                              text), n
-    assert curls == 3                                # coast-build's three downloads; a new one must be looked at
+    # coast-build's three downloads + bathy-build's GEBCO zip (plan section 93b); a new one must be looked at
+    assert curls == 4

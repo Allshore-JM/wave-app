@@ -1,0 +1,100 @@
+# Bathymetry data tiles (plan section 93b; tools/bathy). On push: the unit tests only (no network, no secrets). On manual
+# dispatch: the tests, then one region built from its sources (NOAA's coastal lidar bucket over /vsis3/, read by window;
+# region "gebco" from the GEBCO 2026 GeoTIFF zip, downloaded first), checked, and (only when `upload` is true) published
+# to the frames bucket under static/bathy/<region>/v<version>/ (files, LICENSE.txt, index.json last), then the region's
+# line in static/bathy/regions.json. A different build under the same version is refused unless `replace` is true.
+# Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: bathy-build
+on:
+  push:
+    branches: ["**"]                       # branches only: a rollback tag on an old commit is not a new test run
+    paths: ["tools/bathy/**", "tests/bathy/**", "tools/model_frames/publish.py", ".github/workflows/bathy-build.yml"]
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "hawaii, marianas, samoa, prvi or gebco (tools/bathy/bathy_sources.py)"
+        default: "hawaii"
+      version:
+        description: "the region's data version (static/bathy/<region>/v<N>)"
+        default: "1"
+      upload:
+        description: "publish to R2 (true/false)"
+        default: "false"
+      replace:
+        description: "overwrite a DIFFERENT build under the same version (true/false; objects are immutable for a year)"
+        default: "false"
+concurrency:
+  group: bathy-build
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: pip install numpy==2.5.4 scipy==1.18.1 pillow==13.0.0 rasterio==1.5.2 pytest==9.2.0 certifi==2026.10.23
+      - run: python -m pytest -q tests/bathy
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: pip install numpy==2.5.4 scipy==1.18.1 pillow==13.0.0 rasterio==1.5.2 boto3==1.43.98 certifi==2026.10.23
+      - name: Check the inputs
+        shell: bash
+        env:
+          REGION: ${{ github.event.inputs.region }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          case "$REGION" in hawaii|marianas|samoa|prvi|gebco) ;; *) echo "region must be hawaii, marianas, samoa, prvi or gebco"; exit 2;; esac
+          case "$VERSION" in ''|*[!0-9]*) echo "version must be a whole number"; exit 2;; esac
+          nproc; df -h . | tail -1
+      - name: Download GEBCO 2026 (region gebco)
+        if: github.event.inputs.region == 'gebco'
+        shell: bash
+        run: |
+          set -eo pipefail
+          CA="$(python -c 'import certifi; print(certifi.where())')"   # certifi's list, not the runner's (plan section 57)
+          NOCAPATH="$(mktemp -d)"     # an empty CA folder: --cacert alone leaves Ubuntu curl's /etc/ssl/certs in use
+          curl -sSfL --retry 3 --cacert "$CA" --capath "$NOCAPATH" -o gebco_2026_geotiff.zip https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/geotiff/gebco_2026_geotiff.zip
+          ls -l gebco_2026_geotiff.zip; sha256sum gebco_2026_geotiff.zip | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Build and check
+        shell: bash
+        env:
+          REGION: ${{ github.event.inputs.region }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: |
+          rc=0
+          CMD=(python tools/bathy/build_bathy.py build --region "$REGION" --version "$VERSION" --out build/bathy)
+          [ "$REGION" = "gebco" ] && CMD+=(--gebco gebco_2026_geotiff.zip)
+          /usr/bin/time -v -o time.txt "${CMD[@]}" | tee build.log || rc=$?
+          { echo '```'; tail -40 build.log; grep -E "Maximum resident|Elapsed" time.txt; df -h . | tail -1; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: Upload to R2
+        if: github.event.inputs.upload == 'true'
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REGION: ${{ github.event.inputs.region }}
+          VERSION: ${{ github.event.inputs.version }}
+          REPLACE: ${{ github.event.inputs.replace }}
+        run: |
+          rc=0
+          CMD=(python tools/bathy/build_bathy.py upload "build/bathy/$REGION/v$VERSION")
+          [ "$REPLACE" = "true" ] && CMD+=(--replace)
+          "${CMD[@]}" | tee upload.log || rc=$?
+          tail -3 upload.log >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"

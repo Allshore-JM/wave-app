@@ -451,6 +451,16 @@ def main(argv=None, src=GFS):
                 _summary(f"WARNING: run {run} not ready {rec['count']} times in a row: {exc}")
         return 3
     except Exception as exc:                                  # noqa: BLE001
+        if store is not None and not partial and P.is_storage_busy(exc):
+            rec = P.record_notready(store, run, f"storage busy: {exc}", prefix=src.prefix)
+            print(f"storage busy mid-run (the next tick tries again; {rec['count']} in a row): {exc}")
+            _summary(f"storage busy while publishing {run}: the next tick tries again ({exc})")
+            if rec["count"] == NOTREADY_WARN:                 # about an hour of a busy storage: one mail, not one a tick
+                _summary(f"WARNING: storage busy {rec['count']} times in a row for {run}")
+                return 1
+            if src.stale_fail_h:
+                return _stale_check(store, src, latest, f"storage busy while publishing {run}") or 3
+            return 3
         if store is not None and not partial:
             rec = P.record_failure(store, run, exc, prefix=src.prefix)
             print(f"build failed (attempt {rec['attempts']}): {exc!r}")

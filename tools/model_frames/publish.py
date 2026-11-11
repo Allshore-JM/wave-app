@@ -242,6 +242,18 @@ def notready_key(run, prefix=PREFIX):
     return f"{prefix}/notready/{run}.json"
 
 
+STORAGE_BUSY_CODES = ("ServiceUnavailable", "SlowDown", "TooManyRequests", "RequestLimitExceeded")
+
+
+def is_storage_busy(exc):
+    """A storage 'slow down' that outlasted botocore's own retries: R2's ServiceUnavailable 'Reduce your concurrent
+    request rate for the same object' (model-frames 2026-10-28 and 2026-11-10), S3's SlowDown. Temporary: the next
+    tick tries again, so it is not a failed run (no failure record, no three-hour back-off, no failure mail)."""
+    response = getattr(exc, "response", None)
+    code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
+    return code in STORAGE_BUSY_CODES
+
+
 def record_notready(store, run, message, prefix=PREFIX):
     """Count NotReady exits for a run the listing called complete (an object that is listed but
     never served, or that vanished); the workflow summary warns once the count is high."""

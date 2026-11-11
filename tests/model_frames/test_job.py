@@ -767,6 +767,43 @@ def test_main_records_failure_and_backs_off(monkeypatch, capsys):
     assert R.main([]) == 0 and "failed recently" in capsys.readouterr().out       # backs off
 
 
+class _Busy(Exception):
+    """What botocore raises after its own retries when R2 keeps refusing (model-frames, 2026-11-10 23:42 UTC)."""
+    def __init__(self, code="ServiceUnavailable"):
+        super().__init__(f"An error occurred ({code}) when calling the PutObject operation: Reduce your concurrent "
+                         "request rate for the same object.")
+        self.response = {"Error": {"Code": code}}
+
+
+def test_a_busy_storage_is_tried_again_next_tick_not_a_failed_run(monkeypatch, capsys):
+    """R2 answered 'Reduce your concurrent request rate' past botocore's retries: the run is not failed (no record,
+    no three-hour back-off), the next tick builds it again; only an hour of it in a row mails once."""
+    monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
+    c = FakeClient()
+    _env(monkeypatch, c)
+    calls = []
+
+    def busy(store, run_dt, steps, upload, src):
+        calls.append(1)
+        raise _Busy()
+    monkeypatch.setattr(R, "build_and_publish", busy)
+    assert R.main([]) == 3
+    assert P.failed_key("2026092212") not in c.objects
+    assert json.loads(c.objects[P.notready_key("2026092212")]["body"])["count"] == 1
+    assert R.main([]) == 3 and len(calls) == 2                                   # tried again at once, no back-off
+    for _ in range(R.NOTREADY_WARN - 3):
+        assert R.main([]) == 3
+    assert R.main([]) == 1                                                       # the sixth in a row: one mail
+    assert R.main([]) == 3                                                       # then quiet again
+    assert P.is_storage_busy(_Busy("SlowDown")) and not P.is_storage_busy(RuntimeError("x"))
+    assert not P.is_storage_busy(_Busy("AccessDenied"))
+    # any other error is still a failed run with its back-off
+    monkeypatch.setattr(R, "build_and_publish", lambda *a, **k: (_ for _ in ()).throw(_Busy("AccessDenied")))
+    with pytest.raises(_Busy):
+        R.main(["--force"])
+    assert json.loads(c.objects[P.failed_key("2026092212")]["body"])["attempts"] == 1
+
+
 def _manifest(c, run, stamp, body, prefix="manifest"):
     c.objects[f"{P.PREFIX}/{run}/{prefix}-{stamp}.json"] = {"body": body if isinstance(body, bytes) else json.dumps(body).encode(), "ct": "", "cc": ""}
     return f"{P.PREFIX}/{run}/{prefix}-{stamp}.json"

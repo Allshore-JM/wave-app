@@ -317,6 +317,9 @@ complete run stays live and the panel shows a stale banner after 9 h). Integrate
 production branch alone. The workflow step summary states how long after the cycle each publish happened;
 `failed/<RUN>.json` and `notready/<RUN>.json` in the bucket record build failures and listed-but-missing
 objects (error text is redacted: no endpoint URL, account id or bucket name reaches the public bucket).
+A storage "slow down" that outlasts botocore's retries (R2's `ServiceUnavailable` "Reduce your concurrent request
+rate", S3's `SlowDown`) is not a failed run: it counts under `notready/`, the next tick builds the run again, and
+only the sixth such tick in a row fails the workflow (one mail). The same jobs: GFS frames, ECMWF and GLWU.
 The frames are public only through the bucket's custom domain (`models.allshoresurf.com`, Cloudflare-proxied,
 edge-cached, nosniff + sandbox CSP); the r2.dev development URL is disabled -- re-enable it in the bucket's
 Settings and point `MODEL_FRAMES_BASE` at it only as an emergency fallback. `--force` re-uploads a run under

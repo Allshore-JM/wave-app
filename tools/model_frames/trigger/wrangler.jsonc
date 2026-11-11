@@ -9,16 +9,24 @@
   "compatibility_date": "2025-07-01",
   "workers_dev": false,
   "triggers": {
-    // :05, :15, ... UTC -- interleaved with GitHub's own */10 schedule, which fires at :00, :10, ...
-    // when it fires at all. A tick that finds the run already live costs one ~20 s run of each workflow.
-    "crons": ["5,15,25,35,45,55 * * * *"]
+    // Every minute (plan section 94): each workflow has its own minute of the 10-minute period (GH_PERIOD, GH_MINUTE),
+    // so one run starts a minute instead of ten in the same second. A tick that finds the run already live costs one
+    // ~20 s run of that workflow.
+    "crons": ["* * * * *"]
   },
   "vars": {
     "GH_REPO": "Allshore-JM/wave-app",
     "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml",
     "GH_REF": "Live-Buoy-Update",
-    // dispatched on the :05 tick only (once an hour): the daily SST day needs no 10-minute polling (worker.js)
-    "GH_HOURLY": "model-sst.yml"
+    // every workflow once per 10 minutes, at its own minute; the radar job keeps :05, :15 ... (its slot timing assumes
+    // it), the others take minutes 0-4 and 6-9 in GH_WORKFLOW's order (worker.js)
+    "GH_PERIOD": "10",
+    "GH_MINUTE": "model-radar.yml=5",
+    // dispatched at minute 5 of each hour only: the daily SST day needs no 10-minute polling (worker.js)
+    "GH_HOURLY": "model-sst.yml",
+    // GitHub's free plan runs 20 jobs at once across the whole account: a workflow is held to its next minute (10 min
+    // later) while 8 or more of this repository's runs are running or queued, leaving the rest for other repositories
+    "GH_MAX_ACTIVE": "8"
   },
   "observability": { "enabled": true }
 }

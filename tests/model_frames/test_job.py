@@ -612,7 +612,11 @@ def test_trigger_worker_config_and_unit_tests():
     trigger = os.path.join(ROOT, "tools", "model_frames", "trigger")
     cfg = open(os.path.join(trigger, "wrangler.jsonc"), encoding="utf-8").read()
     assert '"workers_dev": false' in cfg
-    assert re.search(r'"crons":\s*\["5,15,25,35,45,55 \* \* \* \*"\]', cfg)
+    # every minute: each workflow at its own minute of the 10-minute period, the radar job at :x5, a cap of 8 runs
+    # (plan section 94; worker.test.js checks the spread and the cap)
+    assert re.search(r'"crons":\s*\["\* \* \* \* \*"\]', cfg)
+    for k, v in (("GH_PERIOD", "10"), ("GH_MINUTE", "model-radar.yml=5"), ("GH_MAX_ACTIVE", "8")):
+        assert f'"{k}": "{v}"' in cfg, k
     for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml"), ("GH_REF", "Live-Buoy-Update")):
         assert f'"{k}": "{v}"' in cfg, k
     js = open(os.path.join(trigger, "worker.js"), encoding="utf-8").read()

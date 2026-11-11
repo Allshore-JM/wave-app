@@ -331,9 +331,14 @@ published under the old range (plan section 27: hs 0-75 ft with a 0-60 ft legend
 installed versions in the step summary; bump the pins deliberately. External cron trigger: GitHub drops or delays
 most `schedule` ticks, so a Cloudflare Worker (`tools/model_frames/trigger/`, deployed by Cloudflare Workers Builds
 from this repository -- root directory `tools/model_frames/trigger`, build command `npm run build`, deploy command
-`npx wrangler deploy`) calls the workflow-dispatch API at :05, :15, ... UTC for every workflow in its `GH_WORKFLOW`
-list (the GFS frames, the ECMWF frames and the forecast-point product below); GitHub's own schedule stays on as a
-fallback and a duplicate run short-circuits. The Worker needs the secret `GITHUB_TOKEN`, a fine-grained token for
+`npx wrangler deploy`) calls the workflow-dispatch API for every workflow in its `GH_WORKFLOW` list (the GFS frames,
+the ECMWF frames, the forecast-point product and the other publishers below) once every 10 minutes; GitHub's own
+schedule stays on as a fallback and a duplicate run short-circuits. Since plan section 94 the Worker fires every
+minute and starts ONE workflow a minute (`GH_PERIOD` 10, each workflow at its own minute of the ten; `GH_MINUTE` keeps
+the radar job at :05, :15 ..., which its slot timing assumes; the hourly SST at minute 5 of the hour) instead of ten in
+the same second, and it holds a workflow to its next minute while 8 or more of this repository's runs are running or
+queued (`GH_MAX_ACTIVE`; counted from the Actions API, a failed count never stops a dispatch): GitHub's free plan runs
+20 jobs at once across the whole account, and ten runs started together left other repositories' jobs waiting. The Worker needs the secret `GITHUB_TOKEN`, a fine-grained token for
 this repository with "Actions: read and write", entered under the Worker's Settings > Variables and Secrets (rotate
 it there; it is never in the repository). Runs it starts show the event `workflow_dispatch` with the token's owner
 as actor. To stop it, disable the cron under the Worker's Settings > Triggers (or delete the Worker); a full stop

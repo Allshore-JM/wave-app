@@ -1505,6 +1505,40 @@ tile-edge parity rule wait for stage 1b (stage 1a has one source per region, so 
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
 bundle GDAL) instead of the publishers' micromamba environment.
 
+### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.0)
+
+`BATHY_OVERLAY=1` adds "Bathymetry" to the overlay dropdown: an observation kind like SST and radar (no player, no model
+choice, the imagery under it). Unset, the page is unchanged.
+
+- **Data.** `static/bathy/regions.json`, then a region's `index.json` the first time its box is in view, then the zoom-10
+  presence files and the tiles on demand. The store keeps decoded tiles up to 32 MB (least recently used first; tiles in
+  view are never let go), asks at most 4 files at once, and only those some tile on the map still wants. 404, 410 and
+  undecodable files are final; other failures cool down 60 s, then the tiles that asked draw again; 15 s with no answer
+  counts as a failure. Off or another field stops every request.
+- **Drawing.** Per map tile, the first region (priority order) with data there, at the finest zoom it holds; a coarser
+  tile of the same region already held stands in while the finer one loads. GEBCO lies under everything at every zoom
+  (enlarged from its zoom-7 tiles), so every coast without a finer grid still has its regional depths. It is clipped by
+  the coastline: the 1-km world coastline to tile zoom 6, the detailed (full-resolution GSHHG) coastline cells from tile
+  zoom 7, which the layer asks for as tiles need them and draws again when they land (the world coastline stands in
+  meanwhile; the same files as the wave layers' clip). It stays out of the shallows (under 30 m) wherever a region has,
+  or is still loading, data. Depth is bilinear over the nodes present (under a quarter of the weight present = no
+  depth). One colour scale (turquoise to blue): 0-30 m takes 60 % of it, deeper water a muted navy; GEBCO and other
+  coarse pixels never take the shallow colours. A hillshade from each data tile (light from the north-west, more
+  exaggerated at coarse zooms) is interpolated with the depth; filled (interpolated) pixels are drawn a little darker.
+- **Contours** on the same samples, smoothed twice: in metres or feet by the site's unit; at zoom 15 and closer every 1 m
+  to 10 m, 2 m to 30 m, 10 m to 100 m (feet: 5 ft to 30 ft, 10 ft to 100 ft), sparser to zoom 10; below zoom 10 only
+  100, 500, 1,000 and 2,000 m (300, 1,500, 3,000 and 6,000 ft); never a line at 0 (the shoreline).
+- **Readout** from the same sampler as the drawn pixel: "18.4 ft · NOAA CUDEM 2021 · approximate", "· estimated" on filled
+  pixels, "~140 ft (GEBCO, regional estimate)", "dries at mean sea level".
+- **Panel.** The depth scale; "Sources here:" (the sources drawn in view, with year and grid size); "Approximate; not for
+  navigation. Depth below mean sea level."; a transparency slider (20-100 % opacity, default 85 %, kept on the device as
+  `allshore.bathyOpacity.v1`).
+- **Credit.** "Bathymetry: NOAA · GEBCO" by the sources in view (29 visible characters at most, else "Bathymetry: N
+  sources"), linking `/notice/bathy`: NOAA NCEI's CUDEM with its DOI and NOAA's not-an-official-product line, GEBCO's
+  citation, GSHHG, modified by Allshore Surf, not for navigation.
+- **Tests.** `tests/overlay/bathy.test.js` on real tiles of the published `hawaii` and `gebco` sets
+  (`tests/fixtures/bathy`), with its own PNG reader for the readout = drawn-pixel checks.
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

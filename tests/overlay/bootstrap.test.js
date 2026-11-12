@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');

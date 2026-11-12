@@ -191,7 +191,7 @@ test('satStrideFor / satRadius / satAlpha / satColourIndex: the thinning by zoom
   assert.ok(I.SAT_ATTRIBUTION.replace(/<[^>]+>/g, '').length <= 29, 'the credit\'s visible text: ' + I.SAT_ATTRIBUTION.replace(/<[^>]+>/g, ''));
   assert.ok(/10\.48670\/moi-00179/.test(I.SAT_ATTRIBUTION) && /10\.48670\/moi-00178/.test(I.SAT_ATTRIBUTION) && !/moi-00174/.test(I.SAT_ATTRIBUTION), 'both DOIs in the title (014_002 is moi-00178)');
   assert.equal(I.MAX_SAT_CHUNKS, 20, 'the swell job keeps 56 h (19 windows)');
-  assert.deepEqual(Object.keys(I.OBS_DEFS), ['sst', 'sat', 'radar']); assert.equal(I.hasObs('constructor'), false); assert.equal(I.hasObs('sat'), true);
+  assert.deepEqual(Object.keys(I.OBS_DEFS), ['sst', 'sat', 'radar', 'bathy']); assert.equal(I.hasObs('constructor'), false); assert.equal(I.hasObs('sat'), true);
 });
 
 test('SatIndex: the bucket walk equals a brute-force scan (date line, poles, a time slice, a stride); nearest ties to the newest', () => {

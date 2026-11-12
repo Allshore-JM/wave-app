@@ -39,6 +39,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("ALT_GRID", raising=False)
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("RADAR_OVERLAY", raising=False)
+    monkeypatch.delenv("BATHY_OVERLAY", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.delenv("PLACES_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
@@ -94,6 +95,7 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "var SST = false;" in body and "sst: SST" in body and 'value="sst"' in body     # section 44: offered only with SST_OVERLAY=1 (the option is built by script)
         assert "var SAT = false;" in body and "var SWELL = false;" in body and "sat: SAT, swell: SWELL" in body and 'value="sat">Satellite waves' in body   # section 81
         assert "var RADAR = false;" in body and "radar: RADAR" in body and 'value="radar">Radar' in body    # section 85: offered only with RADAR_OVERLAY=1
+        assert "var BATHY = false;" in body and "bathy: BATHY" in body and 'value="bathy">Bathymetry' in body   # section 93b: offered only with BATHY_OVERLAY=1
         assert "var GRID = false;" in body and "sat: SAT, swell: SWELL, grid: GRID" in body                            # section 82
         assert "var GLWU = false;" in body and "glwu: GLWU" in body and "return { model: 'GLWU' }" in body   # section 50: the Great Lakes under GFS (GLWU_OVERLAY=1)
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
@@ -284,6 +286,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
                    .replace("{{ overlay_sst|tojson }}", json.dumps(False))
                    .replace("{{ overlay_radar|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_bathy|tojson }}", json.dumps(False))
                    .replace("{{ overlay_sat|tojson }}", json.dumps(False))
                    .replace("{{ overlay_swell|tojson }}", json.dumps(False))
                    .replace("{{ overlay_grid|tojson }}", json.dumps(False))
@@ -382,6 +385,41 @@ def test_radar_overlay_env_and_the_page(monkeypatch):
     monkeypatch.setenv("RADAR_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
         assert "var RADAR" not in rec["body"] and 'value="radar"' not in rec["body"], name
+
+
+def test_bathy_overlay_env_and_the_page(monkeypatch):
+    """BATHY_OVERLAY (section 93b): "1" offers "Bathymetry" (the page's BATHY, handed to the module); anything else does not; the
+    flag-on page differs from the default only in that line; the flag-off page never carries it."""
+    _on(monkeypatch)
+    for env, want in (("1", True), ("0", False), ("", False), ("true", False)):
+        monkeypatch.setenv("BATHY_OVERLAY", env)
+        assert A._bathy_overlay_enabled() is want, env
+    monkeypatch.setenv("BATHY_OVERLAY", "1")
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("BATHY_OVERLAY")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var BATHY = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var BATHY = true;", "var BATHY = false;") == off[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("BATHY_OVERLAY", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var BATHY" not in rec["body"] and 'value="bathy"' not in rec["body"], name
+
+
+def test_the_bathy_notice_the_credit_links():
+    """The bathymetry credit is short (29 visible characters), so the notice it links carries what the terms ask for: NOAA's
+    CUDEM with its DOI, named at NOAA's request and not an official product; GEBCO's citation; GSHHG; what was changed; not for
+    navigation."""
+    r = A.app.test_client().get("/notice/bathy")
+    assert r.status_code == 200 and r.mimetype == "text/plain" and r.headers["Cache-Control"] == "public, max-age=86400"
+    body = r.get_data(as_text=True)
+    for need in ("NOAA National Centers for Environmental Information", "CUDEM", "doi:10.25921/ds9v-ky35", "Public domain",
+                 "not an official NOAA product", "GEBCO Compilation Group (2026) GEBCO 2026 Grid", "GSHHG", "LGPL 3",
+                 "Modified by Allshore Surf", "do not use this for navigation"):
+        assert need in body, need
+    js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
+    assert 'href="/notice/bathy"' in js, "the credit's link opens this notice"
 
 
 def test_the_radar_look_is_one_look():

@@ -4951,6 +4951,7 @@
       var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
       var RADAR = {{ overlay_radar|tojson }};                   // "Radar" offered (RADAR_OVERLAY; plan section 85)
+      var BATHY = {{ overlay_bathy|tojson }};                   // "Bathymetry" offered (BATHY_OVERLAY; plan section 93b)
       var SAT = {{ overlay_sat|tojson }};                       // "Satellite waves" offered (ALT_OVERLAY; plan section 81)
       var SWELL = {{ overlay_swell|tojson }};                   // ... with the Sentinel-1 swell switch (SARSWELL; plan section 81)
       var GRID = {{ overlay_grid|tojson }};                     // ... with the "Gridded map" box (ALT_GRID; plan section 82)
@@ -4978,7 +4979,8 @@
             '<option value="tp">Peak period</option><option value="wind">Wind speed</option>' +
             (SST ? '<option value="sst">Sea surface temperature</option>' : '') +
             (SAT ? '<option value="sat">Satellite waves</option>' : '') +
-            (RADAR ? '<option value="radar">Radar</option>' : '') + '</select>' +
+            (RADAR ? '<option value="radar">Radar</option>' : '') +
+            (BATHY ? '<option value="bathy">Bathymetry</option>' : '') + '</select>' +
             '<div id="ovPanel"></div>';
           L.DomEvent.disableClickPropagation(box);
           L.DomEvent.disableScrollPropagation(box);
@@ -5038,6 +5040,7 @@
       var KEY = 'allshore.overlay.v1', FIELDS = { hs: 1, tp: 1, wind: 1 }, picked = false;
       if (SST) FIELDS.sst = 1;                                  // a saved 'sst' with the setting off starts Off
       if (RADAR) FIELDS.radar = 1;                              // a saved 'radar' with the setting off starts Off (plan section 85)
+      if (BATHY) FIELDS.bathy = 1;                              // likewise 'bathy' (plan section 93b)
       if (SAT) FIELDS.sat = 1;                                  // likewise 'sat' (plan section 81)
       function stored() {
         try { var o = JSON.parse(sessionStorage.getItem(KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
@@ -5057,7 +5060,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, radar: RADAR, sat: SAT, swell: SWELL, grid: GRID, glwu: GLWU,
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, radar: RADAR, bathy: BATHY, sat: SAT, swell: SWELL, grid: GRID, glwu: GLWU,
             isobars: ISOBARS, particles: PARTICLES / 100
           });
           overlay.mount(field, restore);

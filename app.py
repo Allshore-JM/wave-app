@@ -324,7 +324,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.26.1"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.27.0"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -363,6 +363,13 @@ def _radar_overlay_enabled() -> bool:
     """RADAR_OVERLAY=1: the overlay dropdown offers "Radar" (plan section 85: NOAA MRMS and EUMETNET OPERA published by
     tools/model_frames/radar.py under radar/v1/). Off by default."""
     return os.environ.get("RADAR_OVERLAY", "0") == "1"
+
+
+def _bathy_overlay_enabled() -> bool:
+    """BATHY_OVERLAY=1: the overlay dropdown offers "Bathymetry" (plan section 93b: the depth tiles published by
+    tools/bathy/build_bathy.py under the frames bucket's static/bathy/). Off by default: the client ships first, the setting
+    goes on once checked on the test site."""
+    return os.environ.get("BATHY_OVERLAY", "0") == "1"
 
 
 def _sat_overlay_enabled() -> bool:
@@ -487,6 +494,37 @@ RADAR_NOTICE = "\n".join([
     "wrong (sea clutter, beam blockage, snow or hail). No warranty: do not use this for safety decisions.",
     "",
 ])
+
+
+# The bathymetry notice the map credit links (plan section 93b): NOAA's data is public domain and NOAA asks for attribution and
+# that modified data not pass as the original; GEBCO asks for its citation and that modified data say so.
+BATHY_NOTICE = "\n".join([
+    "Bathymetry (water depth) in the Allshore Surf map (allshoresurf.com)",
+    "",
+    "Hawaii, Guam and the Northern Mariana Islands, American Samoa, Puerto Rico and the US Virgin Islands:",
+    "NOAA National Centers for Environmental Information (NCEI), Continuously Updated Digital Elevation Model (CUDEM),",
+    "1/9 arc-second topobathy, doi:10.25921/ds9v-ky35, through the NOAA Open Data Dissemination Program on AWS.",
+    "Public domain; NOAA is credited at its request. This is not an official NOAA product and has not been reviewed by NOAA.",
+    "",
+    "Everywhere else (regional context only, about 450 m):",
+    "GEBCO Compilation Group (2026) GEBCO 2026 Grid. The GEBCO Grid is free to use with this credit;",
+    "see https://www.gebco.net/data-products/gridded-bathymetry-data. Shown here modified (see below).",
+    "",
+    "Land and sea: GSHHG (Wessel, P., and W. H. F. Smith, 1996), LGPL 3, decides where GEBCO's cells are drawn.",
+    "",
+    "Modified by Allshore Surf, all: reprojected to web map tiles, averaged to coarser zooms, quantised to 1 cm (to 2.5 m in the",
+    "deepest water), kept only for water connected to the open sea, shaded and coloured. Depths are below mean sea level as each",
+    "source gives it; surveys are years old and sand moves. Approximate: do not use this for navigation or safety decisions.",
+    "",
+])
+
+
+@app.route("/notice/bathy")
+def bathy_notice():
+    """The bathymetry attribution notice (plain text)."""
+    resp = app.response_class(BATHY_NOTICE, mimetype="text/plain")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
 
 
 @app.route("/notice/radar")
@@ -5363,7 +5401,7 @@ def _overlay_context(selected_station, selected_tz, payload):
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
     return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
-            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
+            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_bathy": _bathy_overlay_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

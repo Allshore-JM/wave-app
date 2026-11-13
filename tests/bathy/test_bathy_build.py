@@ -530,7 +530,18 @@ def test_gebco_builds_zoom_7_and_wraps_at_the_date_line(tmp_path, monkeypatch):
     found = B.scan_tiles(out)
     assert set(found) == {5, 6, 7}
     xs = {x for (x, _) in found[7]}
-    assert xs == {0, 1, 126, 127}
+    # the shore fill carries the water two cells into the tiles beside the data (x=2, x=125), flagged filled
+    assert xs == {0, 1, 2, 125, 126, 127}
+    k = B.GEBCO_FILL_STEPS
+    for (xx, yy) in found[7]:
+        if xx not in (2, 125):
+            continue
+        d, s = _tile(out, 7, xx, yy)
+        wet, score = d[1:-1, 1:-1] > 0, s[1:-1, 1:-1]
+        cols = np.nonzero(wet.any(axis=0))[0]
+        assert list(cols) == (list(range(k)) if xx == 2 else list(range(T.TILE - k, T.TILE))), (xx, yy, cols)
+        assert np.all(score[wet] & T.FLAG_FILLED) and np.all(score[wet] & T.FLAG_COARSE)
+        assert np.all((score[wet] & T.SRC_BITS) == 31)
     # the wrap: tile x=0's left apron = tile x=127's last core column
     y = sorted(y for (x, y) in found[7] if x == 0)[1]
     a, sa = _tile(out, 7, 0, y)

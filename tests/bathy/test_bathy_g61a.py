@@ -393,7 +393,7 @@ def test_check_refuses_an_empty_build(tmp_path):
     out = str(tmp_path / "empty")
     os.makedirs(out)
     reg = dict(name="empty", zmin=10, zmax=12, box=(0, 0, 1, 1), mhhw=0.4,
-               srcs=[dict(id=10, name="x", year="x", res_m=3, datum="x", licence="x", credit="x")])
+               srcs=[dict(id=10, zmax=12, name="x", year="x", res_m=3, datum="x", licence="x", credit="x")])
     index = B.write_index(reg, out, 1)
     assert index["count"] == 0
     msgs = []

@@ -11,7 +11,7 @@ three planes stacked top to bottom:
 so the site's existing 8-bit grey PNG decoder reads it unchanged. The depth code (16 bits) is depth in metres,
 positive down (negative = above mean sea level, e.g. a reef flat):
 
-    0              no data, or land
+    0              no data, or land: the source plane tells which (LAND_ID = land in the region's own survey)
     1 .. 41001     -10 .. 400 m in 0.01 m steps        code = 1 + round((d + 10) * 100)
     41002 .. 62001 400 .. 2,500 m in 0.1 m steps       code = 41001 + round((d - 400) * 10)
     62002 .. 65401 2,500 .. 11,000 m in 2.5 m steps    code = 62001 + round((d - 2500) / 2.5)
@@ -37,6 +37,11 @@ DEPTH_MIN, DEPTH_MAX = -10.0, 11000.0
 SRC_BITS = 0x1F
 PNG_SIG = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))   # the PNG signature
 FLAG_FILLED, FLAG_BLENDED, FLAG_COARSE = 0x20, 0x40, 0x80
+
+# On a pixel with no depth (code 0) the source plane says why: LAND_ID = the region's survey has a value there and it is
+# land (above the region's high water, or low ground not joined to the sea); 0 = outside every survey of the region. A
+# client may draw a coarser layer (GEBCO) under "outside", never under land. No source uses this id.
+LAND_ID = 30
 
 
 # ---------------------------------------------------------------- tile grid
@@ -168,16 +173,21 @@ def pool2(depth, src):
     """Halve a (2h, 2w) depth field (NaN = no water) with its source/flags plane.
 
     A coarse pixel is water when at least 2 of its 4 fine pixels are; its depth is the mean of those, its source the
-    lowest non-zero source id among them (lower ids are the finer sources), its flags the OR of theirs."""
+    lowest non-zero source id among them (lower ids are the finer sources), its flags the OR of theirs. Otherwise it is
+    land (source LAND_ID) when at least one of the four is land and land and water together make at least two, else no
+    data: an edge of the survey that is mostly outside it stays outside."""
     h, w = depth.shape[0] // 2, depth.shape[1] // 2
     d = depth[:2 * h, :2 * w].reshape(h, 2, w, 2)
     s = src[:2 * h, :2 * w].reshape(h, 2, w, 2)
     wet = np.isfinite(d)
+    land = ~wet & (s == LAND_ID)
     n = wet.sum(axis=(1, 3))
+    nl = land.sum(axis=(1, 3))
     tot = np.where(wet, d, 0.0).sum(axis=(1, 3))
     out = np.where(n >= 2, tot / np.maximum(n, 1), np.nan).astype(np.float32)
     ids = np.where(wet, s & SRC_BITS, 99).min(axis=(1, 3))
     f = np.where(wet, s & 0xE0, 0).astype(np.uint8)
     flags = np.bitwise_or.reduce(np.bitwise_or.reduce(f, axis=3), axis=1)
-    sout = np.where(n >= 2, (np.where(ids == 99, 0, ids) | flags), 0).astype(np.uint8)
+    sout = np.where(n >= 2, (np.where(ids == 99, 0, ids) | flags),
+                    np.where((nl >= 1) & (nl + n >= 2), LAND_ID, 0)).astype(np.uint8)
     return out, sout

@@ -13,8 +13,12 @@ so `offset` (added to bring a source to ~MSL) is 0 for all of them.
 elevation is at or below it AND it is connected to the open sea (tools/bathy/bathy_water.py). From NOAA's tide datums:
 Honolulu +0.27 m, Hilo +0.36, Apra Harbor (Guam) ~+0.35, Pago Pago +0.43, San Juan ~+0.17, Charlotte Amalie ~+0.14.
 
-Source ids are 1-30 (31 = GEBCO); a lower id wins where two sources overlap, so the finer source of a region has the
-lower id.
+Source ids are 1-29 (30 marks land on the source plane: bathy_tiles.LAND_ID; 31 = GEBCO); a lower id wins where two
+sources overlap, so the finer source of a region has the lower id.
+
+`zmax` is the finest zoom a source's pixels earn: a tile is written at a zoom only where a water pixel of it comes from a
+source that earns that zoom (the client draws the next coarser tile, enlarged, elsewhere). `deep` = (metres, zoom): the
+source's pixels deeper than that earn only that zoom (deep open water needs no 10-m tiles).
 """
 
 BUCKET = "noaa-nos-coastal-lidar-pds"
@@ -23,6 +27,12 @@ CUDEM_DOI = "doi:10.25921/ds9v-ky35"
 CUDEM = dict(kind="vrt", zmax=15, res_m=3, licence="public domain (NOAA)", offset=0.0,
              name="NOAA NCEI CUDEM 1/9 arc-second topobathy",
              credit="NOAA NCEI Continuously Updated DEM (CUDEM), " + CUDEM_DOI)
+
+# NOAA's 1/3 arc-second (~10 m) CUDEM: the same compilation as the 1/9 arc-second grid and its complement (checked
+# 2026-11-12: over their overlap the two differ by a median 0.01 m; at the Diamond Head hole of the 1/9 grid the 1/3 set
+# holds 93 %). It fills the 1/9 grid's holes and reaches further offshore, mostly deep water (owner decision 2026-11-12).
+# Read bilinear (it is coarser than the zoom-15 grid). Year = NOAA's publication of most of the set's files.
+CUDEM3 = dict(CUDEM, zmax=14, res_m=10, deep=(200.0, 12), name="NOAA NCEI CUDEM 1/3 arc-second topobathy")
 
 SOURCES = {
     "cudem-hawaii": dict(CUDEM, id=10, year="2021",
@@ -43,6 +53,24 @@ SOURCES = {
     "cudem-usvi": dict(CUDEM, id=11, year="2022",
                        path="dem/NCEI_ninth_Topobathy_USVI_9529/NCEI_ninth_Topobathy_USVI_EPSG-4269.vrt",
                        datum="VIVD09 (Virgin Islands local mean sea level)"),
+    "cudem3-hawaii": dict(CUDEM3, id=20, year="2021",
+                          path="dem/NCEI_third_Topobathy_Hawaii_9429/NCEI_third_Topobathy_Hawaii_EPSG-4326.vrt",
+                          datum="LMSL (Hawaii local mean sea level)"),
+    "cudem3-guam": dict(CUDEM3, id=20, year="2022",
+                        path="dem/NCEI_third_Topobathy_Guam_9463/NCEI_third_Topobathy_Guam_m9463_EPSG-6325.vrt",
+                        datum="GUVD04 (Guam local mean sea level)"),
+    "cudem3-cnmi": dict(CUDEM3, id=21, year="2022",
+                        path="dem/NCEI_third_Topobathy_CNMI_9561/NCEI_third_Topobathy_CNMI_m9561_EPSG-6325.vrt",
+                        datum="NMVD03 (Northern Marianas local mean sea level)"),
+    "cudem3-samoa": dict(CUDEM3, id=20, year="2021",
+                         path="dem/NCEI_third_Topobathy_AmSam_9461/NCEI_third_Topobathy_AmSam_EPSG-4269.vrt",
+                         datum="ASVD02 (American Samoa local mean sea level)"),
+    "cudem3-pr": dict(CUDEM3, id=20, year="2022",
+                      path="dem/NCEI_third_Topobathy_PuertoRico_9524/NCEI_third_Topobathy_PuertoRico_EPSG-4269.vrt",
+                      datum="PRVD02 (Puerto Rico local mean sea level)"),
+    "cudem3-usvi": dict(CUDEM3, id=21, year="2022",
+                        path="dem/NCEI_third_Topobathy_USVI_9528/NCEI_third_Topobathy_USVI_EPSG-4269.vrt",
+                        datum="VIVD09 (Virgin Islands local mean sea level)"),
     "gebco": dict(kind="gebco", id=31, zmax=7, res_m=460, year="2026", offset=0.0,
                   name="GEBCO_2026 Grid", datum="mean sea level (approximate)",
                   licence="GEBCO licence: free to use with credit",
@@ -50,10 +78,16 @@ SOURCES = {
 }
 
 REGIONS = {
-    "hawaii": dict(box=(-160.25, 18.75, -154.75, 22.25), sources=["cudem-hawaii"], mhhw=0.4, zmin=8, prio=10),
-    "marianas": dict(box=(144.5, 13.0, 146.0, 15.5), sources=["cudem-guam", "cudem-cnmi"], mhhw=0.4, zmin=8, prio=10),
-    "samoa": dict(box=(-171.0, -14.5, -169.25, -14.0), sources=["cudem-samoa"], mhhw=0.45, zmin=8, prio=10),
-    "prvi": dict(box=(-68.0, 17.5, -64.25, 18.75), sources=["cudem-pr", "cudem-usvi"], mhhw=0.25, zmin=8, prio=10),
+    # Boxes reach as far as the 1/3 arc-second sets do (Hawaii -160.5..-154.5 x 18.5..22.5; Puerto Rico to 19 N, the
+    # Virgin Islands to 17.25 N), so the regional grids end where their own data ends, not on a straight box line.
+    "hawaii": dict(box=(-160.5, 18.5, -154.5, 22.5), sources=["cudem-hawaii", "cudem3-hawaii"], mhhw=0.4, zmin=8,
+                   prio=10),
+    "marianas": dict(box=(144.5, 13.0, 146.0, 15.5), sources=["cudem-guam", "cudem-cnmi", "cudem3-guam", "cudem3-cnmi"],
+                     mhhw=0.4, zmin=8, prio=10),
+    "samoa": dict(box=(-171.0, -14.5, -169.25, -14.0), sources=["cudem-samoa", "cudem3-samoa"], mhhw=0.45, zmin=8,
+                  prio=10),
+    "prvi": dict(box=(-68.0, 17.25, -64.25, 19.0), sources=["cudem-pr", "cudem-usvi", "cudem3-pr", "cudem3-usvi"],
+                 mhhw=0.25, zmin=8, prio=10),
     "gebco": dict(box=(-180.0, -85.0511, 180.0, 85.0511), sources=["gebco"], mhhw=0.0, zmin=0, prio=0),
 }
 

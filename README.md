@@ -1529,7 +1529,7 @@ different data zooms (each zoom's shading has its own exaggeration, so the relie
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
 bundle GDAL) instead of the publishers' micromamba environment.
 
-### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.1)
+### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.2)
 
 `BATHY_OVERLAY=1` adds "Bathymetry" to the overlay dropdown: an observation kind like SST and radar (no player, no model
 choice, the imagery under it). Unset, the page is unchanged.
@@ -1551,7 +1551,8 @@ choice, the imagery under it). Unset, the page is unchanged.
   depth). One colour scale (turquoise to blue): 0-30 m takes 60 % of it, deeper water a muted navy; GEBCO and other
   coarse pixels never take the shallow colours. A hillshade from each data tile (light from the north-west, more
   exaggerated at coarse zooms) is interpolated with the depth, at 60 % strength on survey grids and 35 % on GEBCO and
-  other coarse pixels; filled (interpolated) pixels are drawn a little darker. Each map tile is sampled with a 3-pixel
+  other coarse pixels; a survey's water deeper than 200 m eases to GEBCO's exaggeration (at most 3x) and strength, fully
+  past 1,000 m, so a survey's footprint never stands out in deep water; filled (interpolated) pixels are drawn a little darker. Each map tile is sampled with a 3-pixel
   apron read from its neighbouring data tiles, so depths, shading and contours join across tile edges; a tile drawn
   before a neighbour arrived is drawn again when it lands. A new map tile tells the map it is ready only after its first
   full draw (or after 2 s at most), so a zoom keeps the old tiles on screen instead of blinking to an empty map.

@@ -493,6 +493,7 @@ test('the entry: only the bathymetry\'s files, its layer and credit, the panel w
   assert.ok(w.attrs.length === 1 && /Bathymetry/.test(w.attrs[0]) && /notice\/bathy/.test(w.attrs[0]));
   const host = ov.ui.host;
   assert.ok(findCls(host, 'ov-bathy-sources')); assert.ok(findCls(host, 'ov-bathy-note')); assert.ok(findCls(host, 'ov-bathy-opacity-range'));
+  assert.ok(findCls(host, 'ov-bathy-legend'), 'the scale carries its own class: the phone nudge of its last label is for bathymetry only (G61 re-check R-4f)');
   assert.ok(!findCls(host, 'ov-play') && !findCls(host, 'ov-timeline') && !findCls(host, 'ov-model-sel'));
   assert.ok(/Bathymetry: water depth/.test(allText(host)) && /not for navigation/.test(allText(host)));
   // the slider: 15 % transparent by default; 40 % -> layer 0.6, kept on the device

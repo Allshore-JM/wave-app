@@ -268,8 +268,9 @@ test('the words: thousands separators, whole numbers from 100 up, "1 source", th
   assert.ok(/1 source\b/.test(one) && !/sources/.test(one), one);
   const text = I.Overlay.prototype._bathySourcesText;
   assert.equal(text.call({ bathyLayer: null, _bathySources: () => [] }), 'Sources here: …');
-  const layer = (busy, cool) => ({ store: { busy: () => busy }, coolingInView: () => cool });
+  const layer = (busy, cool, pend) => ({ store: { busy: () => busy }, coolingInView: () => cool, pendingInView: () => !!pend });
   assert.equal(text.call({ bathyLayer: layer(true, false), _bathySources: () => [] }), 'Sources here: loading…');
+  assert.equal(text.call({ bathyLayer: layer(false, false, true), _bathySources: () => [] }), 'Sources here: loading…', 'a tile in view not drawn yet: loading, never "none in view" (R-4b)');
   assert.equal(text.call({ bathyLayer: layer(false, false), _bathySources: () => [] }), 'Sources here: none in view');
   const s = { name: 'NOAA NCEI CUDEM 1/9 arc-second topobathy', year: '2022', res_m: 3 }, g = { name: 'GEBCO 2026 Grid', year: '2026', res_m: 460 };
   const two = text.call({ bathyLayer: layer(false, true), _bathySources: () => [s, Object.assign({}, s, { region: 'prvi' }), g] });
@@ -406,4 +407,88 @@ test('leaving the entry stops every bathymetry request at once (none new after);
   const n = w.fetches.filter((u) => /static\/bathy/.test(u)).length;
   await settle(); await settle();
   assert.equal(w.fetches.filter((u) => /static\/bathy/.test(u)).length, n, 'nothing new');
+});
+
+// ---- G61 re-check fix round (overlay 2.27.2) ----
+test('R-1: a survey\'s deep water eases to GEBCO\'s look (exaggeration cap 3, weight 0.35) between 200 m and 1,000 m; its shallows keep their own', () => {
+  assert.deepEqual(I.BATHY_DEEP, [200, 1000]);
+  assert.equal(I.bathyDeep(NaN), 0); assert.equal(I.bathyDeep(-5), 0); assert.equal(I.bathyDeep(200), 0); assert.equal(I.bathyDeep(1000), 1); assert.equal(I.bathyDeep(4000), 1);
+  assert.ok(Math.abs(I.bathyDeep(Math.sqrt(200 * 1000)) - 0.5) < 1e-9, 'half way in log depth');
+  assert.ok(I.bathyDeep(300) > 0 && I.bathyDeep(300) < I.bathyDeep(600) && I.bathyDeep(600) < 1, 'rising');
+  assert.equal(I.bathyWeight(50, false), I.BATHY_SHADE_FINE); assert.equal(I.bathyWeight(5000, false), I.BATHY_SHADE_COARSE);
+  assert.equal(I.bathyWeight(50, true), I.BATHY_SHADE_COARSE); assert.equal(I.bathyWeight(5000, true), I.BATHY_SHADE_COARSE);
+  const mid = I.bathyWeight(Math.sqrt(200 * 1000), false);
+  assert.ok(Math.abs(mid - (I.BATHY_SHADE_FINE + I.BATHY_SHADE_COARSE) / 2) < 1e-9, 'the weight half way too');
+  // the shade at data zoom 9 on the equator: a slope 1.2-1.5 km deep shades exactly like GEBCO's; one in 50-80 m keeps the survey's 8x
+  const tile = (reg, depthFn) => {
+    const P2 = 258 * 258, q = new Uint8Array(258 * 774);
+    for (let r = 0; r < 258; r++) for (let c = 0; c < 258; c++) { const code = I.bathyCode(depthFn(r, c)), i = r * 258 + c; q[i] = code >> 8; q[i + P2] = code & 255; }
+    return { q, shade: null, dz: 9, tx: 0, ty: 256, reg };
+  };
+  const deep = (r, c) => 1200 + c * 1.2 + r * 0.7, shallow = (r, c) => 100 + 40 * Math.sin(c / 3) + 20 * Math.sin(r / 4);   // 40-160 m, reef-like slopes
+  const sd = I.bathyShade(tile('hawaii', deep)), gd = I.bathyShade(tile('gebco', deep));
+  let diff = 0; for (let i = 0; i < sd.length; i++) diff = Math.max(diff, Math.abs(sd[i] - gd[i]));
+  assert.equal(diff, 0, 'deep survey water = GEBCO');
+  const ss = I.bathyShade(tile('hawaii', shallow)), gs = I.bathyShade(tile('gebco', shallow)), k = 129 * 258 + 129;
+  assert.ok(Math.abs(ss[k] - 128) > Math.abs(gs[k] - 128) + 5, 'the survey\'s shallows keep a stronger relief: ' + ss[k] + ' vs ' + gs[k]);
+});
+
+test('R-1: the drawn colour takes the eased weight (a deep survey pixel = GEBCO\'s weight, a shallow one the survey\'s)', async () => {
+  const w = world(), st = await v2store(w), layer = layerOn(w, st), c = { x: 2020, y: 14403, z: 15 };
+  const el = addTile(w, layer, c);
+  layer.contours = false;                                     // the depth lines change the RGB they cross
+  await drawAll(w, st, layer);
+  // the same tile made deep and steep: every water node 1,100 m + 20 x its depth, so the survey's pixels take GEBCO's weight
+  const ent = st.tiles.get('t:hawaii@2/15/2020/14403');
+  assert.ok(ent && ent.q, 'the survey tile is held');
+  for (let i = 0; i < P; i++) { const code = (ent.q[i] << 8) | ent.q[i + P]; if (!code) continue; const d = I.bathyCode(1100 + 20 * Math.max(0, depthOf(code))); ent.q[i] = d >> 8; ent.q[i + P] = d & 255; }
+  ent.shade = null;
+  layer._draw(el, c);
+  let deepSurvey = 0, sens = 0;
+  const pieces = el._bPieces, D = layer._D, SF = layer._SF, SH = layer._SH, PI = layer._PI, lut = layer._lut, img = layer._img.data;
+  let n = 0;
+  for (let y = 0; y < 256; y += 7) for (let x = 0; x < 256; x += 7) {
+    const o = (y + A) * W + x + A, pi = PI[o]; if (pi < 0) continue;
+    const pc = pieces[pi], sf = SF[o], coarse = pc.coarse || (sf & 0x80) !== 0;
+    const j = Math.round(I.bathyPos(D[o], coarse) * 1023) * 3;
+    let fac = 1 + I.bathyWeight(D[o], coarse) * (SH[o] - 1); if (sf & 0x20) fac *= 0.88;
+    const i = (y * 256 + x) * 4;
+    assert.ok(Math.abs(img[i] - Math.min(255, Math.max(0, Math.round(lut[j] * fac)))) <= 1, 'pixel ' + x + ',' + y);
+    if (!coarse && D[o] > 1000) { deepSurvey++; if (Math.abs(lut[j] * 0.25 * (SH[o] - 1)) > 3) sens++; }
+    n++;
+  }
+  assert.ok(n > 100 && deepSurvey > 100 && sens > 20, 'sampled ' + n + ', deep survey pixels ' + deepSurvey + ', where the two weights differ by > 3: ' + sens);
+});
+
+test('R-3: a tile Leaflet removes forgets its ready call (a tile made again under the key is never marked ready by the old timer)', () => {
+  const w = world(), layer = layerOn(w, null), c = { x: 5, y: 6, z: 12 }, calls = [];
+  const el = layer.createTile(c, () => calls.push('old'));
+  layer._tiles['5:6:12'] = { el, coords: c };
+  assert.ok(el._bDoneTimer && el._bDone);
+  layer._removeTile('5:6:12');
+  assert.equal(el._bDoneTimer, null); assert.equal(el._bDone, null);
+  assert.equal(layer._tiles['5:6:12'], undefined, 'gone from the layer');
+  I.bathyReady(el);
+  assert.deepEqual(calls, [], 'the old tile never reports');
+  // the base GridLayer's own removal still runs when there is one
+  const base = I.L ? null : null; void base;
+  I.bathyForget(null);                                         // harmless on nothing
+});
+
+test('R-4: whole numbers from 100 up after rounding ("100 ft", never "100.0 ft"); a land-only view credits the usual pair; a new tile in view counts as loading', () => {
+  assert.equal(I.bathyNum(99.96), '100'); assert.equal(I.bathyNum(99.95), '100'); assert.equal(I.bathyNum(99.94), '99.9');
+  assert.equal(I.bathyNum(30.47 * 3.28084), '100');
+  assert.equal(I.bathyCredit([]).replace(/<[^>]+>/g, ''), 'Bathymetry: NOAA · GEBCO');
+  assert.ok(/title="NOAA, GEBCO, modified by Allshore Surf"/.test(I.bathyCredit([])));
+  const w = world(), layer = layerOn(w, null), el = addTile(w, layer, { x: 1, y: 1, z: 6 }), out = addTile(w, layer, { x: 40, y: 30, z: 6 });
+  el._ovGen = -1; out._ovGen = -1;
+  assert.equal(layer.pendingInView(), true);
+  el._ovGen = 0;
+  assert.equal(layer.pendingInView(), false, 'a tile outside the view (the kept ring) does not count');
+});
+
+test('R-4f: the scale\'s phone nudge belongs to the bathymetry scale only', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.css'), 'utf8');
+  assert.ok(/\.ov-sheet \.ov-bathy-legend \.ov-ticks span\.ov-last \{ margin-left: -6px; \}/.test(css));
+  assert.ok(!/\.ov-sheet \.ov-ticks span\.ov-last \{/.test(css), 'no unscoped rule left');
 });

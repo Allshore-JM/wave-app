@@ -177,3 +177,48 @@ v2 in headless Chrome (own profile):
 - Still visible, as recorded in G61b F2 / F3: a contour running along the straight 1/9"-1/3" seam in deep water south of
   Diamond Head (the median 1-2 m step between the grids), and a faint shading box where neighbouring map tiles come from
   different data zooms.
+
+## Re-check of the fix round (2026-11-13, one fresh reviewer on 2.27.1 + the test site)
+
+0 P0, 0 P1, 1 P2, 4 P3 (+ one item recorded only):
+- **R-1 (P2)** at zooms 8-10 the survey's deep water drew as rugged straight-edged boxes beside GEBCO's calm shading
+  (the survey kept its full exaggeration and 60 % hillshade while GEBCO was capped at 3x / 35 %). In the opening view.
+- **R-2 (P3)** a straight colour step on the Anegada shelf at 64.25 W: GEBCO's shallows were drawn as the 30-m blue
+  (`bathyPos`'s clamp) beside the survey's 5-18 m turquoise; depths agree across the line.
+- **R-3 (P3)** a tile Leaflet removed kept its 2-s ready timer, which then marked a tile made again under the same key
+  as ready while its file was still on the way.
+- **R-4 (P3)** words: "100.0 ft" from 99.96; "none in view" while a tile in view was still loading; a land-only view
+  credited nothing; the notice said "about 450 m", "marked as estimated" and had a stray line break; the phone nudge of
+  the scale's last label applied to every scale.
+- **R-5 (recorded)** one 429 and four failed tile reads on a cold 4K sweep; not reproduced.
+
+## Fix round (overlay 2.27.2, then 2.27.3 with the owner's pick)
+
+- R-1: a survey's water deeper than 200 m eases to GEBCO's exaggeration cap and hillshade weight (`bathyDeep`: 0 at
+  200 m, 1 at 1,000 m, log depth between; `bathyWeight`), so the survey footprint no longer stands out; shallow reefs keep
+  the full relief.
+- R-2: OWNER'S PICK (2026-11-13, from a sheet of Anegada z11, Exumas z10, Bali z11 both ways): **B, GEBCO's shallows take
+  the colour of their own depth** (the clamp removed; the readout still says "GEBCO, regional estimate"). The preview
+  switch `?ovgebco=depth` used for the sheet is gone (2.27.3).
+- R-3: `BathyLayer._removeTile` forgets the tile's timer and ready state (`bathyForget`).
+- R-4: whole numbers from 100 after rounding; "loading…" while a tile in view awaits its first draw (`pendingInView`);
+  a land-only view credits "Bathymetry: NOAA · GEBCO"; the notice says about 460 m, without "marked as estimated" or the
+  stray break; the phone nudge scoped to `.ov-bathy-legend`.
+- Tests: bathymetry Node 45 (new: the easing values, the drawn colour of a deep steep survey pixel = GEBCO's weight, the
+  removed tile's timer, the words, the credit, `pendingInView`, the CSS scope, GEBCO's own depth colour); 11 targeted
+  mutants killed; overlay suite 661; flag + page pytest 67.
+
+## Test site on 2.27.3 (2026-11-13 18:23 UTC, test @ 7a4598c, served overlay.js = repo, 2.27.2 URL 404)
+
+Headless Chrome, own profile, never signed in (scratch b93c/v/hl v7.js, r2.js):
+- 20 views at 1280x800 (Pipeline z15/z16, Kaneohe, Guam, Samoa, PR, USVI, Hawaii z6-z9, Big Sur, Bali, world z3, Koko
+  Head, Diamond Head, Kaho'olawe, Anegada, Exumas, open Atlantic) and the same at 375x812: readout = drawn pixel, 0
+  mismatches in every view (40 runs).
+- Anegada at 18.62 N across 64.25 W: survey 14.4 m rgb 37,150,198, GEBCO 14.8 m rgb 37,148-149,198: no step.
+- Hawaii z9: no survey boxes (sheet bathy_R2_choice.jpg, before / after).
+- Land points read nothing (Koko Crater, Koko Head, Diamond Head crater, central Oahu, Kaho'olawe); the 21.25 N hole and
+  Kaho'olawe south read the 1/3" grid.
+- A land-only view (Colorado z9): "Sources here: none in view", credit "Bathymetry: NOAA · GEBCO".
+- `/notice/bathy` 200, "about 460 m"; the slider stores its value; Off asks nothing while panning; phone sheet: the
+  scale ends "16,400+ ft" inside the sheet; console: only my own canvas read-back warnings.
+- R-3's timer was checked by the unit test (the live case needs a throttled zoom in-out-in inside 2 s).

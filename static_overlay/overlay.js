@@ -307,9 +307,10 @@
   function bathyCredit(names) {
     var list = [], seen = {};
     (names || []).forEach(function (n) { n = String(n || '').trim(); if (n && !seen[n]) { seen[n] = true; list.push(n); } });
-    var text = list.length ? list.join(' · ') : 'sources';
+    if (!list.length) list = ['NOAA', 'GEBCO'];          // a view with no depth drawn (land only) credits the usual pair
+    var text = list.join(' · ');
     if (('Bathymetry: ' + text).length > 29) text = list.length + (list.length === 1 ? ' source' : ' sources');
-    var who = list.length ? list.join(', ') : 'The bathymetry sources';
+    var who = list.join(', ');
     return 'Bathymetry: <a href="/notice/bathy" target="_blank" rel="noopener" title="' + who.replace(/["<>&]/g, '') + ', modified by Allshore Surf">' + text.replace(/[<>&]/g, '') + '</a>';
   }
   var BATHY_ATTRIBUTION = bathyCredit(['NOAA', 'GEBCO']);
@@ -4069,6 +4070,7 @@
   var BATHY_SHALLOW = 30;                                  // GEBCO keeps out of shallower water while a region's data there is still on the way
   var BATHY_GEBCO_EX = 3;                                  // GEBCO's hillshade exaggeration at most this: its 450-m slopes stay calm beside finer grids (G61 K1)
   var BATHY_SHADE_FINE = 0.6, BATHY_SHADE_COARSE = 0.35;   // how much of the hillshade the colour takes: survey grids / GEBCO and other coarse pixels
+  var BATHY_DEEP = [200, 1000];                            // survey water deeper than 200 m eases to GEBCO's exaggeration cap and weight, fully past 1,000 m (G61 re-check R-1)
   var BATHY_APRON = 3;                                     // lattice pixels sampled past the map tile on each side (two smoothing passes + the contour's neighbours: G61 A4)
   var BATHY_DONE_MS = 2000;                                // a tile tells the map it is ready after its first full draw, or after this at most (no blank on zoom: G61 B-8)
   var MAX_BATHY_BYTES = 32 * 1024 * 1024;                  // decoded tiles kept (LRU); the ones in view never go
@@ -4083,8 +4085,14 @@
   // A source's short name for the credit ("NOAA", "GEBCO": the credit's first word unless the index names one) and its
   // label for the readout ("NOAA CUDEM 2021").
   function bathyShort(s) { return String((s && (s.short || String(s.credit || s.name || '').split(/[\s,]+/)[0])) || 'source'); }
+  // How far a survey pixel at depth d (m) is eased toward GEBCO's look: 0 to 200 m, 1 past 1,000 m, by log depth between, so
+  // the survey's footprint never stands out as a rugged box in deep water beside calm GEBCO (G61 re-check R-1).
+  function bathyDeep(d) {
+    if (!(d > BATHY_DEEP[0])) return 0;
+    return d >= BATHY_DEEP[1] ? 1 : Math.log(d / BATHY_DEEP[0]) / Math.log(BATHY_DEEP[1] / BATHY_DEEP[0]);
+  }
   function bathyNum(v, whole) {
-    var s = whole || v >= 100 ? String(Math.round(v)) : v.toFixed(1), i = s.indexOf('.'), a = i < 0 ? s : s.slice(0, i);
+    var s = whole || Math.round(v * 10) / 10 >= 100 ? String(Math.round(v)) : v.toFixed(1), i = s.indexOf('.'), a = i < 0 ? s : s.slice(0, i);
     return a.replace(/\B(?=(\d{3})+$)/g, ',') + (i < 0 ? '' : s.slice(i));
   }
   function bathyLabel(s) {
@@ -4444,6 +4452,7 @@
     var q = e.q, S = BATHY_SIDE, out = new Uint8Array(BATHY_PLANE), el = new Float32Array(BATHY_PLANE), D = BATHY_DEPTH;
     for (var i = 0; i < BATHY_PLANE; i++) { var c = (q[i] << 8) | q[i + BATHY_PLANE]; el[i] = -D[c]; }
     var n = TILE * Math.pow(2, e.dz), ex = Math.max(1, Math.min(e.reg === 'gebco' ? BATHY_GEBCO_EX : 20, Math.pow(2, (15 - e.dz) / 2))), lx = -0.5, ly = 0.5, lz = 0.70710678;
+    var exC = Math.min(ex, BATHY_GEBCO_EX);                // a survey's deep water eases to GEBCO's cap (bathyDeep)
     for (var r = 0; r < S; r++) {
       var Y = e.ty * TILE + r - 0.5, lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * Y / n))), m = 40075016.686 * Math.cos(lat) / n, row = r * S;
       for (var cc = 0; cc < S; cc++) {
@@ -4452,7 +4461,8 @@
         var W = cc > 0 ? el[i0 - 1] : NaN, E = cc < S - 1 ? el[i0 + 1] : NaN, N = r > 0 ? el[i0 - S] : NaN, Sd = r < S - 1 ? el[i0 + S] : NaN;
         var gx = E === E && W === W ? (E - W) / (2 * m) : E === E ? (E - z0) / m : W === W ? (z0 - W) / m : 0;
         var gy = N === N && Sd === Sd ? (N - Sd) / (2 * m) : N === N ? (N - z0) / m : Sd === Sd ? (z0 - Sd) / m : 0;
-        var nx = -ex * gx, ny = -ex * gy, len = Math.sqrt(nx * nx + ny * ny + 1);
+        var exn = ex > exC ? ex - (ex - exC) * bathyDeep(-z0) : ex;
+        var nx = -exn * gx, ny = -exn * gy, len = Math.sqrt(nx * nx + ny * ny + 1);
         var mult = (nx * lx + ny * ly + lz) / len / 0.70710678;
         mult = mult < 0 ? 0 : mult > 2 ? 2 : mult;
         out[i0] = Math.round(mult * 127.5);
@@ -4463,10 +4473,17 @@
   }
   // Colour position (0..1) of a depth: the knots spend most of the bar on 0-30 m; GEBCO and other coarse pixels never use
   // the shallow colours (a 450-m cell has no reef in it); dry at mean sea level = the lightest colour.
+  // PREVIEW ONLY (removed with the owner's pick, G61 re-check R-2): ?ovgebco=depth colours GEBCO's shallows by their own depth.
+  var BATHY_GEBCO_DEPTH = (function () { try { return /[?&]ovgebco=depth(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();
   function bathyPos(d, coarse) {
-    if (coarse && d < BATHY_SHALLOW) d = BATHY_SHALLOW;
+    if (coarse && d < BATHY_SHALLOW && !BATHY_GEBCO_DEPTH) d = BATHY_SHALLOW;
     if (d <= 0) return 0;
     return through(KNOTS.bathy, d, 0, 1);
+  }
+  // How much of the hillshade a pixel's colour takes: GEBCO and other coarse pixels 0.35; a survey's 0.6, easing to 0.35 in
+  // deep water (bathyDeep).
+  function bathyWeight(d, coarse) {
+    return coarse ? BATHY_SHADE_COARSE : BATHY_SHADE_FINE - (BATHY_SHADE_FINE - BATHY_SHADE_COARSE) * bathyDeep(d);
   }
   function bathyLut() {
     var out = new Uint8ClampedArray(1024 * 3);
@@ -4655,6 +4672,12 @@
   }
 
   // ---- the layer ----
+  // A tile Leaflet removes forgets its ready call: a tile made again under the same key must not be marked ready by the
+  // old one's timer (G61 re-check R-3).
+  function bathyForget(el) {
+    if (!el) return;
+    clearTimeout(el._bDoneTimer); el._bDoneTimer = null; el._bDone = null;
+  }
   function bathyReady(el) {
     var done = el._bDone;
     if (!done) return;
@@ -4766,6 +4789,12 @@
     _queueStale: ModelGridLayer.prototype._queueStale,
     _cancelStale: ModelGridLayer.prototype._cancelStale,
     onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
+    _removeTile: function (key) {
+      var t = this._tiles[key];
+      if (t) bathyForget(t.el);
+      var base = L.GridLayer.prototype._removeTile;
+      if (base) base.call(this, key); else delete this._tiles[key];
+    },
     // A new tile tells the map it is ready only after its first full draw (or after BATHY_DONE_MS at most): Leaflet keeps the
     // old zoom's tiles until then, so a zoom never shows an empty map while the new tiles load (G61 B-8).
     createTile: function (coords, done) {
@@ -4821,7 +4850,7 @@
           var o = (y + A) * W + x + A, i = (y * TILE + x) * 4, pi = PI[o];
           if (pi < 0) { d[i + 3] = 0; continue; }
           var pc = pieces[pi], sf = SF[o], coarse = pc.coarse || (sf & BATHY_COARSE) !== 0;
-          var j = Math.round(bathyPos(D[o], coarse) * 1023) * 3, fac = 1 + (coarse ? BATHY_SHADE_COARSE : BATHY_SHADE_FINE) * (SH[o] - 1);
+          var j = Math.round(bathyPos(D[o], coarse) * 1023) * 3, fac = 1 + bathyWeight(D[o], coarse) * (SH[o] - 1);
           if (sf & BATHY_FILLED) fac *= 0.88;
           d[i] = lut[j] * fac; d[i + 1] = lut[j + 1] * fac; d[i + 2] = lut[j + 2] * fac; d[i + 3] = 255 * pc.fade;
           src[pi] |= 1 << (sf & BATHY_SRC); any = true;
@@ -4875,6 +4904,15 @@
       var pc = el._bPieces[PI[0]], sf = SF[0], ix = this.store && this.store.index['i:' + this.store.regionKey(pc.reg)], id = sf & BATHY_SRC;
       return { kind: 'depth', depth: D[0], srcId: id, src: ix && ix.sources[id] || null, region: pc.reg.name,
         filled: (sf & BATHY_FILLED) !== 0, blended: (sf & BATHY_BLENDED) !== 0, coarse: pc.coarse || (sf & BATHY_COARSE) !== 0 };
+    },
+    // A tile in view that has not had its first draw yet (the sources line says "loading" then, not "none in view").
+    pendingInView: function () {
+      var range = viewRangeOf(this);
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (t.el && t.el._ovGen === -1 && (!range || tileInRange(t.coords, range))) return true;
+      }
+      return false;
     },
     // The sources drawn in the tiles in view, finest first: [{name, year, res_m, credit, region}].
     coolingInView: function () {
@@ -6888,7 +6926,7 @@
       if (s.res_m) t += ' (' + bathyNum(s.res_m, true) + ' m grid)';
       if (!seen[t]) { seen[t] = true; out.push(t); }
     });
-    var txt = 'Sources here: ' + (out.length ? out.join('; ') : !st ? '…' : st.busy() ? 'loading…' : 'none in view');
+    var txt = 'Sources here: ' + (out.length ? out.join('; ') : !st ? '…' : st.busy() || bl.pendingInView() ? 'loading…' : 'none in view');
     if (bl && bl.coolingInView()) txt += '. Some depth files could not be loaded; trying again shortly.';
     return txt;
   };
@@ -6906,7 +6944,7 @@
   Overlay.prototype._renderBathy = function (st, host, compact, focusCls, mapH) {
     var self = this, unit = this.opts.getUnit();
     this._obsShell(st, host, compact, focusCls, mapH, BATHY_HEAD, 'Bathymetry', function (body) {
-      body.appendChild(buildLegend('bathy', BATHY_FDEF, unit));
+      var leg = buildLegend('bathy', BATHY_FDEF, unit); leg.className += ' ov-bathy-legend'; body.appendChild(leg);
       var src = mk('div', 'ov-meta ov-bathy-sources', self._bathySourcesText()); body.appendChild(src); self.ui.bathySources = src;
       body.appendChild(mk('div', 'ov-meta ov-bathy-note', BATHY_NOTE));
       body.appendChild(self._bathyOpacityRow());
@@ -9567,7 +9605,7 @@
       parseBathyIdx: parseBathyIdx, BathyStore: BathyStore, bathyStore: bathyStore, BathyLayer: BathyLayer, bathyAxes: bathyAxes, bathyShade: bathyShade,
       bathyPos: bathyPos, bathyPieces: bathyPieces, bathySample: bathySample, bathyLevels: bathyLevels, bathyLevel: bathyLevel, bathySmooth: bathySmooth,
       bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyNum: bathyNum, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
-      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, bathyReady: bathyReady,
+      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, bathyReady: bathyReady, bathyForget: bathyForget, bathyDeep: bathyDeep, bathyWeight: bathyWeight, BATHY_DEEP: BATHY_DEEP,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
       radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,

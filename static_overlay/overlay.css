@@ -137,8 +137,9 @@
 .ov-sheet .ov-legend { margin-top: 2px; }
 .ov-sheet .ov-legend canvas { height: 10px; }
 .ov-sheet .ov-ticks { height: 14px; font-size: 11px; }
-/* The last label ends 6 px in from the sheet's edge (a sideways phone cut "16,400+ ft": G61 B-4). */
-.ov-sheet .ov-ticks span.ov-last { margin-left: -6px; }
+/* The bathymetry scale's last label ends 6 px in from the sheet's edge (a sideways phone cut "16,400+ ft": G61 B-4); the
+   other scales keep theirs (G61 re-check R-4f). */
+.ov-sheet .ov-bathy-legend .ov-ticks span.ov-last { margin-left: -6px; }
 .ov-sheet .ov-head { flex-wrap: nowrap; }
 .ov-sheet .ov-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-sheet .ov-speed-menu { top: auto; bottom: calc(100% + 4px); }

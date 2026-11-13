@@ -142,3 +142,38 @@ equivalent: an empty block pools to no land, which the save already checks).
 
 Still to do: the job-only merge of the builder and the v2 uploads (each with the owner's go-ahead); then the client on
 the test site against v2 and a short re-check; then the site merge.
+
+## v2 data live, and the client on the test site against it (2026-11-13)
+
+The builder reached production as a job-only merge (tag `prod-pre-bathy2-job` @ c40d3cc; `Live-Buoy-Update` @ 470bf81).
+The five regions were rebuilt as v2 and published one at a time, each read back against its source:
+
+| Region | Run | Built (UTC) | Tiles + idx | Read-back (signed median vs source) |
+|---|---|---|---|---|
+| hawaii | #18 | 04:41:19 | 27,321 + 101 | -0.006 m |
+| marianas | #19 | 04:59:19 | 7,323 + 19 | +0.017 m |
+| samoa | #20 | 05:09:27 | 5,474 + 12 | +0.058 m |
+| prvi | #21 | 05:28:44 | 19,331 + 66 | +0.002 m |
+| gebco | #22 | 05:57:45 | 14,636 | +0.00 m |
+
+Every region: no water pixel with the land id, no other source on a code-0 pixel; GEBCO carries its filled shore pixels;
+land tiles (Australia, the Sahara, Siberia) still absent.
+
+The client (2.27.1: 19dbdf3 + the client part of 6011cdc) went to the test site as c190356 and was checked there against
+v2 in headless Chrome (own profile):
+
+- Readout = drawn pixel in all 16 views at 1280x800 and again at 375x812: 0 mismatches in 25,920 samples per size
+  (Pipeline z15 / z16, Kaneohe z13, Guam z13, Samoa z12, PR z12, USVI z11, Hawaii z8 / z7 / z6, Big Sur z9, Bali z10,
+  world z3, Koko Head z14, Diamond Head z12, Kaho'olawe z11).
+- Land reads nothing ("none"): Koko Crater, Koko Head's cliff top, Diamond Head's crater, central Oahu, Kaho'olawe. No
+  GEBCO colour on Koko Head (G61's P1).
+- The 21.25 N hole off Diamond Head is filled: 21.245 N / 157.80 W reads 18.8 m and 21.24 N / 157.85 W 482 m, both from
+  the 1/3" grid; Kaho'olawe's south water 634 m from the 1/3" grid.
+- GEBCO-only coasts reach the GSHHG shoreline: 0 blank water pixels next to the coast at Big Sur z9 / z11 / z13, Bali z12
+  and Morocco z11 (85 at Bali z10). Inner estuaries stay partly blank where GEBCO itself has land (the upper Tagus at
+  Portugal z10: 2,758 px; Sydney Harbour's narrow arms at z11: 4,409 px).
+- Sources line, credit, slider (stored), `/notice/bathy` 200, Off asks nothing while panning, heap 19-21 MB after Off,
+  console 0 at both sizes.
+- Still visible, as recorded in G61b F2 / F3: a contour running along the straight 1/9"-1/3" seam in deep water south of
+  Diamond Head (the median 1-2 m step between the grids), and a faint shading box where neighbouring map tiles come from
+  different data zooms.

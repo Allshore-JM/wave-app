@@ -308,7 +308,7 @@
     var list = [], seen = {};
     (names || []).forEach(function (n) { n = String(n || '').trim(); if (n && !seen[n]) { seen[n] = true; list.push(n); } });
     var text = list.length ? list.join(' · ') : 'sources';
-    if (('Bathymetry: ' + text).length > 29) text = list.length + ' sources';
+    if (('Bathymetry: ' + text).length > 29) text = list.length + (list.length === 1 ? ' source' : ' sources');
     var who = list.length ? list.join(', ') : 'The bathymetry sources';
     return 'Bathymetry: <a href="/notice/bathy" target="_blank" rel="noopener" title="' + who.replace(/["<>&]/g, '') + ', modified by Allshore Surf">' + text.replace(/[<>&]/g, '') + '</a>';
   }
@@ -381,7 +381,7 @@
     if (field === 'tp') return { label: 's', f: function (v) { return v; }, d: 1 };
     if (field === 'radar') return { label: 'dBZ', f: function (v) { return v; }, inv: function (v) { return v; }, d: 0 };
     if (field === 'bathy') {                               // depth below mean sea level; the legend's top is 5000 m
-      if (unit === 'Metric') return { label: 'm', f: function (v) { return v; }, inv: function (v) { return v; }, d: 1, top: function () { return '5000+ m'; } };
+      if (unit === 'Metric') return { label: 'm', f: function (v) { return v; }, inv: function (v) { return v; }, d: 1, top: function () { return '5,000+ m'; } };
       return { label: 'ft', f: function (v) { return v * 3.28084; }, inv: function (v) { return v / 3.28084; }, d: 1, top: function () { return '16,400+ ft'; } };
     }
     if (field === 'sst') {                                 // an affine unit: scale / offset / inv beside f (ticks, contours)
@@ -4066,7 +4066,11 @@
   var BATHY_SIDE = 258, BATHY_ROWS = 774, BATHY_PLANE = BATHY_SIDE * BATHY_SIDE;
   var BATHY_C1 = 41001, BATHY_C2 = 62001, BATHY_C3 = 65401;
   var BATHY_SRC = 0x1F, BATHY_FILLED = 0x20, BATHY_BLENDED = 0x40, BATHY_COARSE = 0x80;
-  var BATHY_SHALLOW = 30;                                  // GEBCO is only drawn this deep where a region has (or will have) data
+  var BATHY_SHALLOW = 30;                                  // GEBCO keeps out of shallower water while a region's data there is still on the way
+  var BATHY_GEBCO_EX = 3;                                  // GEBCO's hillshade exaggeration at most this: its 450-m slopes stay calm beside finer grids (G61 K1)
+  var BATHY_SHADE_FINE = 0.6, BATHY_SHADE_COARSE = 0.35;   // how much of the hillshade the colour takes: survey grids / GEBCO and other coarse pixels
+  var BATHY_APRON = 3;                                     // lattice pixels sampled past the map tile on each side (two smoothing passes + the contour's neighbours: G61 A4)
+  var BATHY_DONE_MS = 2000;                                // a tile tells the map it is ready after its first full draw, or after this at most (no blank on zoom: G61 B-8)
   var MAX_BATHY_BYTES = 32 * 1024 * 1024;                  // decoded tiles kept (LRU); the ones in view never go
   var MAX_BATHY_INFLIGHT = 4;
   var MAX_BATHY_POINTER = 64 * 1024, MAX_BATHY_INDEX = 1024 * 1024, MAX_BATHY_IDX = 64 * 1024;
@@ -4079,6 +4083,10 @@
   // A source's short name for the credit ("NOAA", "GEBCO": the credit's first word unless the index names one) and its
   // label for the readout ("NOAA CUDEM 2021").
   function bathyShort(s) { return String((s && (s.short || String(s.credit || s.name || '').split(/[\s,]+/)[0])) || 'source'); }
+  function bathyNum(v, whole) {
+    var s = whole || v >= 100 ? String(Math.round(v)) : v.toFixed(1), i = s.indexOf('.'), a = i < 0 ? s : s.slice(0, i);
+    return a.replace(/\B(?=(\d{3})+$)/g, ',') + (i < 0 ? '' : s.slice(i));
+  }
   function bathyLabel(s) {
     var n = String(s.label || s.name || '').replace(/\bNCEI\s+/, '').replace(/\s+(1\/\d.*|topobathy.*)$/i, '').replace(/_/g, ' ').trim();
     return (n + (s.year && n.indexOf(String(s.year)) < 0 ? ' ' + s.year : '')).trim();
@@ -4125,7 +4133,9 @@
     return out;
   }
   // A region's index.json -> {levels {z: {x0, y0, w, h, bits}}, idx {dir, z0, z1, bytes} | null, t10 {"x_y": true},
-  // sources {id: {...}}}; null when it does not belong to the region named in regions.json or cannot be read.
+  // sources {id: {...}}, landId}; null when it does not belong to the region named in regions.json or cannot be read.
+  // landId (data v2): the source id that marks the survey's land (depth code 0 with it = land; code 0 with id 0 = outside
+  // the survey); 0 in a v1 index (code 0 is both, so GEBCO keeps out of the shallows wherever the region has tiles).
   function validBathyIndex(doc, reg) {
     if (!doc || doc.format !== 'bathy-v1' || doc.region !== reg.name || doc.version !== reg.v || doc.zmin !== reg.zmin || doc.zmax !== reg.zmax) return null;
     if (!doc.levels || typeof doc.levels !== 'object' || Array.isArray(doc.levels) || !doc.sources || typeof doc.sources !== 'object' || Array.isArray(doc.sources)) return null;
@@ -4160,7 +4170,12 @@
       sources[+id] = { name: String(s.name || ''), year: String(s.year || ''), res_m: typeof s.res_m === 'number' ? s.res_m : null,
         credit: String(s.credit || ''), datum: String(s.datum || ''), licence: String(s.licence || '') };
     }
-    return { levels: levels, idx: idx, t10: t10, sources: sources };
+    var landId = 0;
+    if (doc.land_id !== undefined) {
+      if (!bathyInt(doc.land_id, 1, BATHY_SRC)) return null;
+      landId = doc.land_id;
+    }
+    return { levels: levels, idx: idx, t10: t10, sources: sources, landId: landId };
   }
   // The bitsets of one z10 cell's idx file: [z11, z12, ... zmax], each k^2 bits row-major (k = 2^(z - 10)); null if it is not one.
   function parseBathyIdx(buf, ix) {
@@ -4177,7 +4192,7 @@
   function BathyStore(base) {
     this.base = base; this.status = 'idle'; this.regions = null; this.loading = null; this.failedAt = 0; this.loadAbort = null;
     this.index = {}; this.idx = new Map(); this.tiles = new Map(); this.bytes = 0;
-    this.inflight = {}; this.queue = []; this.queued = {}; this.fails = {}; this.retryTimer = null;
+    this.inflight = {}; this.queue = []; this.queued = {}; this.fails = {}; this.retryTimer = null; this.retryAt = 0;
     this.onChange = null; this.wanted = null; this.inUse = null;
   }
   BathyStore.prototype.retryMs = BATHY_RETRY_MS;
@@ -4253,9 +4268,10 @@
     var bits = have[z - 11];
     return bitAt(bits, (y - y10 * s) * s + (x - x10 * s)) === 1;
   };
+  BathyStore.prototype.tileKey = function (reg, z, x, y) { return 't:' + this.regionKey(reg) + '/' + z + '/' + x + '/' + y; };
   // A tile's decoded planes: the entry, null (none for good / cooling down), or undefined (asked for). peek: never asks.
   BathyStore.prototype.tile = function (reg, z, x, y, need, peek) {
-    var key = 't:' + this.regionKey(reg) + '/' + z + '/' + x + '/' + y, e = this.tiles.get(key);
+    var key = this.tileKey(reg, z, x, y), e = this.tiles.get(key);
     if (e) { this.tiles.delete(key); this.tiles.set(key, e); return e; }   // LRU touch
     if (peek) return undefined;
     if (need) need.push(key);
@@ -4264,6 +4280,16 @@
     return undefined;
   };
   BathyStore.prototype.held = function (key) { return this.tiles.get(key) || null; };
+  // Is any of these keys still on the way (asked, in flight or queued)? A map tile tells the map it is ready only when none is.
+  BathyStore.prototype.waiting = function (keys) {
+    if (!keys) return false;
+    for (var i = 0; i < keys.length; i++) if (this.inflight[keys[i]] || this.queued[keys[i]]) return true;
+    return false;
+  };
+  // Any request on the way at all (the panel's "loading…").
+  BathyStore.prototype.busy = function () { return this.queue.length > 0 || Object.keys(this.inflight).length > 0; };
+  // Did this key's last request fail, and is it still cooling down (asked again when the cooldown ends)?
+  BathyStore.prototype.cooling = function (key) { return this._failed(key) === true; };
   BathyStore.prototype._ask = function (key, job) {
     if (this.inflight[key] || this.queued[key]) return;
     job.key = key; this.queued[key] = job; this.queue.push(job);
@@ -4319,7 +4345,7 @@
       if (self.inflight[key] !== rec) return;              // dropped meanwhile (Off): this answer belongs to nobody
       delete self.inflight[key];
       delete self.fails[key];
-      if (job.kind === 'tile') { self.tiles.set(key, val); self.bytes += BATHY_ENTRY_BYTES; self._evict(); }
+      if (job.kind === 'tile') { self.tiles.set(key, val); self.bytes += BATHY_ENTRY_BYTES; self._evict(key); }
       else if (job.kind === 'idx') self.idx.set(key, val);
       else self.index[key] = val;
       self._pump();
@@ -4336,16 +4362,33 @@
       if (self.onChange) self.onChange(key);               // the tiles that asked fall back to what they can draw
     });
   };
+  // One timer for every failure still cooling down: it fires when the earliest one ends (+50 ms), asks the layer to draw
+  // again (the tiles that wanted those files ask once more) and arms itself for the next one (G61 A3).
   BathyStore.prototype._armRetry = function () {
-    var self = this;
-    if (this.retryTimer) return;
-    this.retryTimer = setTimeout(function () { self.retryTimer = null; if (self.onChange) self.onChange('*'); }, this.retryMs + 50);
+    var self = this, now = Date.now(), next = Infinity;
+    for (var k in this.fails) {
+      var f = this.fails[k];
+      if (f.final) continue;
+      var t = f.at + this.retryMs;
+      if (t > now && t < next) next = t;
+    }
+    if (next === Infinity) return;
+    if (this.retryTimer && this.retryAt <= next) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryAt = next;
+    this.retryTimer = setTimeout(function () {
+      self.retryTimer = null; self.retryAt = 0;
+      if (self.onChange) self.onChange('*');
+      self._armRetry();
+    }, next - now + 50);
   };
-  BathyStore.prototype._evict = function () {
+  // Over the cap the least recently used tiles go, never one a map tile draws, still wants, or that has just landed (else a
+  // view needing more than the cap would evict each tile as it lands and ask for it again without end: G61 A1).
+  BathyStore.prototype._evict = function (justLanded) {
     if (this.bytes <= MAX_BATHY_BYTES) return;
-    var use = this.inUse ? this.inUse() : null;
+    var use = this.inUse ? this.inUse() : null, want = this.wanted ? this.wanted() : null;
     for (var it = this.tiles.keys(), k = it.next(); !k.done && this.bytes > MAX_BATHY_BYTES; k = it.next()) {
-      if (use && use.has(k.value)) continue;
+      if (k.value === justLanded || (use && use.has(k.value)) || (want && want.has(k.value))) continue;
       this.tiles.delete(k.value); this.bytes -= BATHY_ENTRY_BYTES;
     }
   };
@@ -4354,22 +4397,45 @@
     for (var k in this.inflight) { var rec = this.inflight[k]; clearTimeout(rec.dog); rec.ctrl.abort(); }
     this.inflight = {}; this.queue = []; this.queued = {};
     if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null; }
+    this.retryAt = 0;
     if (this.loadAbort) { this.loadAbort.abort(); this.loadAbort = null; this.loading = null; if (this.status === 'loading') this.status = 'idle'; }
   };
   BathyStore.prototype.release = function () { this.tiles.clear(); this.bytes = 0; };
 
   // ---- the sampler and its pieces ----
-  // Node coordinate (and weight) of map-tile pixel p (-1..256) along one axis: the pixel's centre at the data zoom, in the
-  // data tile's nodes (node j at pixel j - 0.5), clamped to the apron. world0: the map tile's first pixel at its own zoom.
+  // Node coordinate (and weight) of map-tile pixel p (-BATHY_APRON .. TILE-1+BATHY_APRON) along one axis: the pixel's centre
+  // at the data zoom, in the data tile's nodes (node j at pixel j - 0.5). Not clamped: a node past the tile's own 0..257 is
+  // read from the neighbouring data tile (the sampler), else the own edge stands in. world0: the map tile's first pixel at
+  // its own zoom. Entry (p + BATHY_APRON) * 2.
   function bathyAxis(world0, p, s, t, out, o) {
-    var u = (world0 + p + 0.5) / s - t * TILE + 0.5, c = Math.floor(u), f = u - c;
-    if (c < 0) { c = 0; f = 0; } else if (c > BATHY_SIDE - 2) { c = BATHY_SIDE - 2; f = 1; }
-    out[o] = c; out[o + 1] = f;
+    var u = (world0 + p + 0.5) / s - t * TILE + 0.5, c = Math.floor(u);
+    out[o] = c; out[o + 1] = u - c;
   }
   function bathyAxes(world0, s, t) {
-    var a = new Float64Array((TILE + 2) * 2);
-    for (var p = -1; p <= TILE; p++) bathyAxis(world0, p, s, t, a, (p + 1) * 2);
+    var A = BATHY_APRON, a = new Float64Array((TILE + 2 * A) * 2);
+    for (var p = -A; p < TILE + A; p++) bathyAxis(world0, p, s, t, a, (p + A) * 2);
     return a;
+  }
+  // The held data tiles around (tx, ty) at zoom dz that the axes reach into (index (dy + 1) * 3 + dx + 1; never asked for:
+  // they are the neighbouring map tiles' own files), or null when the axes stay inside the tile. A tile not held is left
+  // out (the own edge stands in) and its key goes to miss: the map tile is drawn again when it lands.
+  function bathyNeighbours(store, reg, dz, tx, ty, ax, ay, use, miss) {
+    var A = BATHY_APRON, last = (TILE + 2 * A - 1) * 2, M = BATHY_SIDE - 1;
+    var lo = ax[0] < 0, hi = ax[last] + 1 > M, up = ay[0] < 0, dn = ay[last] + 1 > M;
+    if (!lo && !hi && !up && !dn) return null;
+    var nb = [null, null, null, null, null, null, null, null, null], N = 1 << dz;
+    for (var dy = -1; dy <= 1; dy++) {
+      if ((dy < 0 && !up) || (dy > 0 && !dn)) continue;
+      var yy = ty + dy;
+      if (yy < 0 || yy >= N) continue;
+      for (var dx = -1; dx <= 1; dx++) {
+        if ((!dx && !dy) || (dx < 0 && !lo) || (dx > 0 && !hi)) continue;
+        var xx = ((tx + dx) % N + N) % N, e = store.tile(reg, dz, xx, yy, null, true), key = store.tileKey(reg, dz, xx, yy);
+        if (e) { nb[(dy + 1) * 3 + dx + 1] = e; use.push(key); }
+        else if (miss) miss.push(key);
+      }
+    }
+    return nb;
   }
   // The shade of a data tile (lazy, kept with it): a multiplier per node (byte / 127.5; flat = 1, lit slopes brighter,
   // shadowed darker) from the elevation (-depth) with light from the north-west 45 degrees up; missing nodes 128.
@@ -4377,7 +4443,7 @@
     if (e.shade) return e.shade;
     var q = e.q, S = BATHY_SIDE, out = new Uint8Array(BATHY_PLANE), el = new Float32Array(BATHY_PLANE), D = BATHY_DEPTH;
     for (var i = 0; i < BATHY_PLANE; i++) { var c = (q[i] << 8) | q[i + BATHY_PLANE]; el[i] = -D[c]; }
-    var n = TILE * Math.pow(2, e.dz), ex = Math.max(1, Math.min(20, Math.pow(2, (15 - e.dz) / 2))), lx = -0.5, ly = 0.5, lz = 0.70710678;
+    var n = TILE * Math.pow(2, e.dz), ex = Math.max(1, Math.min(e.reg === 'gebco' ? BATHY_GEBCO_EX : 20, Math.pow(2, (15 - e.dz) / 2))), lx = -0.5, ly = 0.5, lz = 0.70710678;
     for (var r = 0; r < S; r++) {
       var Y = e.ty * TILE + r - 0.5, lat = Math.atan(Math.sinh(Math.PI * (1 - 2 * Y / n))), m = 40075016.686 * Math.cos(lat) / n, row = r * S;
       for (var cc = 0; cc < S; cc++) {
@@ -4410,102 +4476,126 @@
   // The pieces of map tile coords, best first: per regional box (priority order) the finest zoom it holds there (a held
   // coarser tile of the same region stands in while the finer one loads), then GEBCO at every zoom, so it fills wherever
   // no finer grid reaches (no hard edge where a region's grid ends in deep water; owner, 2026-11-11). A piece:
-  // {reg, e, s, ax, ay, gebco, fade, fall, coarse}. need: every key asked for (the layer's want list); use: the tile keys drawn.
-  function bathyPieces(store, coords, need, use) {
-    var out = [], b = tileBox(coords), z = coords.z, xw = b.xw, y = coords.y, n = b.n, regional = false, regs = store.regions || [];
+  // {reg, e, dz, ax, ay, gebco, fade, fall, coarse, landId, nb}. need: every key asked for (the layer's want list); use:
+  // the tile keys drawn (neighbours too); miss: neighbours not held (the tile is drawn again when one lands).
+  // GEBCO's fall (no water shallower than BATHY_SHALLOW) holds only while a region's data here is still on the way (its
+  // index, a presence file, the tile itself, or a failure still cooling down) or a region drawn here has no land marker
+  // (a v1 index); otherwise the regions' own land and "outside the survey" codes decide where GEBCO shows (G61 A2, B-1).
+  function bathyPieces(store, coords, need, use, miss) {
+    var out = [], b = tileBox(coords), z = coords.z, xw = b.xw, y = coords.y, hold = false, regs = store.regions || [];
     var lonW = b.x0 / TILE * 360 - 180, lonE = b.x1 / TILE * 360 - 180;
     var latN = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * b.y0 / TILE)) * 180 / Math.PI, latS = Math.atan(Math.sinh(Math.PI - 2 * Math.PI * b.y1 / TILE)) * 180 / Math.PI;
-    function piece(reg, e, dz, gebco) {
+    function piece(reg, e, dz, gebco, ix) {
       var s = Math.pow(2, z - dz), tx = Math.floor(xw / s), ty = Math.floor(y / s);
-      if (e.tx !== tx || e.ty !== ty) return;                  // not this tile's ancestor (cannot happen; a guard)
-      use.push('t:' + store.regionKey(reg) + '/' + dz + '/' + tx + '/' + ty);
-      out.push({ reg: reg, e: e, dz: dz, ax: bathyAxes(xw * TILE, s, tx), ay: bathyAxes(y * TILE, s, ty), gebco: gebco,
-        fade: 1, fall: false, coarse: gebco });
+      if (e.tx !== tx || e.ty !== ty) return false;           // not this tile's ancestor (cannot happen; a guard)
+      use.push(store.tileKey(reg, dz, tx, ty));
+      var ax = bathyAxes(xw * TILE, s, tx), ay = bathyAxes(y * TILE, s, ty);
+      out.push({ reg: reg, e: e, dz: dz, ax: ax, ay: ay, gebco: gebco, fade: 1, fall: false, coarse: gebco,
+        landId: (ix && ix.landId) || 0, nb: bathyNeighbours(store, reg, dz, tx, ty, ax, ay, use, miss) });
+      return true;
     }
     for (var r = 0; r < regs.length; r++) {
-      var reg = regs[r], gebco = reg.name === 'gebco', bx = reg.box;
-      if (gebco) continue;
+      var reg = regs[r], bx = reg.box;
+      if (reg.name === 'gebco') continue;
       if (z < reg.zmin || bx[3] <= latS || bx[1] >= latN || bx[2] <= lonW || bx[0] >= lonE) continue;
       var ix = store.indexOf(reg, need);
-      if (ix === undefined) { regional = true; continue; }     // its index is on the way: GEBCO keeps out of the shallows meanwhile
-      if (!ix) continue;
+      if (ix === undefined) { hold = true; continue; }        // its index is on the way: GEBCO keeps out of the shallows meanwhile
+      if (!ix) { if (store.cooling('i:' + store.regionKey(reg))) hold = true; continue; }
       var top = Math.min(z, reg.zmax), found = -1, pending = false;
       for (var dz = top; dz >= reg.zmin; dz--) {
         var sh = z - dz, pr = store.present(reg, ix, dz, xw >> sh, y >> sh, need);
         if (pr === undefined) { pending = true; continue; }
         if (pr) { found = dz; break; }
       }
-      if (found < 0) { if (pending) regional = true; continue; }
-      regional = true;
+      if (found < 0) { if (pending) hold = true; continue; }
       // A finer zoom's presence file still on the way: no coarser tile is fetched for the moment (one held stands in).
-      var e = store.tile(reg, found, xw >> (z - found), y >> (z - found), pending ? null : need, pending);
-      if (e) { piece(reg, e, found, false); continue; }
-      // Still on the way, or its file failed (cooling down, or gone): a held coarser tile of the same region stands in.
-      for (var dz2 = found - 1; dz2 >= reg.zmin; dz2--) {
-        var sh2 = z - dz2, e2 = store.tile(reg, dz2, xw >> sh2, y >> sh2, null, true);
-        if (e2) { piece(reg, e2, dz2, false); break; }
+      var fx = xw >> (z - found), fy = y >> (z - found);
+      var e = store.tile(reg, found, fx, fy, pending ? null : need, pending), drew = false;
+      if (pending || (!e && store._failed(store.tileKey(reg, found, fx, fy)) !== 'final')) hold = true;
+      if (e) drew = piece(reg, e, found, false, ix);
+      else {
+        // Still on the way, or its file failed (cooling down, or gone): a held coarser tile of the same region stands in.
+        for (var dz2 = found - 1; dz2 >= reg.zmin; dz2--) {
+          var sh2 = z - dz2, e2 = store.tile(reg, dz2, xw >> sh2, y >> sh2, null, true);
+          if (e2) { drew = piece(reg, e2, dz2, false, ix); break; }
+        }
       }
+      if (drew && !ix.landId) hold = true;                    // a v1 tile: code 0 is land and "no data" alike
     }
-    {
-      for (var g = 0; g < regs.length; g++) {
-        if (regs[g].name !== 'gebco') continue;
-        var gr = regs[g], gx = store.indexOf(gr, need);
-        if (!gx) break;
-        for (var gz = Math.min(z, gr.zmax); gz >= gr.zmin; gz--) {
-          var gs = z - gz;
-          if (!store.present(gr, gx, gz, xw >> gs, y >> gs, need)) continue;
-          var ge = store.tile(gr, gz, xw >> gs, y >> gs, need);
-          if (!ge) {
-            for (var gz2 = gz - 1; gz2 >= gr.zmin && !ge; gz2--) {
-              var gs2 = z - gz2, ge2 = store.tile(gr, gz2, xw >> gs2, y >> gs2, null, true);
-              if (ge2) { piece(gr, ge2, gz2, true); ge = ge2; }
-            }
-            break;
+    for (var g = 0; g < regs.length; g++) {
+      if (regs[g].name !== 'gebco') continue;
+      var gr = regs[g], gx = store.indexOf(gr, need);
+      if (!gx) break;
+      for (var gz = Math.min(z, gr.zmax); gz >= gr.zmin; gz--) {
+        var gs = z - gz;
+        if (!store.present(gr, gx, gz, xw >> gs, y >> gs, need)) continue;
+        var ge = store.tile(gr, gz, xw >> gs, y >> gs, need);
+        if (!ge) {
+          for (var gz2 = gz - 1; gz2 >= gr.zmin && !ge; gz2--) {
+            var gs2 = z - gz2, ge2 = store.tile(gr, gz2, xw >> gs2, y >> gs2, null, true);
+            if (ge2) { piece(gr, ge2, gz2, true, gx); ge = ge2; }
           }
-          piece(gr, ge, gz, true);
           break;
         }
+        piece(gr, ge, gz, true, gx);
         break;
       }
+      break;
     }
-    for (var k = 0; k < out.length; k++) if (out[k].gebco) out[k].fall = regional;
+    for (var k = 0; k < out.length; k++) if (out[k].gebco) out[k].fall = hold;
     return out;
   }
-  // THE sampler (tile, contour lattice and readout alike): for map-tile pixels p in [x0, x1), q in [y0, y1) (-1..256), the
-  // first piece holding water there: depth (bilinear over the present nodes; under a quarter of the weight present = none),
-  // the source/flag byte of the heaviest node, the shade multiplier (bilinear over the same nodes) and the piece. Written to
-  // index (q + off) * stride + (p + off); depth NaN and piece -1 where none. land: GEBCO's mask (>= 128 = land), indexed by
-  // the pixel clamped into the tile.
+  // THE sampler (tile, contour lattice and readout alike): for map-tile pixels p in [x0, x1), q in [y0, y1)
+  // (-BATHY_APRON .. TILE-1+BATHY_APRON), the first piece holding water there: depth (bilinear over the present nodes; under a
+  // quarter of the weight present = none), the source/flag byte of the heaviest node, the shade multiplier (bilinear over
+  // the same nodes; 1 past the tile, where no colour is drawn) and the piece. Written to index (q + off) * stride + (p + off);
+  // depth NaN and piece -1 where none. A piece with a land marker whose nodes are land (half the weight or more with the
+  // water's) ends the search: no piece below it is drawn there (GEBCO never lies over a survey's land: G61 B-1). Nodes past
+  // the data tile come from its held neighbours (else the own edge). land: GEBCO's mask (>= 128 = land), indexed by the pixel
+  // clamped into the tile. Pixels 0..TILE-1 (the colours and the readout) never need a neighbour.
   function bathySample(pieces, land, x0, x1, y0, y1, off, stride, D, SF, SH, PI) {
-    var Q = BATHY_SIDE, P = BATHY_PLANE, DEP = BATHY_DEPTH;
+    var Q = BATHY_SIDE, P = BATHY_PLANE, DEP = BATHY_DEPTH, A = BATHY_APRON, M = Q - 1, SRC = BATHY_SRC;
     for (var qq = y0; qq < y1; qq++) {
       for (var pp = x0; pp < x1; pp++) {
-        var o = (qq + off) * stride + (pp + off), done = false;
-        for (var k = 0; k < pieces.length && !done; k++) {
+        var o = (qq + off) * stride + (pp + off), hit = -1;
+        for (var k = 0; k < pieces.length; k++) {
           var pc = pieces[k];
           if (pc.gebco && land) {
             var lx = pp < 0 ? 0 : pp > TILE - 1 ? TILE - 1 : pp, ly = qq < 0 ? 0 : qq > TILE - 1 ? TILE - 1 : qq;
             if (land === LAND_ALL || land[ly * TILE + lx] >= LAND_READOUT) continue;
           }
-          var q = pc.e.q, ax = pc.ax, ay = pc.ay, ia = (pp + 1) * 2, ib = (qq + 1) * 2;
-          var c0 = ax[ia], fx = ax[ia + 1], r0 = ay[ib], fy = ay[ib + 1], i00 = r0 * Q + c0;
-          var w = 0, acc = 0, best = -1, sf = 0, d, f, i, sh = 0, shade = pc.e.shade;
+          var ax = pc.ax, ay = pc.ay, ia = (pp + A) * 2, ib = (qq + A) * 2;
+          var c0 = ax[ia], fx = ax[ia + 1], r0 = ay[ib], fy = ay[ib + 1], fast = c0 >= 0 && c0 < M && r0 >= 0 && r0 < M;
+          var w = 0, wl = 0, acc = 0, best = -1, sf = 0, sh = 0, landId = pc.landId || 0, shade = pc.e.shade;
           for (var t = 0; t < 4; t++) {
-            i = i00 + (t & 1) + (t >> 1) * Q;
-            f = (t & 1 ? fx : 1 - fx) * (t >> 1 ? fy : 1 - fy);
+            var f = (t & 1 ? fx : 1 - fx) * (t >> 1 ? fy : 1 - fy);
             if (f <= 0) continue;
-            d = DEP[(q[i] << 8) | q[i + P]];
+            var cc = c0 + (t & 1), rr = r0 + (t >> 1), e = pc.e;
+            if (!fast) {
+              var nx = cc < 0 ? -1 : cc > M ? 1 : 0, ny = rr < 0 ? -1 : rr > M ? 1 : 0;
+              if (nx || ny) {
+                var ne = pc.nb ? pc.nb[(ny + 1) * 3 + nx + 1] : null;
+                if (ne) { e = ne; cc -= nx * TILE; rr -= ny * TILE; }     // node -1 of a tile = node 255 of the one before it
+                else { cc = cc < 0 ? 0 : cc > M ? M : cc; rr = rr < 0 ? 0 : rr > M ? M : rr; }
+              }
+            }
+            var q = e.q, i = rr * Q + cc, code = (q[i] << 8) | q[i + P];
+            if (!code) { if (landId && (q[i + 2 * P] & SRC) === landId) wl += f; continue; }
+            var d = DEP[code];
             if (!(d === d)) continue;
             w += f; acc += f * d;
-            if (shade) sh += f * shade[i];
+            if (fast && shade) sh += f * shade[i];
             if (f > best) { best = f; sf = q[i + 2 * P]; }
           }
-          if (w < 0.25) continue;
-          var dep = acc / w;
-          if (pc.gebco && pc.fall && dep < BATHY_SHALLOW) continue;
-          D[o] = dep; SF[o] = sf; SH[o] = shade ? sh / w / 127.5 : 1; PI[o] = k; done = true;
+          if (w >= 0.25) {
+            var dep = acc / w;
+            if (pc.gebco && pc.fall && dep < BATHY_SHALLOW) continue;
+            D[o] = dep; SF[o] = sf; SH[o] = fast && shade ? sh / w / 127.5 : 1; PI[o] = k; hit = k;
+            break;
+          }
+          if (landId && w + wl >= 0.5) break;                 // the survey's land: nothing here, nothing below it
         }
-        if (!done) { D[o] = NaN; SF[o] = 0; SH[o] = 1; PI[o] = -1; }
+        if (hit < 0) { D[o] = NaN; SF[o] = 0; SH[o] = 1; PI[o] = -1; }
       }
     }
   }
@@ -4565,13 +4655,21 @@
   }
 
   // ---- the layer ----
+  function bathyReady(el) {
+    var done = el._bDone;
+    if (!done) return;
+    el._bDone = null;
+    clearTimeout(el._bDoneTimer); el._bDoneTimer = null;
+    done(null, el);
+  }
   var BathyLayer = L.GridLayer.extend({
     initialize: function () {
       L.GridLayer.prototype.initialize.call(this, { pane: 'obsPane', tileSize: TILE, updateWhenZooming: false, updateWhenIdle: true, keepBuffer: 1, className: 'ov-bathy-tiles' });
       this.store = null; this.unit = 'US'; this.contours = true; this._coast = null; this._gen = 0; this._staleQ = null; this._lut = bathyLut();
-      var W = TILE + 2, N = W * W;
+      var W = TILE + 2 * BATHY_APRON, N = W * W, G = (TILE + 2) * (TILE + 2);
       this._D = new Float32Array(N); this._SF = new Uint8Array(N); this._SH = new Float32Array(N); this._PI = new Int8Array(N);
-      this._T = new Float32Array(N); this._F = new Float32Array(N); this._img = null; this.onRedraw = null;
+      this._T = new Float32Array(N); this._F = new Float32Array(N); this._K = new Int8Array(N); this._G = new Float32Array(G);
+      this._img = null; this.onRedraw = null;
     },
     // The store the tiles draw from (null detaches). Its landings redraw only the tiles that asked for that file.
     setStore: function (store) {
@@ -4636,13 +4734,14 @@
       for (var k in this._tiles) { var el = this._tiles[k].el, a = el && el[prop]; if (a) for (var i = 0; i < a.length; i++) out.add(a[i]); }
       return out;
     },
-    // A file landed (or '*': a retry is due): the tiles that asked for it are drawn again in idle time.
+    // A file landed (or '*': a retry is due): the tiles that asked for it, or that drew their edge without it (a neighbouring
+    // data tile), are drawn again in idle time.
     _landed: function (key) {
       if (key === '*') { this._redraw(); return; }
       var any = false;
       for (var k in this._tiles) {
-        var t = this._tiles[k], need = t.el && t.el._bNeed;
-        if (need && need.indexOf(key) >= 0) { t.el._ovGen = -1; any = true; }
+        var t = this._tiles[k], el = t.el, need = el && el._bNeed, nb = el && el._bNb;
+        if ((need && need.indexOf(key) >= 0) || (nb && nb.indexOf(key) >= 0)) { el._ovGen = -1; any = true; }
       }
       if (any) this._queueStale();
     },
@@ -4667,11 +4766,20 @@
     _queueStale: ModelGridLayer.prototype._queueStale,
     _cancelStale: ModelGridLayer.prototype._cancelStale,
     onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
+    // A new tile tells the map it is ready only after its first full draw (or after BATHY_DONE_MS at most): Leaflet keeps the
+    // old zoom's tiles until then, so a zoom never shows an empty map while the new tiles load (G61 B-8).
     createTile: function (coords, done) {
       var el = document.createElement('canvas'); el.width = TILE; el.height = TILE; el._ovGen = -1;
+      el._bDone = done;
+      el._bDoneTimer = setTimeout(function () { bathyReady(el); }, BATHY_DONE_MS);
       this._queueStale();
-      setTimeout(function () { done(null, el); }, 0);
       return el;
+    },
+    // After a draw: the tile is ready when none of the files it asked for is still on the way (failed ones count as answered).
+    _ready: function (el, need) {
+      if (!el._bDone) return;
+      if (need && need.length && this.store && this.store.waiting(need)) return;
+      bathyReady(el);
     },
     // The tile's land mask (null: none), kept on the tile like the wave layer's: a final one is reused, a stand-in is
     // reused until the store moves on and still a stand-in after it.
@@ -4693,46 +4801,67 @@
     _draw: function (el, coords) {
       el._ovGen = this._gen;
       var st = this.store;
-      if (!st || st.status !== 'ok' || !st.regions) { el._bNeed = null; el._bUse = null; this._clearTile(el); return; }
+      if (!st || st.status !== 'ok' || !st.regions) { el._bNeed = null; el._bUse = null; el._bNb = null; this._clearTile(el); bathyReady(el); return; }
       // The want list is on the tile BEFORE the pieces ask for files: the store keeps only the requests some tile wants, and
       // this draw's own requests are among them.
-      var need = [], use = [];
-      el._bNeed = need; el._bUse = use;
-      var pieces = bathyPieces(st, coords, need, use);
-      if (!pieces.length) { this._clearTile(el); return; }
+      var need = [], use = [], miss = [];
+      el._bNeed = need; el._bUse = use; el._bNb = miss;
+      var pieces = bathyPieces(st, coords, need, use, miss);
+      if (!pieces.length) { this._clearTile(el); this._ready(el, need); return; }
       for (var k = 0; k < pieces.length; k++) bathyShade(pieces[k].e);
       var hasGebco = false;
       for (k = 0; k < pieces.length; k++) if (pieces[k].gebco) hasGebco = true;
       var land = hasGebco ? this._landFor(el, coords) : null;
-      var W = TILE + 2, D = this._D, SF = this._SF, SH = this._SH, PI = this._PI;
-      bathySample(pieces, land, -1, TILE + 1, -1, TILE + 1, 1, W, D, SF, SH, PI);
+      var A = BATHY_APRON, W = TILE + 2 * A, D = this._D, SF = this._SF, SH = this._SH, PI = this._PI;
+      bathySample(pieces, land, -A, TILE + A, -A, TILE + A, A, W, D, SF, SH, PI);
       var ctx = el.getContext('2d'), img = this._img || (this._img = ctx.createImageData(TILE, TILE)), d = img.data, lut = this._lut;
       var src = new Uint32Array(pieces.length), any = false;
       for (var y = 0; y < TILE; y++) {
         for (var x = 0; x < TILE; x++) {
-          var o = (y + 1) * W + x + 1, i = (y * TILE + x) * 4, pi = PI[o];
+          var o = (y + A) * W + x + A, i = (y * TILE + x) * 4, pi = PI[o];
           if (pi < 0) { d[i + 3] = 0; continue; }
           var pc = pieces[pi], sf = SF[o], coarse = pc.coarse || (sf & BATHY_COARSE) !== 0;
-          var j = Math.round(bathyPos(D[o], coarse) * 1023) * 3, fac = 1 + 0.6 * (SH[o] - 1);
+          var j = Math.round(bathyPos(D[o], coarse) * 1023) * 3, fac = 1 + (coarse ? BATHY_SHADE_COARSE : BATHY_SHADE_FINE) * (SH[o] - 1);
           if (sf & BATHY_FILLED) fac *= 0.88;
           d[i] = lut[j] * fac; d[i + 1] = lut[j + 1] * fac; d[i + 2] = lut[j + 2] * fac; d[i + 3] = 255 * pc.fade;
           src[pi] |= 1 << (sf & BATHY_SRC); any = true;
         }
       }
-      if (!any) { this._clearTile(el); return; }
-      if (this.contours) this._contours(coords, d);
+      if (!any) { this._clearTile(el); this._ready(el, need); return; }
+      if (this.contours) this._contours(coords, d, pieces);
       ctx.putImageData(img, 0, 0);
       el._bPieces = pieces; el._bLandUsed = land; el._bShown = true;
       el._bSrc = pieces.map(function (p, n) { return { reg: p.reg, mask: src[n] }; });
+      this._ready(el, need);
     },
-    // Depth lines on the lattice the tile was just sampled on (smoothed twice, so they do not follow single noisy nodes).
-    _contours: function (coords, rgba) {
-      var W = TILE + 2, N = W * W, D = this._D, T = this._T, F = this._F, per = this.unit === 'Metric' ? 1 : 3.28084;
+    // Depth lines on the lattice the tile was just sampled on (the map tile plus BATHY_APRON pixels each side, smoothed twice,
+    // so they do not follow single noisy nodes and join their neighbours' lines at the tile edge: G61 A4). GEBCO and other
+    // coarse pixels take the sparse zoom-0 levels at every zoom (a 450-m grid has no 1-m line in it: G61 B-7); where the two
+    // kinds meet no line is drawn (their level numbers differ).
+    _contours: function (coords, rgba, pieces) {
+      var A = BATHY_APRON, W = TILE + 2 * A, D = this._D, T = this._T, F = this._F, G = this._G, K = this._K, PI = this._PI, SF = this._SF;
+      var per = this.unit === 'Metric' ? 1 : 3.28084, L = bathyLevels(coords.z, this.unit), LC = bathyLevels(0, this.unit), mixed = L.length !== LC.length;
       bathySmooth(D, T, W); bathySmooth(T, F, W);
-      var L = bathyLevels(coords.z, this.unit);
-      for (var i = 0; i < N; i++) { var v = F[i]; F[i] = v === v ? bathyLevel(L, v * per) : NaN; }
+      if (mixed) {
+        for (var n = 0; n < W * W; n++) { var pk = PI[n]; K[n] = pk < 0 ? -1 : pieces[pk].coarse || (SF[n] & BATHY_COARSE) ? 1 : 0; }
+      }
+      var M = TILE + 2;
+      for (var gy = 0; gy < M; gy++) {
+        for (var gx = 0; gx < M; gx++) {
+          var s = (gy + A - 1) * W + (gx + A - 1), v = F[s], out = NaN;
+          if (v === v) {
+            if (!mixed) out = bathyLevel(L, v * per);
+            else {
+              var kd = K[s];
+              if (kd >= 0 && !((K[s - 1] >= 0 && K[s - 1] !== kd) || (K[s + 1] >= 0 && K[s + 1] !== kd) ||
+                (K[s - W] >= 0 && K[s - W] !== kd) || (K[s + W] >= 0 && K[s + W] !== kd))) out = bathyLevel(kd ? LC : L, v * per);
+            }
+          }
+          G[gy * M + gx] = out;
+        }
+      }
       var prof = contourProfile(coords.z);
-      contourTile(F, TILE, rgba, 3, null, 0, 0, TILE, TILE, prof[1], prof[2], false);
+      contourTile(G, TILE, rgba, 3, null, 0, 0, TILE, TILE, prof[1], prof[2], false);
     },
     // What the drawn pixel under (lat, lng) shows: the same pieces and sampler as the tile. null without a drawn tile;
     // {kind: 'none'} no data there; {kind: 'depth', depth (m below mean sea level; negative = dry), src (the source entry),
@@ -4748,6 +4877,16 @@
         filled: (sf & BATHY_FILLED) !== 0, blended: (sf & BATHY_BLENDED) !== 0, coarse: pc.coarse || (sf & BATHY_COARSE) !== 0 };
     },
     // The sources drawn in the tiles in view, finest first: [{name, year, res_m, credit, region}].
+    coolingInView: function () {
+      var st = this.store, range = viewRangeOf(this);
+      if (!st) return false;
+      for (var k in this._tiles) {
+        var t = this._tiles[k], need = t.el && t.el._bNeed;
+        if (!need || (range && !tileInRange(t.coords, range))) continue;
+        for (var i = 0; i < need.length; i++) if (st.cooling(need[i])) return true;
+      }
+      return false;
+    },
     sourcesInView: function () {
       var range = viewRangeOf(this), seen = {}, out = [], st = this.store;
       if (!st) return out;
@@ -6739,15 +6878,19 @@
     if (this.ui && this.ui.bathySources) this.ui.bathySources.textContent = this._bathySourcesText();
   };
   Overlay.prototype._bathySources = function () { return this.bathyLayer ? this.bathyLayer.sourcesInView() : []; };
+  // "Sources here: NOAA CUDEM 2021 (3 m grid); GEBCO 2026 Grid (460 m grid)": one entry per printed text (Puerto Rico's
+  // and the Virgin Islands' grids read the same); "loading…" while files are on the way; a note while a file a tile in
+  // view asked for is waiting out its retry after a failure (G61 B-9).
   Overlay.prototype._bathySourcesText = function () {
-    var list = this._bathySources();
-    if (!list.length) return 'Sources here: ' + (this.bathyLayer && this.bathyLayer.store ? 'none in view' : '…');
-    return 'Sources here: ' + list.map(function (s) {
-      var bits = [];
-      if (s.year) bits.push(s.year);
-      if (s.res_m) bits.push((s.res_m >= 100 ? Math.round(s.res_m) : s.res_m) + ' m grid');
-      return s.name + (bits.length ? ' (' + bits.join(', ') + ')' : '');
-    }).join('; ');
+    var bl = this.bathyLayer, st = bl && bl.store, list = this._bathySources(), seen = {}, out = [];
+    list.forEach(function (s) {
+      var t = bathyLabel(s) || 'source';
+      if (s.res_m) t += ' (' + bathyNum(s.res_m, true) + ' m grid)';
+      if (!seen[t]) { seen[t] = true; out.push(t); }
+    });
+    var txt = 'Sources here: ' + (out.length ? out.join('; ') : !st ? '…' : st.busy() ? 'loading…' : 'none in view');
+    if (bl && bl.coolingInView()) txt += '. Some depth files could not be loaded; trying again shortly.';
+    return txt;
   };
   // "18.4 ft · NOAA CUDEM 2021 · approximate"; "· estimated" on filled pixels; "~140 ft (GEBCO, regional estimate)";
   // "dries at mean sea level"; nothing where no depth is drawn.
@@ -6756,8 +6899,8 @@
     var unit = this.opts.getUnit(), s = r.src;
     if (!(r.depth > 0)) return 'dries at mean sea level' + (s ? ' · ' + bathyLabel(s) : '');
     var v = unit === 'Metric' ? r.depth : r.depth * 3.28084, lab = unit === 'Metric' ? 'm' : 'ft';
-    var txt = (v < 100 ? v.toFixed(1) : String(Math.round(v))) + ' ' + lab;
-    if (r.coarse) return '~' + txt + ' (' + (s ? bathyShort(s) : 'GEBCO') + ', regional estimate)';
+    if (r.coarse) return '~' + bathyNum(v, true) + ' ' + lab + ' (' + (s ? bathyShort(s) : 'GEBCO') + ', regional estimate)';
+    var txt = bathyNum(v) + ' ' + lab;
     return txt + (s ? ' · ' + bathyLabel(s) : '') + (r.filled ? ' · estimated' : ' · approximate');
   };
   Overlay.prototype._renderBathy = function (st, host, compact, focusCls, mapH) {
@@ -9423,7 +9566,8 @@
       bathyDepths: bathyDepths, BATHY_DEPTH: BATHY_DEPTH, bathyCode: bathyCode, validBathyRegions: validBathyRegions, validBathyIndex: validBathyIndex,
       parseBathyIdx: parseBathyIdx, BathyStore: BathyStore, bathyStore: bathyStore, BathyLayer: BathyLayer, bathyAxes: bathyAxes, bathyShade: bathyShade,
       bathyPos: bathyPos, bathyPieces: bathyPieces, bathySample: bathySample, bathyLevels: bathyLevels, bathyLevel: bathyLevel, bathySmooth: bathySmooth,
-      bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
+      bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyNum: bathyNum, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
+      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, bathyReady: bathyReady,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
       radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,

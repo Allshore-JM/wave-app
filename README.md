@@ -1526,7 +1526,7 @@ tile-edge parity rule wait for stage 1b (stage 1a has one source per region, so 
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
 bundle GDAL) instead of the publishers' micromamba environment.
 
-### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.0)
+### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.1)
 
 `BATHY_OVERLAY=1` adds "Bathymetry" to the overlay dropdown: an observation kind like SST and radar (no player, no model
 choice, the imagery under it). Unset, the page is unchanged.
@@ -1541,24 +1541,38 @@ choice, the imagery under it). Unset, the page is unchanged.
   (enlarged from its zoom-7 tiles), so every coast without a finer grid still has its regional depths. It is clipped by
   the coastline: the 1-km world coastline to tile zoom 6, the detailed (full-resolution GSHHG) coastline cells from tile
   zoom 7, which the layer asks for as tiles need them and draws again when they land (the world coastline stands in
-  meanwhile; the same files as the wave layers' clip). It stays out of the shallows (under 30 m) wherever a region has,
-  or is still loading, data. Depth is bilinear over the nodes present (under a quarter of the weight present = no
+  meanwhile; the same files as the wave layers' clip). With data v2 a region's own codes decide where GEBCO shows: its
+  land mark (code 0 with the land source id) is land, nothing is drawn there and nothing below it; code 0 without it is
+  outside the survey, where GEBCO shows through. While a region's index, presence file or tile is still on the way (or
+  cooling down after a failure), and over a v1 tile (no land mark), GEBCO stays out of the shallows (under 30 m). Depth is bilinear over the nodes present (under a quarter of the weight present = no
   depth). One colour scale (turquoise to blue): 0-30 m takes 60 % of it, deeper water a muted navy; GEBCO and other
   coarse pixels never take the shallow colours. A hillshade from each data tile (light from the north-west, more
-  exaggerated at coarse zooms) is interpolated with the depth; filled (interpolated) pixels are drawn a little darker.
+  exaggerated at coarse zooms) is interpolated with the depth, at 60 % strength on survey grids and 35 % on GEBCO and
+  other coarse pixels; filled (interpolated) pixels are drawn a little darker. Each map tile is sampled with a 3-pixel
+  apron read from its neighbouring data tiles, so depths, shading and contours join across tile edges; a tile drawn
+  before a neighbour arrived is drawn again when it lands. A new map tile tells the map it is ready only after its first
+  full draw (or after 2 s at most), so a zoom keeps the old tiles on screen instead of blinking to an empty map.
 - **Contours** on the same samples, smoothed twice: in metres or feet by the site's unit; at zoom 15 and closer every 1 m
   to 10 m, 2 m to 30 m, 10 m to 100 m (feet: 5 ft to 30 ft, 10 ft to 100 ft), sparser to zoom 10; below zoom 10 only
-  100, 500, 1,000 and 2,000 m (300, 1,500, 3,000 and 6,000 ft); never a line at 0 (the shoreline).
+  100, 500, 1,000 and 2,000 m (300, 1,500, 3,000 and 6,000 ft); never a line at 0 (the shoreline). GEBCO and other
+  coarse pixels always take the sparse levels (a 450-m grid holds no 1-m line); where they meet survey pixels no line
+  is drawn.
 - **Readout** from the same sampler as the drawn pixel: "18.4 ft · NOAA CUDEM 2021 · approximate", "· estimated" on filled
-  pixels, "~140 ft (GEBCO, regional estimate)", "dries at mean sea level".
-- **Panel.** The depth scale; "Sources here:" (the sources drawn in view, with year and grid size); "Approximate; not for
+  pixels, "~1,234 m (GEBCO, regional estimate)" (whole numbers from 100 up, thousands separators), "dries at mean sea
+  level"; the source is named by label ("NOAA CUDEM 1/9 arc-second (about 3 m)", "... 1/3 arc-second (about 10 m)").
+- **Panel.** The depth scale; "Sources here:" (the sources drawn in view, with year and grid size, each printed text
+  once; "loading…" while files are on the way; a note while a file a tile in view asked for is waiting out its retry);
+  "Approximate; not for
   navigation. Depth below mean sea level."; a transparency slider (20-100 % opacity, default 85 %, kept on the device as
   `allshore.bathyOpacity.v1`).
 - **Credit.** "Bathymetry: NOAA · GEBCO" by the sources in view (29 visible characters at most, else "Bathymetry: N
-  sources"), linking `/notice/bathy`: NOAA NCEI's CUDEM with its DOI and NOAA's not-an-official-product line, GEBCO's
-  citation, GSHHG, modified by Allshore Surf, not for navigation.
+  sources", "1 source"), linking `/notice/bathy`: CIRES and NOAA NCEI's CUDEM (1/9 and 1/3 arc-second) with its DOI and
+  NOAA's not-an-official-product line, GEBCO's citation with its DOI and its no-endorsement line, GSHHG, what Allshore
+  Surf changed (incl. GEBCO carried one or two cells onto its land), not for navigation.
 - **Tests.** `tests/overlay/bathy.test.js` on real tiles of the published `hawaii` and `gebco` sets
-  (`tests/fixtures/bathy`), with its own PNG reader for the readout = drawn-pixel checks.
+  (`tests/fixtures/bathy`), with its own PNG reader for the readout = drawn-pixel checks; `tests/overlay/bathy_v2.test.js`
+  on three v2 tiles built locally by the builder (`tests/fixtures/bathy/v2`: the land mark, the 1/3" fill, the apron
+  across tile edges, the ready rule, the GEBCO hold, the contour seam, the store's cap / retry / stall / Off).
 
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 

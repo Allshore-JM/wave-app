@@ -1,0 +1,88 @@
+{
+ "box": [
+  -158.3,
+  21.2,
+  -157.6,
+  21.75
+ ],
+ "built_utc": "2026-11-13T01:45:01Z",
+ "bytes": 98755996,
+ "count": 2762,
+ "digest": "93e901e53ad521be922cf467ba18c6b8d620464a47a681efe17f0f115fdac273",
+ "format": "bathy-v1",
+ "idx": {
+  "dir": "idx",
+  "zooms": [
+   11,
+   15
+  ]
+ },
+ "land_id": 30,
+ "levels": {
+  "10": {
+   "bits": "/wE=",
+   "h": 3,
+   "w": 3,
+   "x0": 61,
+   "y0": 448
+  },
+  "8": {
+   "bits": "AQ==",
+   "h": 1,
+   "w": 1,
+   "x0": 15,
+   "y0": 112
+  },
+  "9": {
+   "bits": "Dw==",
+   "h": 2,
+   "w": 2,
+   "x0": 30,
+   "y0": 224
+  }
+ },
+ "mhhw": 0.4,
+ "region": "hawaii",
+ "sources": {
+  "10": {
+   "credit": "NOAA NCEI Continuously Updated DEM (CUDEM), doi:10.25921/ds9v-ky35",
+   "datum": "LMSL (Hawaii local mean sea level)",
+   "licence": "public domain (NOAA)",
+   "name": "NOAA NCEI CUDEM 1/9 arc-second topobathy",
+   "res_m": 3,
+   "year": "2021"
+  },
+  "20": {
+   "credit": "NOAA NCEI Continuously Updated DEM (CUDEM), doi:10.25921/ds9v-ky35",
+   "datum": "LMSL (Hawaii local mean sea level)",
+   "licence": "public domain (NOAA)",
+   "name": "NOAA NCEI CUDEM 1/3 arc-second topobathy",
+   "res_m": 10,
+   "year": "2024"
+  }
+ },
+ "t10": [
+  "61_448",
+  "61_449",
+  "61_450",
+  "62_448",
+  "62_449",
+  "62_450",
+  "63_448",
+  "63_449",
+  "63_450"
+ ],
+ "tiles": {
+  "10": 9,
+  "11": 20,
+  "12": 68,
+  "13": 166,
+  "14": 539,
+  "15": 1946,
+  "8": 1,
+  "9": 4
+ },
+ "version": 2,
+ "zmax": 15,
+ "zmin": 8
+}

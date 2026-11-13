@@ -656,14 +656,17 @@ test('contour bands by zoom and unit; dry ground just under level 0; the lines a
   assert.equal(I.bathyLevel([0, 1, 2], -0.2), -0.2);
   assert.equal(I.bathyLevel([0, 2, 4], -1), -0.49);
   assert.equal(I.bathyLevel([0, 1, 2], -100), -0.49);
-  const W = 258, c = 129 * W + 129, far = 10 * W + 10;
+  // the lattice is the map tile plus BATHY_APRON pixels each side; the levels go to a 258 x 258 lattice (1-px apron)
+  const A = I.BATHY_APRON, W = 256 + 2 * A, c = 131 * W + 131, far = 12 * W + 12, M = 258, gc = 129 * M + 129, gfar = 10 * M + 10;
+  assert.equal(A, 3);
   for (const unit of ['US', 'Metric']) {
     const layer = new I.BathyLayer(); layer.unit = unit;
-    layer._D.fill(10); layer._D[c] = 30;
-    layer._contours({ x: 0, y: 0, z: 15 }, new Uint8ClampedArray(256 * 256 * 4));
+    layer._D.fill(10); layer._D[c] = 30; layer._PI.fill(0); layer._SF.fill(10);
+    layer._contours({ x: 0, y: 0, z: 15 }, new Uint8ClampedArray(256 * 256 * 4), [{ coarse: false }]);
     const per = unit === 'Metric' ? 1 : 3.28084, L = I.bathyLevels(15, unit);
-    assert.ok(Math.abs(layer._F[far] - I.bathyLevel(L, 10 * per)) < 1e-4, unit + ': flat water at its level');
-    assert.ok(layer._F[c] < I.bathyLevel(L, 30 * per) - 0.5, unit + ': the single deep node is smoothed down');
+    assert.ok(Math.abs(layer._G[gfar] - I.bathyLevel(L, 10 * per)) < 1e-4, unit + ': flat water at its level');
+    assert.ok(layer._G[gc] < I.bathyLevel(L, 30 * per) - 0.5, unit + ': the single deep node is smoothed down');
+    assert.ok(Math.abs(layer._F[far] - 10) < 1e-4 && layer._F[c] < 30, unit + ': F holds the smoothed depths');
   }
 });
 

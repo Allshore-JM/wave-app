@@ -134,7 +134,62 @@ test('a tile\'s paths: the pieces it meets, in tile pixels, per kind; world copi
   // sub-pixel steps dropped at a low zoom, every step kept at a high one
   const dense = I.decodeLines(encodeLines([[0, [[Array.from({ length: 50 }, (_, i) => D(10 + i * 0.001)), Array.from({ length: 50 }, () => D(10)), 0]]]]));
   assert.ok(I.tilePaths(tileOf(10, 10.02, 3), [dense], all, 0)[0][0].length < 10);
-  assert.equal(I.tilePaths(tileOf(10, 10.0245, 18), [dense], all, 300)[0][0].length, 100);
+  // at a high zoom every step inside the tile (grown by the margin) is kept, the line clipped where it leaves it
+  const tz = tileOf(10, 10.0245, 18), zn = 2 ** 18, oxz = tz.x * 256, keep = [];
+  for (let i = 0; i < 50; i++) { const x = I.lonToX(10 + i * 0.001) * zn - oxz; if (x > -300 && x < 556) keep.push(x); }
+  const zp = I.tilePaths(tz, [dense], all, 300)[0];
+  assert.equal(zp.length, 1);
+  assert.equal(zp[0].length, 2 * (keep.length + 2), 'every inner vertex and the two clipped ends');
+  assert.ok(Math.abs(zp[0][0] + 300) < 1e-6 && Math.abs(zp[0][zp[0].length - 2] - 556) < 1e-6, 'cut at the grown edges');
+  for (let i = 0; i < keep.length; i++) assert.ok(Math.abs(zp[0][2 + 2 * i] - keep[i]) < 1e-6);
+});
+
+test('a line is clipped to its tile (grown by CLIP_PX): no point beyond it, the part inside exact; one run each time it enters', () => {
+  assert.deepEqual(I.clipSegment(-10, 5, 10, 5, 0, 8), [0.5, 0.9]);
+  assert.equal(I.clipSegment(-10, -5, 10, -5, 0, 8), null, 'outside');
+  assert.deepEqual(I.clipSegment(2, 2, 3, 3, 0, 8), [0, 1], 'inside');
+  assert.equal(I.clipSegment(0, -1, 0, -1, 0, 8), null, 'a point outside');
+  // a long state line (zoom 0) from 30 N to 50 N along 100 W, seen by a zoom-10 tile at 40 N: only the tile's own part
+  const z = 10, n = 2 ** z, all = { 0: true, 1: true, 2: true };
+  const long = I.decodeLines(encodeLines([[1, [[[D(-100), D(-100), D(-99.95), D(-99.95)], [D(30), D(40), D(40.0001), D(50)], 0]]]]));
+  const t = tileOf(40, -100.01, z), lo = -I.CLIP_PX, hi = 256 + I.CLIP_PX;
+  const p = I.tilePaths(t, [long], all, 3)[1];
+  assert.ok(p && p.length >= 1);
+  p.forEach((pts) => { for (let i = 0; i < pts.length; i += 2) assert.ok(pts[i] >= lo - 1e-6 && pts[i] <= hi + 1e-6 && pts[i + 1] >= lo - 1e-6 && pts[i + 1] <= hi + 1e-6, 'inside the grown tile'); });
+  // its offset is the line's length before it, in tile px: from 30 N to where it enters the grown tile
+  const ent = p[0], y30 = I.latToY(30) * n - t.y * 256;
+  assert.ok(Math.abs(ent[1] - hi) < 1e-6 && Math.abs(ent[ent.length - 1] - lo) < 1e-6, 'it enters at the grown bottom edge and leaves at the grown top');
+  assert.ok(Math.abs(ent.off - (y30 - ent[1])) < 1e-6, "the length from the line's start (a straight north-south run)");
+  // a line that leaves and comes back: two runs, the second offset by the whole way round
+  const loop = I.decodeLines(encodeLines([[1, [[[D(-100.01), D(-100.01), D(-110), D(-110), D(-100.01), D(-100.01)], [D(40.001), D(40.002), D(40.002), D(40.003), D(40.003), D(40.004)], 0]]]]));
+  const lp = I.tilePaths(tileOf(40.0025, -100.01, 14), [loop], all, 3)[1];
+  assert.equal(lp.length, 2, 'out and back: two runs');
+  assert.ok(lp[1].off > lp[0].off + 2000, 'the second run starts after the long way round');
+});
+
+test("the dash pattern runs on across a tile edge: each tile's run starts at the line's own length there", () => {
+  // a dashed state line running east through two neighbouring zoom-12 tiles
+  const z = 12, all = { 0: true, 1: true, 2: true };
+  // (many vertices: each tile is entered several segments into the line, so its offset counts the segments before it)
+  const lons = [-100.2, -100.13, -100.07, -100.02, -99.98, -99.95, -99.91, -99.85, -99.7];
+  const line = I.decodeLines(encodeLines([[1, [[lons.map(D), lons.map(() => D(40.01)), 0]]]]));
+  const a = tileOf(40.01, -100.0, z), b = { z, x: a.x + 1, y: a.y };
+  const pa = I.tilePaths(a, [line], all, 3)[1][0], pb = I.tilePaths(b, [line], all, 3)[1][0];
+  // the same point (b's left edge minus CLIP_PX, in a's px = 256 - CLIP_PX + 256 ... ) seen from both tiles has one phase:
+  // phase(x) = off + (x - x_start) for a straight run, in each tile's own px
+  const xa0 = pa[0], xb0 = pb[0];
+  const atEdgeA = pa.off + (256 - xa0), atEdgeB = pb.off + (0 - xb0);
+  assert.ok(Math.abs(atEdgeA - atEdgeB) < 1e-6, 'the shared edge has the same dash phase in both tiles');
+  // the drawing sets each dashed run's offset before its stroke; a solid kind is one stroke
+  const calls = [];
+  const ctx = { set lineWidth(v) {}, set strokeStyle(v) {}, set lineJoin(v) {}, set lineCap(v) {}, set lineDashOffset(v) { calls.push(['o', v]); },
+    setLineDash(d) { calls.push(['d', d.join(',')]); }, beginPath() {}, moveTo() {}, lineTo() {}, stroke() { calls.push(['stroke']); } };
+  const r1 = [0, 0, 5, 5]; r1.off = 12; const r2 = [6, 6, 9, 9]; r2.off = 40;
+  I.drawTile(ctx, { 0: [[0, 0, 10, 10], [1, 1, 2, 2]], 1: [r1, r2] });
+  const strokes = calls.filter((c) => c[0] === 'stroke').length;
+  assert.equal(strokes, 2 * (2 + 1), 'states: one stroke a run; the border: one stroke for both runs; twice (halo, core)');
+  const offs = calls.filter((c) => c[0] === 'o').map((c) => c[1]);
+  assert.deepEqual(offs, [12, 40, 12, 40, 0], 'each state run at its own offset, both passes; reset at the end');
 });
 
 test('the drawing: halos of every kind first, then the cores; countries over states; disputed and state lines dashed', () => {

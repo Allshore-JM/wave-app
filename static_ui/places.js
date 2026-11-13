@@ -406,12 +406,31 @@
   }
   // A line shows from its own Natural Earth zoom: tile zoom z serves map zooms below z + 0.5.
   function lineShown(mz10, z) { return mz10 < z * 10 + 5; }
+  // A line is clipped to its tile grown by this many px (the halo's half width and its round cap stay inside it).
+  var CLIP_PX = 4;
+  // The part of segment (x0, y0)-(x1, y1) inside the square [lo, hi] x [lo, hi], as [t0, t1] along it, or null.
+  function clipSegment(x0, y0, x1, y1, lo, hi) {
+    var dx = x1 - x0, dy = y1 - y0, t0 = 0, t1 = 1;
+    var p = [-dx, dx, -dy, dy], q = [x0 - lo, hi - x0, y0 - lo, hi - y0];
+    for (var i = 0; i < 4; i++) {
+      if (p[i] === 0) { if (q[i] < 0) return null; continue; }
+      var r = q[i] / p[i];
+      if (p[i] < 0) { if (r > t1) return null; if (r > t0) t0 = r; }
+      else { if (r < t0) return null; if (r < t1) t1 = r; }
+    }
+    return [t0, t1];
+  }
   // The polylines of a tile as tile-local CSS px, per kind: pieces whose box meets the tile (grown by `margin` px) at
   // the tile's wrapped world x, lines of the kinds wanted and shown at this zoom; a segment wider than half the world
-  // (none after the builder's cut at +-180) is never drawn.
+  // (none after the builder's cut at +-180) is never drawn. Each line is clipped to the tile grown by max(margin,
+  // CLIP_PX) px, so a tile draws only its own part of a line: drawing the whole of every line in a 10-degree piece on
+  // every tile asked the GPU for thousands of dashes a tile where state lines are dense (0.4-0.9-s stalls at Puerto
+  // Rico). A run carries `off`: the line's length in tile px before the run starts, the dash offset that keeps the dash
+  // pattern continuous across tile edges.
   function tilePaths(coords, sets, kinds, margin) {
     var n = Math.pow(2, coords.z), scale = n, xw = ((coords.x % n) + n) % n, ox = xw * TILE, oy = coords.y * TILE;
     var m = (margin || 0) / n, bx0 = xw * TILE / n - m, bx1 = (xw + 1) * TILE / n + m, by0 = coords.y * TILE / n - m, by1 = (coords.y + 1) * TILE / n + m;
+    var grow = Math.max(margin || 0, CLIP_PX), lo = -grow, hi = TILE + grow;
     var out = {}, half = TILE / 2;
     for (var s = 0; s < sets.length; s++) {
       var c = sets[s];
@@ -422,28 +441,48 @@
         if (c.box[b + 2] < bx0 || c.box[b] > bx1 || c.box[b + 3] < by0 || c.box[b + 1] > by1) continue;
         for (var l = c.lineStart[p]; l < c.lineStart[p + 1]; l++) {
           if (!lineShown(c.mz[l], coords.z)) continue;
-          var v0 = c.vertStart[l], v1 = c.vertStart[l + 1], pts = [], lx = NaN, ly = NaN;
-          for (var v = v0; v < v1; v++) {
-            var wx = c.xy[2 * v], wy = c.xy[2 * v + 1];
-            if (v > v0 && Math.abs(wx - c.xy[2 * v - 2]) > half) { if (pts.length >= 4) (out[k] = out[k] || []).push(pts); pts = []; lx = NaN; }
-            var x = wx * scale - ox, y = wy * scale - oy;
-            if (Math.abs(x - lx) < 0.25 && Math.abs(y - ly) < 0.25) continue;      // sub-pixel steps add nothing
-            pts.push(x, y); lx = x; ly = y;
+          var v0 = c.vertStart[l], v1 = c.vertStart[l + 1], pts = null, lx = NaN, ly = NaN, cum = 0;
+          var px = c.xy[2 * v0] * scale - ox, py = c.xy[2 * v0 + 1] * scale - oy;
+          for (var v = v0 + 1; v < v1; v++) {
+            var x = c.xy[2 * v] * scale - ox, y = c.xy[2 * v + 1] * scale - oy;
+            if (Math.abs(c.xy[2 * v] - c.xy[2 * v - 2]) > half) {             // across the world: never drawn
+              if (pts && pts.length >= 4) (out[k] = out[k] || []).push(pts);
+              pts = null; px = x; py = y; continue;
+            }
+            var dx = x - px, dy = y - py, len = Math.sqrt(dx * dx + dy * dy), t = clipSegment(px, py, x, y, lo, hi);
+            if (t) {
+              if (!pts || t[0] > 0) {                                           // the line enters the tile here
+                if (pts && pts.length >= 4) (out[k] = out[k] || []).push(pts);
+                pts = [px + t[0] * dx, py + t[0] * dy]; pts.off = cum + t[0] * len; lx = pts[0]; ly = pts[1];
+              }
+              var ex = px + t[1] * dx, ey = py + t[1] * dy;
+              if (!(Math.abs(ex - lx) < 0.25 && Math.abs(ey - ly) < 0.25)) { pts.push(ex, ey); lx = ex; ly = ey; }   // sub-pixel steps add nothing
+              if (t[1] < 1) { if (pts.length >= 4) (out[k] = out[k] || []).push(pts); pts = null; }                    // and leaves it
+            } else if (pts) { if (pts.length >= 4) (out[k] = out[k] || []).push(pts); pts = null; }
+            cum += len; px = x; py = y;
           }
-          if (pts.length >= 4) (out[k] = out[k] || []).push(pts);
+          if (pts && pts.length >= 4) (out[k] = out[k] || []).push(pts);
         }
       }
     }
     return out;
   }
-  function strokePaths(ctx, list) {
-    ctx.beginPath();
-    for (var i = 0; i < list.length; i++) {
-      var pts = list[i];
-      ctx.moveTo(pts[0], pts[1]);
-      for (var j = 2; j < pts.length; j += 2) ctx.lineTo(pts[j], pts[j + 1]);
+  function tracePath(ctx, pts) {
+    ctx.moveTo(pts[0], pts[1]);
+    for (var j = 2; j < pts.length; j += 2) ctx.lineTo(pts[j], pts[j + 1]);
+  }
+  // A solid kind is one path; a dashed kind one stroke a run, each starting the pattern at the run's own offset.
+  function strokePaths(ctx, list, dashed) {
+    if (!dashed) {
+      ctx.beginPath();
+      for (var i = 0; i < list.length; i++) tracePath(ctx, list[i]);
+      ctx.stroke();
+      return;
     }
-    ctx.stroke();
+    for (var r = 0; r < list.length; r++) {
+      ctx.lineDashOffset = list[r].off || 0;
+      ctx.beginPath(); tracePath(ctx, list[r]); ctx.stroke();
+    }
   }
   // halos first (every kind), then the cores, so a core is never covered by another line's halo
   function drawTile(ctx, paths) {
@@ -455,10 +494,10 @@
         var st = STYLE[k];
         ctx.setLineDash(st.dash || []);
         ctx.lineWidth = pass ? st.core : st.halo; ctx.strokeStyle = pass ? st.coreInk : st.haloInk;
-        strokePaths(ctx, list);
+        strokePaths(ctx, list, !!st.dash);
       }
     }
-    ctx.setLineDash([]);
+    ctx.setLineDash([]); ctx.lineDashOffset = 0;
   }
 
   // ---- the labels ----
@@ -762,7 +801,7 @@
                   LABEL_PANE_Z: LABEL_PANE_Z, BLOCKED_SELECTOR: BLOCKED_SELECTOR,
                   CREDIT_BORDERS: CREDIT_BORDERS, CREDIT_PLACES: CREDIT_PLACES,
                   lonToX: lonToX, latToY: latToY, yToLat: yToLat, decodeLines: decodeLines, decodePlaces: decodePlaces, readVarints: readVarints, unzz: unzz, validIndex: validIndex,
-                  cellName: cellName, cellsForBox: cellsForBox, cellsForTile: cellsForTile, PlacesStore: PlacesStore, kindsAt: kindsAt, lineShown: lineShown, tilePaths: tilePaths,
+                  cellName: cellName, cellsForBox: cellsForBox, cellsForTile: cellsForTile, PlacesStore: PlacesStore, kindsAt: kindsAt, lineShown: lineShown, tilePaths: tilePaths, clipSegment: clipSegment, CLIP_PX: CLIP_PX,
                   drawTile: drawTile, placeShown: placeShown, candidatesFor: candidatesFor, thin: thin, readOn: readOn, writeOn: writeOn }
   };
 })(typeof window !== 'undefined' ? window : this);

@@ -4073,6 +4073,7 @@
   var BATHY_DEEP = [200, 1000];                            // survey water deeper than 200 m eases to GEBCO's exaggeration cap and weight, fully past 1,000 m (G61 re-check R-1)
   var BATHY_APRON = 3;                                     // lattice pixels sampled past the map tile on each side (two smoothing passes + the contour's neighbours: G61 A4)
   var BATHY_SLICE_MS = 12;                                // drawing in one task at most when the page is busy (then a paint and the input in between)
+  var BATHY_FRAME_FALLBACK_MS = 100;                     // a busy page's next slice waits for the next frame, or this long when none comes (a hidden tab)
   var BATHY_COST_MS = 10;                                 // a tile's first drawing-time guess (then the running average)
   var BATHY_DONE_MS = 2000;                                // a tile tells the map it is ready after its first full draw, or after this at most (no blank on zoom: G61 B-8)
   var MAX_BATHY_BYTES = 32 * 1024 * 1024;                  // decoded tiles kept (LRU); the ones in view never go
@@ -4796,15 +4797,36 @@
       if (drew && this.onRedraw) this.onRedraw();
     },
     // soon: the page is busy (the idle callback ran out of patience, or a slice just ended without idle time), so the next
-    // slice comes in a task of its own right away rather than after another idle wait.
+    // slice comes after the next frame (a task posted from the animation frame runs once the frame is painted; the
+    // fallback timer when no frame comes) rather than after another idle wait. Not straight after the slice: Chrome ran 32
+    // such slices back to back during a long pinch without painting a frame (a 0.93-s stall on the test site).
     _queueStale: function (soon) {
       var self = this;
       if (this._staleQ) return;
       var run = function (dl) { self._staleQ = null; self._drawStale(false, dl); };
+      if (soon && typeof requestAnimationFrame === 'function') {
+        var q = this._staleQ = {};
+        var after = function () {                                  // the first of the frame and the fallback
+          if (self._staleQ !== q || q.timer !== undefined) return;
+          if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(q.raf);
+          clearTimeout(q.fall);
+          q.timer = setTimeout(run, 0);
+        };
+        q.raf = requestAnimationFrame(after); q.fall = setTimeout(after, BATHY_FRAME_FALLBACK_MS);
+        return;
+      }
       this._staleQ = soon || typeof requestIdleCallback !== 'function' ? { timer: setTimeout(run, 0) }
         : { idle: requestIdleCallback(run, { timeout: STALE_MAX_MS }) };
     },
-    _cancelStale: ModelGridLayer.prototype._cancelStale,
+    _cancelStale: function () {
+      var q = this._staleQ;
+      if (!q) return;
+      this._staleQ = null;
+      if (q.raf !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(q.raf);
+      if (q.fall !== undefined) clearTimeout(q.fall);
+      if (q.timer !== undefined) clearTimeout(q.timer);
+      if (q.idle !== undefined && typeof cancelIdleCallback === 'function') cancelIdleCallback(q.idle);
+    },
     onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
     _removeTile: function (key) {
       var t = this._tiles[key];
@@ -9622,7 +9644,7 @@
       parseBathyIdx: parseBathyIdx, BathyStore: BathyStore, bathyStore: bathyStore, BathyLayer: BathyLayer, bathyAxes: bathyAxes, bathyShade: bathyShade,
       bathyPos: bathyPos, bathyPieces: bathyPieces, bathySample: bathySample, bathyLevels: bathyLevels, bathyLevel: bathyLevel, bathySmooth: bathySmooth,
       bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyNum: bathyNum, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
-      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, BATHY_SLICE_MS: BATHY_SLICE_MS, BATHY_COST_MS: BATHY_COST_MS, bathyReady: bathyReady, bathyForget: bathyForget, bathyDeep: bathyDeep, bathyWeight: bathyWeight, BATHY_DEEP: BATHY_DEEP,
+      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, BATHY_SLICE_MS: BATHY_SLICE_MS, BATHY_COST_MS: BATHY_COST_MS, BATHY_FRAME_FALLBACK_MS: BATHY_FRAME_FALLBACK_MS, bathyReady: bathyReady, bathyForget: bathyForget, bathyDeep: bathyDeep, bathyWeight: bathyWeight, BATHY_DEEP: BATHY_DEEP,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
       radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,

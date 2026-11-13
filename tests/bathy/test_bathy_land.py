@@ -433,16 +433,18 @@ def test_every_published_region_has_good_ids():
             assert {s["key"].split("-")[0] for s in reg["srcs"]} == {"cudem", "cudem3"}
 
 
-def test_a_block_of_land_only_keeps_its_land_at_coarser_zooms(tmp_path, monkeypatch):
-    """A finest-zoom block holding land only (here a pond not joined to the sea: low ground, so pass 2 reads it) saves its
-    core, so the coarser tile over it and its watery neighbour marks that land. z9 tile 30 = 158.906-158.203 W."""
+def _land_box(tmp_path, monkeypatch, pond, land_m):
+    """Land west of 158.05 W at `land_m` above the sea, open deep sea east of it; with `pond`, a low pond (not joined to
+    the sea) in z9 tile 30 (158.906-158.203 W). Built as region "lnd" (zmax 12, so tile 30 is one finest-zoom block)."""
     w, e, s, n, res = -158.25, -158.0, 21.20, 21.24, 0.0004      # open sea south-west of Oahu on GSHHG
     width, height = int(round((e - w) / res)), int(round((n - s) / res))
     lons = w + (np.arange(width) + 0.5) * res
     lats = n - (np.arange(height) + 0.5) * res
     lo, la = np.meshgrid(lons, lats)
-    data = np.where(lo < -158.05, 5.0, -60.0)              # land west of 158.05 W, open (deep) sea east of it
-    data = np.where((lo > -158.24) & (lo < -158.22), -3.0, data).astype(np.float32)   # the pond, in tile 30's part
+    data = np.where(lo < -158.05, land_m, -60.0)
+    if pond:
+        data = np.where((lo > -158.24) & (lo < -158.22), -3.0, data)
+    data = data.astype(np.float32)
     path = str(tmp_path / "l.tif")
     with rasterio.open(path, "w", driver="GTiff", width=width, height=height, count=1, dtype="float32",
                        crs="EPSG:4326", transform=from_origin(w, n, res, res), nodata=-9999.0) as d:
@@ -452,14 +454,89 @@ def test_a_block_of_land_only_keeps_its_land_at_coarser_zooms(tmp_path, monkeypa
     monkeypatch.setitem(S.REGIONS, "lnd", dict(box=(w, s, e, n), sources=["lnd"], mhhw=0.4, zmin=7, prio=10))
     B._core.cache_clear()
     B.build("lnd", str(tmp_path / "out"), version=1, workers=1, local={"lnd": path})
-    out = os.path.join(str(tmp_path / "out"), "lnd", "v1")
-    x, y = T.tile_of(-158.23, 21.22, 8)
-    t = _tile(out, 8, x, y)
-    assert t is not None
-    code, sf = t
-    x0, y0, x1, y1 = T.tile_bounds(8, x, y)
-    p = (x1 - x0) / T.TILE
-    i = int((T.lonlat_to_xy(-158.23, 21.22)[0] - x0) / p) + 1               # +1: the apron
-    j = int((y1 - T.lonlat_to_xy(-158.23, 21.22)[1]) / p) + 1
-    assert code[j, i] == 0 and sf[j, i] == LAND
     B._core.cache_clear()
+    return os.path.join(str(tmp_path / "out"), "lnd", "v1")
+
+
+def _pixel(out, z, lon, lat):
+    x, y = T.tile_of(lon, lat, z)
+    t = _tile(out, z, x, y)
+    assert t is not None, (z, x, y)
+    code, sf = t
+    x0, y0, x1, y1 = T.tile_bounds(z, x, y)
+    p = (x1 - x0) / T.TILE
+    i = int((T.lonlat_to_xy(lon, lat)[0] - x0) / p) + 1               # +1: the apron
+    j = int((y1 - T.lonlat_to_xy(lon, lat)[1]) / p) + 1
+    return int(code[j, i]), int(sf[j, i])
+
+
+@pytest.mark.parametrize("pond", [True, False])
+@pytest.mark.parametrize("land_m", [5.0, 50.0])
+def test_a_block_of_land_only_keeps_its_land_at_coarser_zooms(tmp_path, monkeypatch, pond, land_m):
+    """A finest-zoom block holding land only saves its land for the coarser zooms: with a pond (low ground, read by pass 2)
+    and without one (high land only, no low pixel: G61b F1, it used to read "outside" there). Land at +50 m clips to the
+    code's top (+10 m, code 1) and is still land (G61b F5: no test had land above +10 m)."""
+    out = _land_box(tmp_path, monkeypatch, pond, land_m)
+    for z in (7, 8):
+        for lon in (-158.245, -158.23, -158.21):
+            assert _pixel(out, z, lon, 21.22) == (0, LAND), (z, lon)
+    # no tile of its own at its zooms (no water there), and the build checks clean
+    assert _tile(out, 9, *T.tile_of(-158.23, 21.22, 9)) is None
+    assert B.check(out, log_fn=lambda *a: None) == 0
+
+
+def test_save_land_core_keeps_nothing_for_an_empty_block(tmp_path):
+    reg = {"work": str(tmp_path), "zmax": 12}
+    B.save_land_core(reg, (30, 200), np.zeros((T.TILE * 8, T.TILE * 8), np.uint16))
+    assert not os.path.exists(os.path.join(str(tmp_path), "c"))
+    core = np.zeros((T.TILE * 8, T.TILE * 8), np.uint16)
+    core[:16, :16] = 1                                        # +10 m and above: code 1, still land
+    B.save_land_core(reg, (30, 200), core)
+    with np.load(os.path.join(str(tmp_path), "c", "9", "30_200.npz")) as f:
+        assert (f["src"][:2, :2] == LAND).all() and (f["src"][2:, :] == 0).all() and (f["code"] == 0).all()
+
+
+def test_read_field_averages_a_finer_grid(tmp_path, monkeypatch):
+    """A source finer than the block's pixels is averaged, not point-sampled (G61b F5): stripes of -10 m and -30 m two
+    metres wide read about -20 m in every pixel; bilinear sampling would scatter them between -10 and -30."""
+    w, s, step = -158.02, 21.20, 0.00002
+    width, height = 1000, 1000
+    lo = w + (np.arange(width) + 0.5) * step
+    row = np.where((np.arange(width) // 1) % 2 == 0, -10.0, -30.0).astype(np.float32)
+    data = np.tile(row, (height, 1))
+    path = str(tmp_path / "f.tif")
+    with rasterio.open(path, "w", driver="GTiff", width=width, height=height, count=1, dtype="float32",
+                       crs="EPSG:4326", transform=from_origin(w, s + height * step, step, step), nodata=-9999.0) as d:
+        d.write(data, 1)
+    monkeypatch.setitem(S.SOURCES, "fine", dict(S.CUDEM, id=10, zmax=12, res_m=1, year="2099", path="f.tif",
+                                                 datum="test", name="fine", credit="test", licence="test"))
+    monkeypatch.setitem(S.REGIONS, "fine", dict(box=(w, s, w + width * step, s + height * step), sources=["fine"],
+                                                 mhhw=0.4, zmin=7, prio=10))
+    B.gdal_env()
+    reg = B.region_config("fine", local={"fine": path})
+    key = T.tile_of(w + 0.01, s + 0.01, reg["zmax"] - B.BLOCK_LEVELS)
+    elev, src = B.read_field(reg, key)
+    inner = elev[np.isfinite(elev)]
+    assert inner.size > 100 and lo.size == width
+    core = np.sort(inner)[inner.size // 10: -inner.size // 10]      # pixels half on the grid's edge left out
+    assert abs(float(np.median(core)) + 20.0) < 0.5
+    assert float(core.std()) < 1.5
+
+
+def test_check_holds_tiles_to_their_sources_earned_zooms(tmp_path, monkeypatch):
+    """check() refuses a tile at a zoom no water pixel's source earns (G61b F6); an index without the zoom rules (v1)
+    is not held to it."""
+    import json
+    out = _land_box(tmp_path, monkeypatch, False, 5.0)
+    assert B.check(out, log_fn=lambda *a: None) == 0
+    p = os.path.join(out, "index.json")
+    index = json.load(open(p))
+    assert index["sources"]["10"]["zmax"] == 12 and index["sources"]["10"]["deep"] is None
+    index["sources"]["10"]["zmax"] = 11
+    json.dump(index, open(p, "w"))
+    lines = []
+    assert B.check(out, log_fn=lines.append) > 0
+    assert any("no water pixel whose source earns zoom 12" in l for l in lines)
+    del index["sources"]["10"]["zmax"]
+    json.dump(index, open(p, "w"))
+    assert B.check(out, log_fn=lambda *a: None) == 0

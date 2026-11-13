@@ -1522,7 +1522,10 @@ depths are below mean sea level with no offsets.
   above high water or a pond; no "outside" pixel at Diamond Head, Koko Head or Kaneohe.
 
 Deviations from the plan's text, on record: the depth code above 2,500 m (2.5-m steps); the feather between sources and the
-tile-edge parity rule wait for stage 1b (stage 1a has one source per region, so no seams between sources); GEBCO's "filled"
+tile-edge parity rule wait for stage 1b. Two seams show meanwhile (G61b, on record): where NOAA's 1/9" grid ends and the
+1/3" grid fills (a faint straight line in deep water: the 1/3" grid reads a median 0.3-0.7 m deeper below 30 m, so the
+step across the seam is a median 1 m at 30-100 m and 2.3 m at 100-300 m), and between neighbouring tiles drawn from
+different data zooms (each zoom's shading has its own exaggeration, so the relief texture changes along a tile line); GEBCO's "filled"
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
 bundle GDAL) instead of the publishers' micromamba environment.
 

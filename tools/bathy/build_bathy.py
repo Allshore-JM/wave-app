@@ -226,6 +226,20 @@ def read_field(reg, key):
     return elev, src_id
 
 
+def save_land_core(reg, key, core):
+    """A block with no low pixel (high land only, G61b F1): no tile of its own, but its land is the region's land at the
+    coarser zooms, so its core at the block zoom is kept as a land-only core (the coarser levels never write a tile
+    without water). A block with no value at all keeps nothing."""
+    if not (core > 0).any():
+        return
+    depth = np.full(core.shape, np.nan, np.float32)
+    src = np.where(core > 0, T.LAND_ID, 0).astype(np.uint8)
+    for _ in range(BLOCK_LEVELS):
+        depth, src = T.pool2(depth, src)
+    if (src == T.LAND_ID).any():
+        save_core(reg["work"], reg["zmax"] - BLOCK_LEVELS, key[0], key[1], depth, src)
+
+
 def _work_path(reg, key):
     return os.path.join(reg["work"], "b_%d_%d.npz" % key)
 
@@ -240,6 +254,7 @@ def pass1(args):
     core = code[MARGIN:MARGIN + px, MARGIN:MARGIN + px]
     low = W.low_of(core, reg["mhhw"])
     if not low.any():
+        save_land_core(reg, key, core)
         return key, None
     np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
     return key, W.summarise(low, W.deep_of(core))
@@ -773,7 +788,8 @@ def write_index(reg, out, version):
     with open(os.path.join(out, "LICENSE.txt"), "w", encoding="utf-8") as f:
         f.write(licence_text(reg))
     digest, count, size = file_digest(out)
-    sources = {str(s["id"]): {k: s[k] for k in ("name", "year", "res_m", "datum", "licence", "credit")}
+    sources = {str(s["id"]): dict({k: s[k] for k in ("name", "year", "res_m", "datum", "licence", "credit", "zmax")},
+                                  deep=list(s["deep"]) if s.get("deep") else None)
                for s in reg["srcs"]}
     index = {
         "format": FORMAT, "region": reg["name"], "version": version, "land_id": T.LAND_ID,
@@ -819,6 +835,10 @@ def check(out, log_fn=print):
         problems.append("format %r" % index.get("format"))
     found = scan_tiles(out)
     ids = {int(k) for k in index.get("sources", {})}
+    tables = None
+    if index.get("sources") and all("zmax" in s for s in index["sources"].values()):
+        tables = zoom_tables({"srcs": [dict(id=int(k), zmax=s["zmax"], deep=s.get("deep"))
+                                       for k, s in index["sources"].items()]})
     for z, tiles in sorted(found.items()):
         if not (index["zmin"] <= z <= index["zmax"]):
             problems.append("zoom %d outside %d-%d" % (z, index["zmin"], index["zmax"]))
@@ -841,6 +861,10 @@ def check(out, log_fn=print):
                 problems.append("%d/%d/%d: unknown source ids %s" % (z, x, y, sorted(bad)))
             if not (code[1:-1, 1:-1] > 0).any():
                 problems.append("%d/%d/%d: no water inside the tile" % (z, x, y))
+            elif tables is not None:
+                c = code[1:-1, 1:-1]
+                if not earns(np.where(c > 0, T.DECODE[c], np.nan), sf[1:-1, 1:-1], tables, z).any():
+                    problems.append("%d/%d/%d: no water pixel whose source earns zoom %d" % (z, x, y, z))
     if {str(z): len(v) for z, v in sorted(found.items())} != index.get("tiles"):
         problems.append("tile counts differ from the index")
     levels, idx = presence(found, index["zmin"], index["zmax"])

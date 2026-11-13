@@ -108,5 +108,37 @@ and passes alone 3/3; untouched code); pytest builder + flag + page 109 passed, 
 section-63 trickle test (`test_capped_fetch_cuts_a_trickle_smaller_than_one_chunk`, a local socket read timing out under
 load; untouched code; passes alone 6 of 8 with a review agent running beside it).
 
-Still to do: one fresh reviewer on the builder (4eadaa4); then the job-only merge and the v2 uploads (each with the owner's
-go-ahead); then the client on the test site against v2 and a short re-check; then the site merge.
+## G61b: one fresh reviewer on the data v2 builder (4eadaa4)
+
+0 P0, 0 P1, 1 P2, 6 P3. Held up: tests 124; four real boxes (Diamond Head + Koko Head, Kaho'olawe, Tutuila north, Tumon)
+read back with the reviewer's own code: 0 water / land / outside mismatches at zooms 12-15, depth median 3-7 mm (max
+5.0 cm, half a code step), every source right, 0 apron mismatches, the 1/3" grid filling every 1/9" gap there; every file
+the six 1/3" VRTs name exists, the grown boxes match the 1/3" extents; the GEBCO shore fill = a whole-world fill on
+synthetic worlds (date line, poles, tile corners, 3 steps: max 0.1 m); its mutants 25 of 29 killed (2 = F5, 1
+equivalent, 1 its own syntax error).
+
+- **F1 (P2), fixed.** A finest-zoom block with no pixel at or below MHHW (high land only) was dropped in pass 1, so its
+  land read "outside" at every coarser zoom and the client let GEBCO show there (Koko Head's failure again). The author's
+  test had a pond in that block. Now `save_land_core` keeps such a block's land, pooled to the block zoom, as a land-only
+  core (never a tile). Real data, central Oahu box (158.12-157.95 W, 21.38-21.52 N), pixels inside the box at zooms 8 /
+  9 / 10 / 11: before 223 / 922 / 3,519 / 1,533 land and 614 / 2,488 / 9,888 / 28,032 outside; after 837 / 3,410 /
+  13,407 / 29,565 land and 0 outside.
+- **F2 (P3), recorded.** The 1/9"-1/3" seam (21.25 N off Diamond Head) shows as a faint straight line in deep water: below
+  30 m the 1/3" grid reads a median 0.3-0.7 m deeper, so the step across the seam is a median 1.0 m at 30-100 m and 2.3 m
+  at 100-300 m (0.13-0.3 m between ordinary rows). A feather between the grids waits for stage 1b. The README's "one
+  source per region, so no seams" is corrected.
+- **F3 (P3), recorded for the owner.** Neighbouring map tiles at zoom 15 can be drawn from data zooms 15, 14 and 13 (a
+  tile is written only at the zooms its sources earn); each data zoom's shading has its own exaggeration, so the relief
+  texture changes along a straight tile line (shade spread 4.6 vs 15.6 across one edge). README.
+- **F4 (P3), fixed.** The 1/3" sources' years were the bucket's upload years (2024 / 2026); now the files' own versions
+  (Hawaii and Samoa 2021, Guam, CNMI, PR, USVI 2022), as for the 1/9" sources.
+- **F5 (P3), fixed.** Tests: land at +50 m (above the code's +10 m clip) through both paths (with and without a pond), and
+  a finer grid averaged, not point-sampled (stripes of -10 / -30 m read -20 m).
+- **F6 (P3), fixed.** The index names each source's `zmax` and `deep` rule, and `check()` refuses a tile at a zoom no water
+  pixel's source earns (an index without the rules, v1, is not held to it).
+
+Fix round: tests/bathy 130 + tls / ci pins 149 passed; 8 mutants of the fixes, 7 killed (the empty-block early return is
+equivalent: an empty block pools to no land, which the save already checks).
+
+Still to do: the job-only merge of the builder and the v2 uploads (each with the owner's go-ahead); then the client on
+the test site against v2 and a short re-check; then the site merge.

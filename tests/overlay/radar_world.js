@@ -68,7 +68,7 @@ function world(opts) {
   };
   g.window = g; g.addEventListener = on('win'); g.removeEventListener = off('win');
   const fn = new Function('L', 'document', 'sessionStorage', 'fetch', 'window', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'AbortController', 'DecompressionStream', 'TextDecoder', 'Response', 'requestAnimationFrame', 'cancelAnimationFrame', src);
-  fn(g.L, g.document, g.sessionStorage, g.fetch, g, g.setTimeout, g.clearTimeout, g.setInterval, g.clearInterval, AbortController, DecompressionStream, TextDecoder, Response, undefined, undefined);
+  fn(g.L, g.document, g.sessionStorage, g.fetch, g, g.setTimeout, g.clearTimeout, g.setInterval, g.clearInterval, AbortController, DecompressionStream, TextDecoder, Response, opts.raf, opts.caf);
   w.I = g.AllshoreOverlay._internals; w.AO = g.AllshoreOverlay; w.g = g;
   w.answer = (re, body, status) => {
     const h = w.held.find((x) => !x.done && re.test(x.url));

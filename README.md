@@ -1529,7 +1529,7 @@ different data zooms (each zoom's shading has its own exaggeration, so the relie
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
 bundle GDAL) instead of the publishers' micromamba environment.
 
-### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.4)
+### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.5)
 
 `BATHY_OVERLAY=1` adds "Bathymetry" to the overlay dropdown: an observation kind like SST and radar (no player, no model
 choice, the imagery under it). Unset, the page is unchanged.
@@ -1558,9 +1558,11 @@ choice, the imagery under it). Unset, the page is unchanged.
   full draw (or after 2 s at most), so a zoom keeps the old tiles on screen instead of blinking to an empty map.
 - **Drawing time.** Tiles are drawn in short slices, the tiles in view first: in the page's idle time while the idle
   period has room for another tile (a running average of the tile's cost, about 5-30 ms); when the page stays busy
-  past the idle callback's 500-ms limit (a pinch zoom), in back-to-back tasks of at most 12 ms of drawing (one tile
-  at least), so frames and input get through between them. Asset 2.27.3 drew every waiting tile in that one task
-  (48 tiles in 0.8 s at San Juan: the freeze seen around Puerto Rico).
+  past the idle callback's 500-ms limit (a pinch zoom), in slices of at most 12 ms of drawing (one tile at least),
+  one slice per screen frame: each slice runs in a task posted from the next animation frame, after that frame is
+  painted (a 100-ms timer instead when no frame comes, as in a hidden tab). Asset 2.27.3 drew every waiting tile in
+  that one task (48 tiles in 0.8 s at San Juan: the freeze seen around Puerto Rico); 2.27.4's back-to-back slices still
+  let Chrome go 0.9 s without painting during a long pinch.
 - **Contours** on the same samples, smoothed twice: in metres or feet by the site's unit; at zoom 15 and closer every 1 m
   to 10 m, 2 m to 30 m, 10 m to 100 m (feet: 5 ft to 30 ft, 10 ft to 100 ft), sparser to zoom 10; below zoom 10 only
   100, 500, 1,000 and 2,000 m (300, 1,500, 3,000 and 6,000 ft); never a line at 0 (the shoreline). GEBCO and other

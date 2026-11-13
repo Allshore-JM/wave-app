@@ -748,3 +748,80 @@ test('the queue: soon = a task of its own (setTimeout), otherwise an idle callba
     layer._cancelStale();
   } finally { globalThis.requestIdleCallback = had; globalThis.cancelIdleCallback = hadC; }
 });
+
+// 2.27.5: on a busy page the next slice waits for the next frame (a task posted from the animation frame runs once the
+// frame is painted), never straight after the slice before it: Chrome ran 32 back-to-back 2.27.4 slices during one long
+// pinch without painting a frame (a 0.93-s stall). Without a frame (a hidden tab) a fallback timer posts it instead.
+function framed() {
+  const frames = [], cancelled = [];
+  let id = 0;
+  const w = world({ raf: (f) => { frames.push({ id: ++id, f }); return id; }, caf: (i) => { cancelled.push(i); } });
+  const layer = new w.I.BathyLayer(), ran = [];
+  layer._drawStale = (inView, dl) => { ran.push(dl); };
+  return { w, layer, frames, cancelled, ran };
+}
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+test('a busy slice waits for the next frame, then runs in a task of its own after it; one queued at a time', async () => {
+  const s = framed();
+  s.layer._queueStale(true);
+  assert.equal(s.frames.length, 1, 'one animation frame asked'); assert.ok(s.layer._staleQ.raf !== undefined);
+  assert.equal(s.layer._staleQ.timer, undefined, 'no task before the frame');
+  s.layer._queueStale(true); s.layer._queueStale(); assert.equal(s.frames.length, 1, 'one queued run at a time');
+  await tick(5); assert.equal(s.ran.length, 0, 'nothing runs until the frame');
+  s.frames[0].f(16);
+  assert.ok(s.layer._staleQ.timer !== undefined, 'the frame posts the task'); assert.equal(s.ran.length, 0, 'not on the frame itself');
+  await tick(5);
+  assert.equal(s.ran.length, 1, 'the slice ran after the frame'); assert.equal(s.layer._staleQ, null);
+  await tick(120); assert.equal(s.ran.length, 1, 'the fallback timer was cancelled by the frame');
+  s.frames[0].f(32); await tick(5); assert.equal(s.ran.length, 1, 'a late second call of the frame callback does nothing');
+  s.layer._queueStale(true); s.frames[1].f(48); s.frames[1].f(49); await tick(5);
+  assert.equal(s.ran.length, 2, 'the frame callback called twice before its task runs posts one task');
+});
+test('no frame (a hidden tab): the fallback timer posts the slice and the frame is cancelled', async () => {
+  const s = framed();
+  s.layer._queueStale(true);
+  await tick(s.w.I.BATHY_FRAME_FALLBACK_MS + 30);
+  assert.equal(s.ran.length, 1, 'the slice ran without a frame'); assert.deepEqual(s.cancelled, [1], 'the waiting frame cancelled');
+  s.frames[0].f(16); await tick(5); assert.equal(s.ran.length, 1, 'the frame arriving late does nothing');
+});
+test('cancel while waiting for the frame or for the posted task: nothing runs, the frame is cancelled', async () => {
+  const s = framed();
+  s.layer._queueStale(true); s.layer._cancelStale();
+  assert.equal(s.layer._staleQ, null); assert.deepEqual(s.cancelled, [1]);
+  await tick(s.w.I.BATHY_FRAME_FALLBACK_MS + 30); s.frames[0].f(16); await tick(5);
+  assert.equal(s.ran.length, 0, 'neither the frame nor the fallback ran the slice');
+  s.layer._queueStale(true); s.frames[1].f(16); s.layer._cancelStale(); await tick(10);
+  assert.equal(s.ran.length, 0, 'the posted task was cancelled too');
+});
+test('idle queueing is unchanged with frames available: not soon = the idle callback, no frame asked', () => {
+  const s = framed(), had = globalThis.requestIdleCallback, hadC = globalThis.cancelIdleCallback;
+  const gone = [];
+  globalThis.requestIdleCallback = () => 9; globalThis.cancelIdleCallback = (i) => { gone.push(i); };
+  try {
+    s.layer._queueStale(); assert.equal(s.layer._staleQ.idle, 9); assert.equal(s.frames.length, 0);
+    s.layer._cancelStale(); assert.deepEqual(gone, [9], 'the idle callback cancelled');
+  } finally { globalThis.requestIdleCallback = had; globalThis.cancelIdleCallback = hadC; }
+});
+test('a busy redraw of 8 costly tiles: exactly one slice between consecutive frames, every tile drawn once', async () => {
+  const frames = [];
+  const w = world({ raf: (f) => { frames.push(f); return frames.length; }, caf: () => {} });
+  const layer = new w.I.BathyLayer();
+  layer._map = { getZoom: () => 5, getZoomScale: () => 1, getPixelBounds: () => ({ min: { x: 0, y: 14 * 256 }, max: { x: 512, y: 15 * 256 } }) };
+  layer._tileZoom = 5;
+  const clk = { t: 1000 }, order = [];
+  layer._clock = () => clk.t;
+  layer._draw = function (el, c) { el._ovGen = this._gen; order.push(c.x); clk.t += 9; };
+  for (let x = 7; x >= 0; x--) layer._tiles[x + ':14:5'] = { el: canvas(w), coords: { x, y: 14, z: 5 } };
+  for (const k in layer._tiles) layer._tiles[k].el._ovGen = -1;
+  layer._drawStale(false, { didTimeout: true, timeRemaining: () => 0 });
+  const perFrame = [order.length];
+  for (let i = 0; i < 20 && order.length < 8; i++) {
+    const before = order.length;
+    await tick(5); assert.equal(order.length, before, 'no slice runs before the next frame');
+    frames[frames.length - 1](16 * (i + 1)); await tick(5);
+    perFrame.push(order.length - before);
+  }
+  assert.equal(order.length, 8); assert.equal(new Set(order).size, 8);
+  assert.ok(perFrame.every((n) => n === 1), 'one 9-ms tile a frame: ' + perFrame.join(','));
+  assert.equal(layer._staleQ, null, 'nothing left queued');
+});

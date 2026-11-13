@@ -10,21 +10,26 @@ finest zoom (`zmax`, the finest source's) down to `zmin`:
 
 1. The region is cut in BLOCKS: one tile of zoom zmax - 3 each, i.e. 8 x 8 tiles (2,048 px) at zmax. Only blocks under a
    source's footprint are read. Each block is read once (GDAL warp to EPSG:3857, the pixel grid of zoom zmax, 8 pixels of
-   margin on every side, "average" resampling), merged best first (the lowest source id wins), and kept on local disk as
-   depth codes.
+   margin on every side; "average" resampling from a finer source, "bilinear" from a coarser one such as the 1/3
+   arc-second sets), merged best first (the lowest source id wins), and kept on local disk as depth codes.
 2. The water rule (tools/bathy/bathy_water.py), on those stored codes at zmax: a pixel is water when it is at or below
    the region's mean higher high water and 4-connected to water deeper than 20 m. Each block is labelled on its own and
    the labels are joined across block edges, so the result is that of labelling the whole region at full resolution.
 3. Each block is cut into its tiles at zmax, zmax - 1, zmax - 2 and zmax - 3 (halving: a coarse pixel is water when 2 of
    its 4 are; its depth their mean). The margin gives every tile its one-pixel apron from the same read, so neighbouring
-   tiles agree on their shared edge.
+   tiles agree on their shared edge. A pixel with a value that is not water is LAND: no depth, the source plane's
+   bathy_tiles.LAND_ID, so a client knows the survey's own land from "outside the survey" (G61 B-1). A tile is written at a
+   zoom only where a water pixel's source earns it (`zmax` and `deep` per source: zoom_tables); land alone never makes a
+   tile.
 4. Coarser zooms down to zmin are built from the zmax - 3 tiles, their aprons from the neighbouring tiles of their zoom.
 
 GEBCO (region "gebco", zooms 0-7) is read from the GEBCO GeoTIFF set (the zip as published; its eight quadrants are
 required, then extracted one at a time): zoom 7 tiles straight from the grid, water = elevation below 0 AND outside GSHHG's
 land (bathy_sources.LAND: the site's own coast-v1 overview, pinned by hash; lakes inside the land are land), so land and
-lake beds below sea level (the Dead Sea, the Caspian) never read as sea depth. Coarser zooms by halving. Every GEBCO pixel
-carries the "coarse" flag.
+lake beds below sea level (the Dead Sea, the Caspian) never read as sea depth. Then GEBCO's water is carried two cells
+onto the land next to it (gebco_fill: each new cell the mean of its neighbours with a value, flagged "filled"), so it
+reaches the shoreline the client clips it to (G61 B-3). Coarser zooms by halving. Every GEBCO pixel carries the "coarse"
+flag.
 
 The output directory holds t/<z>/<x>/<y>.png, idx/<x>_<y>.bin (per zoom-10 tile: one bit per tile at each zoom from 11 to
 zmax), index.json (sources, presence of zooms <= 10, the zoom-10 table, counts, a digest of every data file and the
@@ -36,6 +41,7 @@ import argparse
 import functools
 import hashlib
 import json
+import math
 import os
 import shutil
 import ssl
@@ -117,6 +123,9 @@ def region_config(name, box=None, local=None):
         s["gdal"] = S.gdal_path(s)
         srcs.append(s)
     srcs.sort(key=lambda s: s["id"])          # best first = the lowest id first, whatever order the region lists them in
+    ids = [s["id"] for s in srcs]
+    if len(set(ids)) != len(ids) or any(not 1 <= i <= 31 or i == T.LAND_ID for i in ids):
+        raise ValueError("%s: source ids %s must be distinct, 1-31 and not %d (the land mark)" % (name, ids, T.LAND_ID))
     reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in srcs))
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
@@ -195,10 +204,13 @@ def read_field(reg, key):
     b = T.tile_bounds(bz, key[0], key[1], apron=MARGIN, px=px)
     elev = np.full((size, size), np.nan, np.float32)
     src_id = np.zeros((size, size), np.uint8)
+    ground = (b[2] - b[0]) / size * math.cos(math.radians(T.xy_to_lonlat(0.0, (b[1] + b[3]) / 2)[1]))
     for s in reg["srcs"]:
+        coarser = s["res_m"] > 1.25 * ground      # enlarging: bilinear, not "average" (which would copy 2 x 2 blocks)
         with rasterio.open(s["gdal"]) as d:
             kw = dict(crs="EPSG:3857", transform=from_bounds(*b, size, size), width=size, height=size,
-                      resampling=Resampling.average, nodata=np.nan, dtype="float32")
+                      resampling=Resampling.bilinear if coarser else Resampling.average, nodata=np.nan,
+                      dtype="float32")
             nodata = d.nodata if d.nodata is not None else s.get("nodata")
             if nodata is None:
                 raise ValueError("%s declares no nodata value: name it in bathy_sources (a fill value would read as a "
@@ -266,10 +278,34 @@ def tile_path(out, z, x, y):
 
 
 def write_tile(out, z, x, y, depth258, src258):
+    """A tile file: depth codes, and the source plane where there is water or the region's land (LAND_ID)."""
     p = tile_path(out, z, x, y)
     os.makedirs(os.path.dirname(p), exist_ok=True)
+    keep = np.isfinite(depth258) | (src258 == T.LAND_ID)
     with open(p, "wb") as f:
-        f.write(T.pack_tile(T.encode_depth(depth258), np.where(np.isfinite(depth258), src258, 0)))
+        f.write(T.pack_tile(T.encode_depth(depth258), np.where(keep, src258, 0)))
+
+
+def zoom_tables(reg):
+    """Per source id (0-31): the finest zoom its pixels earn, and its deep rule (pixels deeper than deep_m earn deep_z
+    only; none = inf)."""
+    zmax = np.zeros(32, np.int16)
+    deep_m = np.full(32, np.inf, np.float32)
+    deep_z = np.zeros(32, np.int16)
+    for s in reg["srcs"]:
+        zmax[s["id"]] = s["zmax"]
+        if s.get("deep"):
+            deep_m[s["id"]], deep_z[s["id"]] = s["deep"]
+    return zmax, deep_m, deep_z
+
+
+def earns(depth, src, tables, z):
+    """bool: the water pixels whose source earns a tile at zoom z (land and no-data pixels never do)."""
+    zmax, deep_m, deep_z = tables
+    i = src & T.SRC_BITS
+    wet = np.isfinite(depth)
+    zm = np.where(wet & (np.where(wet, depth, 0) > deep_m[i]), deep_z[i], zmax[i])
+    return wet & (zm >= z)
 
 
 def save_core(work, z, x, y, depth256, src256):
@@ -279,17 +315,19 @@ def save_core(work, z, x, y, depth256, src256):
 
 
 def pass2(args):
-    """Water = low and joined to the sea (its own and its neighbours' finest-zoom sea masks for the margin), then the
-    block's tiles at zmax .. zmax - 3. Returns the tiles written."""
+    """Water = low and joined to the sea (its own and its neighbours' finest-zoom sea masks for the margin); every other
+    pixel with a value is land (LAND_ID on the source plane, no depth). Then the block's tiles at zmax .. zmax - 3, each
+    written where a water pixel's source earns its zoom. Returns the tiles written."""
     reg, key = args
     z = reg["zmax"]
+    tables = zoom_tables(reg)
     px = T.TILE * 2 ** BLOCK_LEVELS
     with np.load(_work_path(reg, key)) as f:
         code, src = f["code"], f["src"]
     sea = W.sea_around(key, _sea_get(reg), px, MARGIN)
     wet = W.low_of(code, reg["mhhw"]) & sea
     depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
-    src = np.where(wet, src, 0).astype(np.uint8)
+    src = np.where(wet, src, np.where(code > 0, T.LAND_ID, 0)).astype(np.uint8)
     written = []
     m, k = MARGIN, 2 ** BLOCK_LEVELS
     while True:
@@ -297,14 +335,16 @@ def pass2(args):
             for i in range(k):
                 y0, x0 = m - 1 + T.TILE * j, m - 1 + T.TILE * i
                 sub = depth[y0:y0 + T.SIDE, x0:x0 + T.SIDE]
-                if z >= reg["zmin"] and np.isfinite(sub[1:-1, 1:-1]).any():   # never below the region's zmin
+                ssub = src[y0:y0 + T.SIDE, x0:x0 + T.SIDE]
+                if z >= reg["zmin"] and earns(sub[1:-1, 1:-1], ssub[1:-1, 1:-1], tables, z).any():   # never below zmin
                     x, y = key[0] * k + i, key[1] * k + j
-                    write_tile(reg["out"], z, x, y, sub, src[y0:y0 + T.SIDE, x0:x0 + T.SIDE])
+                    write_tile(reg["out"], z, x, y, sub, ssub)
                     written.append((z, x, y))
         if k == 1:
             core = depth[m:m + T.TILE, m:m + T.TILE]
-            if np.isfinite(core).any():
-                save_core(reg["work"], z, key[0], key[1], core, src[m:m + T.TILE, m:m + T.TILE])
+            score = src[m:m + T.TILE, m:m + T.TILE]
+            if np.isfinite(core).any() or (score == T.LAND_ID).any():    # land too: the coarser zooms keep it
+                save_core(reg["work"], z, key[0], key[1], core, score)
             break
         depth, src = T.pool2(depth, src)
         m, k, z = m // 2, k // 2, z - 1
@@ -330,36 +370,48 @@ def core_keys(work, z):
     return sorted(tuple(int(v) for v in n[:-4].split("_")) for n in os.listdir(d) if n.endswith(".npz"))
 
 
-def encode_level(work, out, z, wrap=False):
-    """Write every saved core of zoom z as a tile, its apron from the neighbouring cores (missing = no water)."""
+def _assemble(work, z, x, y, a, wrap=False):
+    """(depth, src) of the saved core z/x/y with an `a`-pixel apron from its neighbouring cores (missing = no data)."""
     n = 2 ** z
+    size = T.TILE + 2 * a
+    depth = np.full((size, size), np.nan, np.float32)
+    src = np.zeros((size, size), np.uint8)
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            nx, ny = x + dx, y + dy
+            if wrap:
+                nx %= n
+            if not (0 <= nx < n and 0 <= ny < n):
+                continue
+            c = _core(work, z, nx, ny)
+            if c is None:
+                continue
+            d, s = c
+            ys = slice(a, a + T.TILE) if dy == 0 else (slice(0, a) if dy < 0 else slice(a + T.TILE, size))
+            xs = slice(a, a + T.TILE) if dx == 0 else (slice(0, a) if dx < 0 else slice(a + T.TILE, size))
+            sy = slice(0, T.TILE) if dy == 0 else (slice(T.TILE - a, T.TILE) if dy < 0 else slice(0, a))
+            sx = slice(0, T.TILE) if dx == 0 else (slice(T.TILE - a, T.TILE) if dx < 0 else slice(0, a))
+            depth[ys, xs] = d[sy, sx]
+            src[ys, xs] = s[sy, sx]
+    return depth, src
+
+
+def encode_level(work, out, z, wrap=False, tables=None):
+    """Write every saved core of zoom z that holds water (with `tables`: water whose source earns zoom z) as a tile, its
+    apron from the neighbouring cores (missing = no data). A core of land only is never a tile; it lends its edge."""
     written = []
     for (x, y) in core_keys(work, z):
-        depth = np.full((T.SIDE, T.SIDE), np.nan, np.float32)
-        src = np.zeros((T.SIDE, T.SIDE), np.uint8)
-        for dy in (-1, 0, 1):
-            for dx in (-1, 0, 1):
-                nx, ny = x + dx, y + dy
-                if wrap:
-                    nx %= n
-                if not (0 <= nx < n and 0 <= ny < n):
-                    continue
-                c = _core(work, z, nx, ny)
-                if c is None:
-                    continue
-                d, s = c
-                ys = slice(1, 1 + T.TILE) if dy == 0 else (slice(0, 1) if dy < 0 else slice(T.SIDE - 1, T.SIDE))
-                xs = slice(1, 1 + T.TILE) if dx == 0 else (slice(0, 1) if dx < 0 else slice(T.SIDE - 1, T.SIDE))
-                sy = slice(0, T.TILE) if dy == 0 else (slice(T.TILE - 1, T.TILE) if dy < 0 else slice(0, 1))
-                sx = slice(0, T.TILE) if dx == 0 else (slice(T.TILE - 1, T.TILE) if dx < 0 else slice(0, 1))
-                depth[ys, xs] = d[sy, sx]
-                src[ys, xs] = s[sy, sx]
+        depth, src = _assemble(work, z, x, y, 1, wrap)
+        core = depth[1:-1, 1:-1]
+        keep = earns(core, src[1:-1, 1:-1], tables, z) if tables is not None else np.isfinite(core)
+        if not keep.any():
+            continue
         write_tile(out, z, x, y, depth, src)
         written.append((z, x, y))
     return written
 
 
-def coarse_levels(work, out, zfrom, zmin, wrap=False):
+def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None):
     """Zooms zfrom - 1 .. zmin from the saved cores of zoom zfrom: halve 2 x 2 children, save, encode."""
     written = []
     for z in range(zfrom - 1, zmin - 1, -1):
@@ -374,9 +426,9 @@ def coarse_levels(work, out, zfrom, zmin, wrap=False):
                         big[dy * T.TILE:(dy + 1) * T.TILE, dx * T.TILE:(dx + 1) * T.TILE] = c[0]
                         bs[dy * T.TILE:(dy + 1) * T.TILE, dx * T.TILE:(dx + 1) * T.TILE] = c[1]
             d, s = T.pool2(big, bs)
-            if np.isfinite(d).any():
+            if np.isfinite(d).any() or (s == T.LAND_ID).any():
                 save_core(work, z, px, py, d, s)
-        written += encode_level(work, out, z, wrap=wrap)
+        written += encode_level(work, out, z, wrap=wrap, tables=tables)
     return written
 
 
@@ -494,6 +546,74 @@ def gebco_tile(args):
     return (x, y)
 
 
+def _grow(depth, steps, inside=None):
+    """`steps` rings of cells added around the values of `depth` (NaN = none): each new cell the mean of its 8
+    neighbours that have a value, one ring per step. `inside` (bool, the shape of `depth`) marks the cells that exist:
+    a cell beyond the map's edge (past a pole) never takes a value, so it never passes one on."""
+    d = depth.astype(np.float64)
+    h, w = d.shape
+    for _ in range(steps):
+        p = np.pad(d, 1, constant_values=np.nan)
+        nb = np.stack([p[1 + dy:1 + dy + h, 1 + dx:1 + dx + w] for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx])
+        ok = np.isfinite(nb)
+        n = ok.sum(axis=0)
+        tot = np.where(ok, nb, 0.0).sum(axis=0)
+        new = np.isnan(d) & (n > 0)
+        if inside is not None:
+            new &= inside
+        d[new] = tot[new] / n[new]
+    return d.astype(np.float32)
+
+
+GEBCO_FILL_STEPS = 2      # cells of GEBCO water carried onto the land next to it (owner decision 2026-11-12)
+
+
+def gebco_fill(work, z=7, steps=GEBCO_FILL_STEPS, wrap=True):
+    """Carry GEBCO's water `steps` cells onto the land next to it, flagged filled (and coarse), so the GEBCO layer
+    reaches the shoreline the client clips it to: GEBCO's water stops short of GSHHG's coast by up to a cell or two (G61
+    B-3). Every zoom-z core and every neighbour of one is redone from the ORIGINAL cores with a `steps`-pixel apron, so the
+    result equals filling the whole world at once (tiles agree on their shared edges). Returns the cells filled."""
+    n = 2 ** z
+    cand = set()
+    for (x, y) in core_keys(work, z):
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                nx, ny = x + dx, y + dy
+                if wrap:
+                    nx %= n
+                if 0 <= nx < n and 0 <= ny < n:
+                    cand.add((nx, ny))
+    tmp = os.path.join(work, "fill_%d" % z)
+    os.makedirs(tmp, exist_ok=True)
+    flag = S.SOURCES["gebco"]["id"] | T.FLAG_COARSE | T.FLAG_FILLED
+    c = slice(steps, steps + T.TILE)
+    size = T.TILE + 2 * steps
+    done, filled = [], 0
+    for (x, y) in sorted(cand):
+        depth, src = _assemble(work, z, x, y, steps, wrap)
+        if not np.isfinite(depth).any():
+            continue
+        rows = y * T.TILE - steps + np.arange(size)          # world pixel rows / columns of the assembled block
+        cols = x * T.TILE - steps + np.arange(size)
+        inside = (rows >= 0) & (rows < n * T.TILE)
+        inside = inside[:, None] & (np.ones(size, bool) if wrap else ((cols >= 0) & (cols < n * T.TILE)))[None, :]
+        grown = _grow(depth, steps, inside)[c, c]
+        new = np.isnan(depth[c, c]) & np.isfinite(grown)
+        if not new.any():
+            continue                                     # nothing to add here: the original core stays as it is
+        s = np.where(new, flag, src[c, c]).astype(np.uint8)
+        np.savez_compressed(os.path.join(tmp, "%d_%d.npz" % (x, y)), code=T.encode_depth(grown), src=s)
+        done.append((x, y))
+        filled += int(new.sum())
+    dst = os.path.join(work, "c", str(z))
+    os.makedirs(dst, exist_ok=True)
+    for (x, y) in done:                                  # only now: every candidate was computed from the originals
+        os.replace(os.path.join(tmp, "%d_%d.npz" % (x, y)), os.path.join(dst, "%d_%d.npz" % (x, y)))
+    shutil.rmtree(tmp, ignore_errors=True)
+    _core.cache_clear()
+    return filled
+
+
 def build_gebco(reg, gebco, workers, land=None):
     import rasterio
     z = 7
@@ -519,6 +639,8 @@ def build_gebco(reg, gebco, workers, land=None):
         log("gebco %s: %d of %d tiles with water" % (os.path.basename(path), len(done), len(jobs)))
         if extracted:
             os.remove(path)
+    filled = gebco_fill(reg["work"], z)
+    log("gebco: %d cells carried onto the land next to the sea (flagged filled)" % filled)
     written += encode_level(reg["work"], reg["out"], z, wrap=True)
     written += coarse_levels(reg["work"], reg["out"], z, reg["zmin"], wrap=True)
     return written
@@ -563,7 +685,7 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                 written += w
         log("pass 2: %d tiles at zooms %d-%d (%.0f s)" % (len(written), reg["zmax"] - BLOCK_LEVELS, reg["zmax"],
                                                          time.time() - t0))
-        written += coarse_levels(work, out, reg["zmax"] - BLOCK_LEVELS, reg["zmin"])
+        written += coarse_levels(work, out, reg["zmax"] - BLOCK_LEVELS, reg["zmin"], tables=zoom_tables(reg))
     _core.cache_clear()
     index = write_index(reg, out, version)
     if not keep_work:
@@ -654,7 +776,7 @@ def write_index(reg, out, version):
     sources = {str(s["id"]): {k: s[k] for k in ("name", "year", "res_m", "datum", "licence", "credit")}
                for s in reg["srcs"]}
     index = {
-        "format": FORMAT, "region": reg["name"], "version": version,
+        "format": FORMAT, "region": reg["name"], "version": version, "land_id": T.LAND_ID,
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "box": [round(v, 6) for v in reg["box"]], "zmin": reg["zmin"], "zmax": reg["zmax"], "mhhw": reg["mhhw"],
         "sources": sources, "levels": levels,
@@ -677,7 +799,9 @@ def licence_text(reg):
             s["name"], s["year"], "%d m grid" % s["res_m"], s["datum"], s["credit"], s["licence"])]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
-            S.LAND["name"], S.LAND["credit"], S.LAND["licence"])]
+            S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),
+                  "- Where GEBCO's water stops short of the shoreline, its depth is carried up to %d cells onto the land "
+                  "next to it (marked estimated)." % GEBCO_FILL_STEPS]
     return "\n".join(lines) + "\n"
 
 
@@ -709,9 +833,10 @@ def check(out, log_fn=print):
                 continue
             if (code > T.C3).any():
                 problems.append("%d/%d/%d: unused codes" % (z, x, y))
-            if ((code > 0) != (sf > 0)).any():
+            land = (code == 0) & (sf == T.LAND_ID)
+            if (((code == 0) & (sf != 0) & ~land) | ((code > 0) & ((sf == 0) | ((sf & T.SRC_BITS) == T.LAND_ID)))).any():
                 problems.append("%d/%d/%d: source plane disagrees with the depth plane" % (z, x, y))
-            bad = set(np.unique(sf[sf > 0] & T.SRC_BITS).tolist()) - ids
+            bad = set(np.unique(sf[code > 0] & T.SRC_BITS).tolist()) - ids
             if bad:
                 problems.append("%d/%d/%d: unknown source ids %s" % (z, x, y, sorted(bad)))
             if not (code[1:-1, 1:-1] > 0).any():

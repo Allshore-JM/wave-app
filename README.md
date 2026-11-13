@@ -1500,6 +1500,27 @@ depths are below mean sea level with no offsets.
 - **Measured.** A Hawaii box (Oahu's north shore) 427 tiles, 14 MB, 61 s on this laptop; tiles read back against the CUDEM
   grid with an independent reader: median error 3 mm, p95 under 4.3 cm (the merge averages a 3-m grid into each pixel).
 
+**Version 2 of the data (the G61 fix round, owner decisions 2026-11-12).**
+- **Land mark.** On a pixel with no depth (code 0) the source plane says why: `bathy_tiles.LAND_ID` (30) = the region's own
+  survey has a value there and it is land (above high water, or low ground not joined to the sea); 0 = outside every
+  survey of the region. A client draws GEBCO under "outside", never under land. When a tile is halved, a coarse pixel is
+  land when one of its 4 is land and land and water together make 2 or more; else an edge mostly outside the survey stays
+  outside. A core of land only is kept for the coarser zooms (they mark its land) but never written as a tile of its own.
+  No source may use id 30; ids repeat nowhere in a region (the build refuses).
+- **The 1/3 arc-second grid.** NOAA's 1/3" CUDEM (~10 m) is the second, lower-priority source of every region: it fills the
+  1/9" grid's holes (the 21.25 N gap off Diamond Head, 20.5 N through Kaho'olawe) and reaches further offshore. Regions
+  grew to its extent (Hawaii 160.5-154.5 W x 18.5-22.5 N; Puerto Rico to 19 N, the Virgin Islands to 17.25 N). It is read
+  bilinear (it is coarser than the zoom-15 grid). Each source earns its own zooms: a tile is written at a zoom only where a
+  water pixel's source earns it (`zmax`: 1/9" 15, 1/3" 14; `deep`: 1/3" pixels deeper than 200 m earn zoom 12 only). The
+  client enlarges the coarser tile elsewhere.
+- **GEBCO onto the shore.** GEBCO's water is carried two cells onto the land next to it (`GEBCO_FILL_STEPS`, each new cell
+  the mean of its neighbours, flagged filled + coarse), so the site's GSHHG coastline decides the edge. Every zoom-7 tile
+  and its neighbours are redone from the original tiles with a two-pixel apron (wrapping at the date line, never past the
+  poles), so the result equals filling the whole world at once.
+- **Measured.** A local Oahu box (2,762 tiles, 99 MB, 322 s): at the Diamond Head gap every 1/3" pixel sits where the 1/9"
+  grid is empty, within 3 mm median of NOAA's own 1/3" values; 1/9" water within 1-2 cm median; every sampled land pixel
+  above high water or a pond; no "outside" pixel at Diamond Head, Koko Head or Kaneohe.
+
 Deviations from the plan's text, on record: the depth code above 2,500 m (2.5-m steps); the feather between sources and the
 tile-edge parity rule wait for stage 1b (stage 1a has one source per region, so no seams between sources); GEBCO's "filled"
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels

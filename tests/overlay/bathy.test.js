@@ -679,3 +679,72 @@ test('the credit carries no markup from a source name', () => {
   assert.ok(!/[<>&]/.test(title), title);
   assert.ok(/title="AB, modified by Allshore Surf"/.test(I.bathyCredit(['A"B'])), 'a quote never closes the title early');
 });
+
+// The freeze around Puerto Rico (2.27.3): when the page stayed busy past the idle callback's limit (a pinch zoom), the
+// layer drew every waiting tile in that one task (48 tiles, 0.8 s at San Juan). Now it draws a slice of BATHY_SLICE_MS at
+// most, the tiles in view first, and the rest follow in tasks of their own right away; in idle time a slice lasts while the
+// idle period has room for another tile.
+function sliced(costOf) {
+  const w = world(), layer = new w.I.BathyLayer();
+  layer._map = { getZoom: () => 5, getZoomScale: () => 1, getPixelBounds: () => ({ min: { x: 0, y: 14 * 256 }, max: { x: 512, y: 15 * 256 } }) };
+  layer._tileZoom = 5;
+  const clk = { t: 1000 }, order = [], runs = [], redrawn = [];
+  layer._clock = () => clk.t;
+  layer._draw = function (el, c) { el._ovGen = this._gen; order.push(c.x); clk.t += costOf(c); };
+  layer._queueStale = (soon) => { runs.push(soon); };
+  layer.onRedraw = () => { redrawn.push(order.length); };
+  for (let x = 7; x >= 0; x--) layer._tiles[x + ':14:5'] = { el: canvas(w), coords: { x, y: 14, z: 5 } };   // x 0-1 in view
+  for (const k in layer._tiles) layer._tiles[k].el._ovGen = -1;
+  return { w, layer, clk, order, runs, redrawn };
+}
+test('a busy page gets slices, not one long task: the in-view tiles first, the rest right after, every tile drawn once', () => {
+  const s = sliced(() => 9);
+  s.layer._drawStale(false, { didTimeout: true, timeRemaining: () => 0 });       // the idle callback ran out of patience
+  assert.deepEqual(s.order, [1], 'one 9-ms tile fills a 12-ms slice; an in-view tile first');
+  assert.deepEqual(s.runs, [true], 'the next slice comes soon (a task of its own), not after another idle wait');
+  let guard = 0;
+  while (s.runs[s.runs.length - 1] === true && guard++ < 50) { const before = s.runs.length; s.layer._drawStale(false, undefined); if (s.runs.length === before) break; }
+  assert.equal(s.order.length, 8, 'every tile drawn'); assert.equal(new Set(s.order).size, 8, 'each once');
+  assert.deepEqual(s.order.slice(0, 2).sort(), [0, 1], 'the tiles in view before the buffer');
+  assert.equal(s.redrawn.length, 8, 'onRedraw after each slice that drew');
+});
+test('cheap tiles share a slice: no slice runs past BATHY_SLICE_MS by more than one tile\'s misjudged cost', () => {
+  const s = sliced(() => 2.5), I2 = s.w.I;
+  const slices = [];
+  let start = s.clk.t, n0 = 0;
+  s.layer._drawStale(false, { didTimeout: true, timeRemaining: () => 0 }); slices.push([s.order.length - n0, s.clk.t - start]);
+  for (let i = 0; i < 20 && s.order.length < 8; i++) { start = s.clk.t; n0 = s.order.length; s.layer._drawStale(false, undefined); slices.push([s.order.length - n0, s.clk.t - start]); }
+  assert.equal(s.order.length, 8);
+  for (const [n, ms] of slices) { assert.ok(n >= 1, 'at least one tile a slice'); assert.ok(ms <= I2.BATHY_SLICE_MS + 2.5, 'slice ' + ms + ' ms'); }
+  assert.ok(slices.some(([n]) => n >= 2), 'cheap tiles go several to a slice once the average has learned their cost');
+});
+test('a tile costlier than a slice still gets drawn, one per task', () => {
+  const s = sliced(() => 40);
+  s.layer._drawStale(false, undefined);
+  assert.deepEqual(s.order.length, 1); assert.deepEqual(s.runs, [true]);
+});
+test('idle time: tiles while the idle period has room for another one; a short idle period waits for the next (not a task now)', () => {
+  const s = sliced(() => 8);
+  let left = 30;
+  const dl = { didTimeout: false, timeRemaining: () => Math.max(0, left - (s.clk.t - 1000)) };
+  s.layer._drawStale(false, dl);
+  // 30 ms of idle: tile 1 at 0 (needs min(cost, slice) = 10), tile 2 at 8 (22 left >= cost 9.6), tile 3 at 16 (14 >= 9.3),
+  // tile 4 at 24: 6 < cost: wait
+  assert.equal(s.order.length, 3); assert.deepEqual(s.runs, [false], 'back to the idle queue, not a task now');
+  const s2 = sliced(() => 8);
+  s2.layer._drawStale(false, { didTimeout: false, timeRemaining: () => 5 });
+  assert.equal(s2.order.length, 0, 'no tile started in a 5-ms idle period (a 10-ms tile would cost a frame)');
+  assert.deepEqual(s2.runs, [false]);
+});
+test('the queue: soon = a task of its own (setTimeout), otherwise an idle callback with the patience limit', () => {
+  const w = world(), layer = new w.I.BathyLayer(), had = globalThis.requestIdleCallback, hadC = globalThis.cancelIdleCallback;
+  const asked = [];
+  globalThis.requestIdleCallback = (f, o) => { asked.push(o); return 7; }; globalThis.cancelIdleCallback = () => {};
+  try {
+    layer._queueStale(); assert.equal(asked.length, 1); assert.equal(asked[0].timeout, w.I.STALE_MAX_MS); assert.equal(layer._staleQ.idle, 7);
+    layer._queueStale(true); assert.equal(asked.length, 1, 'one queued run at a time');
+    layer._cancelStale(); assert.equal(layer._staleQ, null);
+    layer._queueStale(true); assert.equal(asked.length, 1, 'soon: no idle callback'); assert.ok(layer._staleQ.timer !== undefined);
+    layer._cancelStale();
+  } finally { globalThis.requestIdleCallback = had; globalThis.cancelIdleCallback = hadC; }
+});

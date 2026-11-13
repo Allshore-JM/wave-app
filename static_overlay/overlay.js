@@ -4471,12 +4471,10 @@
     e.shade = out;
     return out;
   }
-  // Colour position (0..1) of a depth: the knots spend most of the bar on 0-30 m; GEBCO and other coarse pixels never use
-  // the shallow colours (a 450-m cell has no reef in it); dry at mean sea level = the lightest colour.
-  // PREVIEW ONLY (removed with the owner's pick, G61 re-check R-2): ?ovgebco=depth colours GEBCO's shallows by their own depth.
-  var BATHY_GEBCO_DEPTH = (function () { try { return /[?&]ovgebco=depth(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();
+  // Colour position (0..1) of a depth: the knots spend most of the bar on 0-30 m; every source, GEBCO included, takes the
+  // colour of its own depth (owner, G61 re-check R-2: GEBCO's shelves show, no colour step where a survey's box ends; the
+  // readout calls GEBCO a regional estimate); dry at mean sea level = the lightest colour. `coarse` is kept for callers.
   function bathyPos(d, coarse) {
-    if (coarse && d < BATHY_SHALLOW && !BATHY_GEBCO_DEPTH) d = BATHY_SHALLOW;
     if (d <= 0) return 0;
     return through(KNOTS.bathy, d, 0, 1);
   }

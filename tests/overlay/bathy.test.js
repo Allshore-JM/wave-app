@@ -265,7 +265,7 @@ test('GEBCO at z5: drawn coarse (never the shallow colours), its readout flagged
     assert.equal(r.kind, 'depth'); assert.equal(r.coarse, true); assert.ok(Math.abs(r.depth - want) < 1e-3); wet++;
   }
   assert.ok(wet > 100, String(wet));
-  assert.equal(I.bathyPos(5, true), I.bathyPos(30, false), 'coarse never shallow');
+  assert.equal(I.bathyPos(5, true), I.bathyPos(5, false), 'GEBCO takes its own depth colour (owner, R-2)'); assert.ok(I.bathyPos(5, true) < I.bathyPos(30, true));
   assert.equal(I.bathyPos(-1, false), 0); assert.ok(I.bathyPos(30, false) > I.bathyPos(10, false));
   // a tile the index lists but the bucket does not have: 404 = final (the layer detached, so no want list filters the asks)
   layer.setStore(null);

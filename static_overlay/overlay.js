@@ -4072,6 +4072,8 @@
   var BATHY_SHADE_FINE = 0.6, BATHY_SHADE_COARSE = 0.35;   // how much of the hillshade the colour takes: survey grids / GEBCO and other coarse pixels
   var BATHY_DEEP = [200, 1000];                            // survey water deeper than 200 m eases to GEBCO's exaggeration cap and weight, fully past 1,000 m (G61 re-check R-1)
   var BATHY_APRON = 3;                                     // lattice pixels sampled past the map tile on each side (two smoothing passes + the contour's neighbours: G61 A4)
+  var BATHY_SLICE_MS = 12;                                // drawing in one task at most when the page is busy (then a paint and the input in between)
+  var BATHY_COST_MS = 10;                                 // a tile's first drawing-time guess (then the running average)
   var BATHY_DONE_MS = 2000;                                // a tile tells the map it is ready after its first full draw, or after this at most (no blank on zoom: G61 B-8)
   var MAX_BATHY_BYTES = 32 * 1024 * 1024;                  // decoded tiles kept (LRU); the ones in view never go
   var MAX_BATHY_INFLIGHT = 4;
@@ -4686,7 +4688,7 @@
   var BathyLayer = L.GridLayer.extend({
     initialize: function () {
       L.GridLayer.prototype.initialize.call(this, { pane: 'obsPane', tileSize: TILE, updateWhenZooming: false, updateWhenIdle: true, keepBuffer: 1, className: 'ov-bathy-tiles' });
-      this.store = null; this.unit = 'US'; this.contours = true; this._coast = null; this._gen = 0; this._staleQ = null; this._lut = bathyLut();
+      this.store = null; this.unit = 'US'; this.contours = true; this._coast = null; this._gen = 0; this._staleQ = null; this._drawMs = BATHY_COST_MS; this._lut = bathyLut();
       var W = TILE + 2 * BATHY_APRON, N = W * W, G = (TILE + 2) * (TILE + 2);
       this._D = new Float32Array(N); this._SF = new Uint8Array(N); this._SH = new Float32Array(N); this._PI = new Int8Array(N);
       this._T = new Float32Array(N); this._F = new Float32Array(N); this._K = new Int8Array(N); this._G = new Float32Array(G);
@@ -4766,25 +4768,42 @@
       }
       if (any) this._queueStale();
     },
-    // Every tile drawn again, in idle-time batches (a bathymetry tile costs ~10-20 ms: never a burst on one task), the
-    // tiles in view first. The old picture stays until each tile is redrawn.
+    // Every tile drawn again in short slices, the tiles in view first; the old picture stays until each tile is redrawn. A
+    // bathymetry tile costs ~5-30 ms. In the page's idle time a slice lasts while the idle period has room for another tile.
+    // When the page stays busy past the idle callback's limit (a pinch zoom), the rest follow in back-to-back slices of
+    // BATHY_SLICE_MS at most, with a paint and the input between them: 2.27.3 drew every waiting tile in that one task
+    // (48 tiles, 0.8 s at San Juan: the freeze the owner saw around Puerto Rico).
     _redraw: function () { this._gen++; this._queueStale(); },
+    _clock: nowMs,
     _drawStale: function (inView, deadline) {
-      var range = viewRangeOf(this), left = false, drew = false;
+      var range = viewRangeOf(this), left = false, drew = 0;
+      var idle = !!(deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout);
+      var t0 = this._clock(), cost = this._drawMs;
       for (var pass = 0; pass < 2 && !left; pass++) {
         for (var k in this._tiles) {
           var t = this._tiles[k];
           if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
           var seen = !range || tileInRange(t.coords, range);
           if (pass === 0 ? !seen : seen) continue;
-          if (deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout && deadline.timeRemaining() < STALE_TILE_MS) { left = true; break; }
-          this._draw(t.el, t.coords); drew = true;
+          if (idle ? deadline.timeRemaining() < (drew ? cost : Math.min(cost, BATHY_SLICE_MS))
+            : drew && this._clock() - t0 + cost > BATHY_SLICE_MS) { left = true; break; }
+          var a = this._clock();
+          this._draw(t.el, t.coords); drew++;
+          cost = this._drawMs = this._drawMs * 0.8 + (this._clock() - a) * 0.2;
         }
       }
-      if (left) this._queueStale();
+      if (left) this._queueStale(!idle);
       if (drew && this.onRedraw) this.onRedraw();
     },
-    _queueStale: ModelGridLayer.prototype._queueStale,
+    // soon: the page is busy (the idle callback ran out of patience, or a slice just ended without idle time), so the next
+    // slice comes in a task of its own right away rather than after another idle wait.
+    _queueStale: function (soon) {
+      var self = this;
+      if (this._staleQ) return;
+      var run = function (dl) { self._staleQ = null; self._drawStale(false, dl); };
+      this._staleQ = soon || typeof requestIdleCallback !== 'function' ? { timer: setTimeout(run, 0) }
+        : { idle: requestIdleCallback(run, { timeout: STALE_MAX_MS }) };
+    },
     _cancelStale: ModelGridLayer.prototype._cancelStale,
     onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
     _removeTile: function (key) {
@@ -9603,7 +9622,7 @@
       parseBathyIdx: parseBathyIdx, BathyStore: BathyStore, bathyStore: bathyStore, BathyLayer: BathyLayer, bathyAxes: bathyAxes, bathyShade: bathyShade,
       bathyPos: bathyPos, bathyPieces: bathyPieces, bathySample: bathySample, bathyLevels: bathyLevels, bathyLevel: bathyLevel, bathySmooth: bathySmooth,
       bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyNum: bathyNum, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
-      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, bathyReady: bathyReady, bathyForget: bathyForget, bathyDeep: bathyDeep, bathyWeight: bathyWeight, BATHY_DEEP: BATHY_DEEP,
+      BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, BATHY_SLICE_MS: BATHY_SLICE_MS, BATHY_COST_MS: BATHY_COST_MS, bathyReady: bathyReady, bathyForget: bathyForget, bathyDeep: bathyDeep, bathyWeight: bathyWeight, BATHY_DEEP: BATHY_DEEP,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,
       radarSlotMs: radarSlotMs, radarAge: radarAge, RADAR_ATTRIBUTION: RADAR_ATTRIBUTION, RADAR_FDEF: RADAR_FDEF, RADAR_TINT: RADAR_TINT, radarHead: radarHead, radarCredit: radarCredit, radarOpacityOf: radarOpacityOf, RADAR_OPACITY_KEY: RADAR_OPACITY_KEY, RADAR_ALPHA: RADAR_ALPHA, RADAR_JMA8: RADAR_JMA8, RADAR_JMA8_SNAP: RADAR_JMA8_SNAP, radarClassOf: radarClassOf, radarClassText: radarClassText, RADAR_TYPE_CODES: RADAR_TYPE_CODES, rampAt: rampAt, RADAR_TYPE_BASE: RADAR_TYPE_BASE, RADAR_RC: RADAR_RC, RADAR_T: RADAR_T, radarTypeCodesOk: radarTypeCodesOk, radarTypedDef: radarTypedDef, radarSnowWord: radarSnowWord, radarMixWord: radarMixWord, radarTypeBar: radarTypeBar, RADAR_SETTLE_MS: RADAR_SETTLE_MS, RADAR_HOLD_STEPS: RADAR_HOLD_STEPS, RADAR_MAX_BYTES: RADAR_MAX_BYTES, RADAR_MAX_BYTES_SMALL: RADAR_MAX_BYTES_SMALL, RADAR_INFLIGHT: RADAR_INFLIGHT, RADAR_ORDER: RADAR_ORDER, RADAR_PPD: RADAR_PPD, RADAR_CELL: RADAR_CELL,

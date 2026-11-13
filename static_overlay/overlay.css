@@ -119,6 +119,8 @@
 .ov-sheet { position: absolute; left: var(--ov-sheet-left, 0px); right: 0; bottom: 0; z-index: 900; background: #fbf7ee;
   border-top: 1px solid rgba(29,43,79,0.25); border-radius: 14px 14px 0 0; box-shadow: 0 -2px 8px rgba(29,43,79,0.25); padding: 4px 8px 6px; }
 .leaflet-container.ov-sheet-open .leaflet-bottom.leaflet-right { bottom: var(--ov-sheet-h, 0px); }
+/* The opened credit (the (i) corner) can lie over the sheet on phones: an opaque box keeps it readable (G61 B-11). */
+.leaflet-container.ov-sheet-open.attr-open .leaflet-control-attribution { background: #fff; }
 /* Attribution while the overlay is On: may wrap, but inside its own box (map width - 60 px), never over the zoom control. */
 .leaflet-container.ov-on .leaflet-control-attribution { max-width: var(--ov-attr-max, none); }
 
@@ -135,6 +137,8 @@
 .ov-sheet .ov-legend { margin-top: 2px; }
 .ov-sheet .ov-legend canvas { height: 10px; }
 .ov-sheet .ov-ticks { height: 14px; font-size: 11px; }
+/* The last label ends 6 px in from the sheet's edge (a sideways phone cut "16,400+ ft": G61 B-4). */
+.ov-sheet .ov-ticks span.ov-last { margin-left: -6px; }
 .ov-sheet .ov-head { flex-wrap: nowrap; }
 .ov-sheet .ov-title { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-sheet .ov-speed-menu { top: auto; bottom: calc(100% + 4px); }

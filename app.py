@@ -324,7 +324,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.27.0"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.27.1"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf")      # the models the overlay panel can offer (plan section 43; each has a frames job)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
 _OVERLAY_ASSETS = {"overlay.js": "application/javascript", "overlay.css": "text/css",
@@ -502,18 +502,23 @@ BATHY_NOTICE = "\n".join([
     "Bathymetry (water depth) in the Allshore Surf map (allshoresurf.com)",
     "",
     "Hawaii, Guam and the Northern Mariana Islands, American Samoa, Puerto Rico and the US Virgin Islands:",
-    "NOAA National Centers for Environmental Information (NCEI), Continuously Updated Digital Elevation Model (CUDEM),",
-    "1/9 arc-second topobathy, doi:10.25921/ds9v-ky35, through the NOAA Open Data Dissemination Program on AWS.",
+    "Cooperative Institute for Research in Environmental Sciences (CIRES), University of Colorado Boulder, and NOAA",
+    "National Centers for Environmental Information (NCEI): Continuously Updated Digital Elevation Model (CUDEM),",
+    "1/9 arc-second (about 3 m) topobathy tiles, doi:10.25921/ds9v-ky35, and, where the 1/9 arc-second grid has no",
+    "value, NOAA's 1/3 arc-second (about 10 m) CUDEM tiles; through the NOAA Open Data Dissemination Program on AWS.",
     "Public domain; NOAA is credited at its request. This is not an official NOAA product and has not been reviewed by NOAA.",
     "",
     "Everywhere else (regional context only, about 450 m):",
-    "GEBCO Compilation Group (2026) GEBCO 2026 Grid. The GEBCO Grid is free to use with this credit;",
-    "see https://www.gebco.net/data-products/gridded-bathymetry-data. Shown here modified (see below).",
+    "GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa).",
+    "The GEBCO Grid is free to use with this credit; see https://www.gebco.net/data-products/gridded-bathymetry-data.",
+    "Shown here modified (see below). Not endorsed by GEBCO, the IHO or the IOC; it has no official status.",
     "",
     "Land and sea: GSHHG (Wessel, P., and W. H. F. Smith, 1996), LGPL 3, decides where GEBCO's cells are drawn.",
     "",
-    "Modified by Allshore Surf, all: reprojected to web map tiles, averaged to coarser zooms, quantised to 1 cm (to 2.5 m in the",
-    "deepest water), kept only for water connected to the open sea, shaded and coloured. Depths are below mean sea level as each",
+    "Modified by Allshore Surf, all: reprojected to web map tiles, averaged to coarser zooms, quantised (1 cm to 400 m deep,",
+    "10 cm to 2,500 m, 2.5 m deeper), kept only for water connected to the open sea, shaded and coloured. Where GEBCO is the only",
+    "source its nearest value is carried one or two cells onto its land so the coastline decides the edge (marked as estimated).",
+    "Depths are below mean sea level as each",
     "source gives it; surveys are years old and sand moves. Approximate: do not use this for navigation or safety decisions.",
     "",
 ])

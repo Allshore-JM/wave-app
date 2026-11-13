@@ -414,7 +414,9 @@ def test_the_bathy_notice_the_credit_links():
     r = A.app.test_client().get("/notice/bathy")
     assert r.status_code == 200 and r.mimetype == "text/plain" and r.headers["Cache-Control"] == "public, max-age=86400"
     body = r.get_data(as_text=True)
-    for need in ("NOAA National Centers for Environmental Information", "CUDEM", "doi:10.25921/ds9v-ky35", "Public domain",
+    for need in ("National Centers for Environmental Information (NCEI)", "CUDEM", "doi:10.25921/ds9v-ky35", "Public domain",
+                 "1/3 arc-second (about 10 m) CUDEM", "doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa",
+                 "Not endorsed by GEBCO", "carried one or two cells onto its land",
                  "not an official NOAA product", "GEBCO Compilation Group (2026) GEBCO 2026 Grid", "GSHHG", "LGPL 3",
                  "Modified by Allshore Surf", "do not use this for navigation"):
         assert need in body, need

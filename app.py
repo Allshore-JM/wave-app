@@ -496,10 +496,22 @@ RADAR_NOTICE = "\n".join([
 ])
 
 
-# The bathymetry notice the map credit links (plan section 93b): NOAA's data is public domain and NOAA asks for attribution and
+# The bathymetry notice the map credit links (plan sections 93b and 96): NOAA's and USACE's data is public domain and NOAA asks for attribution and
 # that modified data not pass as the original; GEBCO asks for its citation and that modified data say so.
 BATHY_NOTICE = "\n".join([
     "Bathymetry (water depth) in the Allshore Surf map (allshoresurf.com)",
+    "",
+    "Close in (map zooms 16 and 17), where 1-m topobathy lidar exists:",
+    "Hawaii: US Army Corps of Engineers (USACE) National Coastal Mapping Program, 2013 topobathy lidar elevation models of",
+    "Oahu, Kauai, Maui, Molokai, Lanai, the Big Island and Niihau; NOAA National Geodetic Survey (NGS), 2021 topobathy lidar",
+    "of Niihau (used first where the two overlap) and of the Northwestern Hawaiian Islands (French Frigate Shoals, Necker,",
+    "Nihoa; all zooms there). Guam: NOAA NGS 2020 topobathy lidar. Puerto Rico: NOAA NGS 2019 topobathy lidar, and USACE",
+    "2018 topobathy lidar where the 2019 survey has no value. All through NOAA's Digital Coast (Office for Coastal",
+    "Management) and the NOAA Open Data Dissemination Program on AWS. Public domain; NOAA and USACE are credited. This is",
+    "not an official NOAA or USACE product and has not been reviewed by either.",
+    "The 2021 NGS surveys give heights above the NAD83(PA11) ellipsoid: Allshore Surf converted them to mean sea level",
+    "with the EGM2008 geoid, less 0.3 m (approximate, about 0.3 m either way; the Northwestern Hawaiian Islands have no",
+    "sea-level survey to check against).",
     "",
     "Hawaii, Guam and the Northern Mariana Islands, American Samoa, Puerto Rico and the US Virgin Islands:",
     "Cooperative Institute for Research in Environmental Sciences (CIRES), University of Colorado Boulder, and NOAA",
@@ -518,7 +530,8 @@ BATHY_NOTICE = "\n".join([
     "Modified by Allshore Surf, all: reprojected to web map tiles, averaged to coarser zooms, quantised (1 cm to 400 m deep,",
     "10 cm to 2,500 m, 2.5 m deeper), kept only for water connected to the open sea, shaded and coloured. Where GEBCO is the only",
     "source its nearest value is carried one or two cells onto its land so the coastline decides the edge; those cells are drawn",
-    "slightly darker. Depths are below mean sea level as each source gives it; surveys are years old and sand moves.",
+    "slightly darker. Within 24 pixels of a lidar survey's edge the depth blends into the grid beneath it. Depths are below",
+    "mean sea level as each source gives it; surveys are years old and sand moves.",
     "Approximate: do not use this for navigation or safety decisions.",
     "",
 ])

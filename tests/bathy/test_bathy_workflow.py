@@ -36,7 +36,7 @@ def test_tests_on_push_build_only_on_dispatch():
 def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     steps = _steps(_text())
     check = steps["Check the inputs"]
-    assert "hawaii|marianas|samoa|prvi|gebco)" in check
+    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar)" in check
     assert '[[ "$VERSION" =~ ^[1-9][0-9]*$ ]]' in check
     up = steps["Upload to R2"]
     assert "if: github.event.inputs.upload == 'true'" in up
@@ -45,7 +45,7 @@ def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     import sys
     sys.path.insert(0, os.path.join(ROOT, "tools", "bathy"))
     import bathy_sources as S
-    assert set(re.search(r"case \"\$REGION\" in ([a-z|]+)\)", check).group(1).split("|")) == set(S.REGIONS)
+    assert set(re.search(r"case \"\$REGION\" in ([a-z|-]+)\)", check).group(1).split("|")) == set(S.REGIONS)
 
 
 def test_upload_and_replace_are_tick_boxes_and_only_builds_wait_for_each_other():

@@ -418,7 +418,13 @@ def test_the_bathy_notice_the_credit_links():
                  "1/3 arc-second (about 10 m) CUDEM", "doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa",
                  "Not endorsed by GEBCO", "carried one or two cells onto its land",
                  "not an official NOAA product", "GEBCO Compilation Group (2026) GEBCO 2026 Grid", "GSHHG", "LGPL 3",
-                 "Modified by Allshore Surf", "do not use this for navigation"):
+                 "Modified by Allshore Surf", "do not use this for navigation",
+                 # the 1-m lidar (section 96): each survey, the newer-wins rule, the ellipsoid conversion, the blend
+                 "USACE) National Coastal Mapping Program, 2013", "NOAA National Geodetic Survey (NGS), 2021",
+                 "used first where the two overlap", "Northwestern Hawaiian Islands", "Guam: NOAA NGS 2020",
+                 "Puerto Rico: NOAA NGS 2019", "2018 topobathy lidar where the 2019 survey has no value",
+                 "NAD83(PA11) ellipsoid", "EGM2008 geoid, less 0.3 m",
+                 "not an official NOAA or USACE product", "blends into the grid beneath it"):
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/bathy"' in js, "the credit's link opens this notice"

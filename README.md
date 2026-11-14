@@ -1521,13 +1521,63 @@ depths are below mean sea level with no offsets.
   grid is empty, within 3 mm median of NOAA's own 1/3" values; 1/9" water within 1-2 cm median; every sampled land pixel
   above high water or a pond; no "outside" pixel at Diamond Head, Koko Head or Kaneohe.
 
-Deviations from the plan's text, on record: the depth code above 2,500 m (2.5-m steps); the feather between sources and the
-tile-edge parity rule wait for stage 1b. Two seams show meanwhile (G61b, on record): where NOAA's 1/9" grid ends and the
+Deviations from the plan's text, on record: the depth code above 2,500 m (2.5-m steps); the feather between sources came with
+stage 1b (section 96, inside the lidar regions only); the tile-edge parity rule is not built. Two seams show meanwhile (G61b, on record): where NOAA's 1/9" grid ends and the
 1/3" grid fills (a faint straight line in deep water: the 1/3" grid reads a median 0.3-0.7 m deeper below 30 m, so the
 step across the seam is a median 1 m at 30-100 m and 2.3 m at 100-300 m), and between neighbouring tiles drawn from
 different data zooms (each zoom's shading has its own exaggeration, so the relief texture changes along a tile line); GEBCO's "filled"
 flag from its TID grid is not read (GEBCO pixels carry the "coarse" flag); the workflow installs with pip (rasterio's wheels
 bundle GDAL) instead of the publishers' micromamba environment.
+
+### Bathymetry 1b: the 1-m lidar regions (plan section 96)
+
+Four more regions, each drawn over the regional grids (priority 20 against their 10): `hawaii-lidar`, `guam-lidar`,
+`pr-lidar` and `nwhi-lidar`, from NOAA's 1-m topobathy lidar elevation models on the same open bucket (gridded, no point
+clouds), to zoom 17.
+
+- **Sources.** Hawaii: USACE's 2013 surveys of Oahu, Kauai, Maui, Molokai, Lanai, the Big Island and Niihau, and NOAA NGS's
+  2021 Niihau survey, which wins where the two overlap (owner: the newer survey wins; it has the lower source id). Guam:
+  NGS 2020. Puerto Rico: NGS 2019, then USACE 2018 where 2019 has no value (2019 against the regional grid: -0.03 to
+  -0.25 m; 2018 against 2019 up to -0.7 m at 15-30 m). The NW Hawaiian Islands: NGS 2021 (French Frigate Shoals, Necker,
+  Nihoa). Each lidar source's footprint is read from its VRT; a VRT in a projected CRS (UTM, for example) has its
+  rectangles transformed to longitude and latitude (grown by 0.001 degree for the curved edges).
+- **Ellipsoid heights.** NGS's 2021 Niihau and NW Hawaiian Islands surveys give heights above the NAD83(PA11) ellipsoid (about
+  15 m above sea level there). They are converted with the EGM2008 geoid (PROJ's `us_nga_egm08_25.tif`, read through
+  `/vsicurl/`, bilinear onto each block) less 0.3 m (`bathy_sources.EGM2008`): against USACE's 2013 Niihau survey on local
+  mean sea level that leaves about 0.3 m either way (owner decision 2026-11-14; the NW Islands have no sea-level survey to
+  check against, so the readout there is approximate).
+- **Fill sources.** Each lidar region lists the regional grids beneath it as `fill` (Hawaii, Guam and Puerto Rico; the NW
+  Islands have none). A fill source is read and merged under the lidar (its ids must be above every lidar id) but never
+  decides where blocks are built: blocks come from the lidar footprints only, plus a `ring` of one block around them (read
+  for the fill and the water rule, which needs a path to water deeper than 20 m beyond the lidar's reach). So a zoom-16 or
+  -17 tile carries the regional grid wherever the lidar has a hole inside it, and the tile never switches source halfway.
+  Tiles are still written only where a lidar pixel earns the zoom (the earned rule), and never below the region's `zmin`:
+  16 for Hawaii, Guam and Puerto Rico (zoom 15 and coarser stay the regional grids' tiles), 8 for the NW Islands (nothing
+  finer beneath them).
+- **The blend.** Within `FEATHER_PX` (24) pixels of the lidar's edge (its last pixels next to a pixel only the fill has, also
+  round the lidar's holes) the depth goes linearly from the fill to the lidar's own value, flagged blended (0x40); the
+  pixel keeps the lidar's source id. A block reads `margin` 32 pixels around itself (was 8) so the blend never stops at a
+  block edge. The `LICENSE.txt` of such a build says so.
+- **Running.** As the other regions: `bathy-build` with region `hawaii-lidar`, `guam-lidar`, `pr-lidar` or `nwhi-lidar`,
+  version 1. A local build of a box: `build --region guam-lidar --out build/bathy --box=144.6,13.3,144.8,13.5`; a local
+  geoid grid can stand in (`local["geoid:egm2008"]`, tests only).
+
+- **Measured (local builds, 2026-11-14).** Every tile read back against the source files, not the builder's code (median
+  signed / absolute difference at zoom 17):
+
+  | Box | Tiles | Size | Time | Lidar | Fill (regional grid) | Blended pixels between their two sources |
+  |---|---|---|---|---|---|---|
+  | Waimea-Pipeline | 352 | 13.8 MB | 84 s | 0.000 / 0.027 m | 0.001 / 0.021 m | 15 of 15 |
+  | Guam (Tumon) | 92 | 3.0 MB | 54 s | -0.003 / 0.025 m | +0.054 / 0.150 m | 37 of 37 |
+  | Niihau west, NGS 2021 converted from ellipsoid heights | 355 | 15.3 MB | 118 s | -0.010 / 0.100 m | +0.024 / 0.033 m | 22 of 22 |
+  | Kaneohe Bay | 1,397 | 49.4 MB | 222 s | 0.000 / 0.020 m | -0.003 / 0.009 m | 65 of 65 |
+
+  Kaneohe Bay's water is joined to the deep water beyond the reef. Where the 2013 lidar has holes in the turbid bay, the
+  regional grid fills them.
+
+On record: the tile-edge parity rule of section 93b is not built: where a lidar region's tiles end, the map falls back to the
+regional grid's own tile, and the lidar tile's edge pixels there already carry that grid (the fill), so only resampling
+differences remain.
 
 ### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.5)
 
@@ -1539,8 +1589,10 @@ choice, the imagery under it). Unset, the page is unchanged.
   view are never let go), asks at most 4 files at once, and only those some tile on the map still wants. 404, 410 and
   undecodable files are final; other failures cool down 60 s, then the tiles that asked draw again; 15 s with no answer
   counts as a failure. Off or another field stops every request.
-- **Drawing.** Per map tile, the first region (priority order) with data there, at the finest zoom it holds; a coarser
-  tile of the same region already held stands in while the finer one loads. GEBCO lies under everything at every zoom
+- **Drawing.** Per map tile, every region with data there in priority order (the lidar regions, then the regional grids,
+  then GEBCO), each at the finest zoom it holds: at each pixel the first region with water wins, a region's land mark ends
+  the search, and where a region has no survey the next one shows. A coarser tile of the same region already held stands
+  in while the finer one loads. GEBCO lies under everything at every zoom
   (enlarged from its zoom-7 tiles), so every coast without a finer grid still has its regional depths. It is clipped by
   the coastline: the 1-km world coastline to tile zoom 6, the detailed (full-resolution GSHHG) coastline cells from tile
   zoom 7, which the layer asks for as tiles need them and draws again when they land (the world coastline stands in

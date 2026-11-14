@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       region:
-        description: "hawaii, marianas, samoa, prvi or gebco (tools/bathy/bathy_sources.py)"
+        description: "hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar or nwhi-lidar (tools/bathy/bathy_sources.py)"
         default: "hawaii"
       version:
         description: "the region's data version (static/bathy/<region>/v<N>)"
@@ -59,7 +59,7 @@ jobs:
           REGION: ${{ github.event.inputs.region }}
           VERSION: ${{ github.event.inputs.version }}
         run: |
-          case "$REGION" in hawaii|marianas|samoa|prvi|gebco) ;; *) echo "region must be hawaii, marianas, samoa, prvi or gebco"; exit 2;; esac
+          case "$REGION" in hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar) ;; *) echo "region must be hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar or nwhi-lidar"; exit 2;; esac
           [[ "$VERSION" =~ ^[1-9][0-9]*$ ]] || { echo "version must be a whole number from 1, no leading zero"; exit 2; }
           nproc; df -h . | tail -1
       - name: Download GEBCO 2026 (region gebco)

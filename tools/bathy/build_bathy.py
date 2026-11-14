@@ -23,6 +23,15 @@ finest zoom (`zmax`, the finest source's) down to `zmin`:
    tile.
 4. Coarser zooms down to zmin are built from the zmax - 3 tiles, their aprons from the neighbouring tiles of their zoom.
 
+The 1-m lidar regions (plan section 96, bathy_sources) add three things. Their `fill` sources (the CUDEM grids under the
+lidar) are read and merged under the lidar but never decide which blocks are read: the blocks are those under the lidar's
+own footprints, plus `ring` blocks around them (fill only) so the water rule reaches the deep water beyond the lidar.
+Inside the lidar's edge the depth blends linearly from the lidar to the fill over bathy_sources.FEATHER_PX pixels (flagged
+"blended"), so no step shows where the lidar ends. A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
+height N subtracted, read bilinear onto the block's own grid. Their `margin` (pixels read around a block) is wider than
+the default 8 so the blend is exact at every pixel a tile uses; their `zmin` keeps the coarser zooms to the CUDEM regions.
+A footprint read from a projected VRT is transformed to lon/lat.
+
 GEBCO (region "gebco", zooms 0-7) is read from the GEBCO GeoTIFF set (the zip as published; its eight quadrants are
 required, then extracted one at a time): zoom 7 tiles straight from the grid, water = elevation below 0 AND outside GSHHG's
 land (bathy_sources.LAND: the site's own coast-v1 overview, pinned by hash; lakes inside the land are land), so land and
@@ -112,21 +121,36 @@ def log(msg):
 
 # ---------------------------------------------------------------- the region's setup
 
+def margin_of(reg):
+    """Pixels read around a block at the region's finest zoom (a lidar region's blend needs more than the default 8)."""
+    return reg.get("margin", MARGIN)
+
+
 def region_config(name, box=None, local=None):
-    """The region's settings and its sources, as plain data for the worker processes."""
+    """The region's settings and its sources, as plain data for the worker processes. `local` maps a source key to a
+    local file, and "geoid:<name>" to a local geoid grid (tests)."""
     reg = dict(S.REGIONS[name])
     srcs = []
-    for sid in reg["sources"]:
-        s = dict(S.SOURCES[sid], key=sid)
+    for sid, fill in [(k, False) for k in reg["sources"]] + [(k, True) for k in reg.get("fill", ())]:
+        s = dict(S.SOURCES[sid], key=sid, fill=fill)
         if local and sid in local:
             s["local"] = local[sid]
         s["gdal"] = S.gdal_path(s)
+        if s.get("geoid"):
+            s["geoid_path"] = (local or {}).get("geoid:" + s["geoid"]) or S.GEOIDS[s["geoid"]]
         srcs.append(s)
     srcs.sort(key=lambda s: s["id"])          # best first = the lowest id first, whatever order the region lists them in
     ids = [s["id"] for s in srcs]
     if len(set(ids)) != len(ids) or any(not 1 <= i <= 31 or i == T.LAND_ID for i in ids):
         raise ValueError("%s: source ids %s must be distinct, 1-31 and not %d (the land mark)" % (name, ids, T.LAND_ID))
-    reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in srcs))
+    own = [s for s in srcs if not s["fill"]]
+    if not own:
+        raise ValueError("%s: no source of its own (fill sources never drive a region)" % name)
+    if any(f["id"] < max(s["id"] for s in own) for f in srcs if f["fill"]):
+        raise ValueError("%s: a fill source's id must be above every own source's (the lidar wins)" % name)
+    if margin_of(reg) < MARGIN or margin_of(reg) % MARGIN:
+        raise ValueError("%s: margin %s must be a multiple of %d" % (name, margin_of(reg), MARGIN))
+    reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in own))
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
     if box:
@@ -151,8 +175,27 @@ def _https_text(url, timeout=60):
     return _https_bytes(url, timeout).decode("utf-8")
 
 
+FOOT_PAD = 0.001       # degrees added around a footprint transformed from a projected CRS (its curved edges)
+
+
+def to_lonlat(crs, rects, pad=FOOT_PAD):
+    """Rectangles in `crs` units -> lon/lat rectangles holding their four corners, grown by `pad` degrees."""
+    from rasterio.warp import transform
+    xs, ys = [], []
+    for (x0, y0, x1, y1) in rects:
+        xs += [x0, x1, x0, x1]
+        ys += [y0, y0, y1, y1]
+    lon, lat = transform(crs, "EPSG:4326", xs, ys)
+    out = []
+    for i in range(len(rects)):
+        lo, la = lon[4 * i:4 * i + 4], lat[4 * i:4 * i + 4]
+        out.append((min(lo) - pad, min(la) - pad, max(lo) + pad, max(la) + pad))
+    return out
+
+
 def vrt_rects(text):
-    """lon/lat rectangles (lon0, lat0, lon1, lat1) of every source a GDAL VRT places."""
+    """lon/lat rectangles (lon0, lat0, lon1, lat1) of every source a GDAL VRT places. A VRT in a projected CRS (its SRS
+    element) has its rectangles transformed; a geographic one is read as lon/lat as it is."""
     root = ET.fromstring(text)
     gt = [float(v) for v in root.find("GeoTransform").text.replace(",", " ").split()]
     out = []
@@ -162,6 +205,12 @@ def vrt_rects(text):
         lon0, lon1 = gt[0] + x * gt[1], gt[0] + (x + w) * gt[1]
         lat_a, lat_b = gt[3] + y * gt[5], gt[3] + (y + h) * gt[5]
         out.append((min(lon0, lon1), min(lat_a, lat_b), max(lon0, lon1), max(lat_a, lat_b)))
+    srs = root.find("SRS")
+    if out and srs is not None and (srs.text or "").strip():
+        from rasterio.crs import CRS
+        crs = CRS.from_user_input(srs.text.strip())
+        if not crs.is_geographic:
+            return to_lonlat(crs, out)
     return out
 
 
@@ -171,59 +220,131 @@ def footprint(src):
         import rasterio
         with rasterio.open(src["gdal"]) as d:
             b = d.bounds
-        return [(b.left, b.bottom, b.right, b.top)]
+            rect = [(b.left, b.bottom, b.right, b.top)]
+            if d.crs is not None and not d.crs.is_geographic:
+                return to_lonlat(d.crs, rect)
+        return rect
     return vrt_rects(_https_text("https://%s.s3.amazonaws.com/%s" % (S.BUCKET, src["path"])))
 
 
+def rects_of(src):
+    """The source's footprint: worked out once (build() stores it in the source), else read now."""
+    return src["rects"] if "rects" in src else footprint(src)
+
+
 def block_keys(reg):
-    """The blocks (tiles of zoom zmax - 3) under any source footprint, inside the region's box."""
+    """The blocks (tiles of zoom zmax - 3) under the footprint of any of the region's OWN sources (never a fill source's),
+    inside the region's box, plus `ring` blocks around them (read for the fill and the water rule only)."""
     bz = reg["zmax"] - BLOCK_LEVELS
     keys = set()
     box = reg["box"]
     for src in reg["srcs"]:
-        for r in footprint(src):
+        if src.get("fill"):
+            continue
+        for r in rects_of(src):
             c = (max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3]))
             if c[0] >= c[2] or c[1] >= c[3]:
                 continue
             x0, y0, x1, y1 = T.tiles_in_box(c, bz)
             keys.update((x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1))
+    ring = reg.get("ring", 0)
+    if ring and keys:
+        x0, y0, x1, y1 = T.tiles_in_box(box, bz)
+        grown = set()
+        for (x, y) in keys:
+            for dy in range(-ring, ring + 1):
+                for dx in range(-ring, ring + 1):
+                    if x0 <= x + dx <= x1 and y0 <= y + dy <= y1:
+                        grown.add((x + dx, y + dy))
+        keys = grown
     return sorted(keys)
+
+
+def _hits(rects, lonlat_box):
+    """True when any rectangle overlaps the lon/lat box."""
+    a0, b0, a1, b1 = lonlat_box
+    return any(r[0] < a1 and r[2] > a0 and r[1] < b1 and r[3] > b0 for r in rects)
 
 
 # ---------------------------------------------------------------- pass 1: read the blocks
 
-def read_field(reg, key):
-    """(elevation float32, source ids uint8) of block `key`, (2048 + 16) px square at zoom zmax; NaN = no data."""
+def _warp(path, b, size, resampling, nodata=None, key="?"):
+    """One raster warped onto the block grid (EPSG:3857 bounds b, size x size px) as float32, NaN where it has none."""
     import rasterio
-    from rasterio.enums import Resampling
     from rasterio.transform import from_bounds
     from rasterio.vrt import WarpedVRT
+    with rasterio.open(path) as d:
+        kw = dict(crs="EPSG:3857", transform=from_bounds(*b, size, size), width=size, height=size,
+                  resampling=resampling, nodata=np.nan, dtype="float32")
+        nd = d.nodata if d.nodata is not None else nodata
+        if nd is not None:
+            kw["src_nodata"] = nd
+        elif key != "geoid":
+            raise ValueError("%s declares no nodata value: name it in bathy_sources (a fill value would read as a "
+                             "depth)" % key)
+        with WarpedVRT(d, **kw) as v:
+            return v.read(1)
+
+
+def feather(main, main_id, fill, fill_id, px=None):
+    """The merged field: the region's own sources where they have a value, the fill sources elsewhere; inside the own
+    sources' edge (pixels closer than px to a fill-only pixel) the depth goes linearly from the fill to the own value,
+    flagged FLAG_BLENDED. Returns (elevation, source ids)."""
+    px = S.FEATHER_PX if px is None else px
+    elev = np.where(np.isfinite(main), main, fill).astype(np.float32)
+    ids = np.where(np.isfinite(main), main_id, np.where(np.isfinite(fill), fill_id, 0)).astype(np.uint8)
+    fillonly = np.isnan(main) & np.isfinite(fill)
+    if fillonly.any() and px > 0:
+        from scipy import ndimage
+        d = ndimage.distance_transform_edt(~fillonly)
+        band = np.isfinite(main) & np.isfinite(fill) & (d < px)
+        if band.any():
+            w = (d[band] / px).astype(np.float32)
+            elev[band] = w * main[band] + (1 - w) * fill[band]
+            ids[band] = main_id[band] | T.FLAG_BLENDED
+    return elev, ids
+
+
+def read_field(reg, key):
+    """(elevation float32, source ids uint8) of block `key`, (2048 + 2 margin) px square at zoom zmax; NaN = no data.
+    Own sources are merged first-valid by id (the lower id wins: the newer survey), the fill sources likewise beneath
+    them, then blended at the own sources' edge (feather)."""
+    from rasterio.enums import Resampling
+    m = margin_of(reg)
     bz = reg["zmax"] - BLOCK_LEVELS
     px = T.TILE * 2 ** BLOCK_LEVELS
-    size = px + 2 * MARGIN
-    b = T.tile_bounds(bz, key[0], key[1], apron=MARGIN, px=px)
-    elev = np.full((size, size), np.nan, np.float32)
-    src_id = np.zeros((size, size), np.uint8)
+    size = px + 2 * m
+    b = T.tile_bounds(bz, key[0], key[1], apron=m, px=px)
+    (lon0, lat0), (lon1, lat1) = T.xy_to_lonlat(b[0], b[1]), T.xy_to_lonlat(b[2], b[3])
+    ll = (min(lon0, lon1), min(lat0, lat1), max(lon0, lon1), max(lat0, lat1))
+    layers = {False: [np.full((size, size), np.nan, np.float32), np.zeros((size, size), np.uint8)],
+              True: [np.full((size, size), np.nan, np.float32), np.zeros((size, size), np.uint8)]}
     ground = (b[2] - b[0]) / size * math.cos(math.radians(T.xy_to_lonlat(0.0, (b[1] + b[3]) / 2)[1]))
+    geoids = {}
+    any_fill = False
     for s in reg["srcs"]:
+        if "rects" in s and not _hits(s["rects"], ll):
+            continue
         coarser = s["res_m"] > 1.25 * ground      # enlarging: bilinear, not "average" (which would copy 2 x 2 blocks)
-        with rasterio.open(s["gdal"]) as d:
-            kw = dict(crs="EPSG:3857", transform=from_bounds(*b, size, size), width=size, height=size,
-                      resampling=Resampling.bilinear if coarser else Resampling.average, nodata=np.nan,
-                      dtype="float32")
-            nodata = d.nodata if d.nodata is not None else s.get("nodata")
-            if nodata is None:
-                raise ValueError("%s declares no nodata value: name it in bathy_sources (a fill value would read as a "
-                                 "depth)" % s["key"])
-            kw["src_nodata"] = nodata
-            with WarpedVRT(d, **kw) as v:
-                a = v.read(1)
+        a = _warp(s["gdal"], b, size, Resampling.bilinear if coarser else Resampling.average, s.get("nodata"), s["key"])
         a[~(np.abs(a) < S.SANE_M)] = np.nan
+        if s.get("geoid_path"):
+            if not np.isfinite(a).any():
+                continue
+            g = s["geoid_path"]
+            if g not in geoids:
+                geoids[g] = _warp(g, b, size, Resampling.bilinear, key="geoid")
+            a = a - geoids[g]                      # ellipsoid height -> geoid height; NaN where the grid has none
         a += np.float32(s["offset"])
+        elev, ids = layers[bool(s.get("fill"))]
         take = np.isnan(elev) & np.isfinite(a)
         elev[take] = a[take]
-        src_id[take] = s["id"]
-    return elev, src_id
+        ids[take] = s["id"]
+        any_fill = any_fill or bool(s.get("fill"))
+    main, main_id = layers[False]
+    if not any_fill:
+        return main, main_id
+    return feather(main, main_id, *layers[True])
 
 
 def save_land_core(reg, key, core):
@@ -251,7 +372,8 @@ def pass1(args):
     elev, src_id = read_field(reg, key)
     code = T.encode_depth(-elev)
     px = T.TILE * 2 ** BLOCK_LEVELS
-    core = code[MARGIN:MARGIN + px, MARGIN:MARGIN + px]
+    m = margin_of(reg)
+    core = code[m:m + px, m:m + px]
     low = W.low_of(core, reg["mhhw"])
     if not low.any():
         save_land_core(reg, key, core)
@@ -269,8 +391,9 @@ def pass_sea(args):
     its own tiles and its neighbours' aprons."""
     reg, key, keep = args
     px = T.TILE * 2 ** BLOCK_LEVELS
+    m = margin_of(reg)
     with np.load(_work_path(reg, key)) as f:
-        core = f["code"][MARGIN:MARGIN + px, MARGIN:MARGIN + px]
+        core = f["code"][m:m + px, m:m + px]
     np.save(_sea_path(reg, key), T.pack_bits(W.sea_of(W.low_of(core, reg["mhhw"]), keep)))
     return key
 
@@ -339,12 +462,12 @@ def pass2(args):
     px = T.TILE * 2 ** BLOCK_LEVELS
     with np.load(_work_path(reg, key)) as f:
         code, src = f["code"], f["src"]
-    sea = W.sea_around(key, _sea_get(reg), px, MARGIN)
+    sea = W.sea_around(key, _sea_get(reg), px, margin_of(reg))
     wet = W.low_of(code, reg["mhhw"]) & sea
     depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
     src = np.where(wet, src, np.where(code > 0, T.LAND_ID, 0)).astype(np.uint8)
     written = []
-    m, k = MARGIN, 2 ** BLOCK_LEVELS
+    m, k = margin_of(reg), 2 ** BLOCK_LEVELS
     while True:
         for j in range(k):
             for i in range(k):
@@ -683,6 +806,8 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
             raise SystemExit("--gebco <zip or directory> is needed for the gebco region")
         written = build_gebco(reg, gebco, workers, land=land)
     else:
+        for s in reg["srcs"]:
+            s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
         keys = block_keys(reg)
         log("%s: %d blocks of zoom %d to read (zmax %d)" % (name, len(keys), reg["zmax"] - BLOCK_LEVELS, reg["zmax"]))
         blocks = {}
@@ -813,6 +938,9 @@ def licence_text(reg):
     for s in reg["srcs"]:
         lines += ["- %s (%s), %s; vertical datum %s. %s. Licence: %s." % (
             s["name"], s["year"], "%d m grid" % s["res_m"], s["datum"], s["credit"], s["licence"])]
+    if any(s.get("fill") for s in reg["srcs"]):
+        lines += ["- Within %d pixels of the lidar's edge the depth blends from the lidar to the grid beneath it (marked "
+                  "blended)." % S.FEATHER_PX]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

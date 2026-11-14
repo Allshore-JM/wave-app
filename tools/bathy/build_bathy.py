@@ -227,6 +227,19 @@ def footprint(src):
     return vrt_rects(_https_text("https://%s.s3.amazonaws.com/%s" % (S.BUCKET, src["path"])))
 
 
+def outside_box(box, srcs, tol=FOOT_PAD + 1e-6):
+    """(source key, rectangle) of every OWN source's footprint rectangle reaching outside `box` by more than `tol`
+    degrees (a projected footprint is grown by FOOT_PAD). Fill sources reach where they like."""
+    bad = []
+    for s in srcs:
+        if s.get("fill"):
+            continue
+        for r in s["rects"]:
+            if r[0] < box[0] - tol or r[1] < box[1] - tol or r[2] > box[2] + tol or r[3] > box[3] + tol:
+                bad.append((s["key"], tuple(round(v, 4) for v in r)))
+    return bad
+
+
 def rects_of(src):
     """The source's footprint: worked out once (build() stores it in the source), else read now."""
     return src["rects"] if "rects" in src else footprint(src)
@@ -327,14 +340,16 @@ def read_field(reg, key):
             continue
         coarser = s["res_m"] > 1.25 * ground      # enlarging: bilinear, not "average" (which would copy 2 x 2 blocks)
         a = _warp(s["gdal"], b, size, Resampling.bilinear if coarser else Resampling.average, s.get("nodata"), s["key"])
-        a[~(np.abs(a) < S.SANE_M)] = np.nan
         if s.get("geoid_path"):
-            if not np.isfinite(a).any():
+            if not (np.abs(a) < S.SANE_M).any():   # nothing real in the block: the geoid is never read
                 continue
             g = s["geoid_path"]
             if g not in geoids:
-                geoids[g] = _warp(g, b, size, Resampling.bilinear, key="geoid")
+                n = _warp(g, b, size, Resampling.bilinear, key="geoid")
+                n[~(np.abs(n) < S.GEOID_SANE_M)] = np.nan
+                geoids[g] = n
             a = a - geoids[g]                      # ellipsoid height -> geoid height; NaN where the grid has none
+        a[~(np.abs(a) < S.SANE_M)] = np.nan       # after the geoid: a fill value minus N is still a fill value
         a += np.float32(s["offset"])
         elev, ids = layers[bool(s.get("fill"))]
         take = np.isnan(elev) & np.isfinite(a)
@@ -808,6 +823,10 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
     else:
         for s in reg["srcs"]:
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
+        bad = outside_box(S.REGIONS[name]["box"], reg["srcs"])   # the configured box, whatever --box narrowed
+        if bad:
+            raise ValueError("%s: %d footprint rectangle(s) outside the region's box %s, e.g. %s: widen the box"
+                             % (name, len(bad), S.REGIONS[name]["box"], bad[:3]))
         keys = block_keys(reg)
         log("%s: %d blocks of zoom %d to read (zmax %d)" % (name, len(keys), reg["zmax"] - BLOCK_LEVELS, reg["zmax"]))
         blocks = {}

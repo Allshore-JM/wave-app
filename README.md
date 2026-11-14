@@ -1540,14 +1540,19 @@ clouds), to zoom 17.
   NGS 2020. Puerto Rico: NGS 2019, then USACE 2018 where 2019 has no value (2019 against the regional grid: -0.03 to
   -0.25 m; 2018 against 2019 up to -0.7 m at 15-30 m). The NW Hawaiian Islands: NGS 2021 (French Frigate Shoals, Necker,
   Nihoa). Each lidar source's footprint is read from its VRT; a VRT in a projected CRS (UTM, for example) has its
-  rectangles transformed to longitude and latitude (grown by 0.001 degree for the curved edges).
+  rectangles transformed to longitude and latitude (grown by 0.001 degree for the curved edges). A build stops when a
+  lidar footprint reaches outside the region's configured box (its data would be dropped without a word): Guam's box
+  starts at 144.4 E for the offshore banks NGS 2020 surveyed west of the regional grid's 144.5.
 - **Ellipsoid heights.** NGS's 2021 Niihau and NW Hawaiian Islands surveys give heights above the NAD83(PA11) ellipsoid (about
   15 m above sea level there). They are converted with the EGM2008 geoid (PROJ's `us_nga_egm08_25.tif`, read through
   `/vsicurl/`, bilinear onto each block) less 0.3 m (`bathy_sources.EGM2008`): against USACE's 2013 Niihau survey on local
   mean sea level that leaves about 0.3 m either way (owner decision 2026-11-14; the NW Islands have no sea-level survey to
-  check against, so the readout there is approximate).
+  check against, so the readout there is approximate). The geoid is subtracted before the check for impossible values
+  (beyond 12,000 m), and a geoid value beyond 200 m (`GEOID_SANE_M`) counts as missing, so a fill value in a geoid grid
+  can never come through as a 32,000-m height.
 - **Fill sources.** Each lidar region lists the regional grids beneath it as `fill` (Hawaii, Guam and Puerto Rico; the NW
-  Islands have none). A fill source is read and merged under the lidar (its ids must be above every lidar id) but never
+  Islands have none; Puerto Rico's also lists the Virgin Islands grids, since its lidar reaches past 65.25 W at Culebra
+  and Vieques, where only they hold data). A fill source is read and merged under the lidar (its ids must be above every lidar id) but never
   decides where blocks are built: blocks come from the lidar footprints only, plus a `ring` of one block around them (read
   for the fill and the water rule, which needs a path to water deeper than 20 m beyond the lidar's reach). So a zoom-16 or
   -17 tile carries the regional grid wherever the lidar has a hole inside it, and the tile never switches source halfway.

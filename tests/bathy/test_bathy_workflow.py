@@ -107,3 +107,5 @@ def test_the_build_writes_its_numbers_to_the_summary_and_keeps_the_exit_code():
 def test_the_temporary_dry_run_workflow_is_gone():
     """Step 2's runner measurement (plan section 93b) was temporary: it must not stay on the default branch."""
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "bathy-dryrun.yml"))
+    # and section 96's runner measurement of the four lidar regions
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "lidar-dryrun.yml"))

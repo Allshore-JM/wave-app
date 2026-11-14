@@ -154,10 +154,13 @@ REGIONS = {
                          sources=["ngs-niihau21", "usace-oahu13", "usace-kauai13", "usace-maui13", "usace-molokai13",
                                   "usace-lanai13", "usace-bigisland13", "usace-niihau13"],
                          fill=["cudem-hawaii", "cudem3-hawaii"]),
-    "guam-lidar": dict(box=(144.5, 13.0, 145.1, 13.8), mhhw=0.4, zmin=16, prio=20, ring=1, margin=32,
+    # Guam: the box reaches 144.4 E (the lidar's offshore banks lie to 144.43 E, west of the CUDEM region's 144.5).
+    "guam-lidar": dict(box=(144.4, 13.0, 145.1, 13.8), mhhw=0.4, zmin=16, prio=20, ring=1, margin=32,
                        sources=["ngs-guam20"], fill=["cudem-guam", "cudem3-guam"]),
     "pr-lidar": dict(box=(-68.0, 17.25, -65.0, 19.0), mhhw=0.25, zmin=16, prio=20, ring=1, margin=32,
-                     sources=["ngs-pr19", "usace-pr18"], fill=["cudem-pr", "cudem3-pr"]),
+                     sources=["ngs-pr19", "usace-pr18"],
+                     # the lidar reaches past 65.25 W (Culebra, Vieques), where only the Virgin Islands grids hold data
+                     fill=["cudem-pr", "cudem-usvi", "cudem3-pr", "cudem3-usvi"]),
     # The NW Hawaiian Islands (French Frigate Shoals, Necker, Nihoa): nothing finer below them, so zooms 8-17 from the
     # lidar itself (GEBCO under it); the lidar reaches 30-50 m, so the usual deep-water rule finds the open sea.
     "nwhi-lidar": dict(box=(-168.5, 22.5, -160.5, 24.5), mhhw=0.4, zmin=8, prio=20, margin=32,
@@ -168,6 +171,7 @@ FEATHER_PX = 24        # at a region's finest zoom: the band inside the lidar's 
 
 # Geoid grids (a source's `geoid`): GDAL paths of the geoid height N above the ellipsoid, in metres.
 GEOIDS = {"egm2008": "/vsicurl/https://cdn.proj.org/us_nga_egm08_25.tif"}
+GEOID_SANE_M = 200.0  # |geoid height| beyond this is a fill value of the geoid grid (real N: about -107 to +86 m)
 
 GEBCO_URL = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/geotiff/gebco_2026_geotiff.zip"
 

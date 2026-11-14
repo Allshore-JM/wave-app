@@ -29,7 +29,9 @@ def test_the_lidar_regions_are_set_up_as_planned():
         reg = B.region_config(name)
         own = [s for s in reg["srcs"] if not s["fill"]]
         fill = [s for s in reg["srcs"] if s["fill"]]
-        assert reg["zmax"] == 17 and reg["prio"] == 20 and B.margin_of(reg) == 32, name
+        assert reg["zmax"] == 17 and reg["prio"] == 20, name
+        # a region with fill reads 3 x FEATHER_PX around a block (the blend's reach); the NW Islands have no fill
+        assert B.margin_of(reg) == (72 if fill else 32), name
         assert all(s["zmax"] == 17 and s["res_m"] == 1 for s in own), name
         assert all(f["id"] > max(s["id"] for s in own) for f in fill), name
         for s in own:                              # the client's short credit and label (overlay.js bathyShort / bathyLabel)
@@ -54,7 +56,7 @@ def test_region_config_refuses_a_bad_lidar_region(monkeypatch):
     monkeypatch.setitem(S.SOURCES, "lo", dict(S.LIDAR, id=5, path="a.vrt", year="2099", name="x", credit="NOAA x",
                                              datum="t", nodata=-1.0))
     monkeypatch.setitem(S.SOURCES, "hi", dict(S.CUDEM, id=3, path="b.tif", year="2099"))
-    base = dict(box=(0, 0, 1, 1), mhhw=0.4, zmin=16, prio=20, margin=32)
+    base = dict(box=(0, 0, 1, 1), mhhw=0.4, zmin=16, prio=20, margin=72)
     monkeypatch.setitem(S.REGIONS, "bad", dict(base, sources=["lo"], fill=["hi"]))       # fill id below the lidar's
     with pytest.raises(ValueError):
         B.region_config("bad")
@@ -66,9 +68,15 @@ def test_region_config_refuses_a_bad_lidar_region(monkeypatch):
         monkeypatch.setitem(S.REGIONS, "bad", dict(base, sources=["lo"], fill=["hi"], margin=margin))
         with pytest.raises(ValueError):
             B.region_config("bad")
-    monkeypatch.setitem(S.REGIONS, "bad", dict(base, sources=["lo"], fill=["hi"], margin=16))
+    for margin in (16, 64):                                 # a multiple of 8, but short of the blend's 3 x 24 px reach
+        monkeypatch.setitem(S.REGIONS, "bad", dict(base, sources=["lo"], fill=["hi"], margin=margin))
+        with pytest.raises(ValueError, match="FEATHER_PX"):
+            B.region_config("bad")
+    monkeypatch.setitem(S.REGIONS, "nofill", dict(base, sources=["lo"], margin=16))    # no fill: no blend, no rule
+    assert B.margin_of(B.region_config("nofill")) == 16
+    monkeypatch.setitem(S.REGIONS, "bad", dict(base, sources=["lo"], fill=["hi"], margin=72))
     reg = B.region_config("bad")
-    assert reg["zmax"] == 17 and B.margin_of(reg) == 16                     # the fill's zmax 15 never sets the region's
+    assert reg["zmax"] == 17 and B.margin_of(reg) == 72                     # the fill's zmax 15 never sets the region's
     # a fill finer than the region's own sources still never sets its zmax
     monkeypatch.setitem(S.SOURCES, "lo", dict(S.LIDAR, id=5, path="a.vrt", year="2099", name="x", credit="NOAA x",
                                              datum="t", nodata=-1.0, zmax=14))
@@ -152,19 +160,103 @@ def test_feather_blends_inside_the_lidar_edge_only():
     # no fill-only pixel anywhere (a hole-free block inside the lidar): nothing changes
     e2, i2 = B.feather(main[:, :30], main_id[:, :30], fill[:, :30], fill_id[:, :30], px=px)
     assert np.array_equal(e2, main[:, :30]) and np.array_equal(i2, main_id[:, :30])
-    # a lidar hole is blended round its rim too
+    # a lidar hole is blended round its rim too, over the narrowest width (a one-pixel hole: FEATHER_MIN_PX)
     holed = np.full((41, 41), -10.0, np.float32)
     holed[20, 20] = np.nan
     e3, i3 = B.feather(holed, np.where(np.isfinite(holed), 2, 0).astype(np.uint8), np.full((41, 41), -50.0, np.float32),
                        np.full((41, 41), 10, np.uint8), px=4)
+    assert S.FEATHER_MIN_PX == 2
     assert e3[20, 20] == -50.0 and i3[20, 20] == 10 and i3[20, 21] == (2 | T.FLAG_BLENDED) and i3[20, 30] == 2
-    assert e3[20, 21] == pytest.approx(-10 * 0.25 - 50 * 0.75)
+    assert e3[20, 21] == pytest.approx(-10 * 0.5 - 50 * 0.5)
+    assert i3[20, 22] == 2 and e3[20, 22] == -10.0                           # d = 2: not under the width 2
+    assert i3[21, 21] == (2 | T.FLAG_BLENDED)                                # d = 1.41: blended
+
     # a band pixel where the fill itself has no value keeps the lidar's value and id (nothing to blend towards)
     gap = fill.copy()
     gap[1, 25] = np.nan
     e4, i4 = B.feather(main, main_id, gap, fill_id, px=px)
     assert e4[1, 25] == -10.0 and i4[1, 25] == 2
     assert i4[1, 24] == (2 | T.FLAG_BLENDED) and i4[1, 26] == (2 | T.FLAG_BLENDED)
+
+
+def _holes_field(n=360, seed=7):
+    """A lidar field with gaps of every size: one-pixel specks, small discs, a big disc, a long narrow channel, the
+    survey's outer edge on the east, and a hole beside the edge."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:n, 0:n]
+    main = (-5.0 - 0.02 * xx - 0.01 * yy).astype(np.float32)
+    gap = np.zeros((n, n), bool)
+    gap[:, n - 40:] = True                                         # the survey ends 40 px from the east side
+    for cy, cx, r in [(60, 60, 3), (60, 140, 6), (200, 120, 40), (300, 300, 10), (120, 300, 2.5)]:
+        gap |= (yy - cy) ** 2 + (xx - cx) ** 2 <= r * r
+    gap[150:154, 20:330] = True                                    # a channel 4 px wide, joined to the outer edge
+    for _ in range(40):
+        gap[rng.integers(0, n), rng.integers(0, n - 40)] = True    # one-pixel specks
+    main[gap] = np.nan
+    fill = np.full((n, n), -50.0, np.float32) + (xx * 0.03).astype(np.float32)
+    main_id = np.where(np.isfinite(main), 2, 0).astype(np.uint8)
+    return main, main_id, fill, np.full((n, n), 10, np.uint8), gap
+
+
+def test_feather_fades_over_the_gap_size_small_gaps_narrow_big_gaps_and_the_edge_full():
+    """Owner's option C: the fade round a gap is about as wide as the gap is deep, never under FEATHER_MIN_PX, never
+    over FEATHER_PX; the survey's outer edge and a big hole keep the full width."""
+    main, main_id, fill, fill_id, gap = _holes_field()
+    px = 24
+    elev, ids = B.feather(main, main_id, fill, fill_id, px=px)
+    blended = (ids & T.FLAG_BLENDED) != 0
+    from scipy import ndimage
+    d = ndimage.distance_transform_edt(~gap)
+
+    def reach(mask):                                               # how far from the gap the blend reaches round it
+        ring = ndimage.binary_dilation(mask, iterations=px + 2) & ~gap
+        return d[ring & blended].max() if (ring & blended).any() else 0.0
+
+    disc = np.zeros_like(gap)
+    yy, xx = np.mgrid[0:gap.shape[0], 0:gap.shape[1]]
+    disc[(yy - 60) ** 2 + (xx - 60) ** 2 <= 9] = True               # radius 3: a fade about 3 px
+    assert 2.0 <= reach(disc) < 3.2                               # its depth: sqrt(10), the nearest lidar pixel
+    disc[:] = False
+    disc[(yy - 200) ** 2 + (xx - 120) ** 2 <= 1600] = True          # radius 40: the full 24
+    assert px - 1 <= reach(disc) < px
+    edge = np.zeros_like(gap)
+    edge[:, -40:] = True
+    assert px - 1 <= reach(edge & ~ndimage.binary_dilation(disc, iterations=60)) < px
+    # never wider than px anywhere, never at a pixel whose fill has no value, the lidar's own id kept
+    assert d[blended].max() < px and np.all(ids[blended] == (2 | T.FLAG_BLENDED))
+    # every blended depth lies between the lidar's and the fill's, the rest is the lidar's own or the fill's own
+    lo, hi = np.minimum(main, fill), np.maximum(main, fill)
+    assert np.all((elev[blended] >= lo[blended] - 1e-4) & (elev[blended] <= hi[blended] + 1e-4))
+    assert np.array_equal(elev[~blended & ~gap], main[~blended & ~gap])
+    assert np.array_equal(elev[gap], fill[gap])
+    # fewer lidar pixels blended than with a full-width band round every gap (what the old rule did)
+    assert blended.sum() < ((d < px) & ~gap).sum() * 0.9
+
+
+def test_feather_gives_every_block_the_same_values_whatever_its_read_area():
+    """The width is measured within 3 x px of a pixel, so a block read with a margin of 3 x px gives exactly the values
+    of the whole field (a hole cut by the read area's edge never gets a different fade: no seam at block edges)."""
+    main, main_id, fill, fill_id, gap = _holes_field()
+    px = 24
+    whole_e, whole_i = B.feather(main, main_id, fill, fill_id, px=px)
+    n, m, core = main.shape[0], 3 * px, 64
+    checked = 0
+    for y0 in range(m, n - m - core + 1, 37):
+        for x0 in range(m, n - m - core + 1, 41):
+            sl = (slice(y0 - m, y0 + core + m), slice(x0 - m, x0 + core + m))
+            e, i = B.feather(main[sl], main_id[sl], fill[sl], fill_id[sl], px=px)
+            c = (slice(m, m + core), slice(m, m + core))
+            w = (slice(y0, y0 + core), slice(x0, x0 + core))
+            assert np.array_equal(e[c], whole_e[w]) and np.array_equal(i[c], whole_i[w]), (y0, x0)
+            checked += 1
+    assert checked >= 16
+    # with a margin of only px (what a 32-px margin would have been for px 24) some block disagrees: the rule needs 3 x
+    bad = 0
+    for y0 in range(px, n - px - core + 1, 13):
+        sl = (slice(y0 - px, y0 + core + px), slice(150 - px, 150 + core + px))
+        e, _ = B.feather(main[sl], main_id[sl], fill[sl], fill_id[sl], px=px)
+        bad += not np.array_equal(e[px:px + core, px:px + core], whole_e[y0:y0 + core, 150:150 + core])
+    assert bad > 0
 
 
 # ---------------------------------------------------------------- read_field and a whole build on synthetic surveys
@@ -202,7 +294,7 @@ def _surveys(tmp_path, monkeypatch, extra=None):
                                                     name="fill", credit="NOAA test", licence="test"))
     names = ["lid-new", "lid-old"] + (extra or [])
     monkeypatch.setitem(S.REGIONS, "lid", dict(box=(W, SO, E, NO), sources=names, fill=["lid-fill"], mhhw=0.4, zmin=12,
-                                               prio=20, ring=1, margin=32))
+                                               prio=20, ring=1, margin=72))
     return local
 
 
@@ -341,7 +433,7 @@ def test_a_fill_id_must_be_above_every_own_id(monkeypatch):
     monkeypatch.setitem(S.SOURCES, "a", dict(S.LIDAR, id=1, path="a.vrt", **common))
     monkeypatch.setitem(S.SOURCES, "b", dict(S.LIDAR, id=5, path="b.vrt", **common))
     monkeypatch.setitem(S.SOURCES, "f", dict(S.CUDEM, id=3, path="f.tif", year="2099"))
-    monkeypatch.setitem(S.REGIONS, "mix", dict(box=(0, 0, 1, 1), mhhw=0.4, zmin=16, prio=20, margin=32,
+    monkeypatch.setitem(S.REGIONS, "mix", dict(box=(0, 0, 1, 1), mhhw=0.4, zmin=16, prio=20, margin=72,
                                                sources=["a", "b"], fill=["f"]))
     with pytest.raises(ValueError, match="above every own"):     # above the lowest own id, below the highest
         B.region_config("mix")
@@ -365,11 +457,14 @@ BX = -180.0 + 62 * 360.0 / 1024                               # a zoom-10 block 
 
 def test_the_blend_sees_a_lidar_edge_in_the_neighbouring_block(tmp_path, monkeypatch):
     """The lidar ends 10 px east of a block edge: the block to the west must still blend its last pixels (it sees the
-    edge through its 32-px margin; with the default 8 px it would not, and the two blocks would disagree)."""
+    edge through its 72-px margin; with the default 8 px it would not, and the two blocks would disagree). The other
+    surveys start well east of it, so the gap beyond the edge is wide and its fade the full FEATHER_PX."""
     local = _surveys(tmp_path, monkeypatch, extra=["lid-cross"])
     px13 = 360.0 / (2 ** 13 * T.TILE)
     edge = BX + 10 * px13
     local["lid-cross"] = _tif(str(tmp_path / "cross.tif"), -158.24, edge, SO, NO, -8.0)
+    local["lid-new"] = _tif(str(tmp_path / "new2.tif"), -158.17, NEW_E, SO, NO, -5.0 + GEOID_N + 0.3)
+    local["lid-old"] = _tif(str(tmp_path / "old2.tif"), -158.17, OLD_E, SO, NO, -10.0)
     monkeypatch.setitem(S.SOURCES, "lid-cross", dict(S.LIDAR, id=3, zmax=13, res_m=10, year="2099", path="c.vrt",
                                                      name="cross", credit="NOAA c", licence="t", datum="t",
                                                      nodata=-9999.0))
@@ -419,7 +514,7 @@ def test_a_build_keeps_a_sloping_survey_in_place_and_a_lagoon_joined_across_a_bl
     monkeypatch.setitem(S.SOURCES, "lag-fill", dict(S.CUDEM, id=10, zmax=11, year="2099", path="f.tif", datum="test",
                                                     name="fill", credit="NOAA test", licence="test"))
     monkeypatch.setitem(S.REGIONS, "lag", dict(box=(-158.25, 21.20, -158.15, 21.24), sources=["lag-land", "lag-slope"],
-                                               fill=["lag-fill"], mhhw=0.4, zmin=12, prio=20, ring=1, margin=32))
+                                               fill=["lag-fill"], mhhw=0.4, zmin=12, prio=20, ring=1, margin=72))
     B._core.cache_clear()
     B.build("lag", str(tmp_path / "out"), version=1, workers=1, local=local)
     B._core.cache_clear()

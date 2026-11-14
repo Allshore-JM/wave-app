@@ -8,7 +8,8 @@ the client stacks regions by prio, and a pixel the higher region has no picture 
 
 A region's `fill` sources are read and merged under its own (the lidar's holes and the water just beyond it take their
 values) but never decide which blocks are read and never earn a zoom beyond their own `zmax`; inside the lidar's edge the
-depth blends from the lidar to the fill over FEATHER_PX pixels (flagged "blended").
+depth blends from the lidar to the fill (flagged "blended"): over FEATHER_PX pixels at the survey's edge and round
+big holes, narrower round small holes (build_bathy.feather).
 
 Elevations are metres above the source's vertical datum, positive up. Every stage-1 source sits on a local
 mean-sea-level datum (checked 2026-11-11: Hawaii LMSL, Guam GUVD04, CNMI NMVD03, American Samoa ASVD02,
@@ -149,15 +150,15 @@ REGIONS = {
     # The 1-m lidar regions (plan section 96), drawn over the CUDEM regions (prio 20). zmin 16: zoom 15 and coarser stay
     # the CUDEM regions' tiles. `ring`: blocks read around the lidar's own (fill only, never written) so the water rule
     # reaches deep water beyond the lidar. `margin`: pixels read around a block at its finest zoom (the feather needs
-    # FEATHER_PX beyond the coarser zooms' apron).
-    "hawaii-lidar": dict(box=(-160.5, 18.5, -154.5, 22.5), mhhw=0.4, zmin=16, prio=20, ring=1, margin=32,
+    # 3 x FEATHER_PX, so the blend (which looks 3 x FEATHER_PX around a pixel) agrees across block edges).
+    "hawaii-lidar": dict(box=(-160.5, 18.5, -154.5, 22.5), mhhw=0.4, zmin=16, prio=20, ring=1, margin=72,
                          sources=["ngs-niihau21", "usace-oahu13", "usace-kauai13", "usace-maui13", "usace-molokai13",
                                   "usace-lanai13", "usace-bigisland13", "usace-niihau13"],
                          fill=["cudem-hawaii", "cudem3-hawaii"]),
     # Guam: the box reaches 144.4 E (the lidar's offshore banks lie to 144.43 E, west of the CUDEM region's 144.5).
-    "guam-lidar": dict(box=(144.4, 13.0, 145.1, 13.8), mhhw=0.4, zmin=16, prio=20, ring=1, margin=32,
+    "guam-lidar": dict(box=(144.4, 13.0, 145.1, 13.8), mhhw=0.4, zmin=16, prio=20, ring=1, margin=72,
                        sources=["ngs-guam20"], fill=["cudem-guam", "cudem3-guam"]),
-    "pr-lidar": dict(box=(-68.0, 17.25, -65.0, 19.0), mhhw=0.25, zmin=16, prio=20, ring=1, margin=32,
+    "pr-lidar": dict(box=(-68.0, 17.25, -65.0, 19.0), mhhw=0.25, zmin=16, prio=20, ring=1, margin=72,
                      sources=["ngs-pr19", "usace-pr18"],
                      # the lidar reaches past 65.25 W (Culebra, Vieques), where only the Virgin Islands grids hold data
                      fill=["cudem-pr", "cudem-usvi", "cudem3-pr", "cudem3-usvi"]),
@@ -167,7 +168,8 @@ REGIONS = {
                        sources=["ngs-nwhi21"]),
 }
 
-FEATHER_PX = 24        # at a region's finest zoom: the band inside the lidar's edge that blends towards the fill
+FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
+FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 
 # Geoid grids (a source's `geoid`): GDAL paths of the geoid height N above the ellipsoid, in metres.
 GEOIDS = {"egm2008": "/vsicurl/https://cdn.proj.org/us_nga_egm08_25.tif"}

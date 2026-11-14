@@ -1565,10 +1565,16 @@ clouds), to zoom 17.
   Tiles are still written only where a lidar pixel earns the zoom (the earned rule), and never below the region's `zmin`:
   16 for Hawaii, Guam and Puerto Rico (zoom 15 and coarser stay the regional grids' tiles), 8 for the NW Islands (nothing
   finer beneath them).
-- **The blend.** Within `FEATHER_PX` (24) pixels of the lidar's edge (its last pixels next to a pixel only the fill has, also
-  round the lidar's holes) the depth goes linearly from the fill to the lidar's own value, flagged blended (0x40); the
-  pixel keeps the lidar's source id. A block reads `margin` 32 pixels around itself (was 8) so the blend never stops at a
-  block edge. The `LICENSE.txt` of such a build says so.
+- **The blend.** Next to a pixel only the fill has (the lidar's outer edge and its holes) the depth goes linearly from the
+  fill to the lidar's own value, flagged blended (0x40); the pixel keeps the lidar's source id. The fade's width follows
+  the gap's size (owner's choice, 2026-11-14, of three options compared on Pipeline, Kaneohe and Rincon): the gap's depth
+  near it (the largest distance from a fill-only pixel to the lidar within `FEATHER_PX` of the gap pixel nearest it),
+  between `FEATHER_MIN_PX` (2) and `FEATHER_PX` (24). So the survey's edge and big holes fade over the full 24 pixels and
+  a hole a few pixels across over a few, keeping the reef round it the lidar's own. A hard edge was ruled out: the lidar
+  and the regional grid differ by 0.2-0.3 m in the median at the gaps (17-32 % of edge pixels by over 0.5 m). The width
+  is measured within 3 x `FEATHER_PX` of a pixel, so a block reads `margin` 72 pixels around itself (was 8; region_config
+  refuses less for a region with fill) and the blend is the same on both sides of a block edge. The `LICENSE.txt` of such a
+  build says so.
 - **Running.** As the other regions: `bathy-build` with region `hawaii-lidar`, `guam-lidar`, `pr-lidar` or `nwhi-lidar`,
   version 1. A local build of a box: `build --region guam-lidar --out build/bathy --box=144.6,13.3,144.8,13.5`; a local
   geoid grid can stand in (`local["geoid:egm2008"]`, tests only).

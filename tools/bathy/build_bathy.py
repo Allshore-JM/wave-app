@@ -26,8 +26,9 @@ finest zoom (`zmax`, the finest source's) down to `zmin`:
 The 1-m lidar regions (plan section 96, bathy_sources) add three things. Their `fill` sources (the CUDEM grids under the
 lidar) are read and merged under the lidar but never decide which blocks are read: the blocks are those under the lidar's
 own footprints, plus `ring` blocks around them (fill only) so the water rule reaches the deep water beyond the lidar.
-Inside the lidar's edge the depth blends linearly from the lidar to the fill over bathy_sources.FEATHER_PX pixels (flagged
-"blended"), so no step shows where the lidar ends. A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
+Inside the lidar's edge the depth blends linearly from the lidar to the fill (flagged "blended"), so no step shows where
+the lidar ends: over bathy_sources.FEATHER_PX pixels at the survey's edge and round big holes, narrower round small holes
+(the width follows the gap's own size: feather). A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
 height N subtracted, read bilinear onto the block's own grid. Their `margin` (pixels read around a block) is wider than
 the default 8 so the blend is exact at every pixel a tile uses; their `zmin` keeps the coarser zooms to the CUDEM regions.
 A footprint read from a projected VRT is transformed to lon/lat.
@@ -150,6 +151,9 @@ def region_config(name, box=None, local=None):
         raise ValueError("%s: a fill source's id must be above every own source's (the lidar wins)" % name)
     if margin_of(reg) < MARGIN or margin_of(reg) % MARGIN:
         raise ValueError("%s: margin %s must be a multiple of %d" % (name, margin_of(reg), MARGIN))
+    if reg.get("fill") and margin_of(reg) < 3 * S.FEATHER_PX:
+        raise ValueError("%s: margin %s below 3 x FEATHER_PX (the blend looks 3 x %d px around a pixel)" % (
+            name, margin_of(reg), S.FEATHER_PX))
     reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in own))
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
@@ -301,18 +305,29 @@ def _warp(path, b, size, resampling, nodata=None, key="?"):
 
 def feather(main, main_id, fill, fill_id, px=None):
     """The merged field: the region's own sources where they have a value, the fill sources elsewhere; inside the own
-    sources' edge (pixels closer than px to a fill-only pixel) the depth goes linearly from the fill to the own value,
-    flagged FLAG_BLENDED. Returns (elevation, source ids)."""
+    sources' edge the depth goes linearly from the fill to the own value, flagged FLAG_BLENDED. Returns (elevation,
+    source ids).
+
+    The fade's width follows the size of the gap it surrounds (owner's choice, plan section 96, option C): a lidar
+    pixel at distance d from its nearest fill-only pixel q blends when d < width, where width = the gap's depth near q
+    (the largest distance from a fill-only pixel to the lidar within px of q, a square window), clipped to
+    FEATHER_MIN_PX .. px. The survey's outer edge and big holes keep the full px; a hole a few pixels across gets a
+    fade a few pixels wide, so the reef round it stays the lidar's own. Every quantity is measured within 3 px of the
+    pixel, so a block read with a margin of at least 3 px gives the same values as a bigger read (blocks agree at
+    their shared edges; region_config holds the margin to it)."""
     px = S.FEATHER_PX if px is None else px
     elev = np.where(np.isfinite(main), main, fill).astype(np.float32)
     ids = np.where(np.isfinite(main), main_id, np.where(np.isfinite(fill), fill_id, 0)).astype(np.uint8)
     fillonly = np.isnan(main) & np.isfinite(fill)
     if fillonly.any() and px > 0:
         from scipy import ndimage
-        d = ndimage.distance_transform_edt(~fillonly)
-        band = np.isfinite(main) & np.isfinite(fill) & (d < px)
+        d, (iy, ix) = ndimage.distance_transform_edt(~fillonly, return_indices=True)
+        depth = ndimage.maximum_filter(ndimage.distance_transform_edt(fillonly), size=2 * px + 1, mode="nearest")
+        width = np.clip(depth[iy, ix], S.FEATHER_MIN_PX, px).astype(np.float32)
+        del iy, ix, depth
+        band = np.isfinite(main) & np.isfinite(fill) & (d < width)
         if band.any():
-            w = (d[band] / px).astype(np.float32)
+            w = (d[band] / width[band]).astype(np.float32)
             elev[band] = w * main[band] + (1 - w) * fill[band]
             ids[band] = main_id[band] | T.FLAG_BLENDED
     return elev, ids
@@ -958,8 +973,8 @@ def licence_text(reg):
         lines += ["- %s (%s), %s; vertical datum %s. %s. Licence: %s." % (
             s["name"], s["year"], "%d m grid" % s["res_m"], s["datum"], s["credit"], s["licence"])]
     if any(s.get("fill") for s in reg["srcs"]):
-        lines += ["- Within %d pixels of the lidar's edge the depth blends from the lidar to the grid beneath it (marked "
-                  "blended)." % S.FEATHER_PX]
+        lines += ["- Near the lidar's edge the depth blends from the lidar to the grid beneath it (marked blended): "
+                  "within %d pixels at the survey's edge, narrower round small gaps." % S.FEATHER_PX]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

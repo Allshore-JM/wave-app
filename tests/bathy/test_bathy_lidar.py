@@ -755,3 +755,102 @@ def test_every_lidar_source_is_marked_and_no_cudem_grid_is():
             assert s.get("survey_fade") is True, sid
         else:
             assert not s.get("survey_fade"), sid
+
+
+def test_the_survey_fade_never_turns_the_newer_surveys_water_into_land():
+    """Owner, 2026-11-14: where the older survey is land, the fade may make the newer survey's water shallower but never
+    lifts it above mean sea level (or above its own value on a reef flat between 0 and mhhw)."""
+    n = 120
+    newer = np.full((n, n), np.nan, np.float32)
+    newer[:, :60] = -1.5                     # shallow water ending at column 60
+    newer[:10, :60] = 0.2                    # a reef flat (water: below mhhw 0.4)
+    newer[20:24, 30:34] = np.nan             # a small hole the older survey fills with land
+    older = np.full((n, n), 5.0, np.float32)  # land everywhere
+    ids = np.where(np.isfinite(newer), 1, 0).astype(np.uint8)
+    e, i = B.survey_fade(newer, ids, older, 2, 0.4)
+    plain, _ = B.feather(newer, ids, older, np.full(older.shape, 2, np.uint8))
+    water = np.isfinite(newer)
+    assert (plain[water] > 0.4).any()                       # without the cap the fade makes land of it
+    assert np.all(e[water] <= np.maximum(newer[water], 0.0))
+    assert np.all(e[water] <= 0.4)                          # every newer water pixel stays water
+    assert e[0, 59] == pytest.approx(0.2) and e[30, 59] == pytest.approx(0.0)
+    assert np.all(e[~water] == 5.0) and np.all(i[~water] == 2)
+    assert np.all((i[water] & T.SRC_BITS) == 1)
+    # deeper than the older survey: the fade deepens, the cap never touches it
+    deep = np.full((n, n), -20.0, np.float32)
+    e2, _ = B.survey_fade(newer, ids, deep, 2, 0.4)
+    p2, _ = B.feather(newer, ids, deep, np.full(deep.shape, 2, np.uint8))
+    assert np.array_equal(e2, p2)
+    # newer survey land (above mhhw) is never capped
+    newer2 = np.where(water, np.float32(1.0), np.nan).astype(np.float32)
+    e3, _ = B.survey_fade(newer2, ids, older, 2, 0.4)
+    p3, _ = B.feather(newer2, ids, older, np.full(older.shape, 2, np.uint8))
+    assert np.array_equal(e3, p3)
+    # a region whose water line is below 0: capped at the water line
+    e4, _ = B.survey_fade(newer, ids, older, 2, -0.2)
+    wet = water & (newer <= -0.2)
+    assert np.all(e4[wet] <= -0.2)
+
+
+def test_read_field_keeps_the_newer_surveys_water_where_the_older_one_is_land(tmp_path, monkeypatch):
+    """The cap through read_field: the newer survey (-1 m) ends at NEW_E, the older one is land (+5 m) beyond it."""
+    local = _surveys(tmp_path, monkeypatch)
+    local["lid-new"] = _tif(str(tmp_path / "new_shallow.tif"), -158.20, NEW_E, SO, NO, -1.0 + GEOID_N + 0.3)
+    local["lid-old"] = _tif(str(tmp_path / "old_land.tif"), -158.20, OLD_E, SO, NO, 5.0)
+    B.gdal_env()
+    reg = B.region_config("lid", local=local)
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    key = T.tile_of(-158.17, 21.22, reg["zmax"] - B.BLOCK_LEVELS)
+    elev, src, lons, lats, j = _row(reg, key)
+    row, rid = elev[j], src[j]
+    inner = (lons > -158.194) & (lons < OLD_E - 0.006)          # clear of the fill's fades at the box edge and OLD_E
+    newer = inner & ((rid & T.SRC_BITS) == 1)
+    assert newer.sum() > 100
+    assert np.all(row[newer] <= 0.0 + 1e-6) and np.all(row[newer] >= -1.0 - 1e-4)
+    faded = newer & ((rid & T.FLAG_BLENDED) > 0)
+    assert faded.sum() >= S.FEATHER_PX - 4 and np.all(row[faded] > -1.0 + 1e-4)   # it does fade, up to sea level
+    assert row[faded].max() == pytest.approx(0.0, abs=1e-6)     # held at sea level (unheld it would reach about +4.8 m)
+    older = inner & ((rid & T.SRC_BITS) == 2)
+    assert older.sum() > 100 and np.all(row[older] == pytest.approx(5.0))
+
+
+def test_three_surveys_each_older_one_fades_in_under_all_newer(tmp_path, monkeypatch):
+    """A third, still older survey (id 3, -20 m, east to -158.05) fades in where the merged first two end (OLD_E), the
+    way the second fades in where the first ends (NEW_E)."""
+    local = _surveys(tmp_path, monkeypatch, extra=["lid-oldest"])
+    local["lid-oldest"] = _tif(str(tmp_path / "oldest.tif"), -158.20, -158.05, SO, NO, -20.0)
+    monkeypatch.setitem(S.SOURCES, "lid-oldest", dict(S.LIDAR, zmax=13, res_m=10, year="2097", datum="test",
+                                                      credit="NOAA z", licence="test", nodata=-9999.0, id=3,
+                                                      path="z.vrt", name="z"))
+    B.gdal_env()
+    reg = B.region_config("lid", local=local)
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    key = T.tile_of(-158.12, 21.22, reg["zmax"] - B.BLOCK_LEVELS)
+    elev, src, lons, lats, j = _row(reg, key)
+    row, rid = elev[j], src[j]
+    first3 = int(np.where((lons > OLD_E) & ((rid & T.SRC_BITS) == 3))[0].min())
+    edge = _run((rid & T.FLAG_BLENDED) > 0, first3 - 1, -1)
+    assert S.FEATHER_PX - 4 <= edge <= S.FEATHER_PX, edge
+    faded = ((rid & T.FLAG_BLENDED) > 0) & (lons > NEW_E + 0.0008) & (lons < OLD_E)
+    assert faded.sum() > 5 and np.all(rid[faded] == (2 | T.FLAG_BLENDED))
+    assert np.all((row[faded] < -10.0 + 1e-4) & (row[faded] > -20.0 - 1e-4))
+    beyond = (lons > OLD_E + 0.0008) & (lons < -158.056)       # clear of its own fade into the fill at -158.05
+    assert beyond.sum() > 100
+    assert np.all(rid[beyond] == 3) and np.allclose(row[beyond], -20.0, atol=1e-3)
+    assert "Where two lidar surveys meet" in B.licence_text(reg)
+
+
+def test_the_survey_sentence_only_with_two_marked_surveys(tmp_path, monkeypatch):
+    """The licence sentence appears only for two or more marked own surveys: not for one survey with fill (Guam), not for
+    a region of unmarked CUDEM grids."""
+    local = _surveys(tmp_path, monkeypatch)
+    sentence = "Where two lidar surveys meet"
+    text = B.licence_text(B.region_config("lid", local=local))
+    assert sentence in text and "water never becomes land" in text and "within 24 pixels" in text
+    monkeypatch.setitem(S.REGIONS, "lid", dict(S.REGIONS["lid"], sources=["lid-new"]))
+    assert sentence not in B.licence_text(B.region_config("lid", local=local))
+    assert sentence not in B.licence_text(B.region_config("hawaii"))
+    assert sentence in B.licence_text(B.region_config("pr-lidar"))
+    assert sentence not in B.licence_text(B.region_config("guam-lidar"))

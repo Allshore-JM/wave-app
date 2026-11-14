@@ -123,7 +123,8 @@ SOURCES = {
                        datum="GUVD04 (Guam local mean sea level)",
                        path="dem/NGS_Guam_topobathy_DEM_2020_9323/NGS_Guam_topobathy_DEM_2020_m9323_EPSG-8693.vrt",
                        credit="NOAA NGS 2020 Guam topobathy lidar (NOAA Digital Coast)"),
-    # Puerto Rico: NGS 2019 (orthometric; minus CUDEM -0.03..-0.25 m) wins, USACE 2018 fills its holes.
+    # Puerto Rico: NGS 2019 (orthometric; minus CUDEM -0.03..-0.25 m) wins, USACE 2018 fills its holes and fades in
+    # at its edge (the gap-size rule, owner 2026-11-14).
     "ngs-pr19": dict(LIDAR, id=1, year="2019", name="NOAA NGS lidar", nodata=-3.4028234663852886e38,
                      datum="PRVD02 (Puerto Rico local mean sea level)",
                      path="dem/NGS_PR_Topobathy_DEM_2019_9392/NGS_PR_Topobathy_DEM_2019_m9392_EPSG-26919.vrt",

@@ -425,7 +425,8 @@ def test_the_bathy_notice_the_credit_links():
                  "Puerto Rico: NOAA NGS 2019", "2018 topobathy lidar where the 2019 survey has no value",
                  "NAD83(PA11) ellipsoid", "EGM2008 geoid, less 0.3 m",
                  "not an official NOAA or USACE product", "blends into the grid beneath it",
-                 "the older one blends in under the newer one the same way"):
+                 "the older one blends in under the newer one the same way",
+                 "the newer survey's water stays water"):
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/bathy"' in js, "the credit's link opens this notice"

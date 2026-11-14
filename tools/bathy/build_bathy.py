@@ -30,7 +30,8 @@ Inside the lidar's edge the depth blends linearly from the lidar to the fill (fl
 the lidar ends: over bathy_sources.FEATHER_PX pixels at the survey's edge and round big holes, narrower round small holes
 (the width follows the gap's own size: feather). Where two of a region's own surveys meet (Rincon: NGS 2019 and
 USACE 2018; Niihau: NGS 2021 and USACE 2013) the older one fades in under the newer one by the same rule (owner's
-choice, 2026-11-14), so no step shows at the hand-over either. A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
+choice, 2026-11-14), so no step shows at the hand-over either; the fade never lifts a pixel the newer survey has as
+water above mean sea level (owner, 2026-11-14: water stays water). A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
 height N subtracted, read bilinear onto the block's own grid. Their `margin` (pixels read around a block) is wider than
 the default 8 so the blend is exact at every pixel a tile uses; their `zmin` keeps the coarser zooms to the CUDEM regions.
 A footprint read from a projected VRT is transformed to lon/lat.
@@ -341,7 +342,8 @@ def feather(main, main_id, fill, fill_id, px=None):
 def read_field(reg, key):
     """(elevation float32, source ids uint8) of block `key`, (2048 + 2 margin) px square at zoom zmax; NaN = no data.
     Own sources are merged by id (the lower id wins: the newer survey); where an older own source meets the newer
-    ones it fades in under them (feather, the same gap-size rule). The fill sources are merged first-valid beneath
+    ones it fades in under them (feather, the same gap-size rule), never lifting the newer surveys' water above mean
+    sea level (survey_fade). The fill sources are merged first-valid beneath
     them, then blended at the own sources' edge (feather)."""
     from rasterio.enums import Resampling
     m = margin_of(reg)
@@ -376,7 +378,7 @@ def read_field(reg, key):
         if not s.get("fill") and s.get("survey_fade") and (np.isfinite(elev) & np.isfinite(a)).any():
             # an older survey meeting the newer ones: it fills their gaps and fades in at their edge (feather);
             # where the two do not overlap this is the plain merge below
-            layers[False] = list(feather(elev, ids, a, np.full(a.shape, s["id"], np.uint8)))
+            layers[False] = list(survey_fade(elev, ids, a, s["id"], reg["mhhw"]))
             continue
         take = np.isnan(elev) & np.isfinite(a)
         elev[take] = a[take]
@@ -386,6 +388,20 @@ def read_field(reg, key):
     if not any_fill:
         return main, main_id
     return feather(main, main_id, *layers[True])
+
+
+def survey_fade(newer, newer_id, older, older_id, mhhw):
+    """The older survey faded in under the newer ones (feather), except that a pixel the newer surveys hold as water
+    (at or below `mhhw`) is never lifted above mean sea level, or above its own value when that is already higher (a
+    reef flat between 0 and mhhw): the fade may make such water shallower but never turns it into land (owner,
+    2026-11-14). For mhhw below 0 the cap is mhhw itself."""
+    e, i = feather(newer, newer_id, older, np.full(older.shape, older_id, np.uint8))
+    with np.errstate(invalid="ignore"):
+        wet = np.isfinite(newer) & (newer <= np.float32(mhhw))
+        cap = np.maximum(newer, np.float32(min(0.0, mhhw)))
+        lift = wet & (e > cap)
+    e[lift] = cap[lift]
+    return e, i
 
 
 def save_land_core(reg, key, core):
@@ -987,8 +1003,9 @@ def licence_text(reg):
         lines += ["- Near the lidar's edge the depth blends from the lidar to the grid beneath it (marked blended): "
                   "within %d pixels at the survey's edge, narrower round small gaps." % S.FEATHER_PX]
     if sum(1 for s in reg["srcs"] if not s.get("fill") and s.get("survey_fade")) > 1:
-        lines += ["- Where two lidar surveys meet, the older one blends in under the newer one the same way "
-                  "(marked blended)."]
+        lines += ["- Where two lidar surveys meet, the older one blends in under the newer one (marked blended): "
+                  "within %d pixels where the newer survey ends, narrower round small gaps; the newer survey's "
+                  "water never becomes land." % S.FEATHER_PX]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

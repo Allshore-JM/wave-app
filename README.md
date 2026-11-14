@@ -1543,7 +1543,8 @@ clouds), to zoom 17.
 
 - **Sources.** Hawaii: USACE's 2013 surveys of Oahu, Kauai, Maui, Molokai, Lanai, the Big Island and Niihau, and NOAA NGS's
   2021 Niihau survey, which wins where the two overlap (owner: the newer survey wins; it has the lower source id). Guam:
-  NGS 2020. Puerto Rico: NGS 2019, then USACE 2018 where 2019 has no value (2019 against the regional grid: -0.03 to
+  NGS 2020. Puerto Rico: NGS 2019, then USACE 2018 where 2019 has no value, faded in at 2019's edge (2019 against the
+  regional grid: -0.03 to
   -0.25 m; 2018 against 2019 up to -0.7 m at 15-30 m). The NW Hawaiian Islands: NGS 2021 (French Frigate Shoals, Necker,
   Nihoa). Each lidar source's footprint is read from its VRT; a VRT in a projected CRS (UTM, for example) has its
   rectangles transformed to longitude and latitude (grown by 0.001 degree for the curved edges). A build stops when a
@@ -1579,7 +1580,10 @@ clouds), to zoom 17.
   test site showed a hard step at the hand-over: Rincon NGS 2019 / USACE 2018 median +0.42 m, up to 6.25 m; Niihau NGS
   2021 / USACE 2013 +0.10 m, up to 4.10 m): where the newer survey stops and the older one carries on, the older one
   fades in under the newer over the gap's own width (2-24 px), flagged blended with the newer survey's id; where the two
-  never overlap (different islands) nothing changes. Only sources marked `survey_fade` (the `LIDAR` template) take part:
+  never overlap (different islands) nothing changes. The fade never turns the newer survey's water into land (owner,
+  2026-11-14, after G63b found a reef channel lifted above sea level beside an older survey's dry ground): a pixel the
+  newer survey holds at or below the region's mhhw stays at or below mean sea level (or at its own value on a reef flat
+  between 0 and mhhw; `survey_fade`). Only sources marked `survey_fade` (the `LIDAR` template) take part:
   the stage-1 regions' 1/9 and 1/3 arc-second CUDEM grids keep their first-valid merge and their 8-px margin, so their
   published builds do not change.
 - **Running.** As the other regions: `bathy-build` with region `hawaii-lidar`, `guam-lidar`, `pr-lidar` or `nwhi-lidar`,

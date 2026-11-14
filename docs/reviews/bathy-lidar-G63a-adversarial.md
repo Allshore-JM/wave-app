@@ -279,3 +279,36 @@ the same rule as the fade to the 3-m grid (rule C: the width follows the gap's o
   test deselected: `test_capped_fetch_cuts_a_trickle_smaller_than_one_chunk` (the section-63 buoy fetch) fails on this
   Windows machine even alone and on the unchanged code (a shut socket does not wake a waiting read on Windows: section
   63's note); it is untouched here and runs on CI's Linux.
+
+## G63b: review of the survey hand-over (2026-11-14)
+
+One fresh reviewer on `2adbc01..4e0d9cb` (the survey fade, its tests, the notice and README). Report kept in the session's
+scratch folder (`g63b\g63b-report.md`); its worktrees were removed at the end.
+
+### Findings and outcomes
+
+| id | P | what | outcome |
+|---|---|---|---|
+| G1 | P3 (owner call) | The survey fade could lift water the NEWER survey shows above `mhhw`, so it became land: Rincon z17 288 px (newer depths up to 1.04 m), Niihau 155 px (one 13-px cluster 0.9-2.2 m deep turned +0.6..+4.0 m). Tiles were the same; pixels were not. | OWNER (2026-11-14): "Keep water as water". `survey_fade` caps the blend: where the newer survey is wet (at or below `mhhw`), the fade may make it shallower but never above mean sea level, or above the newer value itself when that is already higher (a reef flat between 0 and `mhhw`); for `mhhw` below 0 the cap is `mhhw`. Ids and flags unchanged. |
+| G2 | P3 | The licence sentence's survey count (`> 1`) was not pinned: mutant M6 survived. The step-5 record said it was pinned; that was wrong (the only negative test used unmarked sources). | Pinned: one marked survey (with and without fill), the stage-1a `hawaii`, `guam-lidar` and `pr-lidar` checked both ways. |
+| G3 | P3 | Nothing tested three marked surveys (M17 survived). | A `read_field` test with three surveys: the oldest fades in under the two merged above it, the blended flag keeps the top survey's id. |
+| G4 | P3 (recorded) | GDAL's warp of the projected NGS sources gives slightly different raw values for the same pixel at margin 72 and 144 (Rincon up to 0.078 m, Niihau 0.278 m; a few data / no-data flips at the edge). The merge itself is margin-exact. Older than this change. | Recorded. Later: try `WarpedVRT(..., error_threshold=0)` and measure. Not a blocker. |
+| G5 | P3 | Text still described the PR hand-over as first-valid; the licence line said "the same way" with nothing before it in a no-fill region. | PR source comment, notice and README now say the 2018 survey fades in at 2019's edge; the licence line names the rule itself and says the newer survey's water never becomes land. |
+
+What held up (per the reviewer): C1 (every changed pixel a newer-survey pixel flagged blended; older-only pixels unchanged),
+C2 (only Niihau 2021 x 2013 and PR 2019 x 2018 overlap; the overlap gate is a speed-up only), C3 (stage-1a builds
+byte-identical), C4 (the merge margin-exact at 72 px: 0 differing pixels in 65 synthetic trials and on two real blocks with
+the raw arrays held fixed; 48 px differs), C5, C6 except G1, C7 (rebuilds = the recorded ones, the same hand-over jumps), C8
+except G2 / G3. Reviewer's mutants: 17 of 19 killed, 1 equivalent (M9, the `continue`).
+
+### Fix round evidence
+
+- `tests/bathy` 157 passed (venv), `tests/test_overlay_flag.py` 22 passed (system Python).
+- Mutants of the fix round: 8 of 8 killed (no cap, the reef-flat rule, `mhhw` below 0, wet judged on the faded value, wet
+  ignoring `mhhw`, `read_field` back to the plain feather, the licence count `> 0`, the cap changing ids).
+- Real rebuilds with the cap, the same boxes as step 5: the same tile sets (Rincon 57 + 177, Niihau 78 + 278), digests
+  Rincon d4cdca48d639faa0, Niihau 88a7937f550a5d2d. Against the builds without the cap: the only changed pixels are water
+  given back. Rincon z16 79 / z17 297 px, now at or above mean sea level by at most 0.25 m (reef flats keep their own
+  value). Niihau z16 40 / z17 153 px, from 0.40 m above to 0.62 m below mean sea level. No water lost anywhere.
+- Hand-over jumps unchanged by the cap: Rincon p90 0.34 m, max 3.44 m (hard step 0.54 / 6.25); Niihau p90 0.25 m, max
+  2.78 m (0.38 / 4.10).

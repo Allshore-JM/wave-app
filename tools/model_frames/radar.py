@@ -560,8 +560,8 @@ def opera_lattice(values):
     return out.reshape(shape)
 
 
-def opera_frame(slot_dt, get):
-    body = fetch(opera.url_of(slot_dt), get, opera.MAX_BYTES)
+def _opera_file(slot_dt, base, get):
+    body = fetch(opera.url_of(slot_dt, base), get, opera.MAX_BYTES)
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "f.h5")
         with open(path, "wb") as fh:
@@ -569,7 +569,30 @@ def opera_frame(slot_dt, get):
         data = _reading("OPERA", lambda: opera.read(path))
     if data["time"] != slot_name(slot_dt):
         raise ValueError(f"the file labelled {slot_name(slot_dt)} says {data['time']}")
-    return _reading("OPERA", lambda: opera_lattice(data["values"])), 0, data["radars"]
+    return data
+
+
+def opera_frame(slot_dt, get):
+    """The slot's file from the first of opera.HOSTS that has a good one. All answering 404 = Missing; a host that did not answer
+    (and none had the file) = Down, so the slot is asked again; a damaged file everywhere else = that ValueError."""
+    down = bad = None
+    for base in opera.HOSTS:
+        try:
+            data = _opera_file(slot_dt, base, get)
+        except Missing:
+            continue
+        except Down as exc:
+            down = down or exc
+            continue
+        except ValueError as exc:
+            bad = bad or exc
+            continue
+        return _reading("OPERA", lambda: opera_lattice(data["values"])), 0, data["radars"]
+    if bad is not None:
+        raise bad
+    if down is not None:
+        raise down
+    raise Missing("HTTP 404 at every host")
 
 
 _JMA = {}

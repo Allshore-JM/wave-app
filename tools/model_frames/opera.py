@@ -2,6 +2,8 @@
 
 Anonymous object storage, CC BY 4.0, property rights EUMETNET:
   https://s3.waw3-1.cloudferro.com/openradar-24h/YYYY/MM/DD/OPERA/COMP/OPERA@YYYYMMDDTHHMM@0@DBZH.h5
+and EUMETNET's documented backup with the same paths (asked when the first has no file or does not answer; section 83b):
+  https://object-store.os-api.cci1.ecmwf.int/openradar-24h-backup/...
 every 5 minutes, about 4 minutes late (at most 14 seen), kept 24 h; a label ends a 10-minute MAX window. /dataset1/data1/data:
 4400 rows x 3800 columns, gain 1, offset 0, nodata -9999000 (no radar), undetect -8888000 (radar, no echo), real values down to
 about -33 dBZ. Lambert azimuthal equal-area on WGS84, 1000 m. forward() is Snyder's ellipsoidal form (no pyproj in the job's
@@ -12,6 +14,8 @@ import math
 import numpy as np
 
 BUCKET_URL = "https://s3.waw3-1.cloudferro.com/openradar-24h"
+BACKUP_URL = "https://object-store.os-api.cci1.ecmwf.int/openradar-24h-backup"
+HOSTS = (BUCKET_URL, BACKUP_URL)        # asked in this order
 ROWS, COLS = 4400, 3800
 PIXEL_M = 1000.0
 LAT0, LON0, X0, Y0 = 55.0, 10.0, 1950000.0, -2100000.0
@@ -23,8 +27,8 @@ CORNER_TOL_M = 1500.0                   # the corner attributes hold a few decim
 MAX_BYTES = 24_000_000                  # a real frame is 1.4 - 1.7 MB
 
 
-def url_of(when):
-    return f"{BUCKET_URL}/{when:%Y/%m/%d}/OPERA/COMP/OPERA@{when:%Y%m%dT%H%M}@0@DBZH.h5"
+def url_of(when, base=BUCKET_URL):
+    return f"{base}/{when:%Y/%m/%d}/OPERA/COMP/OPERA@{when:%Y%m%dT%H%M}@0@DBZH.h5"
 
 
 def _q(sin_phi):

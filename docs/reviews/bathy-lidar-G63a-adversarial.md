@@ -15,7 +15,9 @@ Result: **0 P0, 0 P1, 2 P2, 6 P3**, plus 4 information items. The data held up e
 - C3 merge order: the newer survey wins (Niihau north-east: 1,905,737 overlapping pixels, every one NGS 2021's id 1); geoid,
   then the offset; one geoid warp per block.
 - C4 the blend: monotone, the lidar id kept with 0x40, never at a seam between two lidar surveys, never where the fill has
-  no value; margin 32 = the 24-px band + the coarsest apron's 8.
+  no value; margin 32 = the 24-px band + the coarsest apron's 8. (Superseded twice on 2026-11-14: the margin is 72 since
+  F-3's rule, and the seam between two lidar surveys now fades too, by the owner's decision after step 5: see "The
+  hand-over between surveys" below.)
 - C5 projected footprints: the reviewer's own pyproj edge-sampled rectangles agree; sources a block does not touch are
   never opened.
 - C6 `region_config` refusals (mutants M02-M04 killed).
@@ -41,7 +43,8 @@ Result: **0 P0, 0 P1, 2 P2, 6 P3**, plus 4 information items. The data held up e
 Information (no action asked): I-1 NGS 2021 Niihau is +0.21 m above USACE 2013 after the 0.3-m offset (inside the
 notice's "about 0.3 m either way"); I-2 French Frigate Shoals was not built locally (the dry run built all of nwhi-lidar,
 check 0 problems); I-3 the absence pin named only `bathy-dryrun.yml` (now also `lidar-dryrun.yml`, removed); I-4 the
-NGS / USACE seam at Niihau is a hard ~0.2-m step by decision (two lidar surveys are never blended).
+NGS / USACE seam at Niihau is a hard ~0.2-m step by decision (two lidar surveys are never blended). Superseded on
+2026-11-14: the owner chose the gap-size fade between surveys too ("The hand-over between surveys" below).
 
 ## Mutation
 
@@ -224,3 +227,55 @@ before any upload.
 - Niihau 2021 sits +0.21 m above 2013 after the conversion (I-1); French Frigate Shoals was not checked for water marked
   as land; footprints are not antimeridian-safe (F-6); the NW Islands' lidar meets GEBCO with no fill; the test site's
   /notice/bathy still shows the old text (production has the new one).
+
+## The hand-over between surveys (2026-11-14)
+
+### The owner's choice
+
+After step 5 the owner chose "Fade by gap size (Recommended)": where two of a region's own lidar surveys meet
+(Rincon: NOAA NGS 2019 and USACE 2018; Niihau: NGS 2021 and USACE 2013), the older survey fades in under the newer one by
+the same rule as the fade to the 3-m grid (rule C: the width follows the gap's own size, 2-24 px).
+
+### The rule as built
+
+- `read_field` merges each own source in id order (the newer survey first). When an own source marked `survey_fade`
+  overlaps what is already merged, it goes through `feather(merged, merged ids, older, older id)` instead of the plain
+  first-valid merge: it fills the newer surveys' gaps, and inside the newer survey's edge the depth blends toward it.
+  Faded pixels keep the newer survey's id with the blended flag (0x40), as at the lidar's edge.
+- Surveys that never overlap (different islands) are merged as before: `feather` is not called for them, so a block
+  calls it once, for the fill beneath.
+- `survey_fade=True` is set on the `LIDAR` template only. The stage-1a CUDEM pairs (1/9" over 1/3" in hawaii, marianas,
+  samoa, prvi: several own sources, no fill, margin 8) keep the first-valid merge, so their published builds are
+  unchanged (a test pins that every lidar source is marked and no CUDEM grid is; another that unmarked surveys keep the
+  plain merge and the small margin).
+- `region_config` requires the 72-px margin (3 x FEATHER_PX) for a region with fill OR with two or more `survey_fade`
+  sources; hawaii-lidar and pr-lidar have both, guam-lidar has fill only, nwhi-lidar one survey and no fill (32).
+- The licence text of a region with two or more marked surveys gains "Where two lidar surveys meet, the older one blends
+  in under the newer one the same way (marked blended)."; /notice/bathy and the README say the same.
+
+### Evidence
+
+- Real rebuilds with the builder (the step-5 boxes) are byte-identical to the step-5 prototype of rule C between
+  surveys: Rincon 57 + 177 tiles (digest adfe7606e1ebb6c6), Niihau 78 + 278 (digest 7be183dc80e42dec); check 0 problems.
+- Hand-over jumps (neighbouring pixels across the hand-over line, today's build vs the real rule-C build, the step-5
+  metric; p50 / p90 / p99 / max in metres):
+
+| Place | today | rule C | pixels changed > 1 cm | blended share of water, today -> rule C |
+|---|---|---|---|---|
+| Rincon (86,267 hand-over pixels) | 0.09 / 0.54 / 1.26 / 6.25 | 0.08 / 0.34 / 1.06 / 3.44 | 2.62 % | 4.44 % -> 6.98 % |
+| Niihau north-east (21,750) | 0.09 / 0.38 / 0.97 / 4.10 | 0.08 / 0.25 / 0.57 / 2.78 | 0.16 % | 1.46 % -> 1.62 % |
+
+  The roughness inside a survey (lidar more than 60 px from a hand-over): p90 0.14 m Rincon, 0.20 m Niihau.
+- Tests (tests/bathy/test_bathy_lidar.py): `test_an_older_survey_fades_in_under_the_newer_by_the_gap_size` (a 6-px hole
+  in the newer survey: a narrow fade round it, the full 20-24 px where the newer survey ends, every faded pixel between
+  the two surveys with the newer id + blended), `test_surveys_that_never_overlap_are_merged_as_before` (feather called
+  once a block, for the fill), `test_the_survey_fade_sees_an_edge_in_the_neighbouring_block` (the block beside the newer
+  survey's edge fades its last pixels; the same pixels read from the next block agree),
+  `test_unmarked_surveys_keep_the_plain_merge_and_the_small_margin`, `test_every_lidar_source_is_marked_and_no_cudem_grid_is`;
+  the existing seam test now expects the blend between the surveys, the hole test checks the licence sentence, and the margin test refuses two
+  marked surveys below 72 px.
+- Mutants: 10 on a scratch copy, all killed (one, the licence sentence's survey count, first survived and was pinned).
+- Suites: `tests/bathy` 153 passed (venv); the repository suite 2,847 passed + 1 skipped on the system Python, with one
+  test deselected: `test_capped_fetch_cuts_a_trickle_smaller_than_one_chunk` (the section-63 buoy fetch) fails on this
+  Windows machine even alone and on the unchanged code (a shut socket does not wake a waiting read on Windows: section
+  63's note); it is untouched here and runs on CI's Linux.

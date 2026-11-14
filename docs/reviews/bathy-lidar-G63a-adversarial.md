@@ -115,3 +115,112 @@ blend is the same on both sides of a block edge. The NW Islands (no fill) keep 3
   below the 1-cm storage step). With the old 8-px margin the same block differed by up to 1.2 m at 5,013 pixels: the
   block-edge seam the wider margin removes.
 - Real builds with the committed code: Pipeline 352 tiles, Kaneohe 1,397, Rincon 235; check 0 problems on each.
+
+## Step 5: the test site with locally built lidar tiles (2026-11-14)
+
+Set-up: the four lidar regions built on the laptop with the committed code (936088a) and served to the test site
+(wave-app-clean, overlay 2.27.6, `BATHY_OVERLAY=1`) through DevTools Fetch. The page's `regions.json` gained the four
+regions (version 1, priority 20); their index, idx and tile requests were answered from the local build; everything else
+came from the live bucket. Headless Chrome with the GPU, its own profile, trusted mouse and touch input. Nothing was
+uploaded.
+
+### What was checked
+
+| Check | Result |
+|---|---|
+| Views: Pipeline, Sunset, Waimea, Waikiki, Kaneohe, Tumon, Rincon, Nihoa at zooms 13-18 | 26 views at 1280x800 and 18 at 1920x1080. The readout = the drawn pixel at every sampled point (1,440-3,240 a view). 0 problems |
+| Hover text | 12 of 12 = the drawn sample, US and Metric (e.g. "20.7 ft · USACE lidar 2013 · approximate") |
+| Phones | 375x812 and 812x375 at Pipeline and Tumon z17: readout = drawn (480-720 a view), page width = window width, "Sources here" names the lidar |
+| NW Islands (Nihoa z8-z17) | lidar tiles from z9, GEBCO beneath; z15-z17 0 % blended (that region has no fill) |
+| Tile edges | Between two tiles of one survey the step is the same as between two pixels inside a tile (Pipeline z16 p95 0.43 m vs 0.34 m inside; Rincon z17 0.13 m vs 0.16 m). Where a lidar tile meets a 3-m-grid tile: p95 0.01-0.07 m |
+| Credits | Pipeline "Bathymetry: USACE · NOAA", Tumon "NOAA", Rincon "NOAA · USACE", Nihoa "NOAA · GEBCO"; "Sources here" gives each survey and year; production's /notice/bathy has the lidar citations |
+
+First view at 1280x800 (bytes from the bucket + from the local lidar build; today = production's tiles only):
+
+| View | today | with lidar | decoded store, today -> lidar |
+|---|---|---|---|
+| Pipeline z16 | 217 kB, 11 requests | 216 + 695 kB, 10 + 22 requests | 1.8 MB (7 tiles) -> 6.9 MB (27) |
+| Pipeline z17 | 154 kB | 154 + 643 kB, 8 + 22 requests | 1.3 -> 6.3 MB |
+| Tumon z17 | 151 kB | 150 + 551 kB | 1.3 -> 6.1 MB |
+| Kaneohe z16 | 335 kB | 335 + 980 kB, 13 + 26 requests | 2.5 -> 8.6 MB (34 tiles) |
+
+A lidar view costs 0.55-1.0 MB more the first time (the plan estimated 1-1.5 MB). The local tiles came from the laptop,
+so their load times say nothing about the bucket's.
+
+Memory, 40 pan steps at z17: the decoded store peaked at 23.9 MB (its cap is 32 MB), 94 tiles; the page's heap peaked at
+97 MB (today 10.7 MB, 42 tiles, 58 MB); readout = drawn at 1,860 of 1,860 points.
+
+Pan cost (frame gaps while dragging, lidar vs today): p50 and p95 17 ms on both; the slowest frame 67-117 ms vs
+50-83 ms; frames over 100 ms 0-1 vs 0; over 250 ms none on either; one long task (55-124 ms) vs one or two (58-103 ms).
+
+### Finding: the step where two lidar surveys meet
+
+Where the newer survey ends and the older one takes over (Rincon: NOAA NGS 2019 -> USACE 2018; Niihau: NGS 2021 ->
+USACE 2013), the builder switches with no fade. That is by design (the fade only runs from a lidar to its 3-m fill;
+G63a C4 and I-4), so the two surveys' differences show as a step:
+
+| Place | newer minus older, where both have data: median | abs p90 | p99 | max |
+|---|---|---|---|---|
+| Rincon | +0.42 m | 0.87 m | 1.90 m | 6.25 m |
+| Niihau north-east | +0.10 m | 0.60 m | 1.50 m | 4.10 m |
+
+The differences grow with depth at Rincon (about -0.1 m near the shore to -0.4..-0.7 m at 15-30 m in the step-1 check),
+so they are survey differences, not a datum offset.
+
+Options studied (each built with the real builder on the same boxes; the step measured as the jump between neighbouring
+pixels across the hand-over line, p50 / p90 / p99 / max in metres):
+
+- 1. Keep the hard step (today).
+- 2. Rule C between surveys: the older survey fades in at the newer survey's edge the way the fill does, the fade as wide
+  as the gap (2-24 px).
+- 2'. The full 24-px fade at every hand-over.
+- 3. A difference surface: the older survey shifted by the smoothed difference between the two where they overlap (the
+  older survey's depths move; a larger change).
+- 4. One survey per area: the older lidar dropped where the newer one exists, the 3-m grid in the newer survey's holes
+  (the older survey's 1-m detail there is lost).
+
+| Rincon z17 (86,252 hand-over pairs; jumps inside a survey: p90 0.14, p99 0.41) | jumps | pixels changed by > 1 cm | lidar pixels blended |
+|---|---|---|---|
+| 1. today | 0.09 / 0.54 / 1.26 / 6.25 | - | 6.03 % |
+| 2. rule C | 0.08 / 0.34 / 1.06 / 3.44 | 2.62 % | 6.98 % |
+| 2'. 24 px | 0.08 / 0.35 / 1.09 / 3.44 | 6.19 % (one by 10.07 m) | 10.55 % |
+
+| Niihau z17 (21,750 pairs; jumps inside a survey: p90 0.20, p99 0.53) | jumps | pixels changed by > 1 cm | lidar pixels blended |
+|---|---|---|---|
+| 1. today | 0.09 / 0.38 / 0.97 / 4.10 | - | - |
+| 2. rule C | 0.08 / 0.25 / 0.57 / 2.78 | 0.16 % | 1.62 % |
+| 2'. 24 px | 0.08 / 0.23 / 0.50 / 2.78 | 0.97 % | 2.57 % |
+
+- By depth at Rincon (p90, today / C / 24 px): 0-5 m 0.48 / 0.33 / 0.25; 5-10 m 0.40 / 0.29 / 0.30; 10-20 m 0.57 /
+  0.36 / 0.36; 20-40 m 0.62 / 0.31 / 0.32.
+- By the width rule C gives (p50 / p90, today -> C -> 24 px): 2-4 px 0.45 / 1.09 -> 0.24 / 0.71 -> 0.13 / 0.62;
+  4-8 px 0.40 / 0.91 -> 0.13 / 0.55 -> 0.11 / 0.53; 8-16 px 0.46 / 0.85 -> 0.09 / 0.39 -> 0.08 / 0.39; 16-24 px
+  0.47 / 0.79 -> 0.07 / 0.26 -> 0.07 / 0.27. A third of Rincon's hand-over pixels (35.7 %) get a width under 8 px;
+  at Niihau 95.8 %.
+- Tiles: rule C writes the same tiles (Rincon 235). The 24-px fade dropped two Niihau tiles (z17 7206/57360, z16
+  3603/28680): it pushed 11 shoreline pixels near sea level above the +0.4-m water line, so they became land.
+- In the real client (the test site, a z17 view centred on the hand-over, today vs rule C): 4.3 % of the pixels change
+  visibly at Rincon (1.2 % at z16), 0.9 % at Niihau. At normal size the difference is small; at 2x rule C removes the
+  dark jagged streaks and the kinked contours along the hand-over.
+- Neither fade brings the hand-over down to the roughness inside a survey (p90 0.34 / 0.25 against 0.14 / 0.20).
+
+Author's recommendation: option 2 (rule C between surveys). It removes the staircase, halves the largest step, cuts the
+p90 by about 35-40 % and touches few pixels (Rincon 2.6 %, Niihau 0.16 %) with no tile lost. The 24-px fade gains little
+more at narrow holes, changes 2.4 to 6 times as many pixels and pushed a beach sliver over the water line. Options 3 and
+4 are larger changes for a seam that two places show.
+
+If option 2 is chosen, the build work: the real rule in `read_field` (each own source after the first fades in by rule
+C), the 72-px margin also for regions with two or more own sources, C4 / I-4 above updated, the notice and README, the
+`feather` docstring ("3 px" -> "3 x px"), tests and mutants, a review, then a job-only merge with a new rollback tag
+before any upload.
+
+### Owner awareness
+
+- Cloudflare R2 behind models.allshoresurf.com answered HTTP 500 "Internal Error" now and then on requests not yet in
+  the edge cache (about 20:00 UTC 2026-11-14): 2 of 20 uncached `regions.json` requests, one hawaii v2 z15 tile and one
+  GFS direction frame; all 200 when asked again. The client retries by itself; once the panel showed "Some depth files
+  could not be loaded; trying again shortly". Not our code.
+- The notice says the fade runs "within 24 pixels"; with rule C most gaps fade over fewer (still true, less specific).
+- Niihau 2021 sits +0.21 m above 2013 after the conversion (I-1); French Frigate Shoals was not checked for water marked
+  as land; footprints are not antimeridian-safe (F-6); the NW Islands' lidar meets GEBCO with no fill; the test site's
+  /notice/bathy still shows the old text (production has the new one).

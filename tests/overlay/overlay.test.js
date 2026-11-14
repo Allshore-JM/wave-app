@@ -932,6 +932,29 @@ test('section 95: a new tile is not drawn in createTile; it is drawn later, in v
   } finally { delete global.document; }
 });
 
+test('section 95 (G62 finding 1): a new tile the drawer never reaches still reports ready after TILE_DONE_MS (2 s), once; a drawn tile does not report again then', async () => {
+  const grabEl = () => { const el = { draws: 0, getContext: () => ({ clearRect() { el.draws++; }, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() { el.draws++; } }) }; return el; };
+  global.document = { createElement: () => grabEl() };
+  try {
+    const box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 12 } };
+    const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+    const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; l._clock = () => 0;
+    l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, I.buildRamp(I.RAMPS.hs), { step: 0, valid_utc: '2026-09-22T12:00:00Z' });
+    let never = 0, drawn = 0;
+    const el = l.createTile({ x: 10, y: 10, z: 6 }, () => { never++; });
+    l._cancelStale();                                                      // the drawer never runs for it (e.g. the page stays busy)
+    const el2 = l.createTile({ x: 11, y: 10, z: 6 }, () => { drawn++; });
+    l._tiles['11:10:6'] = { el: el2, coords: { x: 11, y: 10, z: 6 } };
+    l._drawStale(false);                                                   // only the registered tile is drawn
+    assert.equal(el.draws, 0); assert.equal(never, 0, 'not ready before it is drawn or the time is up');
+    await new Promise((r) => setTimeout(r, 30)); assert.equal(drawn, 1, 'the drawn tile reported at once');
+    await new Promise((r) => setTimeout(r, 2050));
+    assert.equal(never, 1, 'reported after 2 s even though it was never drawn (Leaflet shows it then)');
+    assert.equal(drawn, 1, 'the drawn tile did not report a second time');
+    l._cancelStale();
+  } finally { delete global.document; }
+});
+
 test('section 95: a slice ends when the next tile would pass 12 ms; the next slice follows; in-view tiles go first; a page move draws only tiles in view', () => {
   let now = 0;
   const grabEl = () => { const el = { draws: 0, getContext: () => ({ clearRect() { el.draws++; }, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() { el.draws++; } }) }; return el; };

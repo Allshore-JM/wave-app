@@ -3779,3 +3779,30 @@ test('G33 re-check N-3 / R22: a height frame that never comes reads "no data" af
     o.unmount(); assert.equal(o._lakeHs, null);
   });
 });
+
+test('section 95 (G62 finding 2): a playback step waits while a pan or pinch runs (movestart / zoomstart to moveend), then playback goes on; a hold never outlasts GESTURE_HOLD_MS', async () => {
+  const w = world({ fakeTimers: true });
+  await onFakeClock(w, async () => {
+    const o = await mounted(w, A); await w.releaseAll(); w.orig._bindMap.call(o);
+    o.setSpeed(4); o.play(); await settle(); await w.releaseAll(); await settle();
+    const step = async (ms) => { await w.fade(ms); await settle(); await w.releaseAll(); await settle(); };
+    let i = o.frameIndex;
+    await step(125); assert.equal(o.frameIndex, i + 1, 'playing'); i = o.frameIndex;
+    for (const ev of ['movestart', 'zoomstart']) {
+      w.fire('map', ev);
+      for (let k = 0; k < 6; k++) await step(125);
+      assert.equal(o.frameIndex, i, ev + ': no step while the gesture runs');
+      assert.equal(o.playing, true, ev + ': still playing');
+      w.fire('map', 'moveend');
+      for (let k = 0; k < 3; k++) await step(125);
+      assert.ok(o.frameIndex > i, ev + ': playback goes on after the gesture'); i = o.frameIndex;
+    }
+    // an end event that never comes: the hold lets go after GESTURE_HOLD_MS
+    w.fire('map', 'movestart');
+    await step(125); assert.equal(o.frameIndex, i, 'held');
+    o._gesture -= 6000;                                                    // the gesture began more than 5 s ago
+    for (let k = 0; k < 3; k++) await step(125);
+    assert.ok(o.frameIndex > i, 'a lost moveend does not stop playback for good');
+    o.pause(); o.unmount();
+  });
+});

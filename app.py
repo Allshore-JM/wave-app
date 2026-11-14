@@ -530,8 +530,9 @@ BATHY_NOTICE = "\n".join([
     "Modified by Allshore Surf, all: reprojected to web map tiles, averaged to coarser zooms, quantised (1 cm to 400 m deep,",
     "10 cm to 2,500 m, 2.5 m deeper), kept only for water connected to the open sea, shaded and coloured. Where GEBCO is the only",
     "source its nearest value is carried one or two cells onto its land so the coastline decides the edge; those cells are drawn",
-    "slightly darker. Within 24 pixels of a lidar survey's edge the depth blends into the grid beneath it. Depths are below",
-    "mean sea level as each source gives it; surveys are years old and sand moves.",
+    "slightly darker. Within 24 pixels of a lidar survey's edge the depth blends into the grid beneath it, and where two",
+    "lidar surveys meet the older one blends in under the newer one the same way. Depths are below mean sea level as",
+    "each source gives it; surveys are years old and sand moves.",
     "Approximate: do not use this for navigation or safety decisions.",
     "",
 ])

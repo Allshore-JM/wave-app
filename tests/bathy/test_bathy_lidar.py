@@ -74,6 +74,15 @@ def test_region_config_refuses_a_bad_lidar_region(monkeypatch):
             B.region_config("bad")
     monkeypatch.setitem(S.REGIONS, "nofill", dict(base, sources=["lo"], margin=16))    # no fill: no blend, no rule
     assert B.margin_of(B.region_config("nofill")) == 16
+    # two surveys of its own and no fill: the older fades in under the newer, so the same 3 x 24 px reach is needed
+    monkeypatch.setitem(S.SOURCES, "lo2", dict(S.LIDAR, id=6, path="c.vrt", year="2098", name="y",
+                                              credit="NOAA y", datum="t", nodata=-1.0))
+    for margin in (16, 64):
+        monkeypatch.setitem(S.REGIONS, "two", dict(base, sources=["lo", "lo2"], margin=margin))
+        with pytest.raises(ValueError, match="FEATHER_PX"):
+            B.region_config("two")
+    monkeypatch.setitem(S.REGIONS, "two", dict(base, sources=["lo", "lo2"], margin=72))
+    assert B.margin_of(B.region_config("two")) == 72
     monkeypatch.setitem(S.REGIONS, "bad", dict(base, sources=["lo"], fill=["hi"], margin=72))
     reg = B.region_config("bad")
     assert reg["zmax"] == 17 and B.margin_of(reg) == 72                     # the fill's zmax 15 never sets the region's
@@ -323,19 +332,23 @@ def test_read_field_newer_survey_wins_geoid_and_blend(tmp_path, monkeypatch):
     j = int(np.argmin(np.abs(lats - 21.22)))
     row, rid = elev[j], src[j]
     blend = S.FEATHER_PX * (lons[1] - lons[0]) + 0.0005
-    new = (lons > -158.20 + blend) & (lons < NEW_E - 0.001)
+    new = (lons > -158.20 + blend) & (lons < NEW_E - blend)
     old = (lons > NEW_E + 0.001) & (lons < OLD_E - blend)
     fill = (lons > OLD_E + 0.001) & (lons < E - 0.001)
     assert new.sum() > 20 and old.sum() > 20 and fill.sum() > 20
     assert np.allclose(row[new], -5.0, atol=1e-3) and np.all(rid[new] == 1)       # ellipsoid -> geoid -> -0.3 m
     assert np.allclose(row[old], -10.0, atol=1e-3) and np.all(rid[old] == 2)
     assert np.allclose(row[fill], -50.0, atol=1e-3) and np.all(rid[fill] == 10)
-    # the lidar's east edge: blended, deeper towards the fill, flagged; the new/old seam is never blended (both own)
+    # the lidar's east edge: blended, deeper towards the fill, flagged
     edge = (lons > OLD_E - blend + 0.0008) & (lons < OLD_E - 0.0008)
     assert edge.sum() > 5 and np.all(rid[edge] == (2 | T.FLAG_BLENDED)) and np.all(np.diff(row[edge]) < 0)
     assert np.all((row[edge] < -10.0) & (row[edge] > -50.0))
-    seam = (lons > NEW_E - 0.003) & (lons < NEW_E + 0.003)
-    assert not np.any(rid[seam] & T.FLAG_BLENDED)
+    # where the new survey ends the old one fades in under it (owner, 2026-11-14): the new id flagged, between the two
+    seam = (lons > NEW_E - blend + 0.0008) & (lons < NEW_E - 0.0008)
+    assert seam.sum() > 5 and np.all(rid[seam] == (1 | T.FLAG_BLENDED)) and np.all(np.diff(row[seam]) < 0)
+    assert np.all((row[seam] < -5.0) & (row[seam] > -10.0))
+    beyond = (lons > NEW_E + 0.0008) & (lons < NEW_E + 0.01)                  # the old survey's own side: as it was
+    assert np.all(rid[beyond] == 2) and np.allclose(row[beyond], -10.0, atol=1e-3)
 
 
 def test_a_lidar_build_writes_its_zooms_only_where_the_lidar_is(tmp_path, monkeypatch):
@@ -504,7 +517,9 @@ def test_a_build_keeps_a_sloping_survey_in_place_and_a_lagoon_joined_across_a_bl
         return v
 
     local = {
-        "lag-land": _tif_fn(str(tmp_path / "land.tif"), -158.215, -158.195, 21.214, 21.226, land),
+        # the land survey reaches well beyond the wall, the lagoon and the pond: the older survey fades in at its edge
+        # (owner, 2026-11-14), over up to 24 px, and must not reach them
+        "lag-land": _tif_fn(str(tmp_path / "land.tif"), -158.225, -158.185, 21.208, 21.232, land),
         "lag-slope": _tif_fn(str(tmp_path / "slope.tif"), -158.25, -158.16, 21.20, 21.24, slope),
         "lag-fill": _tif(str(tmp_path / "fill.tif"), -158.25, -158.15, 21.20, 21.24, -50.0, res=0.0004),
     }
@@ -579,3 +594,164 @@ def test_the_geoid_is_subtracted_before_the_junk_filter_and_its_own_junk_is_drop
     monkeypatch.setattr(B, "_warp", counting)
     elev, src = B.read_field(reg, key)
     assert "geoid" not in calls and "lid-new" in calls and not (src == 1).any()
+
+
+# ---------------------------------------------------------------- where two lidar surveys meet (owner, 2026-11-14)
+
+def _row(reg, key, lat=21.22):
+    elev, src = B.read_field(reg, key)
+    lons, lats = _column_lons(reg, key)
+    j = int(np.argmin(np.abs(lats - lat)))
+    return elev, src, lons, lats, j
+
+
+def _run(mask, start, step):
+    """How many pixels from `start` (inclusive) in direction `step` are True before the first False."""
+    n, i = 0, start
+    while 0 <= i < len(mask) and mask[i]:
+        n, i = n + 1, i + step
+    return n
+
+
+def test_an_older_survey_fades_in_under_the_newer_by_the_gap_size(tmp_path, monkeypatch):
+    """The newer survey (-5 m) has a small hole the older one (-10 m) fills: round the hole the fade is a few pixels wide
+    (the hole's own size); where the newer survey ends, with a wide stretch of the older one beyond, the full FEATHER_PX.
+    Every faded pixel keeps the newer survey's id with the blended flag and lies between the two surveys."""
+    local = _surveys(tmp_path, monkeypatch)
+    hole = (-158.1805, 21.2195, -158.1795, 21.2205)             # about 6 x 6 pixels at zoom 13
+
+    def new_fn(lon, lat):
+        v = np.full(lon.shape, -5.0 + GEOID_N + 0.3)
+        v[(lon > hole[0]) & (lon < hole[2]) & (lat > hole[1]) & (lat < hole[3])] = -9999.0
+        return v
+
+    local["lid-new"] = _tif_fn(str(tmp_path / "newhole.tif"), -158.20, NEW_E, SO, NO, new_fn)
+    B.gdal_env()
+    reg = B.region_config("lid", local=local)
+    # the build's LICENSE.txt says so (two lidar surveys in the region)
+    assert "Where two lidar surveys meet, the older one blends in under the newer one" in B.licence_text(reg)
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    key = T.tile_of(-158.17, 21.22, reg["zmax"] - B.BLOCK_LEVELS)
+    elev, src, lons, lats, j = _row(reg, key)
+    row, rid = elev[j], src[j]
+    blended = (rid & T.FLAG_BLENDED) > 0
+    # the hole: the old survey's own value and id
+    inside = np.where((lons > hole[0] + 0.0002) & (lons < hole[2] - 0.0002))[0]
+    assert len(inside) >= 2 and np.all(rid[inside] == 2) and np.allclose(row[inside], -10.0, atol=1e-3)
+    # round the hole: a narrow fade (FEATHER_MIN_PX .. a few px), the newer survey's own value beyond it
+    holecols = np.where((rid & T.SRC_BITS) == 2)[0]
+    holecols = holecols[(lons[holecols] > hole[0] - 0.001) & (lons[holecols] < hole[2] + 0.001)]
+    west, east = _run(blended, holecols.min() - 1, -1), _run(blended, holecols.max() + 1, 1)
+    assert S.FEATHER_MIN_PX <= west <= 4 and S.FEATHER_MIN_PX <= east <= 4, (west, east)
+    for i in (holecols.min() - west - 2, holecols.max() + east + 2):
+        assert rid[i] == 1 and row[i] == pytest.approx(-5.0, abs=1e-3)
+    # where the newer survey ends (NEW_E), with the old survey beyond: the full width
+    first_old = int(np.where((lons > NEW_E) & ((rid & T.SRC_BITS) == 2))[0].min())
+    edge = _run(blended, first_old - 1, -1)
+    assert S.FEATHER_PX - 4 <= edge <= S.FEATHER_PX, edge
+    # (the newer survey's west edge at -158.20 fades into the fill beneath, not into the older survey: left out here)
+    faded = blended & (lons > hole[2] + 0.001) & (lons < NEW_E)
+    assert np.all(rid[faded] == (1 | T.FLAG_BLENDED))
+    assert np.all((row[faded] < -5.0 + 1e-4) & (row[faded] > -10.0 - 1e-4))
+
+
+def test_surveys_that_never_overlap_are_merged_as_before(tmp_path, monkeypatch):
+    """Two surveys of one region that do not overlap (different islands): no fade between them; feather runs once per
+    block, for the fill beneath. A region with one survey likewise."""
+    local = _surveys(tmp_path, monkeypatch)
+    local["lid-old"] = _tif(str(tmp_path / "old_apart.tif"), NEW_E + 0.01, OLD_E, SO, NO, -10.0)
+    B.gdal_env()
+    reg = B.region_config("lid", local=local)
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    calls = []
+    real = B.feather
+
+    def counting(main, main_id, fill, fill_id, px=None):
+        calls.append(sorted(set(np.unique(fill_id[np.isfinite(fill)]).tolist())))
+        return real(main, main_id, fill, fill_id, px)
+
+    monkeypatch.setattr(B, "feather", counting)
+    key = T.tile_of(-158.17, 21.22, reg["zmax"] - B.BLOCK_LEVELS)
+    elev, src, lons, lats, j = _row(reg, key)
+    assert calls == [[10]], calls                              # only the fill's
+    row, rid = elev[j], src[j]
+    near = (lons > NEW_E - 0.003) & (lons < NEW_E - 0.0002)     # the newer survey beside the gap: fades to the FILL
+    assert np.all((rid[near] & T.SRC_BITS) == 1)
+    assert np.all(row[near] <= -5.0 + 1e-4) and np.all(row[near] > -50.0)
+    # one survey only: the same single call
+    monkeypatch.setitem(S.REGIONS, "lid", dict(S.REGIONS["lid"], sources=["lid-new"]))
+    reg = B.region_config("lid", local=local)
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    calls.clear()
+    B.read_field(reg, key)
+    assert calls == [[10]], calls
+
+
+def test_the_survey_fade_sees_an_edge_in_the_neighbouring_block(tmp_path, monkeypatch):
+    """The newer survey ends 10 px east of a block edge and the older one covers both blocks: the block to the west must
+    fade its last pixels toward the older survey (it sees the newer survey's edge through its 72-px margin)."""
+    local = _surveys(tmp_path, monkeypatch)
+    px13 = 360.0 / (2 ** 13 * T.TILE)
+    edge = BX + 10 * px13
+    local["lid-new"] = _tif(str(tmp_path / "new3.tif"), -158.24, edge, SO, NO, -5.0 + GEOID_N + 0.3)
+    local["lid-old"] = _tif(str(tmp_path / "old3.tif"), -158.24, OLD_E, SO, NO, -10.0)
+    B.gdal_env()
+    reg = B.region_config("lid", local=local)
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    key = T.tile_of(-158.21, 21.22, reg["zmax"] - B.BLOCK_LEVELS)
+    assert T.tile_bounds(10, *key)[2] == pytest.approx(T.lonlat_to_xy(BX, 21.22)[0])
+    elev, src, lons, lats, j = _row(reg, key)
+    m = B.margin_of(reg)
+    last = m + T.TILE * 2 ** B.BLOCK_LEVELS - 1
+    for k in range(0, 10):                                     # 10.5-20 px from the newer survey's edge: faded
+        assert src[j, last - k] == (1 | T.FLAG_BLENDED), k
+        assert -10.0 < elev[j, last - k] < -5.0
+    for k in range(16, 30):                                    # 26+ px from it: the newer survey's own value
+        assert src[j, last - k] == 1 and elev[j, last - k] == pytest.approx(-5.0, abs=1e-3), k
+    # the same pixels read as part of the east block (its own margin) give the same values
+    east = (key[0] + 1, key[1])
+    elev2, src2, lons2, lats2, j2 = _row(reg, east)
+    for k in range(0, 10):
+        i2 = m - 1 - k                                          # the east block's margin column for the same pixel
+        assert lons2[i2] == pytest.approx(lons[last - k], abs=1e-9)
+        assert src2[j2, i2] == src[j, last - k] and elev2[j2, i2] == pytest.approx(elev[j, last - k], abs=1e-4), k
+
+
+def test_unmarked_surveys_keep_the_plain_merge_and_the_small_margin(tmp_path, monkeypatch):
+    """The fade between surveys is for lidar surveys only (survey_fade): the stage-1 regions' two CUDEM grids, both
+    their own sources, keep the first-valid merge and the 8-px margin, so their published builds do not change."""
+    local = _surveys(tmp_path, monkeypatch)
+    for sid in ("lid-new", "lid-old"):
+        monkeypatch.setitem(S.SOURCES, sid, dict(S.SOURCES[sid], survey_fade=False))
+    monkeypatch.setitem(S.REGIONS, "lid", dict(S.REGIONS["lid"], fill=[], margin=8))
+    B.gdal_env()
+    reg = B.region_config("lid", local=local)                  # two own sources, no fill: 8 px allowed
+    assert B.margin_of(reg) == 8
+    assert not any("blends in under the newer" in line for line in B.licence_text(reg).splitlines())
+    for s in reg["srcs"]:
+        s["rects"] = B.footprint(s)
+    key = T.tile_of(-158.17, 21.22, reg["zmax"] - B.BLOCK_LEVELS)
+    elev, src, lons, lats, j = _row(reg, key)
+    row, rid = elev[j], src[j]
+    new = (lons > -158.195) & (lons < NEW_E - 0.0002)
+    old = (lons > NEW_E + 0.0002) & (lons < OLD_E - 0.0002)
+    assert np.all(rid[new] == 1) and np.allclose(row[new], -5.0, atol=1e-3)     # no fade at the hand-over
+    assert np.all(rid[old] == 2) and np.allclose(row[old], -10.0, atol=1e-3)
+    # the same region with lidar surveys refuses that margin
+    for sid in ("lid-new", "lid-old"):
+        monkeypatch.setitem(S.SOURCES, sid, dict(S.SOURCES[sid], survey_fade=True))
+    with pytest.raises(ValueError, match="FEATHER_PX"):
+        B.region_config("lid", local=local)
+
+
+def test_every_lidar_source_is_marked_and_no_cudem_grid_is():
+    """The owner's rule applies to the lidar surveys only: the LIDAR template carries the mark, the CUDEM ones do not."""
+    for sid, s in S.SOURCES.items():
+        if s.get("zmax") == 17:
+            assert s.get("survey_fade") is True, sid
+        else:
+            assert not s.get("survey_fade"), sid

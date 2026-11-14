@@ -9,7 +9,8 @@ the client stacks regions by prio, and a pixel the higher region has no picture 
 A region's `fill` sources are read and merged under its own (the lidar's holes and the water just beyond it take their
 values) but never decide which blocks are read and never earn a zoom beyond their own `zmax`; inside the lidar's edge the
 depth blends from the lidar to the fill (flagged "blended"): over FEATHER_PX pixels at the survey's edge and round
-big holes, narrower round small holes (build_bathy.feather).
+big holes, narrower round small holes (build_bathy.feather). Where two of a region's own surveys meet, the older one
+fades in under the newer one by the same rule (build_bathy.read_field).
 
 Elevations are metres above the source's vertical datum, positive up. Every stage-1 source sits on a local
 mean-sea-level datum (checked 2026-11-11: Hawaii LMSL, Guam GUVD04, CNMI NMVD03, American Samoa ASVD02,
@@ -49,7 +50,9 @@ CUDEM3 = dict(CUDEM, zmax=14, res_m=10, deep=(200.0, 12), name="NOAA NCEI CUDEM 
 
 # NOAA's 1-m topobathy lidar DEMs (plan section 96), on the same bucket. Names end in "lidar" and credits start with the
 # agency (the client's short credit is the credit's first word). Read average when finer than the grid (always at z17).
-LIDAR = dict(kind="vrt", zmax=17, res_m=1, licence="public domain (US government)", offset=0.0)
+# survey_fade: where two of a region's lidar surveys meet, the older fades in under the newer (owner, 2026-11-14);
+# the CUDEM grids of the stage-1 regions are not marked, so their merge is unchanged.
+LIDAR = dict(kind="vrt", zmax=17, res_m=1, licence="public domain (US government)", offset=0.0, survey_fade=True)
 USACE13 = dict(LIDAR, year="2013", name="USACE lidar", datum="LMSL (Hawaii local mean sea level)",
                nodata=-3.4028234663852886e38,
                credit="USACE National Coastal Mapping Program 2013 Hawaii topobathy lidar (NOAA Digital Coast)")
@@ -93,7 +96,8 @@ SOURCES = {
     "cudem3-usvi": dict(CUDEM3, id=21, year="2022",
                         path="dem/NCEI_third_Topobathy_USVI_9528/NCEI_third_Topobathy_USVI_EPSG-4269.vrt",
                         datum="VIVD09 (Virgin Islands local mean sea level)"),
-    # Hawaii lidar: the newest survey wins (owner decision): NGS Niihau 2021 first, USACE 2013 fills its holes.
+    # Hawaii lidar: the newest survey wins (owner decision): NGS Niihau 2021 first, USACE 2013 fills its holes and
+    # fades in at its edge (the gap-size rule, owner 2026-11-14).
     "ngs-niihau21": dict(LIDAR, **EGM2008, id=1, year="2021", name="NOAA NGS lidar", nodata=-999999.0,
                          path="dem/NGS_Niihau_HI_Topobathy_2021_10193/NGS_Niihau_HI_Topobathy_2021_m10193_EPSG-6634.vrt",
                          credit="NOAA NGS 2021 Niihau topobathy lidar (NOAA Digital Coast)"),

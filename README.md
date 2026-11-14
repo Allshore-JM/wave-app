@@ -1573,8 +1573,15 @@ clouds), to zoom 17.
   a hole a few pixels across over a few, keeping the reef round it the lidar's own. A hard edge was ruled out: the lidar
   and the regional grid differ by 0.2-0.3 m in the median at the gaps (17-32 % of edge pixels by over 0.5 m). The width
   is measured within 3 x `FEATHER_PX` of a pixel, so a block reads `margin` 72 pixels around itself (was 8; region_config
-  refuses less for a region with fill) and the blend is the same on both sides of a block edge. The `LICENSE.txt` of such a
-  build says so.
+  refuses less for a region with fill or with two or more lidar surveys) and the blend is the same on both sides of a block
+  edge. The `LICENSE.txt` of such a build says so.
+- **Where two lidar surveys meet.** The same rule between a region's own surveys (owner's choice, 2026-11-14, after the
+  test site showed a hard step at the hand-over: Rincon NGS 2019 / USACE 2018 median +0.42 m, up to 6.25 m; Niihau NGS
+  2021 / USACE 2013 +0.10 m, up to 4.10 m): where the newer survey stops and the older one carries on, the older one
+  fades in under the newer over the gap's own width (2-24 px), flagged blended with the newer survey's id; where the two
+  never overlap (different islands) nothing changes. Only sources marked `survey_fade` (the `LIDAR` template) take part:
+  the stage-1 regions' 1/9 and 1/3 arc-second CUDEM grids keep their first-valid merge and their 8-px margin, so their
+  published builds do not change.
 - **Running.** As the other regions: `bathy-build` with region `hawaii-lidar`, `guam-lidar`, `pr-lidar` or `nwhi-lidar`,
   version 1. A local build of a box: `build --region guam-lidar --out build/bathy --box=144.6,13.3,144.8,13.5`; a local
   geoid grid can stand in (`local["geoid:egm2008"]`, tests only).

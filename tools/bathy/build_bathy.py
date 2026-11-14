@@ -28,7 +28,9 @@ lidar) are read and merged under the lidar but never decide which blocks are rea
 own footprints, plus `ring` blocks around them (fill only) so the water rule reaches the deep water beyond the lidar.
 Inside the lidar's edge the depth blends linearly from the lidar to the fill (flagged "blended"), so no step shows where
 the lidar ends: over bathy_sources.FEATHER_PX pixels at the survey's edge and round big holes, narrower round small holes
-(the width follows the gap's own size: feather). A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
+(the width follows the gap's own size: feather). Where two of a region's own surveys meet (Rincon: NGS 2019 and
+USACE 2018; Niihau: NGS 2021 and USACE 2013) the older one fades in under the newer one by the same rule (owner's
+choice, 2026-11-14), so no step shows at the hand-over either. A source with a `geoid` (NAD83(PA11) ellipsoid heights) has the geoid
 height N subtracted, read bilinear onto the block's own grid. Their `margin` (pixels read around a block) is wider than
 the default 8 so the blend is exact at every pixel a tile uses; their `zmin` keeps the coarser zooms to the CUDEM regions.
 A footprint read from a projected VRT is transformed to lon/lat.
@@ -151,7 +153,7 @@ def region_config(name, box=None, local=None):
         raise ValueError("%s: a fill source's id must be above every own source's (the lidar wins)" % name)
     if margin_of(reg) < MARGIN or margin_of(reg) % MARGIN:
         raise ValueError("%s: margin %s must be a multiple of %d" % (name, margin_of(reg), MARGIN))
-    if reg.get("fill") and margin_of(reg) < 3 * S.FEATHER_PX:
+    if (reg.get("fill") or sum(1 for s in own if s.get("survey_fade")) > 1) and margin_of(reg) < 3 * S.FEATHER_PX:
         raise ValueError("%s: margin %s below 3 x FEATHER_PX (the blend looks 3 x %d px around a pixel)" % (
             name, margin_of(reg), S.FEATHER_PX))
     reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in own))
@@ -312,9 +314,12 @@ def feather(main, main_id, fill, fill_id, px=None):
     pixel at distance d from its nearest fill-only pixel q blends when d < width, where width = the gap's depth near q
     (the largest distance from a fill-only pixel to the lidar within px of q, a square window), clipped to
     FEATHER_MIN_PX .. px. The survey's outer edge and big holes keep the full px; a hole a few pixels across gets a
-    fade a few pixels wide, so the reef round it stays the lidar's own. Every quantity is measured within 3 px of the
-    pixel, so a block read with a margin of at least 3 px gives the same values as a bigger read (blocks agree at
-    their shared edges; region_config holds the margin to it)."""
+    fade a few pixels wide, so the reef round it stays the lidar's own. Every quantity is measured within 3 x px of
+    the pixel, so a block read with a margin of at least 3 x px gives the same values as a bigger read (blocks agree
+    at their shared edges; region_config holds the margin to it).
+
+    read_field also uses it between a region's own surveys: `main` = the newer surveys merged so far, `fill` = the
+    next older one (owner's choice, 2026-11-14: the older survey fades in at the newer one's edge)."""
     px = S.FEATHER_PX if px is None else px
     elev = np.where(np.isfinite(main), main, fill).astype(np.float32)
     ids = np.where(np.isfinite(main), main_id, np.where(np.isfinite(fill), fill_id, 0)).astype(np.uint8)
@@ -335,7 +340,8 @@ def feather(main, main_id, fill, fill_id, px=None):
 
 def read_field(reg, key):
     """(elevation float32, source ids uint8) of block `key`, (2048 + 2 margin) px square at zoom zmax; NaN = no data.
-    Own sources are merged first-valid by id (the lower id wins: the newer survey), the fill sources likewise beneath
+    Own sources are merged by id (the lower id wins: the newer survey); where an older own source meets the newer
+    ones it fades in under them (feather, the same gap-size rule). The fill sources are merged first-valid beneath
     them, then blended at the own sources' edge (feather)."""
     from rasterio.enums import Resampling
     m = margin_of(reg)
@@ -367,6 +373,11 @@ def read_field(reg, key):
         a[~(np.abs(a) < S.SANE_M)] = np.nan       # after the geoid: a fill value minus N is still a fill value
         a += np.float32(s["offset"])
         elev, ids = layers[bool(s.get("fill"))]
+        if not s.get("fill") and s.get("survey_fade") and (np.isfinite(elev) & np.isfinite(a)).any():
+            # an older survey meeting the newer ones: it fills their gaps and fades in at their edge (feather);
+            # where the two do not overlap this is the plain merge below
+            layers[False] = list(feather(elev, ids, a, np.full(a.shape, s["id"], np.uint8)))
+            continue
         take = np.isnan(elev) & np.isfinite(a)
         elev[take] = a[take]
         ids[take] = s["id"]
@@ -975,6 +986,9 @@ def licence_text(reg):
     if any(s.get("fill") for s in reg["srcs"]):
         lines += ["- Near the lidar's edge the depth blends from the lidar to the grid beneath it (marked blended): "
                   "within %d pixels at the survey's edge, narrower round small gaps." % S.FEATHER_PX]
+    if sum(1 for s in reg["srcs"] if not s.get("fill") and s.get("survey_fade")) > 1:
+        lines += ["- Where two lidar surveys meet, the older one blends in under the newer one the same way "
+                  "(marked blended)."]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

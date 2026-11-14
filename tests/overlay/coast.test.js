@@ -224,7 +224,9 @@ test('tiles entirely inside Antarctica are LAND_ALL; the Arctic is ocean; an inc
   st2.rev = 2; l._landFor(el, c); assert.equal(calls, 2);
   let drawn = 0; l._draw = () => { drawn++; };
   l._tiles = { a: { el, coords: c }, b: { el: { _ovLandFinal: false }, coords: c }, c: { el: { _ovLandFinal: true }, coords: c } };
+  for (const k in l._tiles) l._tiles[k].el._ovGen = l._gen;                   // drawn already (section 95: the drawer redraws stale tiles)
   st2.onChange();
+  l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.equal(drawn, 1);
 });
 
@@ -402,15 +404,15 @@ test('layer: a stand-in that is still a stand-in is not re-rasterised or redrawn
   l.setCoast(st);
   assert.equal(typeof st.onChange, 'function'); assert.equal(typeof st.onNeeded, 'function');
   const el = { getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} }) }, c = { z: 3, x: 5, y: 5 };
-  l._tiles['5:5:3'] = { el, coords: c };
+  l._tiles['5:5:3'] = { el, coords: c }; el._ovGen = l._gen;
   const m1 = l._landFor(el, c);
   assert.equal(calls, 1); assert.equal(el._ovLandFinal, false);
   let draws = 0; const origDraw = l._draw; l._draw = function (e, cc) { draws++; return origDraw.call(this, e, cc); };
-  st.rev = 1; st.onChange();                                                                    // an unrelated chunk landed
+  st.rev = 1; st.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false);    // an unrelated chunk landed
   assert.equal(calls, 2); assert.equal(l._landFor(el, c), m1); assert.equal(draws, 0);        // asked again, same stand-in object, no redraw
-  sets = { sets: [coast], complete: true }; st.rev = 2; st.onChange();
+  sets = { sets: [coast], complete: true }; st.rev = 2; st.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.equal(calls, 3); assert.ok(el._ovLandFinal); assert.equal(draws, 1);                   // final now: one redraw
-  st.rev = 3; st.onChange();
+  st.rev = 3; st.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.equal(calls, 3); assert.equal(draws, 1);                                               // final tiles never recompute
   assert.deepEqual(Object.keys(l._cellsNeeded()), []);                                          // the fake store has no index at z3 -> tier1Zoom false
   l.setCoast(null);
@@ -471,7 +473,7 @@ test('CoastStore: a chunk whose body is not coast-v1 is failed for good, fetched
   }
 });
 
-test('layer: a tile asks for its cells while Leaflet has not registered it yet (createTile runs before _tiles is set)', async () => {
+test('layer: a new tile is drawn after Leaflet registers it (section 95) and asks for its cells then; an unregistered tile asking still gets both cells', async () => {
   const idx = { format: 'coast-v1', q: 10000, tier0: { file: 'world-i.bin', cell: 30, max_zoom: 6 }, tier1: { dir: 'f', cell: 5, min_zoom: 7, cells: { '20_-160': [1, 1], '20_-165': [1, 1] } } };
   const world = encodeCoast([[ISLAND], [ANTARCTICA]], 30), cellBuf = encodeCoast([[OAHU]], 5);
   const pending = [];
@@ -490,12 +492,17 @@ test('layer: a tile asks for its cells while Leaflet has not registered it yet (
     assert.deepEqual(l._tiles, {});
     const coords = { z: 9, x: 28, y: 224 };                                                      // Niihau: crosses 160 W, needs 20_-165 and 20_-160
     const el = l.createTile(coords, () => {});                                                   // Leaflet registers the tile only after this returns
+    assert.equal(el._ovGen, -1, 'not drawn in createTile');
+    assert.deepEqual(Object.keys(s.inflight), [], 'no cells asked before the tile is drawn');
+    l._landFor(el, coords);                                                                     // a mask asked while the tile is not registered yet (G5 R1)
     assert.equal(el._ovLandFinal, false);
     assert.deepEqual(Object.keys(s.inflight).sort(), ['20_-160', '20_-165']);                   // both cells requested although no tile is registered yet
     l._tiles['28:224:9'] = { el, coords };
+    l._cancelStale(); l._drawStale(false);                                                      // the drawer's pass: the registered tile is drawn
+    assert.equal(el._ovGen, l._gen);
     pending.shift()(); pending.shift()(); await settle();
     assert.equal(el._ovLandFinal, true); assert.equal(s.chunks.size, 2);
-    s.abortAll();
+    l._cancelStale(); s.abortAll();
   } finally {
     delete global.fetch; delete global.document;
   }
@@ -1097,6 +1104,7 @@ test('wind coastlines follow the mask: the tier-0 stand-in lines are replaced wh
   w._tiles = { t: { el, coords } };
   store.sets = [fine]; store.complete = true; store.rev++;
   w._redrawIncomplete();                                                       // what the store's onChange does when the chunk lands
+  w._clock = () => 0; w._cancelStale(); w._drawStale(false);                   // section 95: the sliced drawer's pass
   assert.notEqual(el._ovEdges, e1, 'edges recomputed for the new mask');
   const ref = layer(frame(1440, 721, () => 90), GRID, 'wind', WIND); ref.setCoast(fakeStore([fine]));
   assert.deepEqual(Array.from(el.out), Array.from(drawTile(ref, coords)), 'the same picture as a tile drawn from the final mask');

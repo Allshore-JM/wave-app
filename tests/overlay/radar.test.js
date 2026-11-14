@@ -40,6 +40,8 @@ function layerWith(w, st, idx, playing) {
 function tile(layer, x, y, z) {
   const el = layer.createTile({ x, y, z }, () => {});
   layer._tiles[x + ':' + y + ':' + z] = { el, coords: { x, y, z } };
+  // A new tile is drawn later by the sliced drawer (plan section 95); the tests draw it at once.
+  if (el._ovGen !== layer._gen) layer._draw(el, { x, y, z });
   return el;
 }
 function tileAt(layer, lat, lon, z) {

@@ -151,25 +151,45 @@
         return { left: r.left - base.left - 4, right: r.right - base.left + 4, top: r.top - base.top - 4, bottom: r.bottom - base.top + 4 };
       }).filter(function (r) { return r.right > r.left && r.bottom > r.top; });
     }
+    // Each label's text is measured once (section 95, G62 finding 8: reading a size after writing the label forced a
+    // layout per label on every frame of a drag). An update reads first (the control rectangles, then the sizes of the
+    // texts not measured yet, together), then writes; a text or class already in place is not written again. During a
+    // zoom or a pinch the labels stay hidden (zoomstart hid them) and are placed when it ends.
+    var sizes = {}, sized = 0, zooming = false;
+    function sizeKey(lb) { return lb.kind + '|' + lb.text; }
     function update() {
       if (!on) { box.hidden = true; return; }
+      if (zooming) { box.hidden = true; return; }
+      var z = Math.round(map.getZoom()), list = labelsFor(map, stepFor(z)), rects = controlRects();
+      var els = list.map(function (lb, i) {
+        var el = pool[i] || (pool[i] = box.appendChild(doc.createElement('span'))), cls = 'graticule-label graticule-' + lb.kind;
+        if (el.className !== cls) el.className = cls;
+        if (el.textContent !== lb.text) el.textContent = lb.text;
+        return el;
+      });
       box.hidden = false;
-      var z = Math.round(map.getZoom()), list = labelsFor(map, stepFor(z)), rects = controlRects(), used = 0;
-      list.forEach(function (lb) {
-        var el = pool[used] || (pool[used] = box.appendChild(doc.createElement('span')));
-        el.className = 'graticule-label graticule-' + lb.kind;
-        el.textContent = lb.text;
+      var todo = [], asked = {};
+      list.forEach(function (lb, i) {
+        var k = sizeKey(lb);
+        if (!sizes[k] && !asked[k]) { asked[k] = 1; els[i].hidden = false; todo.push(i); }
+      });
+      if (sized + todo.length > 4000) { sizes = {}; sized = 0; }  // a bound (the texts are few: degrees, N/S/E/W)
+      todo.forEach(function (i) {
+        var w = els[i].offsetWidth, h = els[i].offsetHeight;
+        if (w > 0 && h > 0 && !sizes[sizeKey(list[i])]) { sizes[sizeKey(list[i])] = { w: w, h: h }; sized++; }
+      });
+      list.forEach(function (lb, i) {
+        var el = els[i], sz = sizes[sizeKey(lb)];
         // top-edge longitudes centred on their line; right-edge latitudes centred on theirs
-        var w = el.offsetWidth || lb.text.length * 7, h = el.offsetHeight || 14;
+        var w = sz ? sz.w : lb.text.length * 7, h = sz ? sz.h : 14;
         var left = lb.kind === 'lon' ? lb.x - w / 2 : lb.x - w - 4, top = lb.kind === 'lon' ? 4 : lb.y - h / 2;
         if (lb.kind === 'lon') top = lonTop(left, w, rects);    // below a short control at the top edge (phones)
         var r = { left: left, right: left + w, top: top, bottom: top + h };
         var hidden = rects.some(function (c) { return overlaps(r, c); }) || (lb.kind === 'lat' && top < 22);   // under a control / the top row
         el.style.left = Math.round(left) + 'px'; el.style.top = Math.round(top) + 'px';
         el.hidden = hidden;
-        used++;
       });
-      for (var i = used; i < pool.length; i++) pool[i].hidden = true;
+      for (var i = list.length; i < pool.length; i++) pool[i].hidden = true;
     }
     var on = readOn(storage), frame = null;
     // a control that grows or shrinks (the overlay panel mounting, Off, the phone sheet) re-places the labels
@@ -180,8 +200,10 @@
       } catch (e) {}
     }
     function schedule() { if (frame !== null) return; frame = (root.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { frame = null; update(); }); }
+    map.on('zoomstart', function () { zooming = true; box.hidden = true; });
+    map.on('zoomend moveend viewreset', function () { zooming = false; });   // before the update they schedule
+    map.on('resize', function () { sizes = {}; sized = 0; });      // a page zoom can change the text sizes
     map.on('move resize viewreset zoomend', schedule);
-    map.on('zoomstart', function () { box.hidden = true; });
     function set(v) {
       on = !!v; writeOn(storage, on);
       if (on && !map.hasLayer(layer)) layer.addTo(map);

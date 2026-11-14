@@ -504,15 +504,17 @@ test('the layer\'s lake coverage: from the lakes coast set (an island cuts its l
   // setLake: the field's code space only; redraws the tiles with coverage (and tells the animator); clear drops it
   l._tiles[key(SUPERIOR)] = { el, coords: SUPERIOR }; l._tiles['10:50:7'] = { el: far, coords: { z: 7, x: 10, y: 50 } };
   let redraws = 0; l.onRedraw = () => redraws++;
+  el._ovGen = l._gen; far._ovGen = l._gen;                                     // drawn already (section 95: the drawer redraws stale tiles)
+  const flush = () => { l._clock = () => 0; l._cancelStale(); l._drawStale(false); for (const k in l._tiles) l._tiles[k].el._ovGen = l._gen; };
   const lf = lakeFrame(lakeFn, HS), data = { frame: lf, grid: LG, entry: { step: 1 }, lo: HS.lo, hi: HS.hi };
   const drawn = []; l._draw = (e, c) => drawn.push(key(c));
-  assert.equal(l.setLake(data), true); assert.equal(l._lake, data); assert.deepEqual(drawn, [key(SUPERIOR)], 'only the tile with lake coverage'); assert.equal(redraws, 1);
+  assert.equal(l.setLake(data), true); flush(); assert.equal(l._lake, data); assert.deepEqual(drawn, [key(SUPERIOR)], 'only the tile with lake coverage'); assert.equal(redraws, 1);
   assert.equal(l.setLake(data), false, 'the same again: nothing'); assert.equal(redraws, 1);
   assert.throws(() => l.setLake({ frame: lf, grid: LG, entry: {}, lo: 0, hi: 15 }), /code space/);
   assert.throws(() => l.setLake({ frame: { cols: 10, rows: 10, q: new Uint8Array(100) }, grid: LG, entry: {}, lo: HS.lo, hi: HS.hi }), /lake frame/);
-  assert.equal(l.setLake(null), true); assert.equal(l._lake, null); assert.equal(drawn.length, 2); assert.equal(l.setLake(null), false);
-  l.setLake(data, true); assert.equal(drawn.length, 2, 'quiet: no redraw');
-  l._redrawLake(true); assert.equal(drawn.length, 3, 'every tile in the box');
+  assert.equal(l.setLake(null), true); flush(); assert.equal(l._lake, null); assert.equal(drawn.length, 2); assert.equal(l.setLake(null), false);
+  l.setLake(data, true); flush(); assert.equal(drawn.length, 2, 'quiet: no redraw');
+  l._redrawLake(true); flush(); assert.equal(drawn.length, 3, 'every tile in the box');
   l.clear(); assert.equal(l._lake, null); assert.equal(l._lakeMask, false);
   // setFrame takes the lake into the one redraw; another field (another code space) without it throws; the mask follows the field
   l.setFrame(globalFrame(PATTERN), GRID, 'hs', HS, I.buildLut('hs', HS.legend), { step: 1 }, data);

@@ -402,26 +402,27 @@ test('the source redraws a tile only when its tier changed or one of its cells l
   l._tiles['14:112:8'] = { el: a, coords: ca }; l._tiles['17:112:8'] = { el: b, coords: cb };
   let draws = 0; const orig = l._draw; l._draw = function (el, c) { draws++; return orig.call(this, el, c); };
   l._draw(a, ca); l._draw(b, cb); draws = 0;
+  const settle2 = async () => { await settle(); l._clock = () => 0; l._cancelStale(); l._drawStale(false); };      // section 95: the sliced drawer's pass
   assert.equal(a._ovSrcTier, 0); assert.equal(b._ovSrcTier, 0);
   const order = st.fake.held.map((h) => h.url.replace(/.*\//, ''));
   assert.ok(order.indexOf('20_-160.png') >= 0);
   // the t1 cell lands: both tiles can move to tier 1
-  st.fake.held.find((h) => /t1\//.test(h.url)).go(); st.fake.held = st.fake.held.filter((h) => !/t1\//.test(h.url)); await settle();
+  st.fake.held.find((h) => /t1\//.test(h.url)).go(); st.fake.held = st.fake.held.filter((h) => !/t1\//.test(h.url)); await settle2();
   assert.equal(draws, 2); assert.equal(a._ovSrcTier, 1); assert.equal(b._ovSrcTier, 1); draws = 0;
   // t2 20_-165 lands: tile a is still waiting for 20_-160; nothing changes tier, but a's own cell landed -> a redrawn? no: the tier did not change
   // and landedAfter looks at cells of the DRAWN tier (1), so neither tile is redrawn
-  st.fake.held.find((h) => /20_-165/.test(h.url)).go(); st.fake.held = st.fake.held.filter((h) => !/20_-165/.test(h.url)); await settle();
+  st.fake.held.find((h) => /20_-165/.test(h.url)).go(); st.fake.held = st.fake.held.filter((h) => !/20_-165/.test(h.url)); await settle2();
   assert.equal(draws, 0);
   // t2 20_-160 lands: a has both -> tier 2; b still waits for 20_-155 -> stays at 1
-  st.fake.held.find((h) => /20_-160/.test(h.url)).go(); st.fake.held = st.fake.held.filter((h) => !/20_-160/.test(h.url)); await settle();
+  st.fake.held.find((h) => /20_-160/.test(h.url)).go(); st.fake.held = st.fake.held.filter((h) => !/20_-160/.test(h.url)); await settle2();
   assert.equal(draws, 1); assert.equal(a._ovSrcTier, 2); assert.equal(b._ovSrcTier, 1); draws = 0;
-  while (st.fake.held.length) { release(st, 1); await settle(); }
+  while (st.fake.held.length) { release(st, 1); await settle2(); }
   assert.equal(b._ovSrcTier, 2);
   draws = 0;
   // a pad cell landing after the draw: the tile is redrawn (its contour lattice reads it)
   const rec = st.tiers[1].loaded.get('20_-165'); rec.rev = st.rev + 1; st.rev++;
-  st.onChange(); assert.equal(draws, 1); draws = 0;
-  st.onChange(); assert.equal(draws, 0, 'nothing new: nothing redrawn');
+  st.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false); assert.equal(draws, 1); draws = 0;
+  st.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false); assert.equal(draws, 0, 'nothing new: nothing redrawn');
   l.setSource(null, true);
   assert.equal(st.onChange, null); assert.equal(l._src, null);
   const codes = l.tileCodes(ca, new Float64Array(65536));
@@ -717,11 +718,12 @@ test('G31-17: a cell that only the pad reads redraws its tile when it lands; _dr
   l.setContours({ step: 1, per: 1, off: 0, zero: true }, true);
   const tiers = [], c0 = l._contours.bind(l); l._contours = (c, d, all, t) => { tiers.push(t); return c0(c, d, all, t); };
   l._draw(el, west); assert.equal(el._ovSrcTier, 0);
-  while (st.fake.held.length && !st.fake.held[0].url.endsWith('/t2/20_175.png')) { release(st); await settle(); }
+  const settle2 = async () => { await settle(); l._clock = () => 0; l._cancelStale(); l._drawStale(false); };      // section 95: the sliced drawer's pass
+  while (st.fake.held.length && !st.fake.held[0].url.endsWith('/t2/20_175.png')) { release(st); await settle2(); }
   assert.equal(el._ovSrcTier, 2, 'its own cells landed: drawn at 1 km');
   assert.equal(tiers[tiers.length - 1], 2, 'the isotherms traced at the same tier');
   assert.ok(st.fake.held.some((h) => h.url.endsWith('/t2/20_175.png')), 'the pad cell beyond 180 is on its way');
   let draws = 0; const d0 = l._draw.bind(l); l._draw = (e, c) => { draws++; return d0(e, c); };
-  while (st.fake.held.length) { release(st); await settle(); }
+  while (st.fake.held.length) { release(st); await settle2(); }
   assert.equal(draws, 1, 'the pad landing redrew the tile');
 });

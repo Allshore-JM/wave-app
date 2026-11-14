@@ -76,3 +76,72 @@ Germany, Kashmir and the central US (z6.4) differ by at most 31 of 255 in any pi
 a live wind flag changed between the captures. Dashed state lines cross the tile edges unbroken.
 
 Not checked: a real phone / iPad pinch (the owner's device).
+
+## G62: a global freeze review (owner, 2026-11-13: "do a global review to make sure similar freezing behavior does not
+## occur elsewhere. fix any issues found before going to production")
+One fresh reviewer (G62 A, read-only, Node timings on the module's own functions with real fixtures; d5ce74e) looked for
+the same "everything in one task" pattern across the map. Ten findings:
+
+| # | Finding | Severity | Outcome |
+|---|---|---|---|
+| 1 | Wave, satellite and radar layers drew every new tile of a zoom in Leaflet's one task (30-84 tiles; 40-300 ms of compute at 1280x800-1920x1080 with contours) | P0/P1 | Fixed: the bathymetry layer's sliced drawer shared by all four layers (tiles in view first, 12-ms slices, a frame painted between them); a new tile reports ready after its first draw, or after 2 s at most |
+| 2 | Playback kept stepping during a pan or pinch; each step redrew every tile in range in one task (115-500 ms in a pinch out at 1920x1080) | P1 | Fixed: a step waits from movestart / zoomstart to moveend (polled every 50 ms; never longer than 5 s) |
+| 3 | Exposure tool: the swell window's veil was a Leaflet polygon of 60,000-300,000 points in three world copies, projected on every zoom end | P1 (tool open) | Fixed: only the world copies near the view; the veil's point spacing by zoom band; a pan, zoom or resize that changes either redraws |
+| 4 | Touch screens: the live-dot touch pads checked every live dot against every forecast station in one task | P1 (touch) | Fixed: an index per list (32-px squares) |
+| 5 | Live-buoy dots: every one rebuilt as a DOM marker after a pan | P2 | Fixed: only the dots that change are rebuilt |
+| 6 | A timed-out idle callback drew every waiting buffer tile in one task | P2 | Fixed by finding 1's drawer: a timed-out callback draws one 12-ms slice, then waits for the next frame |
+| 7 | Coast data landing redrew a whole view in one task | P2 | Fixed: the tiles are marked stale and drawn by the sliced drawer |
+| 8 | Gridline labels: a forced layout per label on every move frame | P3 | Fixed: sizes cached, labels hidden during a zoom |
+| 9 | Satellite dots at low zoom | P2/P3 | No change: bounded (7-33 ms at the reading cap in Node); revisit only if a browser trace shows it |
+| 10 | Window resize ran enforceSingleWorld on every event; a height-only resize rebuilt all marker layers | P3 | Fixed: at most once per 100 ms; a height-only resize goes through the debounced marker refresh |
+
+Commits on fix/bathy-freeze: da74bcd (the fixes, overlay 2.27.6, UI 1.30.6), 3ec7caa (golden), 139d22c (two pins added
+after the mutation pass below). test @ bb1d891.
+
+Mutants on a scratch copy (each fix's own tests; tests added where one survived):
+| Finding | Mutants | Killed |
+|---|---|---|
+| 1 | C1-C7 (createTile draws at once / queues nothing, no 2-s ready timer, view order ignored, slice unbounded, drawn tiles redrawn, leftover never queued) | 7 / 7 (C2 by the 139d22c pin) |
+| 2 | H1-H6 (movestart / zoomstart set no hold, moveend keeps it, the tick ignores it, no 5-s cap, a held tick never retried) | 6 / 6 (by the 139d22c pin) |
+| 3 | F1-F12 | 12 / 12 |
+| 4 | F01-F16 | 15 / 16 (F07, the pole fallback, changes speed only) |
+| 5 | L1-L9 | 9 / 9 (L9 after a pin) |
+| 7 | R01-R16 | 16 / 16 (after pins) |
+| 8 | G1-G10 (9 mutants) | 9 / 9 (G10 after a pin) |
+| 10 | source-text pin (tests/test_index_page.py) | - |
+
+Suites at 3ec7caa: pytest 2,884 passed + 4 skipped; Node UI 639, overlay 677. 139d22c adds the two pins (overlay.test.js +
+playback.test.js 238 pass; on the test branch 237).
+
+Live, test site (headless Chrome with the GPU, 1280x800): the swell window (exposure tool) left open, then zoomed out and
+pinched (production overlay 2.27.3 / UI 1.30.4 against the test site 2.27.6 / UI 1.30.6):
+| View | Long tasks | Longest | Sum | Gaps > 250 ms |
+|---|---|---|---|---|
+| zoom 3, pinch | 100 -> 2 | 381 -> 53 ms | 8.6 s -> under 0.11 s | 5 -> 0 |
+| world, pinch | 212 -> 29 | 466 -> 99 ms | 22.3 s -> 1.9 s | 21 -> 0 |
+| zoom 6, pinch | 15 -> 0 | 257 ms -> - | - | - |
+The veil's holes as drawn: 1 (the copy in view) instead of 3; 0 console problems.
+
+Full sweep, test site, before (sweep_all1: overlay 2.27.5 / UI 1.30.5) and after (sweep_all2: 2.27.6 / UI 1.30.6): headless
+Chrome with the GPU, 1280x800, storage cleared per field; 8 fields x 12 places (San Juan, Honolulu, North Sea, Tokyo, New
+York, Lake Michigan, the Keys, Bali, Norway, the world view, Southern California, Biscay); at each place 6 pinch rounds,
+two long pinches, 4 wheel zooms and 3 drags (scratch b93c/v/hl/sweep.js; comparison cmp_sweep.py). Per field, the 12 places
+summed:
+| Field | Gaps > 250 ms | Long tasks | Longest | Long-task time | Places with a task > 150 ms |
+|---|---|---|---|---|---|
+| none (no overlay) | 0 -> 0 | 99 -> 93 | 120 -> 123 ms | 6.5 s -> 6.1 s | 0 -> 0 |
+| wave height | 6 -> 3 | 305 -> 193 | 329 -> 242 ms | 28.9 s -> 13.0 s | 10 -> 1 |
+| peak period | 5 -> 0 | 417 -> 34 | 326 -> 101 ms | 37.9 s -> 2.1 s | 12 -> 0 |
+| wind | 4 -> 0 | 282 -> 1 | 510 -> 71 ms | 26.5 s -> 0.07 s | 7 -> 0 |
+| sea surface temperature | 10 -> 0 | 232 -> 0 | 354 -> 0 ms | 24.9 s -> 0 | 10 -> 0 |
+| satellite waves | 13 -> 0 | 301 -> 1 | 261 -> 55 ms | 24.6 s -> 0.06 s | 1 -> 0 |
+| radar | 7 -> 0 | 367 -> 3 | 300 -> 53 ms | 33.4 s -> 0.16 s | 8 -> 0 |
+| bathymetry | 0 -> 0 | 209 -> 1 | 205 -> 65 ms | 15.0 s -> 0.07 s | 1 -> 0 |
+0 console problems in either run.
+
+Left (after the fixes): wave height at the WORLD view (zoom 2.6-3.2) still has 134 long tasks, five over 150 ms (longest
+242 ms) and two frame gaps of 267 ms; the other 11 places under wave height are 0-12 long tasks under 90 ms. Peak period at
+the same place: 8 long tasks, longest 89 ms; no overlay: 64, longest 116 ms (the page's own cost at that zoom). Tokyo under
+wave height had one 367-ms frame gap with no long task (the browser or the GPU, not page code). Not yet traced.
+
+Not checked: a real phone / iPad (the owner's devices).

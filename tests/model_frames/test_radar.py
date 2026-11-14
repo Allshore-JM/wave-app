@@ -363,6 +363,9 @@ def test_the_url_forms():
                                            "MRMS_SeamlessHSR_00.00_20261106-010400.grib2.gz")
     assert opera.url_of(when) == ("https://s3.waw3-1.cloudferro.com/openradar-24h/2026/11/06/OPERA/COMP/"
                                   "OPERA@20261106T0104@0@DBZH.h5")
+    assert opera.url_of(when, opera.BACKUP_URL) == ("https://object-store.os-api.cci1.ecmwf.int/openradar-24h-backup/2026/11/06/"
+                                                    "OPERA/COMP/OPERA@20261106T0104@0@DBZH.h5")
+    assert opera.HOSTS == (opera.BUCKET_URL, opera.BACKUP_URL)
 
 
 # ---------------------------------------------------------------- OPERA
@@ -470,6 +473,63 @@ def test_the_label_must_be_the_slot(small, monkeypatch, tmp_path):
     web = Web({opera.url_of(slot): p.read_bytes()})
     with pytest.raises(ValueError):
         R.opera_frame(slot, web)
+
+
+SLOT_0050 = datetime(2026, 11, 6, 0, 50, tzinfo=timezone.utc)          # write_h5's label
+
+
+def _h5(tmp_path, name="f.h5", **kw):
+    p = tmp_path / name
+    write_h5(str(p), **kw)
+    return p.read_bytes()
+
+
+def test_the_backup_serves_a_frame_the_first_bucket_lacks(small, tmp_path):
+    good = _h5(tmp_path)
+    web = Web({opera.url_of(SLOT_0050, opera.BACKUP_URL): good})
+    lattice, offset, radars = R.opera_frame(SLOT_0050, web)
+    assert offset == 0 and radars == 3 and lattice.shape
+    assert web.asked == [opera.url_of(SLOT_0050), opera.url_of(SLOT_0050, opera.BACKUP_URL)]
+
+
+def test_the_first_bucket_is_asked_first_and_the_backup_only_without_it(small, tmp_path):
+    good = _h5(tmp_path)
+    web = Web({opera.url_of(SLOT_0050): good, opera.url_of(SLOT_0050, opera.BACKUP_URL): good})
+    R.opera_frame(SLOT_0050, web)
+    assert web.asked == [opera.url_of(SLOT_0050)]
+
+
+def test_the_backup_answers_when_the_first_bucket_is_down(small, tmp_path):
+    good = _h5(tmp_path)
+    web = Web({opera.url_of(SLOT_0050, opera.BACKUP_URL): good}, down=("cloudferro",))
+    R.opera_frame(SLOT_0050, web)
+    assert opera.url_of(SLOT_0050, opera.BACKUP_URL) in web.asked
+
+
+def test_missing_only_when_every_host_answers_404(small):
+    web = Web({})
+    with pytest.raises(R.Missing):
+        R.opera_frame(SLOT_0050, web)
+    assert web.asked == [opera.url_of(SLOT_0050), opera.url_of(SLOT_0050, opera.BACKUP_URL)]
+
+
+def test_a_host_that_did_not_answer_makes_it_down_not_missing(small):
+    for down in ("cloudferro", "cci1.ecmwf"):                          # either host silent, the other 404
+        with pytest.raises(R.Down):
+            R.opera_frame(SLOT_0050, Web({}, down=(down,)))
+
+
+def test_a_damaged_file_is_skipped_for_the_backup_and_kept_when_none_is_good(small, tmp_path):
+    good, bad = _h5(tmp_path), _h5(tmp_path, "b.h5", quantity=b"TH")
+    web = Web({opera.url_of(SLOT_0050): bad, opera.url_of(SLOT_0050, opera.BACKUP_URL): good})
+    lattice, _o, _r = R.opera_frame(SLOT_0050, web)
+    assert lattice.shape
+    for backup in ({}, {opera.url_of(SLOT_0050, opera.BACKUP_URL): bad}):
+        web = Web(dict({opera.url_of(SLOT_0050): bad}, **backup))
+        with pytest.raises(ValueError):
+            R.opera_frame(SLOT_0050, web)
+    with pytest.raises(ValueError):                                    # damaged at one, silent at the other: the damage is told
+        R.opera_frame(SLOT_0050, Web({opera.url_of(SLOT_0050, opera.BACKUP_URL): bad}, down=("cloudferro",)))
 
 
 # ---------------------------------------------------------------- one tick

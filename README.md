@@ -1296,6 +1296,12 @@ map's satellite layer (section 81's client; nothing on the page until it ships):
 | conus, alaska, carib, hawaii, guam | NOAA MRMS SeamlessHSR (AWS Open Data, GRIB2) | 0.01 deg (Hawaii, Guam 0.005 deg, pooled to 0.01) | the file at slot + 4 min, else + 2, + 0: an instant |
 | europe | EUMETNET OPERA maximum reflectivity (object storage, ODIM HDF5, CC BY 4.0) | 1 km Lambert azimuthal equal-area, regridded by the nearest source pixel | the label at the slot: the maximum over the 10 minutes ending there |
 
+OPERA's files are read from EUMETNET's main bucket (`s3.waw3-1.cloudferro.com/openradar-24h`) and, for any slot it has
+no file for or does not answer, from EUMETNET's documented backup with the same paths
+(`object-store.os-api.cci1.ecmwf.int/openradar-24h-backup`). A slot is "not published" only when both answer 404; a host that
+does not answer makes it Down (asked again next tick). The main bucket was empty from 2026-11-11 20:10 UTC (EUMETNET's
+cloud-provider problem): Europe's radar stopped until the backup was added (section 83b).
+
 A slot is a nominal time, `YYYYMMDDHHMM`. Every tier sits on one lattice of 1/ppd-degree pixels from a whole-degree box, row 0 at the
 north edge. Codes u8: 0 = no radar coverage, 1 = covered, no echo (below 5 dBZ), code >= 2: dBZ = 5 + (code - 2) x 0.5.
 

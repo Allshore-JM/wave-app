@@ -1916,8 +1916,9 @@
       map.setMinZoom(MIN_MAP_ZOOM);
 
       // The stored view is (re)applied at load and when the width changes; a height-only resize (a phone's
-      // browser bar collapsing, a soft keyboard for the settings) must not snap the map back.
-      if (lastEnforcedWidth === w) { clampMapLatitude(); refreshWrappedMarkerCopies(true); return; }
+      // browser bar collapsing, a soft keyboard for the settings) must not snap the map back. Its marker refresh is
+      // the debounced one (section 95, G62 finding 10): only the layers whose stations in view changed are rebuilt.
+      if (lastEnforcedWidth === w) { clampMapLatitude(); refreshWrappedMarkerCopies(false); return; }
       lastEnforcedWidth = w;
 
       // Precedence: the in-session view (sessionStorage) > the hard default.
@@ -2009,6 +2010,7 @@
     let lastForecastSig = null;
     let lastLiveSig = null;
     let liveDrawn = [];                              // the drawn live markers: { marker, lat, lng, s, active, pad } (their Tab stops, touch pads)
+    let liveByKey = new Map();                       // id#copy -> the drawn dot (rebuildLiveBuoyMarkers keeps the ones that stay)
     let refreshTimer = null;
     // the tide layer's state (plan section 38; the functions are with rebuildLiveBuoyMarkers below)
     const TIDE_MIN_ZOOM = 9;                        // the stations show from this map zoom (fractional zooms: >=)
@@ -3391,19 +3393,28 @@
       lastLiveSig = sig;
 
       const focusKey = focusedMarkerKey();
-      liveBuoyLayer.clearLayers();
-      liveDrawn = [];
+      // only the dots that change are rebuilt (section 95, G62 finding 5; the wind flags' rule): a pan that brings one
+      // buoy in used to rebuild every dot (up to ~650 DOM markers). A dot drawn before in the same world copy, at the same
+      // place, with the same name and highlight, keeps its marker; its station record is renewed (a new list's record).
+      const next = new Map(), drawnNow = [];
 
       vis.forEach(function (c) {
-        const s = c.s;
+        const s = c.s, active = s.id === activeLiveBuoyId;
+        let key = s.id + '#' + c.o;
+        while (next.has(key)) key += '+';                       // a repeated id keeps a key of its own (never a lost marker)
         const label = 'Live ' + buoyDisplayLabel(s) + (s.source ? ' (' + s.source + ')' : '');
+        const old = liveByKey.get(key);
+        if (old && old.active === active && old.lat === s.lat && old.lng === c.lng && old.label === label) {
+          liveByKey.delete(key); old.s = s; next.set(key, old); drawnNow.push(old); return;
+        }
         const marker = L.marker([s.lat, c.lng], {
-          icon: s.id === activeLiveBuoyId ? liveBuoyIconActive : liveBuoyIconInactive,
+          icon: active ? liveBuoyIconActive : liveBuoyIconInactive,
           title: label,
           zIndexOffset: 500,
           autoPanOnFocus: false                                   // a focused marker never pans the map (G27 re-check RC-3)
         }).addTo(liveBuoyLayer);
-        liveDrawn.push({ marker: marker, lat: s.lat, lng: c.lng, s: s, active: s.id === activeLiveBuoyId });
+        const drawn = { marker: marker, lat: s.lat, lng: c.lng, s: s, active: active, label: label };
+        next.set(key, drawn); drawnNow.push(drawn);
 
         marker.bindTooltip(textTip(label), {                       // a provider's station name: text, never HTML (G22 A-20)
           permanent: false,
@@ -3414,9 +3425,12 @@
 
         marker.on('click', function (e) {
           if (window.AllshoreTools && window.AllshoreTools.active()) { window.AllshoreTools.click(e.latlng, e.originalEvent); return; }   // markers do not pass clicks to the map
-          openLiveBuoy(s);
+          openLiveBuoy(drawn.s);                                  // the station's newest record (a kept dot's is renewed)
         });
       });
+      liveByKey.forEach(function (d) { liveBuoyLayer.removeLayer(d.marker); });   // the dots no longer drawn
+      liveByKey = next;
+      liveDrawn = drawnNow;
       refocusMarker(liveDrawn.map(function (d) { return d.marker; }), focusKey, 'l:');
       liveTabStops();
     }
@@ -3758,25 +3772,79 @@
       const g = /^[a-z0-9-]+:0-\d+-0-(\d{5})$/i.exec(t);
       return g ? g[1] : linkKey(t);
     }
-    // the station of `list` linked to `from` ({id, lat, lon}): {s, km} or null
+    // A list's index, built once per list (the lists are replaced, never changed in place; a list whose length moved
+    // is indexed again): its stations by link id, and in 0.1-degree cells. A link is then looked for among a few
+    // candidates instead of the whole list (G62 finding 4: the pads asked for every live dot against every forecast
+    // station in one task, 90-110 ms on a laptop and 270-550 ms on a phone). The answer is the one a look at every
+    // station gives: the candidates hold every station a rule can pick, and they are measured with the same formula and
+    // compared in the list's order (ties go to the earlier station, as before).
+    const LINK_CELL = 0.1, LINK_COLS = 3600, LINK_DEG_KM = 6371 * Math.PI / 180, LINK_MARGIN = 1.01;
+    const linkIndexes = new WeakMap();
+    function linkCol(lon) { const c = Math.floor((((lon % 360) + 360) % 360) / LINK_CELL); return ((c % LINK_COLS) + LINK_COLS) % LINK_COLS; }
+    function linkRow(lat) { return Math.floor((lat + 90) / LINK_CELL); }
+    function linkIndex(list) {
+      const had = linkIndexes.get(list);
+      if (had && had.n === list.length) return had;
+      const n = list.length, lat = new Float64Array(n), lon = new Float64Array(n), byId = new Map(), cells = new Map();
+      for (let i = 0; i < n; i++) {
+        const s = list[i], a = s ? Number(s.lat) : NaN, o = s ? Number(s.lon) : NaN;
+        lat[i] = a; lon[i] = o;
+        if (!Number.isFinite(a) || !Number.isFinite(o)) continue;
+        const k = linkId(s.id);
+        if (k) { const b = byId.get(k); if (b) b.push(i); else byId.set(k, [i]); }
+        const ck = linkRow(a) * LINK_COLS + linkCol(o), c = cells.get(ck);
+        if (c) c.push(i); else cells.set(ck, [i]);
+      }
+      const ix = { n: n, lat: lat, lon: lon, byId: byId, cells: cells, all: null };
+      linkIndexes.set(list, ix);
+      return ix;
+    }
+    // every station that can lie within LINK_KM of (a, o), in the list's order: the cells the 1-km circle can reach
+    // (with a margin), the whole list where that circle takes every longitude (near a pole)
+    function linkNear(ix, a, o) {
+      const dLat = LINK_KM * LINK_MARGIN / LINK_DEG_KM, r = Math.PI / 180;
+      const far = Math.max(Math.abs(a - dLat), Math.abs(a + dLat));
+      const cosMin = far < 90 ? Math.cos(far * r) : 0, q = Math.sin(LINK_KM * LINK_MARGIN / (2 * 6371)) / Math.sqrt(Math.max(0, Math.cos(a * r)) * cosMin);
+      let dLon = q < 1 ? 2 * Math.asin(q) / r * LINK_MARGIN + 1e-9 : 360;
+      const c0 = Math.floor((o - dLon) / LINK_CELL), c1 = Math.floor((o + dLon) / LINK_CELL);
+      if (!(dLon < 180) || c1 - c0 + 1 >= LINK_COLS) {
+        if (!ix.all) { ix.all = []; for (let i = 0; i < ix.n; i++) if (Number.isFinite(ix.lat[i]) && Number.isFinite(ix.lon[i])) ix.all.push(i); }
+        return ix.all;
+      }
+      const r0 = Math.max(0, linkRow(a - dLat)), r1 = Math.min(Math.floor(180 / LINK_CELL), linkRow(a + dLat)), out = [];
+      for (let row = r0; row <= r1; row++) {
+        for (let c = c0; c <= c1; c++) {
+          const got = ix.cells.get(row * LINK_COLS + ((c % LINK_COLS) + LINK_COLS) % LINK_COLS);
+          if (got) for (let j = 0; j < got.length; j++) out.push(got[j]);
+        }
+      }
+      return out.sort(function (x, y) { return x - y; });
+    }
+    // the station of `list` linked to `from` ({id, lat, lon}): {s, km} or null; the same id within LINK_ID_KM (the
+    // nearest), else the nearest within LINK_KM
     function linkFor(from, list) {
       const at = from && { lat: Number(from.lat), lon: Number(from.lon) };
       if (!at || !Number.isFinite(at.lat) || !Number.isFinite(at.lon) || !Array.isArray(list)) return null;
-      const want = linkId(from.id);
+      const ix = linkIndex(list), want = linkId(from.id), ids = want ? ix.byId.get(want) : null;
       let same = null, near = null;
-      for (let i = 0; i < list.length; i++) {
-        const s = list[i], lat = Number(s && s.lat), lon = Number(s && s.lon);
-        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-        const km = linkKm(at, { lat: lat, lon: lon });
-        if (want && linkId(s.id) === want && km <= LINK_ID_KM && (!same || km < same.km)) same = { s: s, km: km };
-        else if (km <= LINK_KM && (!near || km < near.km)) near = { s: s, km: km };
+      if (ids) for (let j = 0; j < ids.length; j++) {
+        const i = ids[j], km = linkKm(at, { lat: ix.lat[i], lon: ix.lon[i] });
+        if (km <= LINK_ID_KM && (!same || km < same.km)) same = { s: list[i], km: km };
       }
-      return same || near;
+      if (same) return same;
+      const cand = linkNear(ix, at.lat, at.lon);
+      for (let j = 0; j < cand.length; j++) {
+        const i = cand[j], km = linkKm(at, { lat: ix.lat[i], lon: ix.lon[i] });
+        if (km <= LINK_KM && (!near || km < near.km)) near = { s: list[i], km: km };
+      }
+      return near;
     }
+    // a live buoy's forecast point depends on the forecast list and the buoy (it is kept through a new live list, which
+    // comes every few minutes; a buoy that moved is asked again: its position is in the key); a forecast station's live
+    // buoy on both lists
     function linkCached(map_, key, compute) {
-      if (linkCache.lists[0] !== forecastStationsData || linkCache.lists[1] !== liveStationsData) {
-        linkCache.lists = [forecastStationsData, liveStationsData]; linkCache.fwd.clear(); linkCache.back.clear();
-      }
+      if (linkCache.lists[0] !== forecastStationsData) { linkCache.lists[0] = forecastStationsData; linkCache.fwd.clear(); linkCache.back.clear(); }
+      if (linkCache.lists[1] !== liveStationsData) { linkCache.lists[1] = liveStationsData; linkCache.back.clear(); }
       if (!map_.has(key)) map_.set(key, compute());
       return map_.get(key);
     }
@@ -3784,7 +3852,7 @@
     // position, so the sheltered note can offer its live buoy: G35 B-8)
     let fwStationAt = null;
     // a live buoy's forecast point / a forecast station's live buoy ({s, km} or null; never for one of My points)
-    function forecastLinkFor(live) { return live ? linkCached(linkCache.fwd, String(live.id), function () { return linkFor(live, forecastStationsData); }) : null; }
+    function forecastLinkFor(live) { return live ? linkCached(linkCache.fwd, String(live.id) + '|' + live.lat + '|' + live.lon, function () { return linkFor(live, forecastStationsData); }) : null; }
     function liveLinkFor(sid) {
       if (!sid || /^pt_/.test(String(sid))) return null;
       return linkCached(linkCache.back, String(sid), function () {
@@ -3903,29 +3971,47 @@
     // through "Forecast for this point" (re-check F-1, owner 2026-10-25: kept as built). Touch screens: (any-pointer:
     // coarse), whichever pointer is the primary one (B-7), so a mouse on a touch-screen computer gets the pads too
     // (owner, 2026-10-25: kept); without a touch screen: nothing.
-    const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3;
+    // LIVE_CELL: the pads are measured in 32-px squares, each dot against the icons in its own square and the eight
+    // around it (G62 finding 4: before, every dot against every icon). Exact: an icon 32 px or more away cannot change a
+    // pad (floor(32 / 2 - 7.5) is already the full 8 px), and every icon nearer lies in those nine squares.
+    const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3, LIVE_CELL = 32;
     function liveDotAt(d) {                           // the dot's centre: the icon sits right of its coordinate
       const p = map.latLngToContainerPoint([d.lat, d.lng]), size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
       return { x: p.x + size / 2 - anchor, y: p.y, h: size / 2 };
     }
     function liveTargets() {
       if (!liveDrawn.length || !map.latLngToContainerPoint || !(window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches)) return;
-      const others = [], pt = function (lat, lng) { const q = map.latLngToContainerPoint([lat, lng]); return { x: q.x, y: q.y }; };
-      if (typeof tideDrawn !== 'undefined') tideDrawn.forEach(function (d) { const q = pt(d.s.lat, d.lng); others.push({ x: q.x + (d.off ? d.off[0] : 0), y: q.y + (d.off ? d.off[1] : 0) }); });
-      if (typeof windDrawn !== 'undefined') windDrawn.forEach(function (d) { others.push(pt(d.s.lat, d.lng)); });
-      if (map.hasLayer(pointLayer)) visibleCopies(savedPointsData).forEach(function (c) { others.push(pt(c.s.lat, c.lng)); });
-      const fc = map.hasLayer(forecastLayer) ? visibleCopies(forecastStationsData).map(function (f) { return { id: String(f.s.id), q: pt(f.s.lat, f.lng) }; }) : [];
+      // the icons in their squares: k 0 = a live dot (i its index), 1 = any other icon, 2 = a forecast dot (id)
+      const grid = new Map(), cellOf = function (v) { return Math.floor(v / LIVE_CELL); };
+      const put = function (x, y, k, i, id) {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const key = cellOf(x) + ',' + cellOf(y), e = { x: x, y: y, k: k, i: i, id: id }, got = grid.get(key);
+        if (got) got.push(e); else grid.set(key, [e]);
+      };
+      const pt = function (lat, lng) { const q = map.latLngToContainerPoint([lat, lng]); return { x: q.x, y: q.y }; };
+      if (typeof tideDrawn !== 'undefined') tideDrawn.forEach(function (d) { const q = pt(d.s.lat, d.lng); put(q.x + (d.off ? d.off[0] : 0), q.y + (d.off ? d.off[1] : 0), 1); });
+      if (typeof windDrawn !== 'undefined') windDrawn.forEach(function (d) { const q = pt(d.s.lat, d.lng); put(q.x, q.y, 1); });
+      if (map.hasLayer(pointLayer)) visibleCopies(savedPointsData).forEach(function (c) { const q = pt(c.s.lat, c.lng); put(q.x, q.y, 1); });
+      if (map.hasLayer(forecastLayer)) visibleCopies(forecastStationsData).forEach(function (f) { const q = pt(f.s.lat, f.lng); put(q.x, q.y, 2, -1, String(f.s.id)); });
       const dots = liveDrawn.map(liveDotAt);
+      dots.forEach(function (q, i) { put(q.x, q.y, 0, i); });
       liveDrawn.forEach(function (d, i) {
         const p = dots[i], twin = forecastLinkFor(d.s), twinId = twin && twin.km <= LINK_KM ? String(twin.s.id) : null;
         let c = Infinity;
-        const near = function (q) { c = Math.min(c, Math.hypot(q.x - p.x, q.y - p.y)); };
-        dots.forEach(function (q, j) { if (j !== i) near(q); });
-        others.forEach(near);
-        fc.forEach(function (f) {
-          if (f.id === twinId && Math.hypot(f.q.x - p.x, f.q.y - p.y) <= p.h + LIVE_TWIN_UNDER) return;   // its twin, under the dot
-          near(f.q);
-        });
+        const cx = cellOf(p.x), cy = cellOf(p.y);
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          for (let gy = cy - 1; gy <= cy + 1; gy++) {
+            const got = grid.get(gx + ',' + gy);
+            if (!got) continue;
+            for (let j = 0; j < got.length; j++) {
+              const e = got[j];
+              if (e.k === 0 && e.i === i) continue;                           // the dot itself
+              const dd = Math.hypot(e.x - p.x, e.y - p.y);
+              if (e.k === 2 && e.id === twinId && dd <= p.h + LIVE_TWIN_UNDER) continue;   // its twin, under the dot
+              if (dd < c) c = dd;
+            }
+          }
+        }
         const pad = Math.max(0, Math.min(LIVE_TAP_MAX, Math.floor(c / 2 - p.h)));
         const el = d.marker.getElement && d.marker.getElement();
         if (el && el.style && el.style.setProperty && d.pad !== pad) { el.style.setProperty('--live-tap', pad + 'px'); d.pad = pad; }
@@ -4328,7 +4414,14 @@
     }
     // ---------------- (end of the wind stations block) ----------------
 
-    window.addEventListener('resize', enforceSingleWorld);
+    // A window resize runs enforceSingleWorld at most once per 100 ms (section 95, G62 finding 10: a resize drag or a
+    // phone's browser bar fired it on every event); the run after the last event reads the final size.
+    let resizeQueued = null;
+    function onWindowResize() {
+      if (resizeQueued !== null) return;
+      resizeQueued = setTimeout(function () { resizeQueued = null; enforceSingleWorld(); }, 100);
+    }
+    window.addEventListener('resize', onWindowResize);
     // ---- first view (tests/ui/firstview.test.js runs this block: keep it self-contained between the markers) ----
     // Where the site opens (plan section 46): the tab's own view (sessionStorage) > the visitor's default station (the
     // shaka: its position at the opening zoom, openZoom) > the visitor's area from the IP address (the head's geo race,

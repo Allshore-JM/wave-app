@@ -113,10 +113,19 @@ test('the setting: on unless stored "0"; blocked storage reads on and never thro
 // a minimal Leaflet for create(): GridLayer.extend, a map with panes, layers and events, a DOM with rects
 function harness(opts) {
   const events = {}, layers = new Set(), panes = {};
+  const reads = { n: 0 }, writes = { n: 0 };
   function el(tag) {
     const e = { tagName: tag, style: {}, children: [], hidden: false, className: '', textContent: '', offsetWidth: 0, offsetHeight: 0, attrs: {},
       appendChild(c) { this.children.push(c); c.parentNode = this; return c; }, setAttribute(k, v) { this.attrs[k] = v; },
       getContext: () => null, getBoundingClientRect: () => ({ left: 0, top: 0, right: 0, bottom: 0 }), querySelectorAll: () => [] };
+    if (opts && opts.measure && tag === 'span') {             // a laid-out label: its size from its text, 0 while hidden
+      let text = '', cls = '';
+      const shown = () => !e.hidden && !(e.parentNode && e.parentNode.hidden);
+      Object.defineProperty(e, 'textContent', { get: () => text, set: (v) => { writes.n++; text = String(v); } });
+      Object.defineProperty(e, 'className', { get: () => cls, set: (v) => { writes.n++; cls = String(v); } });
+      Object.defineProperty(e, 'offsetWidth', { get: () => { reads.n++; return shown() ? text.length * 6 : 0; } });
+      Object.defineProperty(e, 'offsetHeight', { get: () => { reads.n++; return shown() ? 13 : 0; } });
+    }
     return e;
   }
   const doc = { createElement: el };
@@ -133,9 +142,10 @@ function harness(opts) {
   const L = { GridLayer: { extend: (proto) => { function C(o) { this.options = o; } Object.assign(C.prototype, proto, { addTo(m) { layers.add(this); return this; } }); return C; } } };
   const mem = new Map(); if (opts && opts.stored !== undefined) mem.set(I.KEY, opts.stored);
   const storage = { getItem: (k) => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, v) };
-  const win = { requestAnimationFrame: (f) => { f(); return 1; }, devicePixelRatio: 2 };
+  const q = [];                                                // opts.queue: frames run when flush() says (as a browser does)
+  const win = { requestAnimationFrame: opts && opts.queue ? (f) => { q.push(f); return q.length; } : (f) => { f(); return 1; }, devicePixelRatio: 2 };
   const G = load(win).create(map, { L, document: doc, storage });
-  return { G, map, layers, panes, mem, container };
+  return { G, map, layers, panes, mem, container, reads, writes, flush: () => { while (q.length) q.shift()(); } };
 }
 
 test('create(): its own pane under the markers, on by default, labels hidden under a control, set() toggles and remembers', () => {
@@ -154,6 +164,41 @@ test('create(): its own pane under the markers, on by default, labels hidden und
   const off = harness({ stored: '0' });
   assert.equal(off.G.on(), false); assert.equal(off.layers.has(off.G.layer), false); assert.equal(off.G.labels.hidden, true);
   const n = h.G.labels.children.length; h.map.fire('move'); assert.equal(h.G.labels.children.length, n, 'labels are pooled, not re-created');
+});
+
+test('section 95 (G62 finding 8): each label text measured once; a steady frame writes no text; a zoom or pinch keeps them hidden until it ends', () => {
+  const h = harness({ queue: true, measure: true });
+  h.flush();
+  const spans = h.G.labels.children, shown = spans.filter((s) => s.textContent);
+  assert.ok(shown.length > 10);
+  const texts = new Set(shown.map((s) => s.className + '|' + s.textContent));
+  assert.ok(h.reads.n > 0 && h.reads.n <= 2 * texts.size, 'each text measured once (width and height): ' + h.reads.n + ' reads, ' + texts.size + ' texts');
+  const lon = shown.find((s) => s.className.includes('graticule-lon') && !s.hidden);
+  assert.ok(lon, 'a longitude shown');
+  h.reads.n = 0; h.writes.n = 0;
+  h.map.fire('move'); h.flush();
+  assert.equal(h.reads.n, 0, 'nothing measured again'); assert.equal(h.writes.n, 0, 'no text or class written again');
+  assert.equal(h.G.labels.hidden, false);
+  // a zoom or a pinch: hidden at its start, a move during it leaves them hidden, placed when it ends
+  h.map.fire('zoomstart'); assert.equal(h.G.labels.hidden, true);
+  h.map.fire('move'); h.flush(); assert.equal(h.G.labels.hidden, true, 'not shown during the zoom');
+  h.map.fire('zoomend'); h.flush(); assert.equal(h.G.labels.hidden, false, 'placed at its end');
+  // a resize forgets the sizes (a page zoom can change them): measured again once
+  h.reads.n = 0; h.map.fire('resize'); h.flush(); assert.ok(h.reads.n > 0);
+  const again = h.reads.n; h.reads.n = 0; h.map.fire('move'); h.flush(); assert.equal(h.reads.n, 0); assert.ok(again <= 2 * texts.size);
+  // another view: spans the last update hid (under a control, or spare) take new texts and are measured shown, so every
+  // shown longitude sits centred on its line at its measured width (6 px a character here, 7 is the unmeasured guess)
+  Object.assign(h.map, fakeMap({ z: 3, lat: 20, lng: -170, w: 200, h: 120 })); h.map.fire('move'); h.flush();   // few labels: spares hidden
+  Object.assign(h.map, fakeMap({ z: 4, lat: 35, lng: 60, w: 1500, h: 800 })); h.map.fire('move'); h.flush();
+  const want = new Map(I.labelsFor(h.map, I.stepFor(4)).filter((l) => l.kind === 'lon').map((l) => [l.text + '@' + Math.round(l.x - l.text.length * 3), true]));
+  const lons = h.G.labels.children.filter((s) => s.className.includes('graticule-lon') && !s.hidden && s.textContent);
+  assert.ok(lons.length > 5);
+  lons.forEach((s) => assert.ok(want.has(s.textContent + '@' + parseFloat(s.style.left)), 'measured width: ' + s.textContent + ' at ' + s.style.left));
+  // a direct update during a zoom (the setting toggled) keeps them hidden; moveend also ends the zoom state
+  const s = harness({ queue: true }); s.flush();
+  s.map.fire('zoomstart'); s.G.set(true); assert.equal(s.G.labels.hidden, true, 'set() during a zoom keeps them hidden');
+  s.map.fire('moveend'); s.flush(); assert.equal(s.G.labels.hidden, true, 'moveend alone schedules nothing');
+  s.G.update(); assert.equal(s.G.labels.hidden, false, 'the zoom state ended with moveend');
 });
 
 test('G18a: lines snap to the middle of a device pixel at any scaling; longitudes drop below short top controls, stay hidden under tall ones', () => {

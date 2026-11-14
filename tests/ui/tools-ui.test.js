@@ -512,14 +512,14 @@ test('the page keeps focus where it was when it minimises a window for the tool 
 // ---- the window projected on the map (plan section 30) ----
 async function reachDrawn(E) { for (let i = 0; i < 400 && !E.s.reachOn; i++) await wait(5); }
 const kinds = (E) => [...E.s.reach._items].reduce((m, l) => { m[l.kind] = (m[l.kind] || 0) + 1; return m; }, {});
-test('the projection: a veil with three holes, rays and rings after a result; gone after Clear, a new click and a tool switch', async () => {
+test('the projection: a veil with a hole, rays and rings after a result; gone after Clear, a new click and a tool switch', async () => {
   const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
   assert.ok(E.s.reachOn && E.s.result.reach, 'drawn');
   const veil = [...E.s.reach._items].find((l) => l.kind === 'polygon');
-  assert.ok(veil && veil.a.length === 4 && veil.o.pane === 'toolsReachPane', 'outer ring and three world copies of the lit ring');
-  assert.ok(veil.a[2].length > 1000 && Math.abs(veil.a[1][0][1] - veil.a[2][0][1] + 360) < 1e-9, 'copies 360 degrees apart');
+  assert.ok(veil && veil.a.length === 2 && veil.o.pane === 'toolsReachPane', 'outer ring and the lit ring of the one world copy in view (section 95)');
+  assert.ok(veil.a[1].length > 1000, 'the lit ring');
   const k = kinds(E);
-  assert.ok(k.polyline > 30 && k.label >= 3, JSON.stringify(k));
+  assert.ok(k.polyline > 30 && k.label >= 2, JSON.stringify(k));
   const rays = [...E.s.reach._items].filter((l) => l.kind === 'polyline' && !l.o.dashArray);
   assert.ok(rays.every((l) => l.o.pane === 'toolsReachPane' && l.a.length >= 2), 'every ray in the pane');
   E.q('[data-act="clear"]').dispatch('click');
@@ -536,10 +536,10 @@ test('the projection: a click superseded during its reach draws nothing; a unit 
   const E = makeEnv(); E.pick('exposure');
   E.clickAt(21.6655, -158.054); await E.settle();
   E.clickAt(21.269, -157.829); await E.settle(); await reachDrawn(E); await wait(50);
-  const veil = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.a.length === 4);
+  const veil = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.55);
   assert.equal(veil.length, 1, 'one projection');
   const light = [...E.s.reach._items].filter((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.25);
-  assert.ok(light.length === 0 || light.length === 3, 'small-island shadows: none, or one per world copy');
+  assert.ok(light.length === 0 || light.length === 1, 'small-island shadows: none, or one per world copy drawn (one here)');
   light.forEach((l) => assert.ok(l.o.fillOpacity < veil[0].o.fillOpacity, 'lighter than the veil'));
   assert.ok(Math.abs(E.s.result.origin.lat - 21.27) < 0.02, 'the second click\'s');
   const labels = () => [...E.s.reach._items].filter((l) => l.kind === 'label').map((l) => l.o.icon.html);
@@ -687,7 +687,7 @@ test('a new point drops the old spot\'s readout and its line at once', async () 
 
 test('the spot\'s copy follows the view (as the page\'s markers do): the fan, the window and a tapped readout\'s line', async () => {
   const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
-  const lng0 = E.s.fanLng, veil = () => [...E.s.reach._items].find((l) => l.kind === 'polygon' && l.a.length === 4);
+  const lng0 = E.s.fanLng, veil = () => [...E.s.reach._items].find((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.55);
   const v1 = veil();
   E.view.lng0 += 100; E.map.fire('moveend');
   assert.ok(E.s.fanLng === lng0 && veil() === v1, 'a pan inside the world changes nothing');
@@ -714,8 +714,8 @@ test('the spot\'s copy follows the view (as the page\'s markers do): the fan, th
   assert.equal(E.s.fanLng, lng0 + 720);
   assert.ok(Math.abs(E.fan().a[1] - (lng0 + 720)) < 1e-9, 'the fan there');
   const outer = veil().a[0];
-  assert.ok(Math.abs(outer[0][1] - (lng0 + 180)) < 1e-9 && Math.abs(outer[1][1] - (lng0 + 1260)) < 1e-9, 'the window round it');
-  assert.ok(veil().a.slice(1).every((h, j) => h.every((p) => Math.abs(p[1] - (E.s.fanLng + (j - 1) * 360)) < 180)), 'its holes round the fan\'s copy too');
+  assert.ok(Math.abs(outer[0][1] - (lng0 + 540)) < 1e-9 && Math.abs(outer[1][1] - (lng0 + 900)) < 1e-9, 'the window round it');
+  assert.ok(veil().a.length === 2 && veil().a[1].every((p) => Math.abs(p[1] - E.s.fanLng) < 180), 'its hole round the fan\'s copy too');
   const end = cursorLineOf(E).a.slice(-1)[0];
   assert.ok(E.s.readout && E.s.pinned && Math.abs(end[1] - 560) < 1e-6 && Math.abs(end[0] - 22.5) < 1e-6, 'the tapped readout\'s line in that world too');
 });
@@ -723,7 +723,8 @@ test('the spot\'s copy follows the view (as the page\'s markers do): the fan, th
 // ---- G21 fix round: what is drawn, the bar, Lock and touch ----
 const dist = (A, o, p) => A.distanceKm(o, { lat: p[0], lng: p[1] });
 test('the projection is on the map while a result stands, on its own canvas; the owner\'s style; holes, rays, arcs and labels where they belong (G21 A-1)', async () => {
-  const E = makeEnv({ canvas: true }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const E = makeEnv({ canvas: true, scale: 2 }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);   // 500 degrees across: all three copies
+  assert.equal(E.s.reachKey, '-360,0,360|100');
   const A = E.A._internals, res = E.s.result, o = res.origin, shift = E.s.fanLng - o.lng, items = [...E.s.reach._items];
   assert.ok(E.layers.has(E.s.reach), 'the group is on the map');
   const pane = E.map.getPane('toolsReachPane');
@@ -787,6 +788,53 @@ test('the projection is on the map while a result stands, on its own canvas; the
   });
   E.q('[data-act="clear"]').dispatch('click');
   assert.ok(!E.layers.has(E.s.reach) && !E.s.reachOn, 'off the map after Clear');
+});
+
+test('section 95 (G62 finding 3): only the world copies near the view are drawn; the points spaced by the zoom; a pan, zoom or resize that changes either redraws', async () => {
+  const E = makeEnv(); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
+  const A = E.A._internals, res = E.s.result, o = res.origin, f = E.s.fanLng, shift = f - o.lng;
+  const items = () => [...E.s.reach._items], veil = () => items().find((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.55);
+  const rays = () => items().filter((l) => l.kind === 'polyline' && !l.o.dashArray);
+  const strips = () => items().filter((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.25);
+  const wide = (gap) => A.litRing(res, gap, res.reachWide);
+  const check = (ks, gap, why) => {
+    assert.equal(E.s.reachKey, ks.join(',') + '|' + gap, why);
+    const v = veil(), w = wide(gap);
+    assert.equal(v.a.length, 1 + ks.length, why + ': a hole per copy');
+    ks.forEach((k, j) => assert.ok(v.a[j + 1].length === w.length && v.a[j + 1].every((p, n) => Math.abs(p[1] - (w[n].lng + shift + k)) < 1e-9), why + ': hole ' + k));
+    assert.deepEqual(v.a[0].map((p) => p[1]), [f + ks[0] - 180, f + ks[ks.length - 1] + 180, f + ks[ks.length - 1] + 180, f + ks[0] - 180], why + ': the box');
+    const want = []; for (let i = 5; i < 720; i += 10) if (res.reach[i] >= 300) want.push(i);
+    assert.equal(rays().length, ks.length * want.length, why + ': rays per copy');
+    ks.forEach((k, j) => want.forEach((i, n) => assert.equal(rays()[j * want.length + n].a.length, A.rayPath(o, A.rayBearing(i), res.reach[i], gap, 25).length, why + ': ray pieces')));
+    const sp = A.stripPolygons(res, res.reachWide, gap);
+    assert.equal(strips().length, sp.length ? ks.length : 0, why + ': strips per copy');
+    strips().forEach((s) => assert.ok(s.a.length === sp.length && s.a.every((poly, m) => poly[0].length === sp[m].length), why + ': strip pieces'));
+  };
+  check([0], 100, 'the default view (2.5 degrees, zoom 8)');
+  const v0 = veil();
+  E.view.lng0 = f + 30; E.map.fire('moveend');
+  assert.ok(veil() === v0, 'a pan that keeps the copies and the band: no redraw');
+  E.view.lng0 = f + 176; E.map.fire('moveend');                                // its right edge 1.5 degrees from the copy's edge: a view's width away
+  check([0, 360], 100, 'near the copy\'s edge');
+  E.view.lng0 = f - 178.5; E.map.fire('moveend');
+  check([-360, 0], 100, 'near its west edge');
+  E.view.lng0 = f - 1.25; E.map.fire('moveend');
+  check([0], 100, 'back at the spot');
+  E.view.zoom = 4; E.map.fire('zoomend'); E.map.fire('moveend');
+  check([0], 100, 'zoom 4: 100 km');
+  E.view.zoom = 3.9; E.map.fire('zoomend'); E.map.fire('moveend');
+  check([0], 200, 'zoom 3.9: 200 km');
+  E.view.zoom = 3; E.map.fire('zoomend'); E.map.fire('moveend');
+  check([0], 200, 'zoom 3');
+  E.view.zoom = 2.6; E.view.scale = 5; E.view.lng0 = f - 100; E.map.fire('zoomend'); E.map.fire('moveend');   // 200 degrees across
+  check([-360, 0, 360], 400, 'zoom 2.6, a world view: three copies, 400 km');
+  E.view.zoom = 8; E.view.scale = 400; E.view.lng0 = f - 1.25; E.map.fire('zoomend'); E.map.fire('moveend');
+  check([0], 100, 'back in');
+  // a wider map (Leaflet's own resize event does not always fire): the resize watcher redraws when the copies change
+  E.view.lng0 = f + 174; E.map.fire('moveend');                                // 1000 px: 2.5 degrees, 2.5 from the copy's edge
+  check([0], 100, 'near the edge, before the resize');
+  E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 1800 }); E.win.fire('resize'); await wait(200);
+  check([0, 360], 100, 'after it: the next copy');
 });
 
 test('the fold button folds the bar to its title (a readout still shows under it, "Computing…" while busy); phones drop the hints (G21 B-6)', async () => {
@@ -949,7 +997,7 @@ test('a details line taller than its three lines is left out of the height the p
 
 test('the window\'s canvas: padding capped by its size in pixels, freed when the tool closes; the readout\'s line stays on top of a redraw (R1-2, R1-3)', async () => {
   const E = makeEnv({ canvas: true }); E.pick('exposure'); E.clickAt(21.6655, -158.054); await E.settle(); await reachDrawn(E);
-  const veil = () => [...E.s.reach._items].find((l) => l.kind === 'polygon' && l.a.length === 4), rend = veil().o.renderer;
+  const veil = () => [...E.s.reach._items].find((l) => l.kind === 'polygon' && l.o.fillOpacity === 0.55), rend = veil().o.renderer;
   assert.equal(rend.options.padding, 0.5, 'a 1000 x 700 map: the full half map');
   E.win.devicePixelRatio = 2; E.mapEl.rect = Object.assign({}, E.mapEl.rect, { width: 2000, height: 1400 });
   E.unitSel.value = 'Metric'; E.unitSel.dispatch('change');                 // a redraw at the new size

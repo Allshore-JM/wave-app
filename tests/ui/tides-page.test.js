@@ -48,7 +48,7 @@ function boot(o = {}) {
   // a flat stand-in for the projection: at zoom 9 one degree is pxPerDeg px, doubling per zoom (container = the same, no pan)
   const pxPerDeg = o.pxPerDeg || 1000, scale = () => pxPerDeg * Math.pow(2, zoom - 9);
   const container = { focused: 0, focus() { this.focused++; } };
-  const liveLayer = { items: [], clearLayers() { this.items = []; } };
+  const liveLayer = { items: [], clearLayers() { this.items = []; }, removeLayer(m) { this.items = this.items.filter((x) => x !== m); } };
   const map = { hasLayer: (l) => (l === tideLayer && on) || (l === liveLayer && o.liveOn !== false), getZoom: () => zoom,
     latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),   // Leaflet's: x from -180
@@ -83,7 +83,7 @@ function boot(o = {}) {
   const renderSignature = (vis) => vis.map((c) => c.s.id + '@' + c.lng).join(',');
   const saves = [];
   const liveOpened = [];
-  const code = 'let liveStationsData = [], lastLiveSig = null, liveDrawn = [], activeLiveBuoyId = null;\n' + STATE + NOTE + LIVE + BLOCK +
+  const code = 'let liveStationsData = [], lastLiveSig = null, liveDrawn = [], liveByKey = new Map(), activeLiveBuoyId = null;\n' + STATE + NOTE + LIVE + BLOCK +
     '\nreturn { get tideNoteText() { return tideNoteText; }, get tideStationsData() { return tideStationsData; }, get activeTideId() { return activeTideId; }, ' +
     'rebuildTideMarkers, loadTideStations, openTideStation, closeTideWindow, tideWindowClosed, tideZone, paintTideNote, paintLiveNote, TIDE_CREDIT, ' +
     'get tideView() { return tideView; }, setLive(t) { liveNoteText = t; }, rebuildLiveBuoyMarkers, set liveData(d) { liveStationsData = d; } };';
@@ -95,7 +95,7 @@ function boot(o = {}) {
     window, document, fetch, map, L, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => measures.push(1), () => (o.unit || 'US'), (iso, tz) => tz + '!', () => Promise.resolve(),
     class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11,
-    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => liveOpened.push(st.id), windDrawn);
+    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => { liveOpened.push(st.id); Object.defineProperty(liveOpened, 'last', { value: st, configurable: true }); }, windDrawn);
   api.container = container;
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
     document, mkEl, liveLayer, liveOpened, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
@@ -577,6 +577,50 @@ test('fresh check F-4: Retry\'s answer takes the focus only from the page\'s bod
   assert.equal(b.document.activeElement, b.byId.twHeader, 'from inside the window too');
 });
 
+test('section 95 (G62 finding 5): live dots that stay keep their markers; only the dots that change are made again or removed', () => {
+  const b = boot({ zoom: 9, size: { x: 1e9, y: 1e9 }, list: { fields: FIELDS, stations: [] }, copies: [0, 360] });
+  const A = { id: 'A', lat: 30, lon: -150, source: 'NDBC' }, B = { id: 'B', lat: 31, lon: -151, source: 'NDBC' }, C = { id: 'C', lat: 32, lon: -152, source: 'CDIP' };
+  b.api.liveData = [A, B];
+  b.api.rebuildLiveBuoyMarkers(true);
+  const at = (id, off) => b.liveLayer.items.filter((m) => m.opts.title.indexOf('Live ' + id + ' ') === 0 && m.ll[1] === { A: -150, B: -151, C: -152, D: -153 }[id] + off);
+  assert.equal(b.liveLayer.items.length, 4, 'two buoys in two world copies');
+  const a0 = at('A', 0)[0], a1 = at('A', 360)[0], b0 = at('B', 0)[0];
+  b.api.liveData = [A, B, C];                                       // a pan brings C in: A and B keep their markers
+  b.api.rebuildLiveBuoyMarkers(false);
+  assert.equal(b.liveLayer.items.length, 6);
+  assert.equal(at('A', 0)[0], a0); assert.equal(at('A', 360)[0], a1); assert.equal(at('B', 0)[0], b0);
+  assert.equal(at('C', 0).length, 1);
+  const A2 = Object.assign({}, A, { name: 'x' });
+  b.api.liveData = [A2, C];                                         // B leaves; A is a new record of the same buoy
+  b.api.rebuildLiveBuoyMarkers(false);
+  assert.equal(b.liveLayer.items.length, 4, 'the dots no longer drawn are removed');
+  assert.equal(at('B', 0).length, 0); assert.equal(at('A', 0)[0], a0, 'kept');
+  a0.fire('click', { latlng: a0.getLatLng(), originalEvent: {} });
+  assert.deepEqual(b.liveOpened, ['A']); assert.equal(b.liveOpened.last, A2, 'a kept dot opens the newest record');
+  const a0b = at('A', 0)[0], a1b = at('A', 360)[0];
+  assert.notEqual(a0b, a0, 'opened: its highlight is a new dot'); assert.equal(a0b.opts.icon, 'LIVE-ACTIVE');
+  assert.ok(!b.liveLayer.items.includes(a0) && !b.liveLayer.items.includes(a1), 'the old dots are off the layer');
+  b.api.liveData = [Object.assign({}, A, { lat: 30.2 }), C];        // A moved: a new dot in each copy, C kept
+  const c0 = at('C', 0)[0];
+  b.api.rebuildLiveBuoyMarkers(true);
+  assert.equal(b.liveLayer.items.length, 4);
+  assert.notEqual(at('A', 0)[0], a0b); assert.notEqual(at('A', 360)[0], a1b); assert.equal(at('C', 0)[0], c0);
+  b.api.liveData = [Object.assign({}, A, { lat: 30.2, source: 'CDIP' }), C];   // another name: a new dot
+  const a2 = at('A', 0)[0];
+  b.api.rebuildLiveBuoyMarkers(true);                                   // a new list: the page forces the rebuild
+  assert.notEqual(b.liveLayer.items.find((m) => m.opts.title === 'Live A (CDIP)' && m.ll[1] === -150), undefined);
+  assert.ok(!b.liveLayer.items.includes(a2));
+  const a3 = b.liveLayer.items.find((m) => m.opts.title === 'Live A (CDIP)' && m.ll[1] === -150);
+  b.api.liveData = [Object.assign({}, A, { lat: 30.2, lon: -150.1, source: 'CDIP' }), C];   // moved east-west only: a new dot
+  b.api.rebuildLiveBuoyMarkers(true);
+  assert.ok(!b.liveLayer.items.includes(a3)); assert.ok(b.liveLayer.items.some((m) => m.opts.title === 'Live A (CDIP)' && m.ll[1] === -150.1));
+  b.api.liveData = [A, A];                                          // a repeated id: both drawn, none lost on the next rebuild
+  b.api.rebuildLiveBuoyMarkers(true);
+  assert.equal(b.liveLayer.items.length, 4);
+  b.api.rebuildLiveBuoyMarkers(true);
+  assert.equal(b.liveLayer.items.length, 4);
+});
+
 test('fresh check T16 / T17 / T27: live markers: Tab stops follow the view without a rebuild, the focus survives a rebuild, no pan on focus, Enter opens', async () => {
   const size = { x: 300, y: 1e9 };
   const b = boot({ zoom: 9, size, list: { fields: FIELDS, stations: [] } });
@@ -590,6 +634,9 @@ test('fresh check T16 / T17 / T27: live markers: Tab stops follow the view witho
   byId('IN').el.focus();
   const old = byId('IN').el;
   b.api.rebuildLiveBuoyMarkers(true);
+  assert.equal(byId('IN').el, old, 'a rebuild keeps a dot that did not change (G62 finding 5)');
+  b.api.liveData = [{ id: 'IN', lat: 30.01, lon: -179.85, source: 'NDBC' }, { id: 'OUT', lat: 30, lon: -179.5, source: 'NDBC' }];
+  b.api.rebuildLiveBuoyMarkers(true);                                   // IN moved: a new dot
   assert.notEqual(byId('IN').el, old); assert.equal(b.document.activeElement, byId('IN').el, 'the focus on the new element (T17)');
   byId('IN').el.keys.keydown({ key: 'Enter', preventDefault() {} });
   assert.deepEqual(b.liveOpened, ['IN']);

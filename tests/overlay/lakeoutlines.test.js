@@ -148,25 +148,25 @@ test('the line: the coastline\'s own edge pass over the lake mask, under wind on
 test('redraws: the set arriving redraws the outlined tiles from zoom 4, its removal redraws only the tiles that had a mask; a chunk landing redraws a stand-in tile only when its mask changed', () => {
   const l = layer('wind'), st = store(SET);
   const tiles = { lake: LAKE_T, far: tileOf(40, 40, 6), low: tileOf(10.8, 11, 3) };
-  for (const n in tiles) l._tiles[key(tiles[n])] = { el: canvas(), coords: tiles[n] };
+  for (const n in tiles) { const el = canvas(); el._ovGen = l._gen; l._tiles[key(tiles[n])] = { el, coords: tiles[n] }; }
   const drawn = []; const draw0 = l._draw; l._draw = function (el, c) { drawn.push(key(c)); return draw0.call(this, el, c); };
-  l.setLakeOutlineCoast(st);
+  l.setLakeOutlineCoast(st); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.deepEqual(drawn.sort(), [key(tiles.far), key(tiles.lake)].sort(), 'zoom 4+ tiles redrawn; zoom 3 not');
   drawn.length = 0;
-  l.setLakeOutlineCoast(null);
+  l.setLakeOutlineCoast(null); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.deepEqual(drawn, [key(tiles.lake)], 'only the tile that had a mask');
   assert.equal(l._tiles[key(tiles.lake)].el._ovLo, null);
   // a stand-in (complete: false) tile: re-evaluated when the store moves on
   let complete = false;
   const st2 = store(SET, { setsFor: () => ({ sets: [SET], complete }) });
-  l.setLakeOutlineCoast(st2);
+  l.setLakeOutlineCoast(st2); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   const el = l._tiles[key(tiles.lake)].el;
   assert.equal(el._ovLoFinal, false);
   drawn.length = 0;
-  st2.rev++; st2.onChange();
+  st2.rev++; st2.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.deepEqual(drawn, [], 'the same stand-in mask: no redraw');
   complete = true; st2.setsFor = () => ({ sets: [I.decodeCoast(encodeCoast([[sq(10, 10, 12, 11.6)]], 5))], complete: true });
-  st2.rev++; st2.onChange();
+  st2.rev++; st2.onChange(); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.deepEqual(drawn, [key(tiles.lake)], 'the full-resolution mask differs: redrawn'); assert.equal(el._ovLoFinal, true);
   // the cells the tiles need: only outlined tiles at a tier-1 zoom
   const st3 = store(SET, { tier1Zoom: (z) => z >= 7 });
@@ -176,19 +176,20 @@ test('redraws: the set arriving redraws the outlined tiles from zoom 4, its remo
   assert.deepEqual(Object.keys(st3.onNeeded()), I.coastCellsForTile(t7, 5));
   l.setFrame(FR, GRID, 'hs', HS, I.buildLut('hs', HS.legend), { step: 3 });
   assert.deepEqual(st3.onNeeded(), {}, 'wave height: none');
+  l._cancelStale();
 });
 
 test('V7-5: the set taken away under another field (wave height, SST): every tile lets its mask go, none is redrawn; under wind the masked ones are redrawn', () => {
   const l = layer('wind'), st = store(SET);
   l._tiles[key(LAKE_T)] = { el: canvas(), coords: LAKE_T };
-  l.setLakeOutlineCoast(st);
+  l.setLakeOutlineCoast(st); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   const el = l._tiles[key(LAKE_T)].el;
   assert.ok(el._ovLo, 'a mask under wind');
   l.setFrame(FR, GRID, 'hs', HS, I.buildLut('hs', HS.legend), { step: 3 });
   assert.ok(el._ovLo, 'the switch to wave height alone keeps it until the set is taken away');
   assert.ok(el._ovLoEdgesOf === el._ovLo && el._ovLoEdges, 'the edge cache holds the mask');
   const drawn = []; const draw0 = l._draw; l._draw = function (e, c) { drawn.push(key(c)); return draw0.call(this, e, c); };
-  l.setLakeOutlineCoast(null);
+  l.setLakeOutlineCoast(null); l._clock = () => 0; l._cancelStale(); l._drawStale(false);
   assert.equal(el._ovLo, null, 'the mask let go'); assert.equal(el._ovLoKey, null);
   assert.equal(el._ovLoEdges, null, 'the edge list too'); assert.equal(el._ovLoEdgesOf, null, 'and the edge cache’s mask (G34 F-A3)');
   assert.deepEqual(drawn, [], 'wave height draws no lake line: nothing to redraw');

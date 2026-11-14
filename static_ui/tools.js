@@ -1444,6 +1444,28 @@
     function fanR() { return s.compass ? COMPASS_R : defaultRadius(); }
     function ext(a, b) { var o = {}, k; for (k in a) o[k] = a[k]; for (k in b) o[k] = b[k]; return o; }
     function clearReach() { reachLayer.clearLayers(); if (s.reachOn) { map.removeLayer(reachLayer); s.reachOn = false; } }
+    // The world copies of the window to draw: those meeting the view widened by its own width on each side, so a short
+    // pan or a zoom out by a step stays covered until the moveend redraw (section 95, G62 finding 3: three copies of a
+    // veil of up to 100,000 points were projected on every zoom end, two of them far off the map). Copy k spans the
+    // fan's longitude + k, +- 180 degrees. A view that cannot be measured gets all three.
+    function reachCopies() {
+      var all = [-360, 0, 360];
+      try {
+        var z = map.getSize(), a = map.containerPointToLatLng([0, z.y / 2]), b = map.containerPointToLatLng([z.x, z.y / 2]);
+        var w = b.lng - a.lng;
+        if (!(w > 0) || !isFinite(w)) return all;
+        var lo = a.lng - w, hi = b.lng + w;
+        var ks = all.filter(function (k) { return s.fanLng + k + 180 > lo && s.fanLng + k - 180 < hi; });
+        return ks.length ? ks : [0];
+      } catch (e) { return all; }
+    }
+    // The spacing of the points along the veil's sides and the rays by the zoom: about 10 px a piece (section 95, G62
+    // finding 3: 100 km is 2.5 px at zoom 2). Whole-zoom bands, so a zoom redraws only when it crosses one.
+    function reachGapKm() {
+      var z = typeof map.getZoom === 'function' ? Math.floor(map.getZoom()) : NaN;
+      return !isFinite(z) || z >= 4 ? 100 : z >= 3 ? 200 : 400;
+    }
+    function reachKey() { return reachCopies().join(',') + '|' + reachGapKm(); }
     // The window on the map, in three world copies round the fan's: a veil over the water the spot cannot see (the
     // world with the lit ring cut out), a ray every 5 degrees where it runs some way, and range rings drawn as arcs inside
     // the window with their labels on them (owner, G21).
@@ -1452,24 +1474,26 @@
       var res = s.result; if (!res || !res.reach) return;
       if (reachRenderer) reachRenderer.options.padding = reachPadding();    // the map's size now
       var st = REACH_STYLE, shift = s.fanLng - res.origin.lng, opt = reachOpt({});
+      var copies = reachCopies(), gap = reachGapKm(); s.reachKey = copies.join(',') + '|' + gap;
       // the full veil outside the window with small islands' shadows bridged; those shadows get a lighter veil
-      var bridged = res.reachWide || smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), wide = litRing(res, 100, bridged);
+      var bridged = res.reachWide || smallShadowReach(res.reach, ISLAND_RAYS, NEAR_KM), wide = litRing(res, gap, bridged);
       var u = unit(), rings = ringsFor(u, ringReachKm(res)), holes = [];
       var arcs = rings.map(function (rg) { return { rg: rg, arcs: ringArcs(res, rg.km), labels: ringLabelBearings(bridged, rg.km) }; });
       var at = function (k) { return function (q) { return [q.lat, q.lng + shift + k]; }; };
-      [-360, 0, 360].forEach(function (k) { holes.push(wide.map(at(k))); });
-      var west = s.fanLng - 540, east = s.fanLng + 540, outer = [[85, west], [85, east], [-85, east], [-85, west]];
+      copies.forEach(function (k) { holes.push(wide.map(at(k))); });
+      var west = s.fanLng + copies[0] - 180, east = s.fanLng + copies[copies.length - 1] + 180;
+      var outer = [[85, west], [85, east], [-85, east], [-85, west]];
       L.polygon([outer].concat(holes), ext({ stroke: false, fillColor: st.veil, fillOpacity: st.veilOpacity }, opt)).addTo(reachLayer);
-      var strips = stripPolygons(res, bridged, 100);
+      var strips = stripPolygons(res, bridged, gap);
       if (strips.length) {                                                  // one layer per world copy, a polygon per strip
-        [-360, 0, 360].forEach(function (k) {
+        copies.forEach(function (k) {
           L.polygon(strips.map(function (sp) { return [sp.map(at(k))]; }), ext({ stroke: false, fillColor: st.veil, fillOpacity: st.smallVeilOpacity }, opt)).addTo(reachLayer);
         });
       }
-      [-360, 0, 360].forEach(function (k) {
+      copies.forEach(function (k) {
         for (var i = Math.floor(st.rayEvery / 2); i < res.reach.length; i += st.rayEvery) {
           if (res.reach[i] < st.rayMinKm) continue;
-          var line = rayPath(res.origin, rayBearing(i), res.reach[i], 100, 25).map(function (q) { return [q.lat, q.lng + shift + k]; });
+          var line = rayPath(res.origin, rayBearing(i), res.reach[i], gap, 25).map(function (q) { return [q.lat, q.lng + shift + k]; });
           L.polyline(line, ext({ color: st.ray, opacity: st.rayOpacity, weight: st.rayWeight }, opt)).addTo(reachLayer);
         }
         arcs.forEach(function (a) {
@@ -1629,6 +1653,7 @@
       if (s.tool !== 'exposure' || !s.result || !s.fan || typeof map.getCenter !== 'function') return;
       var lng = map.getCenter().lng, k = Math.round((lng - s.fanLng) / 360) * 360;
       if (k) { s.fanLng += k; drawFan(); if (s.reachOn) drawReach(); }
+      else if (s.reachOn && reachKey() !== s.reachKey) drawReach();       // another copy in view, or another zoom band
       if (s.readout && s.pinned && s.readoutAt) {
         var j = Math.round((lng - s.readoutAt.lng) / 360) * 360;
         if (j) showReadout({ lat: s.readoutAt.lat, lng: s.readoutAt.lng + j }, true);
@@ -1675,6 +1700,7 @@
           if (ox >= 0 && oy >= 0 && ox <= o.x && oy <= o.y && !s.compass) placeCurrentFan();
           else if (s.radius !== fanR()) { s.radius = fanR(); drawFan(); }
           s.size = z;
+          if (s.reachOn && reachKey() !== s.reachKey) drawReach();           // a wider map can need another copy
         }
         if (s.tool) render(); else layout();                                // compact or not follows the new size (R1-6)
       }, 150);

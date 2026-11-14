@@ -2392,6 +2392,98 @@
   var STALE_TILE_MS = 3;                                     // idle time one buffer tile needs (about 2 ms measured)
   var STALE_MAX_MS = 500;                                    // a buffer tile is never further behind than this while the page is busy
   function tileInRange(c, r) { return c.z === r.z && c.x >= r.x0 && c.x <= r.x1 && c.y >= r.y0 && c.y <= r.y1; }
+  // The sliced tile drawer (plan section 95, G62): the wave, satellite and radar layers drew every new tile of a zoom in
+  // Leaflet's one task (30-84 tiles, up to ~300 ms at 1920x1080), and a timed-out idle callback drew every waiting buffer
+  // tile in one task. Now a new tile is drawn later, the tiles in view first, in slices of SLICE_MS at most with a frame
+  // painted between them (the bathymetry layer's rule, 2.27.5); the tile tells the map it is ready after its first draw
+  // (Leaflet keeps the old zoom's tiles until then: no blank map), or after TILE_DONE_MS at most.
+  var SLICE_MS = 12;                                        // drawing in one task at most when the page is busy
+  var SLICE_FALLBACK_MS = 100;                              // the next slice waits for the next frame, or this long when none comes
+  var TILE_DONE_MS = 2000;                                  // a new tile reports ready after its first draw, or after this at most
+  var TILE_COST_MS = 3;                                     // a tile's first drawing-time guess (then the running average)
+  function tileReady(el) {
+    var done = el && el._tDone;
+    if (!done) return;
+    el._tDone = null;
+    clearTimeout(el._tDoneTimer); el._tDoneTimer = null;
+    done(null, el);
+  }
+  // A new tile: drawn at once when the layer has nothing to draw (a clear, no cost), else queued for the sliced drawer.
+  function slicedCreateTile(coords, done) {
+    var el = document.createElement('canvas'); el.width = TILE; el.height = TILE; el._ovGen = -1;
+    if (!this._staleOk()) { this._draw(el, coords); setTimeout(function () { done(null, el); }, 0); return el; }
+    el._tDone = done;
+    el._tDoneTimer = setTimeout(function () { tileReady(el); }, TILE_DONE_MS);
+    this._queueStale();
+    return el;
+  }
+  // Draw the tiles that are behind (a new frame or step, a new tile): those in view first, then the buffer, until the slice
+  // is used up; then the next slice after the next frame (busy page) or in idle time. inView (the page's 'move': a buffer
+  // tile coming into view): only tiles in view, one slice, the rest after the next frame.
+  function slicedDrawStale(inView, deadline) {
+    if (!this._staleOk()) return;
+    var range = viewRangeOf(this), left = false, drew = 0;
+    var idle = !inView && !!(deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout);
+    var clock = this._clock || nowMs, t0 = clock(), cost = this._drawMs || TILE_COST_MS;
+    for (var pass = 0; pass < (inView ? 1 : 2) && !left; pass++) {
+      for (var k in this._tiles) {
+        var t = this._tiles[k];
+        if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
+        var seen = !range || tileInRange(t.coords, range);
+        if (pass === 0 ? !seen : seen) continue;
+        if (idle ? deadline.timeRemaining() < (drew ? cost : Math.min(cost, SLICE_MS))
+          : drew && clock() - t0 + cost > SLICE_MS) { left = true; break; }
+        var a = clock();
+        this._draw(t.el, t.coords); drew++;
+        cost = this._drawMs = (this._drawMs || TILE_COST_MS) * 0.8 + (clock() - a) * 0.2;
+      }
+    }
+    if (left) this._queueStale(!idle);
+    else if (!inView && this._staleNotify) { this._staleNotify = false; if (this.onRedraw) this.onRedraw(); }
+  }
+  // Tiles to draw again (coast data landed, a mask changed): marked behind and drawn by the sliced drawer, the tiles in
+  // view first, never all in one task (G62 finding 7). pick(tile) chooses them (none = every tile); notify: the layer's
+  // onRedraw is called once they are all drawn. True when anything was marked.
+  function slicedRestale(pick, notify) {
+    if (!this._staleOk()) return false;
+    var any = false;
+    for (var k in this._tiles) {
+      var t = this._tiles[k];
+      if (!t.el || !t.coords || (pick && !pick(t))) continue;
+      t.el._ovGen = -1; any = true;
+    }
+    if (any) { if (notify) this._staleNotify = true; this._queueStale(true); }
+    return any;
+  }
+  // soon: the page is busy, so the next slice comes after the next frame (a task posted from the animation frame), with a
+  // fallback timer when no frame comes; else in idle time (STALE_MAX_MS at most).
+  function slicedQueueStale(soon) {
+    var self = this;
+    if (this._staleQ) return;
+    var run = function (dl) { self._staleQ = null; self._drawStale(false, dl); };
+    if (soon && typeof requestAnimationFrame === 'function') {
+      var q = this._staleQ = {};
+      var after = function () {
+        if (self._staleQ !== q || q.timer !== undefined) return;
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(q.raf);
+        clearTimeout(q.fall);
+        q.timer = setTimeout(run, 0);
+      };
+      q.raf = requestAnimationFrame(after); q.fall = setTimeout(after, SLICE_FALLBACK_MS);
+      return;
+    }
+    this._staleQ = soon || typeof requestIdleCallback !== 'function' ? { timer: setTimeout(run, 0) }
+      : { idle: requestIdleCallback(run, { timeout: STALE_MAX_MS }) };
+  }
+  function slicedCancelStale() {
+    var q = this._staleQ;
+    if (!q) return;
+    this._staleQ = null;
+    if (q.raf !== undefined && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(q.raf);
+    if (q.fall !== undefined) clearTimeout(q.fall);
+    if (q.timer !== undefined) clearTimeout(q.timer);
+    if (q.idle !== undefined && typeof cancelIdleCallback === 'function') cancelIdleCallback(q.idle);
+  }
   var ModelGridLayer = L.GridLayer.extend({
     initialize: function (opts) {
       L.GridLayer.prototype.initialize.call(this, { pane: 'modelPane', tileSize: TILE, updateWhenZooming: false,
@@ -2496,15 +2588,8 @@
     },
     // Redraw the tiles that show lake water (all: every tile in the lakes' box, for a coast set that just arrived).
     _redrawLake: function (all) {
-      if (!this._frame) return;
-      var drawn = false;
-      for (var k in this._tiles) {
-        var t = this._tiles[k];
-        if (!t.el || !t.coords) continue;
-        if (all ? !lakeBoxHits(t.coords, this._lakeBox) : !t.el._ovLake) continue;
-        this._draw(t.el, t.coords); drawn = true;
-      }
-      if (drawn && this.onRedraw) this.onRedraw();
+      var self = this;
+      this._restale(function (t) { return all ? lakeBoxHits(t.coords, self._lakeBox) : !!t.el._ovLake; }, true);
     },
     _redrawLakeIncomplete: function () {
       if (!this._lakeCoast || !this._lakeMask || !this._frame) return;
@@ -2513,9 +2598,9 @@
         var t = this._tiles[k];
         if (!t.el || !t.coords || t.el._ovLakeFinal !== false) continue;
         var before = t.el._ovLake, after = this._lakeFor(t.el, t.coords);
-        if (after !== before) { this._draw(t.el, t.coords); changed = true; }
+        if (after !== before) { t.el._ovGen = -1; changed = true; }
       }
-      if (changed && this.onRedraw) this.onRedraw();
+      if (changed) { this._staleNotify = true; this._queueStale(true); }
     },
     _lakeCellsNeeded: function () {
       var st = this._lakeCoast, need = {};
@@ -2566,7 +2651,7 @@
       for (var k in this._tiles) {
         var t = this._tiles[k], el = t.el;
         if (!el || !t.coords || this._allLand(el)) continue;
-        if (st.tierFor(t.coords) !== el._ovSrcTier || st.landedAfter(t.coords, el._ovSrcTier, el._ovSrcRev)) this._draw(el, t.coords);
+        if (st.tierFor(t.coords) !== el._ovSrcTier || st.landedAfter(t.coords, el._ovSrcTier, el._ovSrcRev)) { el._ovGen = -1; this._queueStale(true); }
       }
     },
     _srcNeeded: function () {
@@ -2589,8 +2674,7 @@
         this._coast.onChange = this._onCoast;
         this._coast.onNeeded = function () { return self._cellsNeeded(); };
       }
-      this._redraw();
-      if (this.onRedraw) this.onRedraw();
+      if (!this._restale(null, true) && this.onRedraw) this.onRedraw();
     },
     // The lake-outline set (plan section 51), or null: from now on the tiles of an outlined field (wind) carry the lakes'
     // shores as lines, drawn like the coastline. Without it the tiles that had lines are redrawn without them.
@@ -2610,12 +2694,12 @@
         if (!this._lakeOut) {                                  // detached: every tile lets its mask go (V7-5), whatever field is shown
           var had = !!t.el._ovLo;
           t.el._ovLo = null; t.el._ovLoKey = null; t.el._ovLoEdges = null; t.el._ovLoEdgesOf = null;   // the edge cache holds the mask too (G34 F-A3)
-          if (had && drawn) this._draw(t.el, t.coords);
+          if (had && drawn) { t.el._ovGen = -1; this._queueStale(true); }
           continue;
         }
         if (!drawn || t.coords.z < LAKE_OUTLINE_MIN_ZOOM) continue;
         t.el._ovLoKey = null;
-        this._draw(t.el, t.coords);
+        t.el._ovGen = -1; this._queueStale(true);
       }
     },
     // The tile's lake water (0..255 per pixel) from the lake-outline set: null below LAKE_OUTLINE_MIN_ZOOM and where no lake
@@ -2639,7 +2723,7 @@
         var t = this._tiles[k];
         if (!t.el || !t.coords || t.el._ovLoFinal !== false) continue;
         var before = t.el._ovLo, after = this._lakeOutFor(t.el, t.coords);
-        if (after !== before) this._draw(t.el, t.coords);
+        if (after !== before) { t.el._ovGen = -1; this._queueStale(true); }
       }
     },
     _lakeOutCellsNeeded: function () {
@@ -2678,31 +2762,11 @@
     // Draw the tiles that still show an older frame: those in view at once (a drag that brings a buffer tile into
     // view: the page calls this on 'move'), the rest while the browser has idle time (requestIdleCallback where it
     // exists, else one task), coming back for the remainder.
-    _drawStale: function (inView, deadline) {
-      if (!this._frame) return;
-      var range = this._viewRange(), left = false;
-      for (var k in this._tiles) {
-        var t = this._tiles[k];
-        if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
-        if (inView) { if (range && !tileInRange(t.coords, range)) continue; }
-        else if (deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout && deadline.timeRemaining() < STALE_TILE_MS) { left = true; break; }
-        this._draw(t.el, t.coords);
-      }
-      if (left) this._queueStale();
-    },
-    _queueStale: function () {
-      var self = this;
-      if (this._staleQ) return;
-      var run = function (dl) { self._staleQ = null; self._drawStale(false, dl); };
-      this._staleQ = typeof requestIdleCallback === 'function' ? { idle: requestIdleCallback(run, { timeout: STALE_MAX_MS }) } : { timer: setTimeout(run, 0) };
-    },
-    _cancelStale: function () {
-      var q = this._staleQ;
-      if (!q) return;
-      this._staleQ = null;
-      if (q.timer !== undefined) clearTimeout(q.timer);
-      else if (typeof cancelIdleCallback === 'function') cancelIdleCallback(q.idle);
-    },
+    _staleOk: function () { return !!this._frame; },
+    _drawStale: slicedDrawStale,
+    _queueStale: slicedQueueStale,
+    _cancelStale: slicedCancelStale,
+    _restale: slicedRestale,
     // The tiles need land masks: clipped fields (hs, tp) and outlined ones (wind) once a coast store is set.
     _masked: function () { return !!(this._coast && (CLIP_FIELDS[this.field] || OUTLINE_FIELDS[this.field])); },
     // The tier-1 cells the tiles on the map need right now (the store drops queued downloads for others).
@@ -2727,9 +2791,9 @@
         var t = this._tiles[k];
         if (!t.el || !t.coords || t.el._ovLandFinal !== false) continue;
         var before = t.el._ovLand, after = this._landFor(t.el, t.coords);
-        if (after !== before) { this._draw(t.el, t.coords); changed = true; }
+        if (after !== before) { t.el._ovGen = -1; changed = true; }
       }
-      if (changed && this.onRedraw) this.onRedraw();                        // the animation's particles are gated by the masks
+      if (changed) { this._staleNotify = true; this._queueStale(true); }    // the animation's particles are gated by the masks
     },
     // The tile's land alpha, computed once per tile element (per zoom) and kept on it like _ovImg. A
     // stand-in that is still a stand-in after the store moved on is reused, not re-rasterised.
@@ -2766,12 +2830,7 @@
       if (lk > a) a = lk;
       return a >= LAND_READOUT ? v : null;
     },
-    createTile: function (coords, done) {
-      var el = document.createElement('canvas'); el.width = TILE; el.height = TILE;
-      this._draw(el, coords);
-      setTimeout(function () { done(null, el); }, 0);
-      return el;
-    },
+    createTile: slicedCreateTile,
     _value: function (code) { return this._lo + (code - 1) / 254 * (this._hi - this._lo); },
     // THE sampler (sampleRow): both the tile drawing and the readout go through here, and so do the
     // particle flow's node values.
@@ -2806,7 +2865,8 @@
       if (lake && this._lake) sampleLake(this._lake.frame, this._lake.grid, coords, 0, 0, 1, TILE, out, lake);
       return out;
     },
-    _draw: function (el, coords) {
+    _draw: function (el, coords) { this._drawTile(el, coords); tileReady(el); },
+    _drawTile: function (el, coords) {
       var ctx = el.getContext('2d');
       el._ovGen = this._gen;
       if (!this._frame) { ctx.clearRect(0, 0, TILE, TILE); return; }
@@ -3100,30 +3160,16 @@
       }
       if (later) this._queueStale();
     },
-    // The buffer tiles a generation behind (ModelGridLayer's rule, without its frame check).
-    _drawStale: function (inView, deadline) {
-      if (!this.store) return;
-      var range = viewRangeOf(this), left = false;
-      for (var k in this._tiles) {
-        var t = this._tiles[k];
-        if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
-        if (inView) { if (range && !tileInRange(t.coords, range)) continue; }
-        else if (deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout && deadline.timeRemaining() < STALE_TILE_MS) { left = true; break; }
-        this._draw(t.el, t.coords);
-      }
-      if (left) this._queueStale();
-    },
-    _queueStale: ModelGridLayer.prototype._queueStale,
-    _cancelStale: ModelGridLayer.prototype._cancelStale,
+    // The tiles a generation behind: the shared sliced drawer (the model layer's rule; ready without a frame).
+    _staleOk: function () { return !!this.store; },
+    _drawStale: slicedDrawStale,
+    _queueStale: slicedQueueStale,
+    _cancelStale: slicedCancelStale,
     onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
-    createTile: function (coords, done) {
-      var el = document.createElement('canvas'); el.width = TILE; el.height = TILE; el._ovSatN = 0;
-      this._draw(el, coords);
-      setTimeout(function () { done(null, el); }, 0);
-      return el;
-    },
+    createTile: function (coords, done) { var el = slicedCreateTile.call(this, coords, done); el._ovSatN = el._ovSatN || 0; return el; },
     _padPx: function (z) { return this.mode === 'arrows' ? 26 + SAT_ARROW_HEAD : satRadius(z) + 2; },
-    _draw: function (el, coords) {
+    _draw: function (el, coords) { this._drawTile(el, coords); tileReady(el); },
+    _drawTile: function (el, coords) {
       el._ovGen = this._gen;
       var sl = this._slice(), ctx;
       if (!sl) { if (el._ovSatN) { ctx = el.getContext('2d'); ctx.clearRect(0, 0, TILE, TILE); el._ovSatN = 0; } return; }   // empty -> empty touches nothing
@@ -3754,16 +3800,12 @@
     // The loop's step on the map; split: the tiles in view now, the buffer in idle time.
     setStep: function (i, playing, split) { this.idx = i; this.playing = !!playing; this._redraw(!!split); },
     _redraw: SatLayer.prototype._redraw,
-    _drawStale: SatLayer.prototype._drawStale,
-    _queueStale: ModelGridLayer.prototype._queueStale,
-    _cancelStale: ModelGridLayer.prototype._cancelStale,
+    _staleOk: function () { return !!this.store; },
+    _drawStale: slicedDrawStale,
+    _queueStale: slicedQueueStale,
+    _cancelStale: slicedCancelStale,
     onRemove: function (map) { this._cancelStale(); L.GridLayer.prototype.onRemove.call(this, map); },
-    createTile: function (coords, done) {
-      var el = document.createElement('canvas'); el.width = TILE; el.height = TILE;
-      this._draw(el, coords);
-      setTimeout(function () { done(null, el); }, 0);
-      return el;
-    },
+    createTile: slicedCreateTile,
     // Which region owns each pixel: the first in the priority order whose newest t0 covers it (never by box: the US box's no-coverage
     // strip must not hide the Caribbean's data). Kept with the tile until the coverage changes.
     _owners: function (el) {
@@ -3838,7 +3880,8 @@
       }
       return out;
     },
-    _draw: function (el, coords) {
+    _draw: function (el, coords) { this._drawTile(el, coords); tileReady(el); },
+    _drawTile: function (el, coords) {
       el._ovGen = this._gen;
       var st = this.store, ctx;
       if (!st || !st.pointer || this.idx < 0) {
@@ -8125,6 +8168,10 @@
     var self = this;
     if (!this.playing || gen !== this.playGen) return;
     if (this._painting) { this._paintWaiting = function () { self._tick(gen); }; return; }   // the last landing is not on screen yet
+    // A pan or a pinch in progress: the next step waits until it ends (G62: a step redraws every tile in range at once,
+    // and a pinch out widens the range to the buffer ring: 88-126 tiles, 0.1-0.5 s a step at 1920x1080). Never skipped,
+    // only held; GESTURE_HOLD_MS at most, so a lost end event cannot stop playback.
+    if (this._gesture && nowMs() - this._gesture < GESTURE_HOLD_MS) { this.timer = setTimeout(function () { self.timer = null; self._tick(gen); }, GESTURE_POLL_MS); return; }
     var un = function (j) { return self._isUnavailable(j); };
     var pending = this.target !== null && this.target !== this.frameIndex;
     var next = pending && !un(this.target) ? this.target                      // a seek or a slow frame: wait for it
@@ -8151,6 +8198,7 @@
   // older play (a pause + play, or a hide + show, while it was loading) or after a pause arms nothing, since clearing
   // the gate would drop the current play's waiting tick and leave playback stranded (G29 re-check R-1 / R-2). The gate
   // runs the waiter it holds; the waiter (a tick) checks its own generation.
+  var GESTURE_HOLD_MS = 5000, GESTURE_POLL_MS = 50;
   Overlay.prototype._paintWait = function (gen) {
     var self = this;
     if (!this.playing || gen !== this.playGen) return;
@@ -8262,8 +8310,10 @@
   Overlay.prototype._bindMap = function () {
     var self = this;
     this._on('zoomend', function () { self._radarView(); self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); });
-    this._on('moveend', function () { self._syncLakeGate(); self._radarView(); self._bathyViewSoon(); });
+    this._on('moveend', function () { self._gesture = 0; self._syncLakeGate(); self._radarView(); self._bathyViewSoon(); });
     this._on('viewreset', function () { self._syncLakeGate(); });
+    this._on('movestart', function () { self._gesture = nowMs(); });
+    this._on('zoomstart', function () { self._gesture = nowMs(); });
     this._on('move', function () { if (self.layer) self.layer._drawStale(true); if (self.satLayer) self.satLayer._drawStale(true); if (self.radarLayer) self.radarLayer._drawStale(true); });   // a buffer tile a frame behind comes into view
     this._on('resize', function () { self._onSize(); });
     // The page sizes #map by script and has Leaflet re-read the size before invalidateSize(), so the map's own 'resize'

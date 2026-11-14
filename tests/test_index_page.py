@@ -1036,7 +1036,13 @@ def test_geo_base_reaches_the_head_and_the_first_view_block_is_in_place(client, 
         assert needle in fv, needle
     assert "\n    enforceSingleWorld();\n" not in body, "the first view is set inside the block, not before it"
     assert ".leaflet-container.geo-pending .leaflet-map-pane { visibility: hidden; }" in body
-    assert "window.addEventListener('resize', enforceSingleWorld);" in body
+    assert "window.addEventListener('resize', onWindowResize);" in body and "window.addEventListener('resize', enforceSingleWorld);" not in body
+    # section 95 (G62 finding 10): a resize runs enforceSingleWorld at most once per 100 ms, the last event's size wins;
+    # a height-only change refreshes the markers through the debounced, signature-checked path
+    rs = body[body.index("function onWindowResize() {"):]
+    rs = rs[:rs.index("\n    }\n") + 6]
+    assert "if (resizeQueued !== null) return;" in rs and "resizeQueued = setTimeout(function () { resizeQueued = null; enforceSingleWorld(); }, 100);" in rs
+    assert "if (lastEnforcedWidth === w) { clampMapLatitude(); refreshWrappedMarkerCopies(false); return; }" in body
     # no view is kept while the race runs (a reload then asks again: G32 B-6); a retired default is forgotten (A-P3-3)
     save = body[body.index("function saveMapView(map) {"):]
     assert save.index("if (map.getContainer && map.getContainer().classList.contains('geo-pending')) return;") < save.index("sessionStorage.setItem(")
@@ -1211,7 +1217,7 @@ def test_buoy_links_on_the_page(client):
         "    // ---- buoy links (plan section 52; tests/ui/buoylinks.test.js runs this block) ----",
         "    // ---- end buoy links ----",
         "const LINK_KM = 1.0, LINK_ID_KM = 400, LINK_PLAIN_KM = 2.0;",
-        "const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3;",
+        "const LIVE_TAP_MAX = 8, LIVE_TWIN_UNDER = 3, LIVE_CELL = 32;",
         "    // ---- nearest path (tests/ui/nearest.test.js runs this block) ----",
         "@media (any-pointer: coarse) { #lwForecast, #fwLive { min-height: 44px; } }",
         "var RETIRED = {{ retired_stations|tojson }};".replace("{{ retired_stations|tojson }}", '["44039", "44040", "44043", "44058", "44061", "44062", "44063", "44064", "44072", "44087", "46088"]'),

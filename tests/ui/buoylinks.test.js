@@ -354,7 +354,7 @@ test('the page wiring: the block between its markers, the two buttons, the canva
   assert.ok(TPL.includes('@media (any-pointer: coarse) { #lwForecast, #fwLive { min-height: 44px; } }'), 'finger-sized links (B-5)');
   assert.ok(!/@media \(pointer: coarse\)/.test(TPL), 'every touch rule on any touch screen (B-7)');
   assert.ok(TPL.includes('.fwin.fw-front:not(.fw-min) { z-index: 3510; }'));
-  assert.ok(/marker\.on\('click', function \(e\) \{\n\s+if \(window\.AllshoreTools[^\n]+\n\s+openLiveBuoy\(s\);\n/.test(TPL), 'the dot opens the buoy through openLiveBuoy');
+  assert.ok(/marker\.on\('click', function \(e\) \{\n\s+if \(window\.AllshoreTools[^\n]+\n\s+openLiveBuoy\(drawn\.s\);[^\n]*\n/.test(TPL), 'the dot opens the buoy through openLiveBuoy');
   assert.ok(TPL.includes("liveShownStation = station;\n      if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"));
   assert.ok(TPL.includes("      if (typeof requestLiveTargets === 'function') requestLiveTargets();   // the live dots' pads after every round (plan section 52)"));
   assert.ok(TPL.includes("            rebuildForecastMarkers(true);\n            if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B25: after the forecast list lands');
@@ -363,6 +363,136 @@ test('the page wiring: the block between its markers, the two buttons, the canva
   assert.ok(TPL.includes("    function openLiveBuoy(s) {                        // a click on its dot, or the forecast window's \"Live buoy\"\n      if (typeof forgetLiveBack === 'function') forgetLiveBack();"),
     'a dot\'s own open forgets the back link (R1-3)');
   assert.ok(TPL.includes("          rebuildLiveBuoyMarkers(!info.same);        // an unchanged list keeps its markers (no rebuild, no flash)\n          if (typeof syncBuoyLinks === 'function') syncBuoyLinks();"), 'B26: after the live list lands');
+});
+
+// G62 finding 4: the look at every station / every icon the block did before, kept here as the reference the indexed
+// search and the bucketed pads must equal exactly
+function mulberry(seed) { let a = seed >>> 0; return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+function refKm(a, b) {
+  const r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+function refLinkFor(A, from, list) {
+  const at = from && { lat: Number(from.lat), lon: Number(from.lon) };
+  if (!at || !Number.isFinite(at.lat) || !Number.isFinite(at.lon) || !Array.isArray(list)) return null;
+  const want = A.linkId(from.id);
+  let same = null, near = null;
+  for (let i = 0; i < list.length; i++) {
+    const s = list[i], lat = Number(s && s.lat), lon = Number(s && s.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+    const km = refKm(at, { lat: lat, lon: lon });
+    if (want && A.linkId(s.id) === want && km <= A.LINK_ID_KM && (!same || km < same.km)) same = { s: s, km: km };
+    else if (km <= A.LINK_KM && (!near || km < near.km)) near = { s: s, km: km };
+  }
+  return same || near;
+}
+
+test('G62 finding 4: the indexed link search gives the answer a look at every station gives (ties, the date line, the poles, bad rows)', () => {
+  const rnd = mulberry(62);
+  const ids = ['41113', 'ndbc:41113', '51201', 'ndbc:51201', 'cdip:163', '52201', 'cmems:GL_TS_MO_6200163', '62163', 'X1', 'X2', 'kma:0-410-0-22101', '22101', ''];
+  const centres = [[21.3, -157.9], [0.001, 179.999], [-0.002, -179.9995], [85.5, 10], [89.97, 50], [-89.99, -120], [-60, 0.0001], [47.55, -8.47], [7.1, 171.39]];
+  const list = [];
+  for (const [la, lo] of centres) {
+    const cl = Math.max(0.05, Math.cos(la * Math.PI / 180));
+    for (let k = 0; k < 70; k++) {
+      const pick = rnd();
+      if (pick < 0.03) { list.push({ id: 'nopos' }); continue; }
+      if (pick < 0.05) { list.push({ id: 'bad', lat: NaN, lon: lo }); continue; }
+      if (pick < 0.12 && list.length && list[list.length - 1]) { const prev = list[list.length - 1]; list.push({ id: ids[Math.floor(rnd() * ids.length)], lat: prev.lat, lon: prev.lon }); continue; }   // a tie
+      let lat = la + (rnd() - 0.5) * 0.04, lon = lo + (rnd() - 0.5) * 0.04 / cl;
+      if (rnd() < 0.15) { lat = la + (rnd() - 0.5) * 6; lon = lo + (rnd() - 0.5) * 6; }                    // far: a same-id match only
+      lat = Math.max(-90, Math.min(90, lat));
+      const row = { id: ids[Math.floor(rnd() * ids.length)], lat, lon: lon > 180 ? lon - 360 : lon < -180 ? lon + 360 : lon };
+      if (rnd() < 0.1) { row.lat = String(row.lat); row.lon = String(row.lon); }                            // coordinates as text
+      list.push(row);
+    }
+  }
+  const b = boot({ forecast: list }), A = b.api;
+  let n = 0, sameHits = 0, nearHits = 0;
+  for (const [la, lo] of centres) {
+    const cl = Math.max(0.05, Math.cos(la * Math.PI / 180));
+    for (let k = 0; k < 160; k++) {
+      let from;
+      const row = list[Math.floor(rnd() * list.length)];
+      if (rnd() < 0.3 && row && Number.isFinite(Number(row.lat))) from = { id: ids[Math.floor(rnd() * ids.length)], lat: row.lat, lon: row.lon };   // on a station
+      else from = { id: ids[Math.floor(rnd() * ids.length)], lat: Math.max(-90, Math.min(90, la + (rnd() - 0.5) * 0.05)), lon: lo + (rnd() - 0.5) * 0.05 / cl + (rnd() < 0.2 ? 360 : 0) };
+      const got = A.linkFor(from, list), exp = refLinkFor(A, from, list);
+      n++;
+      assert.equal(got ? got.s : null, exp ? exp.s : null, JSON.stringify(from));
+      if (exp) {
+        assert.equal(got.km, exp.km, 'the same distance, to the last bit');
+        if (exp.km > A.LINK_KM) sameHits++; else nearHits++;
+      }
+    }
+  }
+  assert.ok(n > 1000 && sameHits > 20 && nearHits > 300, n + ' ' + sameHits + ' ' + nearHits);
+  // a station 0.67 km away in the next row of cells (the circle's full height is searched)
+  const north = { id: 'N', lat: 20.0005, lon: 5 }, q1 = { id: 'q', lat: 19.9945, lon: 5 };
+  assert.equal(A.linkFor(q1, [north]).s, north);
+  // two stations at the same distance on either side of the 0-degree column line: the earlier in the list wins, as before
+  const east = { id: 'E', lat: 1, lon: 0.005 }, west = { id: 'W', lat: 1, lon: -0.005 }, q2 = { id: 'q', lat: 1, lon: 0 };
+  assert.equal(refLinkFor(A, q2, [east, west]).s, east); assert.equal(A.linkFor(q2, [east, west]).s, east, 'a tie across cells');
+  assert.equal(A.linkFor(q2, [west, east]).s, west);
+  // a list whose length moved is indexed again; a new list object too
+  const grown = [OTHER]; assert.equal(A.linkFor(BUOY, grown).s, OTHER); grown.push(TWIN); assert.equal(A.linkFor(BUOY, grown).s, TWIN);
+});
+
+test('G62 finding 4: a live buoy\'s forecast point is kept through a new live list (asked again when the buoy moved); a new forecast list asks again', () => {
+  const b = boot({ forecast: [TWIN], live: [BUOY] }), A = b.api;
+  const first = A.forecastLinkFor(BUOY);
+  assert.equal(first.s, TWIN); assert.equal(A.forecastLinkFor(BUOY), first, 'kept');
+  b.env.liveStationsData = [BUOY]; assert.equal(A.forecastLinkFor(BUOY), first, 'a new live list: kept');
+  const moved = Object.assign({}, BUOY, { lat: 28.4015 });
+  const again = A.forecastLinkFor(moved); assert.notEqual(again, first, 'the buoy moved: asked again'); assert.equal(again.s, TWIN);
+  b.env.forecastStationsData = [OTHER]; assert.equal(A.forecastLinkFor(BUOY).s, OTHER, 'a new forecast list: asked again');
+  b.fire('allshore:forecast', { station: '41113' });
+  b.env.forecastStationsData = [TWIN]; b.env.liveStationsData = [BUOY]; A.syncBuoyLinks(); assert.equal(b.els.fwLive.hidden, false);
+  b.env.liveStationsData = []; A.syncBuoyLinks(); assert.equal(b.els.fwLive.hidden, true, 'the live buoy\'s link follows a new live list');
+});
+
+test('G62 finding 4: the pads measured in 32-px squares equal the pads of a look at every icon', () => {
+  const rnd = mulberry(4);
+  const area = (k) => 0.8 * rnd() + k;
+  const drawn = [], live = [], forecast = [], tides = [], winds = [], points = [];
+  for (let i = 0; i < 140; i++) {
+    const lat = area(10), lon = area(20), active = rnd() < 0.1, id = 'ndbc:' + (40000 + i);
+    const d = at(id, lat, lon, active); drawn.push(d); live.push(d.s);
+    const t = rnd();
+    if (t < 0.25) forecast.push({ id: String(40000 + i), lat: lat + (rnd() - 0.5) * 0.002, lon: lon + 0.0065 + (rnd() - 0.5) * 0.004 });   // the twin near or under the dot
+    else if (t < 0.4) forecast.push({ id: String(40000 + i), lat: lat + (rnd() - 0.5) * 0.02, lon: lon + (rnd() - 0.5) * 0.02 });          // the twin apart
+    if (rnd() < 0.05) { const e = at('ndbc:dup' + i, lat, lon, false); drawn.push(e); live.push(e.s); }                                      // two dots at one spot
+  }
+  for (let i = 0; i < 160; i++) forecast.push({ id: 'F' + i, lat: area(10), lon: area(20) });
+  for (let i = 0; i < 90; i++) { const lat = area(10), lon = area(20); tides.push({ s: { lat, lon }, lng: lon, off: rnd() < 0.5 ? [Math.round((rnd() - 0.5) * 24), Math.round((rnd() - 0.5) * 24)] : null }); }
+  for (let i = 0; i < 70; i++) { const lat = area(10), lon = area(20); winds.push({ s: { lat, lon }, lng: lon }); }
+  for (let i = 0; i < 40; i++) points.push({ id: 'pt_' + i, lat: area(10), lon: area(20) });
+  const refPads = (A, withForecast) => {
+    const P = (lat, lng) => ({ x: lng * 1000, y: -lat * 1000 });
+    const dotAt = (d) => { const p = P(d.lat, d.lng), size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7)); return { x: p.x + size / 2 - anchor, y: p.y, h: size / 2 }; };
+    const others = [];
+    tides.forEach((d) => { const q = P(d.s.lat, d.lng); others.push({ x: q.x + (d.off ? d.off[0] : 0), y: q.y + (d.off ? d.off[1] : 0) }); });
+    winds.forEach((d) => others.push(P(d.s.lat, d.lng)));
+    points.forEach((c) => others.push(P(c.lat, c.lon)));
+    const fc = withForecast ? forecast.map((f) => ({ id: String(f.id), q: P(f.lat, f.lon) })) : [];
+    const dots = drawn.map(dotAt);
+    return drawn.map((d, i) => {
+      const p = dots[i], twin = refLinkFor(A, d.s, forecast), twinId = twin && twin.km <= A.LINK_KM ? String(twin.s.id) : null;
+      let c = Infinity;
+      const near = (q) => { c = Math.min(c, Math.hypot(q.x - p.x, q.y - p.y)); };
+      dots.forEach((q, j) => { if (j !== i) near(q); });
+      others.forEach(near);
+      fc.forEach((f) => { if (f.id === twinId && Math.hypot(f.q.x - p.x, f.q.y - p.y) <= p.h + 3) return; near(f.q); });
+      return Math.max(0, Math.min(8, Math.floor(c / 2 - p.h))) + 'px';
+    });
+  };
+  const b = boot({ forecast, live, drawn, tides, winds, points }), A = b.api;
+  A.liveTargets();
+  const got = drawn.map((d) => d.marker.style.props['--live-tap']), exp = refPads(A, true);
+  assert.deepEqual(got, exp);
+  const kinds = new Set(got); assert.ok(kinds.size >= 5 && kinds.has('0px') && kinds.has('8px'), [...kinds].join(' '));
+  b.layers.delete('forecast'); b.layers.delete('points'); points.length = 0;
+  A.liveTargets(); assert.deepEqual(drawn.map((d) => d.marker.style.props['--live-tap']), refPads(A, false), 'the layers unticked');
 });
 
 test('section 63: NDBC bulk-report buoys show their number like NDBC; GLOS and IOOS numbers link to their forecast points', () => {

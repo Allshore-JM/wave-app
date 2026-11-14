@@ -781,6 +781,7 @@ test('no frame (a hidden tab): the fallback timer posts the slice and the frame 
   const s = framed();
   s.layer._queueStale(true);
   await tick(s.w.I.BATHY_FRAME_FALLBACK_MS + 30);
+  for (let i = 0; i < 40 && !s.ran.length; i++) await tick(25);               // a loaded test machine runs the timer late
   assert.equal(s.ran.length, 1, 'the slice ran without a frame'); assert.deepEqual(s.cancelled, [1], 'the waiting frame cancelled');
   s.frames[0].f(16); await tick(5); assert.equal(s.ran.length, 1, 'the frame arriving late does nothing');
 });

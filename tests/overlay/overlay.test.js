@@ -852,6 +852,7 @@ test('section 42: a new frame draws the tiles in view first and the buffer tiles
   let box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 12 } };
   const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
   const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; plant(l);
+  l._clock = () => 0;                                                         // a frozen clock: every slice has time for every tile
   const f1 = frame(1440, 721, PATTERN), f2 = frame(1440, 721, (r, c) => 1 + ((r * 5 + c * 11) % 254)), f3 = frame(1440, 721, (r, c) => 1 + ((r + c * 2) % 254));
   const lut = I.buildRamp(I.RAMPS.hs), entry = { step: 0, valid_utc: '2026-09-22T12:00:00Z' };
   const counts = () => { const o = {}; for (const k in l._tiles) o[k] = l._tiles[k].el.draws; return o; };
@@ -884,6 +885,179 @@ test('section 42: a new frame draws the tiles in view first and the buffer tiles
   const off = new I.ModelGridLayer({ opacity: 1 }); assert.equal(off._viewRange(), null, 'off a map: every tile is drawn at once');
 });
 
+
+// ---- plan section 95 (G62): the sliced tile drawer of the wave, satellite and radar layers ----
+test('section 95: a new tile is not drawn in createTile; it is drawn later, in view first, and reports ready after its first draw', async () => {
+  const grabEl = () => { const el = { out: null, draws: 0, getContext: () => ({ clearRect() { el.draws++; }, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData(img) { el.out = img.data.slice(); el.draws++; } }) }; return el; };
+  global.document = { createElement: () => grabEl() };
+  try {
+    const box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 12 } };
+    const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+    const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; l._clock = () => 0;
+    const lut = I.buildRamp(I.RAMPS.hs), entry = { step: 0, valid_utc: '2026-09-22T12:00:00Z' };
+    l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, lut, entry);
+    const ready = {};
+    for (let x = 9; x <= 12; x++) {
+      const coords = { x, y: 10, z: 6 }, k = x + ':10:6';
+      const el = l.createTile(coords, (err, e) => { assert.equal(err, null); assert.equal(e, el); ready[k] = (ready[k] || 0) + 1; });
+      assert.equal(el.draws, 0, k + ': nothing drawn while Leaflet creates the tile');
+      assert.equal(el._ovGen, -1);
+      l._tiles[k] = { el, coords };
+    }
+    assert.deepEqual(ready, {}, 'no tile ready before it is drawn');
+    await new Promise((r) => setTimeout(r, 15));
+    for (let x = 9; x <= 12; x++) { const k = x + ':10:6'; assert.equal(l._tiles[k].el.draws, 1, k + ' drawn once'); assert.equal(ready[k], 1, k + ' ready once'); }
+    l.setFrame(frame(1440, 721, (r, c) => 1 + ((r + c) % 254)), GRID, 'hs', HS, lut, entry);
+    await new Promise((r) => setTimeout(r, 15));
+    for (let x = 9; x <= 12; x++) assert.equal(ready[x + ':10:6'], 1, 'a later frame does not report the tile again');
+    // without a frame there is nothing to draw: the tile is cleared at once and reported in the next task
+    const empty = new I.ModelGridLayer({ opacity: 1 }); let done = 0;
+    const el0 = empty.createTile({ x: 1, y: 1, z: 2 }, () => { done++; });
+    assert.equal(el0.draws, 1); assert.equal(done, 0);
+    await new Promise((r) => setTimeout(r, 5)); assert.equal(done, 1);
+    l._cancelStale();
+  } finally { delete global.document; }
+});
+
+test('section 95: a slice ends when the next tile would pass 12 ms; the next slice follows; in-view tiles go first; a page move draws only tiles in view', () => {
+  let now = 0;
+  const grabEl = () => { const el = { draws: 0, getContext: () => ({ clearRect() { el.draws++; }, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() { el.draws++; } }) }; return el; };
+  const box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 11 } };     // tiles 10 and 11 of row 10 in view
+  const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; l._clock = () => now;
+  const lut = I.buildRamp(I.RAMPS.hs), entry = { step: 0, valid_utc: '2026-09-22T12:00:00Z' };
+  l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, lut, entry);
+  const order = []; let cost = 5;
+  for (let x = 6; x <= 13; x++) { const el = grabEl(); el._ovGen = -1; l._tiles[x + ':10:6'] = { el, coords: { x, y: 10, z: 6 } }; }
+  l._draw = function (el, c) { order.push(c.x); now += cost; el._ovGen = this._gen; };
+  l._drawMs = 5;
+  l._drawStale(false);                                                          // 5 ms a tile: two tiles fit in 12 ms
+  assert.deepEqual(order, [10, 11], 'the tiles in view first, two per slice');
+  assert.ok(l._staleQ, 'the rest is queued');
+  l._cancelStale(); order.length = 0;
+  l._drawStale(true);                                                           // the page's move: only tiles in view, and they are drawn
+  assert.deepEqual(order, [], 'the page move draws no buffer tile');
+  l._drawStale(false); assert.equal(order.length, 2, 'the next slice: two more');
+  l._cancelStale();
+  for (let i = 0; i < 10 && Object.keys(l._tiles).some((k) => l._tiles[k].el._ovGen !== l._gen); i++) { l._drawStale(false); l._cancelStale(); }
+  assert.deepEqual(order.slice().sort((a, b) => a - b), [6, 7, 8, 9, 12, 13], 'every buffer tile drawn once');
+  // a slow tile (35 ms): a slice always draws at least one tile, then stops
+  for (const k in l._tiles) l._tiles[k].el._ovGen = -1;
+  order.length = 0; cost = 35;
+  l._drawStale(false); assert.equal(order.length, 1, 'one slow tile, then the slice ends');
+  l._drawStale(false); assert.equal(order.length, 2, 'the learned cost (now above 12 ms) still lets one tile through');
+  l._cancelStale();
+});
+
+test('section 95: the next slice waits for a screen frame (requestAnimationFrame, then a task), with a 100-ms fallback; cancel stops it', async () => {
+  const frames = []; let rafId = 0;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); return ++rafId; };
+  global.cancelAnimationFrame = () => {};
+  try {
+    const l = new I.ModelGridLayer({ opacity: 1 }); let runs = 0;
+    l._drawStale = function (inView) { runs++; assert.equal(inView, false); };
+    l._queueStale(true);
+    assert.equal(frames.length, 1); assert.equal(runs, 0);
+    l._queueStale(true); assert.equal(frames.length, 1, 'one queued slice at a time');
+    frames[0](); assert.equal(runs, 0, 'the frame posts a task, it does not draw in the frame');
+    await new Promise((r) => setTimeout(r, 5)); assert.equal(runs, 1);
+    l._queueStale(true);                                                         // no frame comes (a hidden tab): the fallback
+    await new Promise((r) => setTimeout(r, 140)); assert.equal(runs, 2);
+    frames[frames.length - 1](); await new Promise((r) => setTimeout(r, 5)); assert.equal(runs, 2, 'a late frame after the fallback does not run it twice');
+    l._queueStale(true); l._cancelStale(); frames[frames.length - 1]();
+    await new Promise((r) => setTimeout(r, 140)); assert.equal(runs, 2, 'cancelled: nothing runs');
+  } finally { delete global.requestAnimationFrame; delete global.cancelAnimationFrame; }
+});
+
+test('section 95 (G62 finding 7): coast data landing marks tiles for the sliced drawer instead of drawing them all at once; the animator is told once the marked set is drawn', () => {
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._clock = () => 0;
+  const lut = I.buildRamp(I.RAMPS.hs), entry = { step: 0, valid_utc: '2026-09-22T12:00:00Z' };
+  assert.equal(l._restale(null, true), false, 'no frame: nothing marked');
+  l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, lut, entry);
+  const drawn = []; l._draw = function (el, c) { drawn.push(c.x); el._ovGen = this._gen; };
+  for (let x = 0; x < 6; x++) l._tiles[x + ':1:3'] = { el: { _ovGen: l._gen }, coords: { x, y: 1, z: 3 } };
+  let told = 0; l.onRedraw = () => { told++; };
+  // a pick: only the chosen tiles are marked, none drawn yet, the animator not told yet
+  assert.equal(l._restale((t) => t.coords.x % 2 === 0, true), true);
+  assert.deepEqual(drawn, [], 'nothing drawn in the call');
+  assert.equal(told, 0);
+  assert.deepEqual(Object.keys(l._tiles).filter((k) => l._tiles[k].el._ovGen === -1).sort(), ['0:1:3', '2:1:3', '4:1:3']);
+  // a slice that ends early (5 ms a tile, 12-ms slice): two tiles, the animator still waits
+  let now = 0; l._clock = () => now; l._drawMs = 5;
+  l._draw = function (el, c) { drawn.push(c.x); now += 5; el._ovGen = this._gen; };
+  l._cancelStale(); l._drawStale(false);
+  assert.equal(drawn.length, 2); assert.equal(told, 0, 'not told while marked tiles are left');
+  l._cancelStale(); l._drawStale(false);
+  assert.deepEqual(drawn.slice().sort((a, b) => a - b), [0, 2, 4], 'every marked tile drawn once');
+  assert.equal(told, 1, 'told once the set is drawn');
+  l._cancelStale(); l._drawStale(false); assert.equal(told, 1, 'not told again');
+  // a page move (in-view pass) never tells: only the full pass does
+  l._clock = () => 0; l._restale(null, true); l._cancelStale(); l._drawStale(true); assert.equal(told, 1);
+  l._cancelStale(); l._drawStale(false); assert.equal(told, 2);
+  // without notify the animator is not told; with nothing to mark, nothing is queued
+  l._restale(null, false); l._cancelStale(); l._drawStale(false); assert.equal(told, 2);
+  assert.equal(l._restale(() => false, true), false); assert.equal(l._staleQ, null);
+  // setCoast: every tile again through the drawer, the animator told after it (none drawn in the call)
+  drawn.length = 0; l.setCoast(null); assert.deepEqual(drawn, []); assert.equal(told, 2);
+  l._cancelStale(); l._clock = () => 0; l._drawStale(false);
+  assert.equal(drawn.length, 6); assert.equal(told, 3);
+  // no tiles at all: setCoast still tells the animator at once (nothing to wait for)
+  l._tiles = {}; l.setCoast(null); assert.equal(told, 4);
+  l._cancelStale();
+});
+
+test('section 95 (G62 finding 7): the lake redraws mark the right tiles; a mask that changed when a chunk landed is redrawn and the animator told once it is drawn (lake and land)', () => {
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._clock = () => 0;
+  const lut = I.buildRamp(I.RAMPS.hs), entry = { step: 0, valid_utc: '2026-09-22T12:00:00Z' };
+  l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, lut, entry);
+  const drawn = []; l._draw = function (el, c) { drawn.push(c.x); el._ovGen = this._gen; };
+  let told = 0; l.onRedraw = () => { told++; };
+  const fresh = () => { for (const k in l._tiles) l._tiles[k].el._ovGen = l._gen; };
+  const marked = () => Object.keys(l._tiles).filter((k) => l._tiles[k].el._ovGen === -1).sort();
+  // the lakes' box covers zoom-0 pixels 0..40 x 32..64: tiles 0 and 1 of row 1 at zoom 3; tile 4 lies outside it but
+  // carries lake water (a stale mask is still a reason to redraw it when the lake frame changes)
+  l._tiles = {
+    '0:1:3': { el: { _ovGen: l._gen }, coords: { x: 0, y: 1, z: 3 } },
+    '1:1:3': { el: { _ovGen: l._gen, _ovLake: new Uint8Array(4) }, coords: { x: 1, y: 1, z: 3 } },
+    '4:1:3': { el: { _ovGen: l._gen, _ovLake: new Uint8Array(4) }, coords: { x: 4, y: 1, z: 3 } },
+  };
+  l._lakeBox = { x0: 0, y0: 32, x1: 40, y1: 64 };
+  l._redrawLake(true); assert.deepEqual(marked(), ['0:1:3', '1:1:3'], 'a coast set that arrived: every tile in the box');
+  l._cancelStale(); l._drawStale(false); assert.equal(told, 1, 'told once those are drawn');
+  l._redrawLake(false); assert.deepEqual(marked(), ['1:1:3', '4:1:3'], 'a new lake frame: the tiles with lake water');
+  l._cancelStale(); l._drawStale(false); assert.equal(told, 2);
+  assert.equal(l._staleNotify, false, 'nothing left to tell');
+  // a lake chunk landed: the stand-in tiles are judged again; only the one whose mask changed is marked
+  l._lakeCoast = { rev: 2 }; l._lakeMask = true;
+  l._lakeFor = function (el) { el._ovLakeFinal = true; if ('_next' in el) el._ovLake = el._next; return el._ovLake; };
+  l._tiles['0:1:3'].el._ovLakeFinal = false;                                  // judged again: no change
+  l._tiles['1:1:3'].el._ovLakeFinal = false; l._tiles['1:1:3'].el._next = new Uint8Array(4);   // judged again: changed
+  drawn.length = 0;
+  l._redrawLakeIncomplete();
+  assert.deepEqual(marked(), ['1:1:3'], 'only the tile whose lake mask changed');
+  assert.deepEqual(drawn, [], 'nothing drawn in the call'); assert.equal(told, 2);
+  l._cancelStale(); l._drawStale(false);
+  assert.deepEqual(drawn, [1]); assert.equal(told, 3, 'the animator told once the marked tile is drawn');
+  // the same for the land mask (wave height is clipped by the coast)
+  l._coast = { rev: 3 }; l._clip = true;
+  l._landFor = function (el) { el._ovLandFinal = true; if ('_nextLand' in el) el._ovLand = el._nextLand; return el._ovLand; };
+  l._tiles['4:1:3'].el._ovLandFinal = false; l._tiles['4:1:3'].el._nextLand = new Uint8Array(4);
+  l._tiles['0:1:3'].el._ovLandFinal = false;
+  drawn.length = 0;
+  l._redrawIncomplete();
+  assert.deepEqual(marked(), ['4:1:3'], 'only the tile whose land mask changed');
+  assert.deepEqual(drawn, []); assert.equal(told, 3);
+  l._cancelStale(); l._drawStale(false);
+  assert.deepEqual(drawn, [4]); assert.equal(told, 4, 'the animator told once the land tile is drawn');
+  l._cancelStale();
+});
+
+test('section 95: the satellite and radar layers use the same sliced drawer and createTile', () => {
+  assert.equal(I.SatLayer.prototype._drawStale, I.ModelGridLayer.prototype._drawStale);
+  assert.equal(I.RadarLayer.prototype._drawStale, I.ModelGridLayer.prototype._drawStale);
+  assert.equal(I.RadarLayer.prototype.createTile, I.ModelGridLayer.prototype.createTile);
+  assert.equal(I.SatLayer.prototype._queueStale, I.ModelGridLayer.prototype._queueStale);
+});
 
 test('section 42 (step 2 finding): FrameCache with the ring\'s ranks drops what the ring does not need first (oldest first), then the ring\'s farthest; never the frame on the map; without ranks plain LRU', () => {
   const c = new I.FrameCache(4), rank = { r0: 0, r1: 1, r2: 2, r3: 3, r4: 4 };

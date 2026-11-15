@@ -44,3 +44,35 @@ All 499 headers equal the grid the VRT assumes; the pre-pass found every block i
 on block, tile and 180-degree edges; every water pixel carries the DEP source id; aprons match across the x = 0 / 2^z - 1
 seam at every zoom; stage-1 regions build byte-identical under the new code; the notice carries the citation, CC BY 4.0,
 "Contains modified Copernicus Sentinel data" and the list of changes.
+
+## Step 4: test site, before the upload (2026-11-15)
+
+Method: the locally built tiles of eight boxes (Fiji: Cloudbreak and Malolo; Tonga: Tongatapu north; Palau; Rarotonga;
+Tahiti: Teahupoo and Papeete; Tikehau; Tarawa) and four US boxes (Oahu, Guam, Tutuila, Upolu's edge) were served to the
+test site (overlay 2.27.6, `BATHY_OVERLAY=1`) through DevTools Fetch, with a `regions.json` that adds `pacific-sdb`
+(box -180, -28.5, 180, 24.5; prio 5). Headless Chrome with the GPU, its own profile, never signed in, trusted input.
+
+| Check | Result |
+|---|---|
+| Views z10-z15 at 1280x800 | 35 views, readout = drawn pixel at 51,840 samples, 0 mismatches; 0 missing local files; store at most 19.3 MB of 32 |
+| Labels | Sources here: "DEP satellite estimate 2024, often off by 2 m (10 m grid); GEBCO 2026 Grid (460 m grid)"; credit "Bathymetry: DEP · GEBCO"; its title "DEP, GEBCO, modified by Allshore Surf" |
+| Hover | 36 of 36 points in feet and metres = the drawn sample, label "· DEP satellite estimate 2024, often off by 2 m · approximate" (a first run gave 34 of 36: two points lay under the page's buttons and panel, where no readout is shown by design; the point picker now skips page controls) |
+| US areas | Oahu z11 / z13, Guam z12, Saipan z12, Tutuila z12 / z13, Puerto Rico z11: no satellite pixel (the exclusion), readout = drawn, credit "Bathymetry: NOAA" (· GEBCO) |
+| Edges with GEBCO | Cloudbreak west and Rarotonga north: no step on the sampled lines; Tikehau's outer reef 7.2 m (GEBCO) -> 3.4 m (DEP) -> 4.9 m (GEBCO); Tarawa west 6.3 m (DEP) -> 39.3 m (GEBCO): the expected step where the satellite depths end at the 12-m cap on a steep reef edge |
+| Phones | 375x812 and 812x375 at Cloudbreak and Teahupoo z13: readout = drawn (480 / 720 / 1,260 / 600 samples), long press 12 of 12 = the drawn sample, no sideways scroll 4 of 4, the sheet inside the screen |
+| Notice | the test branch lacks this section's notice text (it lacks 5043821's app.py); production's `/notice/bathy` has the DEP citation, CC BY 4.0, "Contains modified Copernicus Sentinel data", the list of changes, the registry address and the 12-m cap |
+
+Not defects: one HTTP 503 from the test site on the first page load (the free instance waking; the re-run was clean);
+four tiles reported missing in the phone part were Fiji tiles still loading when the harness switched its local folder
+to Tahiti (they exist in the Fiji build).
+
+Found, not caused by the satellite depths (for the owner):
+- Square patches and dark spots around Fiji's islets. The squares are GEBCO cells the builder filled (flag f), drawn
+  dimmed as nearest-node squares (one zoom-7 data pixel is 64 screen pixels at zoom 13); the dark spots are points where
+  GSHHG's islets clip GEBCO and DEP has no pixel, so nothing is drawn and the imagery shows. The same view with the
+  satellite depths left out gives the same colours and the same blank points: they are on production today. A possible
+  later client change: do not dim GEBCO's filled pixels.
+- F6 above: DEP's empty strip at 180 degrees (Taveuni, Rabi, Qamea and Laucala show GEBCO only).
+
+Clean-up: the test site's and the frame host's storage cleared in the test browser, the browser stopped, its profile
+removed.

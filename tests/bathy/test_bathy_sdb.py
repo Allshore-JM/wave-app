@@ -223,6 +223,7 @@ def test_a_dep_build_keeps_every_value_as_water_and_nothing_as_land(tmp_path, mo
         seen.append(k.get("wrap"))
         return coarse(*a, **k)
     monkeypatch.setattr(B, "coarse_levels", watch)
+    monkeypatch.setattr(B, "dep_blocks", lambda *a: pytest.fail("a local source is never pre-read"))
     B._core.cache_clear()
     index = B.build("sdb", str(tmp_path / "out"), version=1, workers=1, local=local)
     assert seen == [True]                          # the coarse zooms join across 180 degrees (a wrap region)

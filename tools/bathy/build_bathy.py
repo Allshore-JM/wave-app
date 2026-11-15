@@ -258,6 +258,26 @@ def rects_of(src):
     return src["rects"] if "rects" in src else footprint(src)
 
 
+def _presence(args):
+    return D.presence(args)
+
+
+def dep_blocks(reg, src, workers):
+    """The blocks (tiles of zoom zmax - 3) holding a usable pixel of a DEP source, from one full-resolution read of each
+    of its tiles inside the region's box (the satellite depths are sparse: most of a tile's footprint is empty ocean,
+    and a block read costs about the same whether it holds data or not)."""
+    bz = reg["zmax"] - BLOCK_LEVELS
+    tiles = D.tiles_in(D.tiles(src.get("skip_tiles", ())), reg["box"])
+    t0 = time.time()
+    found = set()
+    with pool(workers) as ex:
+        for _, f in ex.map(_presence, [(t, bz, src.get("max_depth")) for t in tiles], chunksize=1):
+            found |= f
+    log("%s: %d blocks hold a usable pixel, from %d tiles (%.0f s)" % (src["key"], len(found), len(tiles),
+                                                                     time.time() - t0))
+    return found
+
+
 def block_keys(reg):
     """The blocks (tiles of zoom zmax - 3) under the footprint of any of the region's OWN sources (never a fill source's),
     inside the region's box, plus `ring` blocks around them (read for the fill and the water rule only)."""
@@ -266,6 +286,10 @@ def block_keys(reg):
     box = reg["box"]
     for src in reg["srcs"]:
         if src.get("fill"):
+            continue
+        if "blocks" in src:          # the blocks found to hold a usable pixel (dep_blocks): exact, not the footprint
+            bx0, by0, bx1, by1 = T.tiles_in_box(box, bz)
+            keys.update(k for k in src["blocks"] if bx0 <= k[0] <= bx1 and by0 <= k[1] <= by1)
             continue
         for r in rects_of(src):
             c = (max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3]))
@@ -913,6 +937,8 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
             if s.get("kind") == "dep" and not s.get("local"):
                 s["gdal"] = D.write_vrt(os.path.join(work, s["key"] + ".vrt"), D.tiles(s.get("skip_tiles", ())))
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
+            if s.get("kind") == "dep" and not s.get("local") and not s.get("fill"):
+                s["blocks"] = dep_blocks(reg, s, workers)
         bad = outside_box(S.REGIONS[name]["box"], reg["srcs"])   # the configured box, whatever --box narrowed
         if bad:
             raise ValueError("%s: %d footprint rectangle(s) outside the region's box %s, e.g. %s: widen the box"

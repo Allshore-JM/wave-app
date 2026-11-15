@@ -106,3 +106,113 @@ def rects(tile_list, pad=0.001):
             out.append((lo0, la0, 180.0, la1))
             out.append((-180.0, la0, lo1 - 360.0, la1))
     return out
+
+# ---------------------------------------------------------------- presence: which blocks hold a usable pixel
+
+GROW_M = 30.0                # a pixel this close (EPSG:3832 metres) to a block counts for it (the warp's reach)
+BAND = 512                   # rows read at a time (one block row of the COG): ~20 MB of float32
+
+
+def tile_path(x, y, url=URL):
+    """GDAL's path of tile (x, y)'s COG."""
+    return "/vsicurl/" + url + KEY.format(x=x, y=y)
+
+
+def _merc_tile_y(lat, n):
+    """EPSG:3857 XYZ row (floor) of latitudes `lat` (degrees, array) at n = 2 ** z tiles; clamped to 0..n-1."""
+    import numpy as np
+    lat = np.clip(lat, -85.0511287798, 85.0511287798)
+    my = 6378137.0 * np.log(np.tan(np.pi / 4 + np.radians(lat) / 2))
+    w = 2 * np.pi * 6378137.0
+    return np.clip(np.floor((w / 2 - my) / w * n).astype(np.int64), 0, n - 1)
+
+
+def _merc_tile_x(lon, n):
+    """EPSG:3857 XYZ column of longitudes `lon` (degrees, array, any value: taken modulo 360) at n = 2 ** z tiles."""
+    import numpy as np
+    lon = np.mod(np.asarray(lon, dtype=np.float64) + 180.0, 360.0)
+    return np.clip(np.floor(lon / 360.0 * n).astype(np.int64), 0, n - 1)
+
+
+def tile_axes(x, y, bz, grow_m=GROW_M):
+    """For DEP tile (x, y): per column the first and last zoom-bz tile column its pixel (grown by grow_m) reaches, and
+    the same per row (rows from the top). EPSG:3832 and EPSG:3857 are both Mercator, so columns map to longitudes and
+    rows to latitudes on their own (the 180th meridian taken modulo 360)."""
+    import numpy as np
+    from pyproj import Transformer
+    n = 2 ** bz
+    x0, y0, x1, y1 = bounds(x, y)
+    c = np.arange(PX, dtype=np.float64)
+    left, right = x0 + c * RES - grow_m, x0 + (c + 1) * RES + grow_m
+    lon = LON0 + np.degrees(np.concatenate([left, right]) / A)
+    tx = _merc_tile_x(lon, n)
+    col_lo, col_hi = tx[:PX], tx[PX:]
+    top, bot = y1 - c * RES + grow_m, y1 - (c + 1) * RES - grow_m
+    t = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True)
+    _, lat = t.transform(np.zeros(2 * PX), np.concatenate([top, bot]))
+    ty = _merc_tile_y(np.asarray(lat), n)
+    row_lo, row_hi = ty[:PX], ty[PX:]            # the top edge is further north: the smaller row number
+    return col_lo, col_hi, row_lo, row_hi
+
+
+def band_blocks(ok, r0, col_lo, col_hi, row_lo, row_hi):
+    """The (tile x, tile y) pairs of zoom bz holding a True pixel of `ok` (a band of rows r0.. of the DEP tile)."""
+    import numpy as np
+    found = set()
+    rows = np.flatnonzero(ok.any(axis=1))
+    if not rows.size:
+        return found
+    rl, rh = row_lo[r0 + rows], row_hi[r0 + rows]
+    for ty in range(int(rl.min()), int(rh.max()) + 1):
+        pick = rows[(rl <= ty) & (rh >= ty)]
+        if not pick.size:
+            continue
+        cols = np.flatnonzero(ok[pick].any(axis=0))
+        for tx in np.union1d(col_lo[cols], col_hi[cols]):
+            found.add((int(tx), ty))
+    return found
+
+
+def usable(a, max_depth=None, sane_m=12000.0):
+    """bool: pixels holding a usable elevation (finite, not a fill value, not deeper than max_depth)."""
+    import numpy as np
+    with np.errstate(invalid="ignore"):
+        ok = np.isfinite(a) & (np.abs(a) < sane_m)
+        if max_depth is not None:
+            ok &= a >= -float(max_depth)
+    return ok
+
+
+def presence(args):
+    """(tile, the set of zoom-bz tiles holding a usable pixel of DEP tile (x, y) within grow_m metres): the blocks a
+    build has to read. The tile's full resolution is read once, a band of rows at a time (DEP's overviews are drawn by
+    nearest and miss pixels, so they cannot say where data is). A tile that is not there gives an empty set."""
+    (x, y), bz, max_depth = args[:3]
+    path = args[3] if len(args) > 3 and args[3] else tile_path(x, y)
+    import rasterio
+    from rasterio.windows import Window
+    col_lo, col_hi, row_lo, row_hi = tile_axes(x, y, bz)
+    found = set()
+    try:
+        d = rasterio.open(path)
+    except rasterio.errors.RasterioIOError:
+        return (x, y), found
+    with d:
+        if d.width != PX or d.height != PX:
+            raise ValueError("DEP tile %03d_%03d is %d x %d, not %d x %d" % (x, y, d.width, d.height, PX, PX))
+        for r0 in range(0, PX, BAND):
+            h = min(BAND, PX - r0)
+            ok = usable(d.read(1, window=Window(0, r0, PX, h)), max_depth)
+            found |= band_blocks(ok, r0, col_lo, col_hi, row_lo, row_hi)
+    return (x, y), found
+
+
+def tiles_in(tile_list, box, pad=0.001):
+    """The tiles whose footprint (rects) meets the lon/lat box."""
+    out = []
+    for t in tile_list:
+        for r in rects([t], pad):
+            if r[0] < box[2] and box[0] < r[2] and r[1] < box[3] and box[1] < r[3]:
+                out.append(t)
+                break
+    return out

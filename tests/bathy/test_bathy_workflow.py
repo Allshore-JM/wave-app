@@ -94,6 +94,8 @@ def test_the_download_uses_certifis_list_and_every_action_is_pinned():
     assert "if: github.event.inputs.region == 'gebco'" in _steps(text)["Download GEBCO 2026 (region gebco)"]
     for pin in re.findall(r"pip install ([^\n]+)", text):
         assert "certifi==2026.10.23" in pin.split()
+    pips = re.findall(r"pip install ([^\n]+)", text)
+    assert len(pips) == 2 and all("pyproj==3.8.0" in p.split() for p in pips)   # the DEP grid's latitudes (bathy_dep)
     for use in re.findall(r"uses: ([^\s]+)", text):
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", use), use
 

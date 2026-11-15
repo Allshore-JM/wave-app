@@ -44,12 +44,26 @@ def test_the_axes_hold_each_pixel_centre_and_reach_the_grow_distance():
     assert ((col_hi - col_lo) <= 1).all() and ((row_hi - row_lo) <= 1).all()
     assert (col_hi != col_lo).sum() < D.PX // 50 and (row_hi != row_lo).sum() < D.PX // 50
     # each block edge inside the tile is shared by the pixels within GROW_M (+ one pixel) of it
+    # every block edge inside the tile is reached from both sides: about 2 x GROW_M / RES pixels share it
+    per = 2 * D.GROW_M / D.RES
+    for lo, hi in ((col_lo, col_hi), (row_lo, row_hi)):
+        edges = len(np.unique(lo)) - 1
+        assert edges >= 1
+        shared = int((hi != lo).sum())
+        assert per * edges <= shared <= (per + 1) * edges + 1, (shared, edges)
     n = 2 ** BZ
     for c in np.flatnonzero(col_hi != col_lo)[:5]:
         edge_lon = col_hi[c] / n * 360.0 - 180.0
         px_lon = D.lon_of(D.bounds(x, y)[0] + (c + 0.5) * D.RES)
         metres = abs(math.radians(px_lon - edge_lon)) * D.A
         assert metres <= D.GROW_M + D.RES
+
+
+def test_the_grow_distance_covers_the_warp_reach():
+    # a kept pixel at zoom 14 averages or interpolates source pixels up to one source pixel plus one target pixel away
+    # (about 20 m at the equator): a block holding only such a neighbour must still be read
+    target_m = 2 * math.pi * 6378137.0 / (256 * 2 ** (BZ + 3))
+    assert D.GROW_M >= D.RES + target_m
 
 
 def test_the_axes_of_the_tile_across_180_degrees_wrap():
@@ -72,7 +86,11 @@ def _brute(ok, r0, col_lo, col_hi, row_lo, row_hi):
 
 def test_band_blocks_equals_a_pixel_by_pixel_listing():
     rng = np.random.default_rng(11)
-    for x, y, r0 in ((35, 39, 0), (66, 40, 4096), (91, 66, 9216)):   # Fiji, 180 degrees, Oahu (the last band)
+    cases = [(35, 39, 0), (66, 40, 4096), (91, 66, 9216)]           # Fiji, 180 degrees, Oahu (the last band)
+    lo35 = D.tile_axes(35, 39, BZ)[2]
+    cut = int(np.flatnonzero(lo35 != lo35[0])[0])                    # a band across a block-row edge
+    cases.append((35, 39, max(0, cut - D.BAND // 2)))
+    for x, y, r0 in cases:
         axes = D.tile_axes(x, y, BZ)
         h = min(D.BAND, D.PX - r0)
         for trial in range(4):
@@ -186,6 +204,18 @@ def test_dep_blocks_reads_only_the_tiles_meeting_the_box_and_joins_their_blocks(
     assert all(bz == BZ and cap == 12.0 for _, bz, cap in seen)
     assert found == {(t[0], t[1] + 1000) for t in tiles}
     assert not set(s["skip_tiles"]) & {t for t, _, _ in seen}
+
+
+def test_dep_blocks_never_reads_a_skipped_tile(monkeypatch):
+    skip = tuple(S.SOURCES["dep-sdb"]["skip_tiles"])[0]
+    r = D.rects([tuple(skip)])[0]
+    box = (r[0] - 0.5, r[1] - 0.5, r[2] + 0.5, r[3] + 0.5)            # the skipped tile and its neighbours
+    assert tuple(skip) in D.tiles_in(D.tiles(), box)
+    reg = _sdb_region(monkeypatch, box=box)
+    seen = []
+    monkeypatch.setattr(D, "presence", lambda args: seen.append(args[0]) or (args[0], set()))
+    B.dep_blocks(reg, reg["srcs"][0], workers=0)
+    assert seen and tuple(skip) not in seen
 
 
 def test_build_asks_for_the_blocks_of_a_remote_dep_source_only(tmp_path, monkeypatch):

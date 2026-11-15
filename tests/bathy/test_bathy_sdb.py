@@ -153,21 +153,26 @@ def _dep_tif(path, fn, w=W, e=E, s=SO, n=NO, res=RES):
 
 
 def _depth(lon, lat):
-    """-5 m west of 178.25, -11.9 / -12.1 m in two strips, -20 m east of 178.40 (beyond the cap), NaN in a pocket."""
+    """-5 m west of 178.25, -11.9 / -12.1 m in two strips, -20 m east of 178.40 (beyond the cap), NaN in a pocket;
+    a -0.3 m strip (very shallow water: drawn), and a strip at or above sea level (+0.5 m south, 0 m north: never
+    drawn, G64a F4)."""
     lon = np.broadcast_to(lon, np.broadcast(lon, lat).shape)
     out = np.full(lon.shape, -5.0)
+    out = np.where((lon > 178.235) & (lon < 178.245), -0.3, out)
     out = np.where((lon > 178.26) & (lon < 178.28), -11.9, out)
     out = np.where((lon > 178.36) & (lon < 178.38), -12.1, out)
+    out = np.where((lon > 178.385) & (lon < 178.395), np.where(np.broadcast_to(lat, lon.shape) > -17.75, 0.0, 0.5),
+                   out)
     out = np.where(lon > 178.40, -20.0, out)
     lat = np.broadcast_to(lat, lon.shape)
     return np.where((lat > -17.76) & (lat < -17.74) & (lon > 178.21) & (lon < 178.23), np.nan, out)
 
 
-def _region(tmp_path, monkeypatch):
+def _region(tmp_path, monkeypatch, zmin=10):
     local = {"sdb-t": _dep_tif(str(tmp_path / "sdb.tif"), _depth)}
     monkeypatch.setitem(S.SOURCES, "sdb-t", dict(S.SOURCES["dep-sdb"], zmax=13, path=None))
     monkeypatch.setitem(S.REGIONS, "ex-t", dict(box=EX, sources=["cudem-samoa"], mhhw=0.4, zmin=8, prio=10))
-    monkeypatch.setitem(S.REGIONS, "sdb", dict(box=(W, SO, E, NO), sources=["sdb-t"], mhhw=0.0, zmin=10, prio=5,
+    monkeypatch.setitem(S.REGIONS, "sdb", dict(box=(W, SO, E, NO), sources=["sdb-t"], mhhw=0.0, zmin=zmin, prio=5,
                                                wrap=True, exclude=["ex-t"]))
     return local
 
@@ -247,10 +252,49 @@ def test_a_dep_build_keeps_every_value_as_water_and_nothing_as_land(tmp_path, mo
     # an enclosed shallow patch is water too (DEP masked the land; no connectivity test)
     d, _ = _pixel(out, 13, 178.215, -17.73)
     assert d == pytest.approx(5.0, abs=0.02)
+    # G64a F7: water 0.3 m deep is published as water (every block here is shallow: none is dropped for lack of
+    # deep water); G64a F4: a value at or above sea level is never drawn as water, at any zoom
+    for z in (13, 12):
+        d, s = _pixel(out, z, 178.24, -17.72)
+        assert d == pytest.approx(0.3, abs=0.02) and s & T.SRC_BITS == 12, z
+        for lat in (-17.72, -17.78):                                       # 0 m north, +0.5 m south
+            d, s = _pixel(out, z, 178.39, lat)
+            assert d is None and (s is None or s & T.SRC_BITS == 0), (z, lat)
     assert B.check(out, log_fn=lambda *a: None) == 0
     lic = open(os.path.join(out, "LICENSE.txt"), encoding="utf-8").read()
     assert "Digital Earth Pacific" in lic and "deeper than 12 m are left out" in lic and "Copernicus Sentinel" in lic
     assert "ex-t" in lic
+
+
+def test_the_excluded_box_holds_nothing_at_any_zoom_or_in_any_apron(tmp_path, monkeypatch):
+    """G64a F3: the cut holds at the top zoom, the zooms pass 2 pools, and the coarse zooms built from the saved cores
+    (zmin 8: two of them here), in every tile's apron too: never a pixel whose centre lies inside the box."""
+    local = _region(tmp_path, monkeypatch, zmin=8)
+    B._core.cache_clear()
+    B.build("sdb", str(tmp_path / "out"), version=1, workers=1, local=local)
+    B._core.cache_clear()
+    out = os.path.join(str(tmp_path / "out"), "sdb", "v1")
+    zooms, inside = set(), 0
+    for z, tiles in B.scan_tiles(out).items():
+        for (x, y) in tiles:
+            code, sf = T.unpack_tile(open(B.tile_path(out, z, x, y), "rb").read())
+            mask = B.exclude_mask(T.tile_bounds(z, x, y, apron=T.APRON), T.SIDE, [EX])
+            assert not code[mask].any() and not (sf[mask] & T.SRC_BITS).any(), (z, x, y)
+            assert code[~mask].any(), (z, x, y)            # the tile holds water outside the box
+            zooms.add(z)
+            inside += int(mask.sum())
+    assert zooms == set(range(8, 14)) and inside > 0
+    assert B.check(out, log_fn=lambda *a: None) == 0
+
+
+def test_the_vrt_written_for_dep_never_lists_the_skipped_tiles(tmp_path):
+    """G64a F7: the four turbid tiles are never read: they are not in the VRT the build writes."""
+    path = B.dep_vrt(dict(S.SOURCES["dep-sdb"], key="dep-sdb"), str(tmp_path))
+    root = ET.parse(path).getroot()
+    names = [s.find("SourceFilename").text for s in root.find("VRTRasterBand").findall("SimpleSource")]
+    held = {tuple(int(v) for v in n.split("dep_s2_sdb_")[1][:7].split("_")) for n in names}
+    assert len(names) == len(held) == 495
+    assert not held & TURBID and held == set(D.tiles(sorted(TURBID)))
 
 
 def test_blocks_wholly_inside_an_excluded_box_are_never_read(monkeypatch):

@@ -111,3 +111,5 @@ def test_the_temporary_dry_run_workflow_is_gone():
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "bathy-dryrun.yml"))
     # and section 96's runner measurement of the four lidar regions
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "lidar-dryrun.yml"))
+    # and section 97's runner measurement of the Pacific satellite depths
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "sdb-dryrun.yml"))

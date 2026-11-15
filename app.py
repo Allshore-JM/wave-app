@@ -522,7 +522,7 @@ BATHY_NOTICE = "\n".join([
     "",
     "Other Pacific islands (shallow reefs only, a satellite estimate):",
     "Digital Earth Pacific Satellite-Derived Bathymetry (Sentinel-2, 10 m), Pacific Community (SPC), version 0-0-1",
-    "(composite of July to December 2024), accessed 2026-11-15 from",
+    "(a 2024 Sentinel-2 composite), accessed 2026-11-15 from",
     "https://registry.opendata.aws/dep-satellite-derived-bathymetry. Contains modified Copernicus Sentinel data 2024.",
     "Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Shown here modified: depths deeper than 12 m left",
     "out, four turbid tiles of Torres Strait and the Gulf of Papua left out, nothing used where the US territories' own",

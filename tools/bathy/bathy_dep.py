@@ -13,7 +13,8 @@ from xml.sax.saxutils import escape
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TILES_FILE = os.path.join(HERE, "dep_tiles.json")
-TILES_NOTE = ("version 0-0-1, Sentinel-2 composite 2024-07 to 2024-12, the 499 tiles listed 2026-11-15")
+TILES_NOTE = ("version 0-0-1, a 2024 Sentinel-2 composite (files labelled 2024-07/2024-12), the 499 tiles listed "
+              "2026-11-15")
 
 URL = "https://dep-public-data.s3.us-west-2.amazonaws.com/"
 KEY = "dep_s2_sdb/0-0-1/{x:03d}/{y:03d}/2024-07/2024-12/dep_s2_sdb_{x:03d}_{y:03d}_2024-07/2024-12_depth.tif"
@@ -173,36 +174,62 @@ def band_blocks(ok, r0, col_lo, col_hi, row_lo, row_hi):
     return found
 
 
-def usable(a, max_depth=None, sane_m=12000.0):
-    """bool: pixels holding a usable elevation (finite, not a fill value, not deeper than max_depth)."""
+OPEN_TRIES = 3               # a tile that will not open is asked again this many times in all, then the build stops
+OPEN_WAIT_S = 5.0            # seconds between the tries (a test sets 0)
+
+
+def usable(a, max_depth=None, sane_m=12000.0, offset=0.0):
+    """bool: pixels holding a usable depth, by the build's own rules in the build's order (read_field): finite and not
+    a fill value (|value| < sane_m) as read; then, the source's offset added, below sea level (DEP's water: a value at
+    or above 0 m is never drawn) and no deeper than max_depth."""
     import numpy as np
     with np.errstate(invalid="ignore"):
         ok = np.isfinite(a) & (np.abs(a) < sane_m)
+        v = a + np.float32(offset) if offset else a
+        ok &= v < 0
         if max_depth is not None:
-            ok &= a >= -float(max_depth)
+            ok &= v >= -float(max_depth)
     return ok
+
+
+def open_tile(path, label, tries=None, wait_s=None):
+    """The opened tile. A tile listed in dep_tiles.json that will not open (403, 404, 503, a broken header) is asked
+    again (`OPEN_TRIES` in all, `OPEN_WAIT_S` apart), then the build STOPS: its blocks would otherwise be silently
+    empty, and the build and its check would still pass."""
+    import time
+    import rasterio
+    tries = OPEN_TRIES if tries is None else tries
+    wait_s = OPEN_WAIT_S if wait_s is None else wait_s
+    err = None
+    for i in range(max(1, tries)):
+        if i:
+            time.sleep(wait_s)
+        try:
+            return rasterio.open(path)
+        except rasterio.errors.RasterioIOError as e:
+            err = e
+    raise RuntimeError("DEP tile %s could not be opened after %d tries (%s): the tile list may be out of date"
+                       % (label, max(1, tries), err))
 
 
 def presence(args):
     """(tile, the set of zoom-bz tiles holding a usable pixel of DEP tile (x, y) within grow_m metres): the blocks a
     build has to read. The tile's full resolution is read once, a band of rows at a time (DEP's overviews are drawn by
-    nearest and miss pixels, so they cannot say where data is). A tile that is not there gives an empty set."""
+    nearest and miss pixels, so they cannot say where data is). args = ((x, y), bz, max_depth[, path[, offset[,
+    sane_m]]]). A tile that will not open stops the build (open_tile); a wrong size raises."""
     (x, y), bz, max_depth = args[:3]
     path = args[3] if len(args) > 3 and args[3] else tile_path(x, y)
-    import rasterio
+    offset = args[4] if len(args) > 4 and args[4] is not None else 0.0
+    sane_m = args[5] if len(args) > 5 and args[5] is not None else 12000.0
     from rasterio.windows import Window
     col_lo, col_hi, row_lo, row_hi = tile_axes(x, y, bz)
     found = set()
-    try:
-        d = rasterio.open(path)
-    except rasterio.errors.RasterioIOError:
-        return (x, y), found
-    with d:
+    with open_tile(path, "%03d_%03d" % (x, y)) as d:
         if d.width != PX or d.height != PX:
             raise ValueError("DEP tile %03d_%03d is %d x %d, not %d x %d" % (x, y, d.width, d.height, PX, PX))
         for r0 in range(0, PX, BAND):
             h = min(BAND, PX - r0)
-            ok = usable(d.read(1, window=Window(0, r0, PX, h)), max_depth)
+            ok = usable(d.read(1, window=Window(0, r0, PX, h)), max_depth, sane_m, offset)
             found |= band_blocks(ok, r0, col_lo, col_hi, row_lo, row_hi)
     return (x, y), found
 

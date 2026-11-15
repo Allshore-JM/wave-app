@@ -1611,7 +1611,7 @@ differences remain.
 
 One more region, `pacific-sdb`, drawn between GEBCO and the US surveys (priority 5 against GEBCO's 0 and the surveys' 10
 and 20): Digital Earth Pacific's Sentinel-2 satellite-derived bathymetry (Pacific Community, SPC; version 0-0-1, a
-composite of July to December 2024; CC BY 4.0), to zoom 14.
+2024 Sentinel-2 composite; CC BY 4.0), to zoom 14.
 
 - **Source.** DEP publishes one Cloud-Optimised GeoTIFF per 96-km tile of its own grid: EPSG:3832 (Mercator, central
   meridian 150 E), origin (-3,000,000, -4,000,000), 10-m pixels (9,600 x 9,600 a tile), float32 elevation (negative
@@ -1621,18 +1621,23 @@ composite of July to December 2024; CC BY 4.0), to zoom 14.
   degrees as one plain rectangle; the region's box is the whole width (-180 to 180) and its coarse zooms join the two
   sides (`wrap`).
 - **What is drawn.** Every pixel DEP gives is water (`water_all`: DEP masked land itself; its estimate stops at about 26 m,
-  so the deep-water connectivity rule would find no open sea). Pixels deeper than 12 m are left out (`max_depth`), so GEBCO
-  shows there (owner, 2026-11-15: past about 12 m the estimate saturates). The four turbid Torres Strait / Gulf of Papua
-  tiles (020_030, 021_030, 022_030, 024_031) are left out. Nothing is drawn inside the US regions' boxes (`exclude`:
-  Hawaii, the Marianas, American Samoa, Puerto Rico and the lidar regions have their own surveys). No bias correction:
-  DEP's numbers as published (owner, 2026-11-15).
+  so the deep-water connectivity rule would find no open sea); a value at or above 0 m is never drawn. Water deeper than
+  12 m is left out (`max_depth`), so GEBCO shows there (owner, 2026-11-15: past about 12 m the estimate saturates). The cap
+  is applied to the value after the warp has averaged DEP's 10-m pixels onto the tile grid (G64a F2): a few pixels over
+  water a little deeper than 12 m can show, and a shallow pixel next to deep water can drop out. The four turbid Torres
+  Strait / Gulf of Papua tiles (020_030, 021_030, 022_030, 024_031) are left out. Nothing is drawn inside the US regions'
+  boxes (`exclude`: Hawaii, the Marianas, American Samoa, Puerto Rico and the lidar regions have their own surveys), at
+  any zoom: the cut is repeated after every pooling step. No bias correction: DEP's numbers as published (owner,
+  2026-11-15).
 - **Accuracy (measured).** Against NOAA's CUDEM at Oahu, Molokai and Guam (873,000 pixels at 20 m): where DEP says 2-12 m,
   56-65 % of pixels are within 2 m of the survey; where it says 0-12 m, the water is really deeper than 15 m in at most
   8 %. On shallow reef flats (0-2 m surveyed) it reads about 2 m too deep. The readout names the source "DEP satellite
   estimate 2024, often off by 2 m"; the notice gives DEP's citation, the licence, "modified" and the Copernicus line.
 - **Reading only the blocks with data.** A tile's depths cover under 1 % of its footprint. Before the build, a pre-pass
   reads each tile meeting the region's box once at full resolution, 512 rows at a time, and lists the zoom-11 blocks
-  holding a usable pixel (finite, not a fill value, no deeper than the cap) within 30 m (`GROW_M`: the warps' reach). The
+  holding a usable pixel (by the build's own rules: finite, not a fill value, the offset added, below 0 m and no deeper
+  than the cap) within 30 m (`GROW_M`: the warps' reach). A listed tile that will not open is asked 3 times, then the
+  build stops (a missing tile would leave its blocks silently empty). The
   build reads those blocks only. Whole region: 5,297 blocks of the 14,039 under the tiles' rectangles; the pre-pass took
   7 minutes on 4 processes from here. DEP's overviews are drawn by nearest and miss pixels, so they cannot be used to
   find the data. A local source (tests) and fill sources keep the rectangle rule.

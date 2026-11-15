@@ -37,8 +37,10 @@ source's pixels deeper than that earn only that zoom (deep open water needs no 1
 Digital Earth Pacific's Sentinel-2 satellite-derived depths (plan section 97; kind "dep": the builder writes a GDAL VRT over
 DEP's 96-km COG tiles, tools/bathy/bathy_dep.py) form ONE region across the Pacific, drawn between GEBCO and the US
 surveys (prio 5). Every pixel DEP gives is water (`water_all`: DEP masked land itself; the estimate stops at ~26 m, so
-the deep-water connectivity rule would find no open sea); pixels deeper than `max_depth` 12 m are left out so GEBCO shows
-there (owner, 2026-11-15: past ~12 m the estimate saturates), the four turbid Torres Strait / Gulf of Papua tiles are
+the deep-water connectivity rule would find no open sea; a value at or above 0 m is never drawn); water deeper than
+`max_depth` 12 m is left out so GEBCO shows there (owner, 2026-11-15: past ~12 m the estimate saturates). The cap applies
+to the value after the warp averages DEP's 10-m pixels onto the tile grid (G64a F2), so a few pixels a little deeper than
+12 m can show and a shallow pixel beside deep water can drop out. The four turbid Torres Strait / Gulf of Papua tiles are
 left out (`skip_tiles`), and nothing is drawn inside the US regions' boxes (`exclude`, owner 2026-11-11: their own
 surveys). No bias correction (owner, 2026-11-15): DEP's numbers as published.
 """
@@ -144,7 +146,8 @@ SOURCES = {
                               "(NOAA Digital Coast)"),
     # Digital Earth Pacific (plan section 97). Measured against NOAA's CUDEM in Hawaii and Guam (2026-11-15): where it
     # says 0-12 m, 56-97 % of pixels lie within 2 m of the survey; on reef flats it reads ~2 m too deep, past ~12 m it
-    # saturates (hence max_depth). The name carries its year and the warning (the client shows the name as the label).
+    # saturates (hence max_depth, applied after the warp's averaging). The name carries its year and the warning (the
+    # client shows the name as the label).
     "dep-sdb": dict(kind="dep", id=12, zmax=14, res_m=10, year="2024", offset=0.0, max_depth=12.0, water_all=True,
                     skip_tiles=((20, 30), (21, 30), (22, 30), (24, 31)), nodata=float("nan"),
                     name="DEP satellite estimate 2024, often off by 2 m",

@@ -271,7 +271,8 @@ def dep_blocks(reg, src, workers):
     t0 = time.time()
     found = set()
     with pool(workers) as ex:
-        for _, f in ex.map(_presence, [(t, bz, src.get("max_depth")) for t in tiles], chunksize=1):
+        for _, f in ex.map(_presence, [(t, bz, src.get("max_depth"), None, src.get("offset", 0.0), S.SANE_M)
+                                       for t in tiles], chunksize=1):
             found |= f
     log("%s: %d blocks hold a usable pixel, from %d tiles (%.0f s)" % (src["key"], len(found), len(tiles),
                                                                      time.time() - t0))
@@ -319,6 +320,12 @@ def _inside_any(z, key, boxes):
     return any(w <= lon0 and lon1 <= e and s <= lat0 and lat1 <= n for (w, s, e, n) in boxes)
 
 
+def dep_vrt(src, work):
+    """The local VRT over a "dep" source's COGs, in `work`: every listed tile but the source's skip_tiles (those are
+    never read, by the pre-pass or the build)."""
+    return D.write_vrt(os.path.join(work, src["key"] + ".vrt"), D.tiles(src.get("skip_tiles", ())))
+
+
 def exclude_mask(b, size, boxes):
     """bool (size, size): the pixels of the EPSG:3857 grid b whose centre lies inside one of the lon/lat boxes
     (longitudes taken modulo 360, so a grid reaching past +-180 is judged by its real longitude)."""
@@ -333,6 +340,13 @@ def exclude_mask(b, size, boxes):
         if cx.any() and cy.any():
             out |= cy[:, None] & cx[None, :]
     return out
+
+
+def _cut(depth, src, mask):
+    """Nothing at the masked pixels (in place): no depth, no source."""
+    if mask.any():
+        depth[mask] = np.nan
+        src[mask] = 0
 
 
 def _hits(rects, lonlat_box):
@@ -430,6 +444,9 @@ def read_field(reg, key):
             a = a - geoids[g]                      # ellipsoid height -> geoid height; NaN where the grid has none
         a[~(np.abs(a) < S.SANE_M)] = np.nan       # after the geoid: a fill value minus N is still a fill value
         a += np.float32(s["offset"])
+        if s.get("water_all"):
+            with np.errstate(invalid="ignore"):
+                a[a >= 0] = np.nan          # every value is taken as water: one at or above sea level is not drawn
         if s.get("max_depth") is not None:
             with np.errstate(invalid="ignore"):
                 a[a < -np.float32(s["max_depth"])] = np.nan     # deeper than the source is trusted: left out
@@ -613,6 +630,11 @@ def pass2(args):
             break
         depth, src = T.pool2(depth, src)
         m, k, z = m // 2, k // 2, z - 1
+        if reg.get("exclude_boxes"):
+            # the cut at every zoom, not only at zmax: a coarser pixel whose centre lies in another region's box
+            # holds nothing of this region (read_field cut zmax by the same rule)
+            b = T.tile_bounds(reg["zmax"] - BLOCK_LEVELS, key[0], key[1], apron=m, px=T.TILE * k)
+            _cut(depth, src, exclude_mask(b, depth.shape[0], reg["exclude_boxes"]))
     os.remove(_work_path(reg, key))
     return written
 
@@ -676,8 +698,9 @@ def encode_level(work, out, z, wrap=False, tables=None):
     return written
 
 
-def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None):
-    """Zooms zfrom - 1 .. zmin from the saved cores of zoom zfrom: halve 2 x 2 children, save, encode."""
+def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None, exclude=None):
+    """Zooms zfrom - 1 .. zmin from the saved cores of zoom zfrom: halve 2 x 2 children, save, encode. With `exclude`
+    (lon/lat boxes), a pixel whose centre lies inside one holds nothing (the same rule as at zmax, at every zoom)."""
     written = []
     for z in range(zfrom - 1, zmin - 1, -1):
         parents = sorted({(x >> 1, y >> 1) for (x, y) in core_keys(work, z + 1)})
@@ -691,6 +714,8 @@ def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None):
                         big[dy * T.TILE:(dy + 1) * T.TILE, dx * T.TILE:(dx + 1) * T.TILE] = c[0]
                         bs[dy * T.TILE:(dy + 1) * T.TILE, dx * T.TILE:(dx + 1) * T.TILE] = c[1]
             d, s = T.pool2(big, bs)
+            if exclude:
+                _cut(d, s, exclude_mask(T.tile_bounds(z, px, py), T.TILE, exclude))
             if np.isfinite(d).any() or (s == T.LAND_ID).any():
                 save_core(work, z, px, py, d, s)
         written += encode_level(work, out, z, wrap=wrap, tables=tables)
@@ -935,7 +960,7 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
     else:
         for s in reg["srcs"]:
             if s.get("kind") == "dep" and not s.get("local"):
-                s["gdal"] = D.write_vrt(os.path.join(work, s["key"] + ".vrt"), D.tiles(s.get("skip_tiles", ())))
+                s["gdal"] = dep_vrt(s, work)
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
             if s.get("kind") == "dep" and not s.get("local") and not s.get("fill"):
                 s["blocks"] = dep_blocks(reg, s, workers)
@@ -962,7 +987,7 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
         log("pass 2: %d tiles at zooms %d-%d (%.0f s)" % (len(written), reg["zmax"] - BLOCK_LEVELS, reg["zmax"],
                                                          time.time() - t0))
         written += coarse_levels(work, out, reg["zmax"] - BLOCK_LEVELS, reg["zmin"], wrap=bool(reg.get("wrap")),
-                                 tables=zoom_tables(reg))
+                                 tables=zoom_tables(reg), exclude=reg.get("exclude_boxes"))
     _core.cache_clear()
     index = write_index(reg, out, version)
     if not keep_work:

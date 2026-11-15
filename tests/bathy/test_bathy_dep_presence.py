@@ -101,10 +101,22 @@ def test_band_blocks_equals_a_pixel_by_pixel_listing():
             assert D.band_blocks(ok, r0, *axes) == _brute(ok, r0, *axes)
 
 
-def test_usable_keeps_finite_values_down_to_the_cap():
-    a = np.array([np.nan, -12.0, -12.01, -0.5, 3.0, -99999.0, np.inf], np.float32)
-    assert D.usable(a, 12.0).tolist() == [False, True, False, True, True, False, False]
-    assert D.usable(a).tolist() == [False, True, True, True, True, False, False]
+def test_usable_keeps_finite_water_down_to_the_cap():
+    a = np.array([np.nan, -12.0, -12.01, -0.5, 3.0, 0.0, -99999.0, np.inf], np.float32)
+    assert D.usable(a, 12.0).tolist() == [False, True, False, True, False, False, False, False]
+    assert D.usable(a).tolist() == [False, True, True, True, False, False, False, False]
+
+
+def test_usable_follows_the_offset_and_the_fill_limit():
+    """G64a F5: the pre-pass applies the source's offset and the build's own fill limit, in read_field's order."""
+    a = np.array([-0.3, -11.9, 0.2, -500.0], np.float32)
+    # +0.5 m offset: -0.3 becomes +0.2 (above sea level: out), 0.2 becomes 0.7 (out), -11.9 becomes -11.4 (in)
+    assert D.usable(a, 12.0, offset=0.5).tolist() == [False, True, False, False]
+    # -0.5 m offset: 0.2 becomes -0.3 (water), -11.9 becomes -12.4 (past the cap)
+    assert D.usable(a, 12.0, offset=-0.5).tolist() == [True, False, True, False]
+    # the fill limit is checked on the value AS READ (before the offset)
+    assert D.usable(a, sane_m=400.0).tolist() == [True, True, False, False]
+    assert D.usable(a, sane_m=600.0).tolist() == [True, True, False, True]
 
 
 def _sparse_tile(path, x, y, pixels):
@@ -143,9 +155,42 @@ def test_presence_reads_a_tile_and_lists_its_blocks(tmp_path):
     assert {tx for tx, _ in found} >= {2 ** BZ - 1, 0}
 
 
-def test_presence_of_a_missing_tile_is_empty(tmp_path):
+def test_presence_of_a_missing_tile_stops_the_build(tmp_path, monkeypatch):
+    """G64a F1: a listed tile that will not open is asked again, then the build stops (never silently empty)."""
     B.gdal_env()
-    assert D.presence(((35, 39), BZ, 12.0, str(tmp_path / "none.tif"))) == ((35, 39), set())
+    monkeypatch.setattr(D, "OPEN_WAIT_S", 0.0)
+    with pytest.raises(RuntimeError, match="could not be opened after 3 tries"):
+        D.presence(((35, 39), BZ, 12.0, str(tmp_path / "none.tif")))
+
+
+def test_open_tile_asks_again_then_gives_up(tmp_path, monkeypatch):
+    import rasterio
+    calls = []
+    good = _sparse_tile(tmp_path / "g.tif", 35, 39, {(0, 0): -1.0})
+    real = rasterio.open
+
+    def flaky(path, *a, **k):
+        calls.append(path)
+        if len(calls) < 3:
+            raise rasterio.errors.RasterioIOError("HTTP 503")
+        return real(path, *a, **k)
+    monkeypatch.setattr(rasterio, "open", flaky)
+    with D.open_tile(good, "035_039", tries=3, wait_s=0.0) as d:
+        assert d.width == D.PX
+    assert len(calls) == 3                                            # two failures, then the third try opens it
+    calls.clear()
+    with pytest.raises(RuntimeError, match="after 2 tries"):
+        D.open_tile(str(tmp_path / "none.tif"), "035_039", tries=2, wait_s=0.0)
+    assert len(calls) == 2
+
+
+def test_presence_applies_the_offset(tmp_path):
+    """G64a F5: a pixel the offset lifts above sea level is not a reason to read a block."""
+    B.gdal_env()
+    path = _sparse_tile(tmp_path / "o.tif", 35, 39, {(100, 3000): -0.3, (5000, 6000): -5.0})
+    _, plain = D.presence(((35, 39), BZ, 12.0, path))
+    _, lifted = D.presence(((35, 39), BZ, 12.0, path, 0.5))
+    assert lifted and lifted < plain                                  # the -0.3 m pixel's blocks drop out
 
 
 def test_presence_refuses_a_tile_of_another_size(tmp_path):
@@ -204,6 +249,21 @@ def test_dep_blocks_reads_only_the_tiles_meeting_the_box_and_joins_their_blocks(
     assert all(bz == BZ and cap == 12.0 for _, bz, cap in seen)
     assert found == {(t[0], t[1] + 1000) for t in tiles}
     assert not set(s["skip_tiles"]) & {t for t, _, _ in seen}
+
+
+def test_dep_blocks_passes_the_sources_offset_and_fill_limit(monkeypatch):
+    """G64a F5: the pre-pass judges a pixel by the build's own rules, so it must get the source's offset."""
+    reg = _sdb_region(monkeypatch, box=(177.0, -18.0, 177.5, -17.5))
+    s = reg["srcs"][0]
+    seen = []
+    monkeypatch.setattr(D, "presence", lambda args: seen.append(args) or (args[0], set()))
+    s["offset"] = 0.5
+    B.dep_blocks(reg, s, workers=0)
+    assert seen and all(a[4] == 0.5 and a[5] == S.SANE_M for a in seen)
+    seen.clear()
+    del s["offset"]
+    B.dep_blocks(reg, s, workers=0)
+    assert seen and all(a[4] == 0.0 for a in seen)
 
 
 def test_dep_blocks_never_reads_a_skipped_tile(monkeypatch):

@@ -76,3 +76,24 @@ Found, not caused by the satellite depths (for the owner):
 
 Clean-up: the test site's and the frame host's storage cleared in the test browser, the browser stopped, its profile
 removed.
+
+## STOP 2: the upload (2026-11-15)
+
+bathy-build run #39 (43684453791; region pacific-sdb, version 1, upload on, replace off), dispatched 06:13 UTC on the owner's
+go-ahead, finished green at 08:17 UTC (built 06:44:57 UTC). `regions.json` lists pacific-sdb v1, prio 5, box -180..180 /
+-28.5..24.5, zmin 8, zmax 14, beside the nine other regions unchanged.
+
+| Check (bucket, read-only) | Result |
+|---|---|
+| Objects | 136,815 tiles (z8 345, z9 716, z10 1,633, z11 3,990, z12 10,945, z13 31,443, z14 87,743) + 2,095 index files = 138,910, the dry run's count |
+| Headers (39 sampled tiles) | 200, `immutable`, image/png, CORS for allshoresurf.com, only source 12 |
+| Water with the land id / DEP deeper than 12 m | 0 / 0 (202,091 water pixels sampled) |
+| Read-back against DEP's own COGs (480 z14 pixels, window mean of the source pixels) | signed median -0.005 m, abs median 0.107 m, p90 0.72 m |
+| US boxes | one z10 cell is centred inside Samoa's box (it straddles the edge); its 1,293 satellite pixels all lie outside the box |
+
+Site (allshoresurf.com, headless Chrome with the GPU, own profile, never signed in): 12 views at 1280x800 (Cloudbreak z13,
+Malolo z14, Tonga z12, Palau z12, Rarotonga z13, Teahupoo z14, Tikehau z12, Tarawa z12, Fiji z9, Oahu north z13, Guam z12,
+Tutuila z12) and Cloudbreak on a 375x812 phone: readout = drawn pixel at 21,960 samples, 0 mismatches; satellite pixels in every
+Pacific view; none in the Hawaii, Guam and Tutuila views (their own surveys only, credit "Bathymetry: NOAA"); Pacific views
+list "DEP satellite estimate 2024, often off by 2 m (10 m grid); GEBCO 2026 Grid (460 m grid)", credit "Bathymetry: DEP ·
+GEBCO"; phone no sideways scroll; Off asked nothing while panning; no console problems. Harness stopped, profile removed.

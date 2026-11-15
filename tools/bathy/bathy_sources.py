@@ -45,6 +45,8 @@ left out (`skip_tiles`), and nothing is drawn inside the US regions' boxes (`exc
 surveys). No bias correction (owner, 2026-11-15): DEP's numbers as published.
 """
 
+import os
+
 BUCKET = "noaa-nos-coastal-lidar-pds"
 CUDEM_DOI = "doi:10.25921/ds9v-ky35"
 
@@ -201,8 +203,18 @@ REGIONS = {
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 
-# Geoid grids (a source's `geoid`): GDAL paths of the geoid height N above the ellipsoid, in metres.
-GEOIDS = {"egm2008": "/vsicurl/https://cdn.proj.org/us_nga_egm08_25.tif"}
+# Datum grids of the Lower 48 (plan section 98), committed beside this file and pinned by hash (DATUM_GRIDS):
+# us_msl_navd88.tif = mean sea level's height above NAVD88, us_mhhw_msl.tif = mean higher high water's height above mean
+# sea level, both from NOAA CO-OPS tide-station datums (tools/bathy/build_datum_grids.py).
+DATUM_DIR = os.path.dirname(os.path.abspath(__file__))
+DATUM_GRIDS = {}      # file name -> sha256 (filled in when the grids are built)
+MHHW_GRID = os.path.join(DATUM_DIR, "us_mhhw_msl.tif")
+
+# Grids a source subtracts from its elevations (a source's `geoid`), GDAL paths, metres. "egm2008": the geoid height N
+# above the ellipsoid (ellipsoid height - N = height above the geoid). "msl_navd88": mean sea level above NAVD88 (NAVD88
+# height - it = height above mean sea level).
+GEOIDS = {"egm2008": "/vsicurl/https://cdn.proj.org/us_nga_egm08_25.tif",
+          "msl_navd88": os.path.join(DATUM_DIR, "us_msl_navd88.tif")}
 GEOID_SANE_M = 200.0  # |geoid height| beyond this is a fill value of the geoid grid (real N: about -107 to +86 m)
 
 GEBCO_URL = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/geotiff/gebco_2026_geotiff.zip"

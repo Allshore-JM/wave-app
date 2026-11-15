@@ -143,6 +143,8 @@ def region_config(name, box=None, local=None):
         s["gdal"] = S.gdal_path(s)
         if s.get("geoid"):
             s["geoid_path"] = (local or {}).get("geoid:" + s["geoid"]) or S.GEOIDS[s["geoid"]]
+            if not (local and "geoid:" + s["geoid"] in local) and committed_grid(s["geoid_path"]):
+                check_datum_grid(s["geoid_path"])
         srcs.append(s)
     srcs.sort(key=lambda s: s["id"])          # best first = the lowest id first, whatever order the region lists them in
     ids = [s["id"] for s in srcs]
@@ -164,10 +166,40 @@ def region_config(name, box=None, local=None):
                exclude_boxes=[tuple(S.REGIONS[n]["box"]) for n in reg.get("exclude", ())])
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
+    mh = reg.get("mhhw")
+    if mh == "grid":
+        reg["mhhw_path"] = (local or {}).get("mhhw:grid") or S.MHHW_GRID
+        if not (local and "mhhw:grid" in local):
+            check_datum_grid(reg["mhhw_path"])
+    elif isinstance(mh, bool) or not isinstance(mh, (int, float)) or not -1.0 <= mh <= 5.0:
+        raise ValueError('%s: mhhw %r must be metres above mean sea level (-1..5) or "grid"' % (name, mh))
     if box:
         b = reg["box"]
         reg["box"] = (max(b[0], box[0]), max(b[1], box[1]), min(b[2], box[2]), min(b[3], box[3]))
     return reg
+
+
+def committed_grid(path):
+    """A datum grid committed beside the source table (bathy_sources.DATUM_DIR), as opposed to a remote geoid such as
+    "/vsicurl/https://cdn.proj.org/..." (which os.path.isabs calls absolute on Linux)."""
+    if path.startswith("/vsi"):
+        return False
+    return os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(os.path.abspath(S.DATUM_DIR))
+
+
+def check_datum_grid(path):
+    """A committed datum grid must be the one pinned in bathy_sources.DATUM_GRIDS: a changed grid moves every depth."""
+    name = os.path.basename(path)
+    want = S.DATUM_GRIDS.get(name)
+    if not want:
+        raise ValueError("%s: no pinned sha256 in bathy_sources.DATUM_GRIDS" % name)
+    if not os.path.exists(path):
+        raise ValueError("%s: the datum grid is missing (tools/bathy/build_datum_grids.py writes it)" % path)
+    with open(path, "rb") as f:
+        got = hashlib.sha256(f.read()).hexdigest()
+    if got != want:
+        raise ValueError("%s: hash %s is not the pinned %s" % (name, got[:16], want[:16]))
+    return path
 
 
 # A named client: the frame host's edge refuses Python's default "Python-urllib" user agent (HTTP 403).
@@ -408,6 +440,43 @@ def feather(main, main_id, fill, fill_id, px=None):
     return elev, ids
 
 
+def block_geom(reg, key):
+    """Block `key` at the region's finest zoom: (EPSG:3857 bounds with the margin, side px with the margin, margin px,
+    core px)."""
+    m = margin_of(reg)
+    px = T.TILE * 2 ** BLOCK_LEVELS
+    return T.tile_bounds(reg["zmax"] - BLOCK_LEVELS, key[0], key[1], apron=m, px=px), px + 2 * m, m, px
+
+
+def grid_mhhw(reg):
+    return isinstance(reg.get("mhhw"), str)
+
+
+def mhhw_field(reg, key):
+    """MHHW above mean sea level over block `key` (with its margin), metres: the region's number, or for mhhw "grid" the
+    Lower-48 grid read bilinearly onto the block (a block outside the grid stops the build)."""
+    if not grid_mhhw(reg):
+        return float(reg["mhhw"])
+    from rasterio.enums import Resampling
+    b, size, _, _ = block_geom(reg, key)
+    a = _warp(reg.get("mhhw_path") or S.MHHW_GRID, b, size, Resampling.bilinear, key="geoid")
+    if not np.isfinite(a).all():
+        raise ValueError("%s: block %s reaches outside the MHHW grid" % (reg["name"], key))
+    return a
+
+
+def low_threshold(reg, key):
+    """The smallest depth code that counts as low over block `key` (with its margin): one number, or one per pixel for a
+    region whose mhhw is "grid" (bathy_water.low_by)."""
+    if not grid_mhhw(reg):
+        return W.low_code(reg["mhhw"])
+    return T.encode_depth(-mhhw_field(reg, key))
+
+
+def _thr_of(reg, f):
+    return f["thr"] if "thr" in f.files else W.low_code(reg["mhhw"])
+
+
 def read_field(reg, key):
     """(elevation float32, source ids uint8) of block `key`, (2048 + 2 margin) px square at zoom zmax; NaN = no data.
     Own sources are merged by id (the lower id wins: the newer survey); where an older own source meets the newer
@@ -415,17 +484,14 @@ def read_field(reg, key):
     sea level (survey_fade). The fill sources are merged first-valid beneath
     them, then blended at the own sources' edge (feather)."""
     from rasterio.enums import Resampling
-    m = margin_of(reg)
-    bz = reg["zmax"] - BLOCK_LEVELS
-    px = T.TILE * 2 ** BLOCK_LEVELS
-    size = px + 2 * m
-    b = T.tile_bounds(bz, key[0], key[1], apron=m, px=px)
+    b, size, m, px = block_geom(reg, key)
     (lon0, lat0), (lon1, lat1) = T.xy_to_lonlat(b[0], b[1]), T.xy_to_lonlat(b[2], b[3])
     ll = (min(lon0, lon1), min(lat0, lat1), max(lon0, lon1), max(lat0, lat1))
     layers = {False: [np.full((size, size), np.nan, np.float32), np.zeros((size, size), np.uint8)],
               True: [np.full((size, size), np.nan, np.float32), np.zeros((size, size), np.uint8)]}
     ground = (b[2] - b[0]) / size * math.cos(math.radians(T.xy_to_lonlat(0.0, (b[1] + b[3]) / 2)[1]))
     geoids = {}
+    mhhw = None
     any_fill = False
     ex = exclude_mask(b, size, reg["exclude_boxes"]) if reg.get("exclude_boxes") else None
     for s in reg["srcs"]:
@@ -456,7 +522,9 @@ def read_field(reg, key):
         if not s.get("fill") and s.get("survey_fade") and (np.isfinite(elev) & np.isfinite(a)).any():
             # an older survey meeting the newer ones: it fills their gaps and fades in at their edge (feather);
             # where the two do not overlap this is the plain merge below
-            layers[False] = list(survey_fade(elev, ids, a, s["id"], reg["mhhw"]))
+            if mhhw is None:
+                mhhw = mhhw_field(reg, key)
+            layers[False] = list(survey_fade(elev, ids, a, s["id"], mhhw))
             continue
         take = np.isnan(elev) & np.isfinite(a)
         elev[take] = a[take]
@@ -472,11 +540,12 @@ def survey_fade(newer, newer_id, older, older_id, mhhw):
     """The older survey faded in under the newer ones (feather), except that a pixel the newer surveys hold as water
     (at or below `mhhw`) is never lifted above mean sea level, or above its own value when that is already higher (a
     reef flat between 0 and mhhw): the fade may make such water shallower but never turns it into land (owner,
-    2026-11-14). For mhhw below 0 the cap is mhhw itself."""
+    2026-11-14). For mhhw below 0 the cap is mhhw itself. `mhhw` is a number or one value per pixel (mhhw "grid")."""
     e, i = feather(newer, newer_id, older, np.full(older.shape, older_id, np.uint8))
+    m = np.asarray(mhhw, np.float32)
     with np.errstate(invalid="ignore"):
-        wet = np.isfinite(newer) & (newer <= np.float32(mhhw))
-        cap = np.maximum(newer, np.float32(min(0.0, mhhw)))
+        wet = np.isfinite(newer) & (newer <= m)
+        cap = np.maximum(newer, np.minimum(np.float32(0.0), m))
         lift = wet & (e > cap)
     e[lift] = cap[lift]
     return e, i
@@ -515,11 +584,13 @@ def pass1(args):
             return key, None
         np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
         return key, True
-    low = W.low_of(core, reg["mhhw"])
+    thr = low_threshold(reg, key)
+    low = W.low_by(core, thr if np.ndim(thr) == 0 else thr[m:m + px, m:m + px])
     if not low.any():
         save_land_core(reg, key, core)
         return key, None
-    np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
+    extra = {} if np.ndim(thr) == 0 else {"thr": thr}
+    np.savez_compressed(_work_path(reg, key), code=code, src=src_id, **extra)
     return key, W.summarise(low, W.deep_of(core))
 
 
@@ -535,7 +606,10 @@ def pass_sea(args):
     m = margin_of(reg)
     with np.load(_work_path(reg, key)) as f:
         core = f["code"][m:m + px, m:m + px]
-    np.save(_sea_path(reg, key), T.pack_bits(W.sea_of(W.low_of(core, reg["mhhw"]), keep)))
+        thr = _thr_of(reg, f)
+    if np.ndim(thr):
+        thr = thr[m:m + px, m:m + px]
+    np.save(_sea_path(reg, key), T.pack_bits(W.sea_of(W.low_by(core, thr), keep)))
     return key
 
 
@@ -603,11 +677,12 @@ def pass2(args):
     px = T.TILE * 2 ** BLOCK_LEVELS
     with np.load(_work_path(reg, key)) as f:
         code, src = f["code"], f["src"]
+        thr = _thr_of(reg, f)
     if reg.get("water_all"):
         wet = code > 0
     else:
         sea = W.sea_around(key, _sea_get(reg), px, margin_of(reg))
-        wet = W.low_of(code, reg["mhhw"]) & sea
+        wet = W.low_by(code, thr) & sea
     depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
     src = np.where(wet, src, np.where(code > 0, T.LAND_ID, 0)).astype(np.uint8)
     written = []

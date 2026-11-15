@@ -36,7 +36,7 @@ def test_tests_on_push_build_only_on_dispatch():
 def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     steps = _steps(_text())
     check = steps["Check the inputs"]
-    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar)" in check
+    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb)" in check
     assert '[[ "$VERSION" =~ ^[1-9][0-9]*$ ]]' in check
     up = steps["Upload to R2"]
     assert "if: github.event.inputs.upload == 'true'" in up

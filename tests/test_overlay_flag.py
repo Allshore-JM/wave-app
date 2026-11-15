@@ -426,7 +426,11 @@ def test_the_bathy_notice_the_credit_links():
                  "NAD83(PA11) ellipsoid", "EGM2008 geoid, less 0.3 m",
                  "not an official NOAA or USACE product", "blends into the grid beneath it",
                  "the older one blends in under the newer one the same way",
-                 "the newer survey's water stays water"):
+                 "the newer survey's water stays water",
+                 # the Pacific satellite depths (section 97): DEP's citation, licence, what was changed, how good it is
+                 "Digital Earth Pacific Satellite-Derived Bathymetry (Sentinel-2, 10 m), Pacific Community (SPC)",
+                 "registry.opendata.aws/dep-satellite-derived-bathymetry", "Contains modified Copernicus Sentinel data 2024",
+                 "CC BY 4.0", "depths deeper than 12 m left", "often off by 2 m"):
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/bathy"' in js, "the credit's link opens this notice"

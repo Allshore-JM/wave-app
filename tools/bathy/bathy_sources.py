@@ -33,6 +33,14 @@ sources overlap, so the finer source of a region has the lower id.
 `zmax` is the finest zoom a source's pixels earn: a tile is written at a zoom only where a water pixel of it comes from a
 source that earns that zoom (the client draws the next coarser tile, enlarged, elsewhere). `deep` = (metres, zoom): the
 source's pixels deeper than that earn only that zoom (deep open water needs no 10-m tiles).
+
+Digital Earth Pacific's Sentinel-2 satellite-derived depths (plan section 97; kind "dep": the builder writes a GDAL VRT over
+DEP's 96-km COG tiles, tools/bathy/bathy_dep.py) form ONE region across the Pacific, drawn between GEBCO and the US
+surveys (prio 5). Every pixel DEP gives is water (`water_all`: DEP masked land itself; the estimate stops at ~26 m, so
+the deep-water connectivity rule would find no open sea); pixels deeper than `max_depth` 12 m are left out so GEBCO shows
+there (owner, 2026-11-15: past ~12 m the estimate saturates), the four turbid Torres Strait / Gulf of Papua tiles are
+left out (`skip_tiles`), and nothing is drawn inside the US regions' boxes (`exclude`, owner 2026-11-11: their own
+surveys). No bias correction (owner, 2026-11-15): DEP's numbers as published.
 """
 
 BUCKET = "noaa-nos-coastal-lidar-pds"
@@ -134,6 +142,15 @@ SOURCES = {
                        path="dem/USACE_PR_Topobathy_DEM_2018_8571/USACE_PR_Topobathy_DEM_2018_m8571_EPSG-6318.vrt",
                        credit="USACE National Coastal Mapping Program 2018 Puerto Rico topobathy lidar "
                               "(NOAA Digital Coast)"),
+    # Digital Earth Pacific (plan section 97). Measured against NOAA's CUDEM in Hawaii and Guam (2026-11-15): where it
+    # says 0-12 m, 56-97 % of pixels lie within 2 m of the survey; on reef flats it reads ~2 m too deep, past ~12 m it
+    # saturates (hence max_depth). The name carries its year and the warning (the client shows the name as the label).
+    "dep-sdb": dict(kind="dep", id=12, zmax=14, res_m=10, year="2024", offset=0.0, max_depth=12.0, water_all=True,
+                    skip_tiles=((20, 30), (21, 30), (22, 30), (24, 31)), nodata=float("nan"),
+                    name="DEP satellite estimate 2024, often off by 2 m",
+                    datum="about mean sea level (FES2022 tide-corrected; satellite estimate)",
+                    licence="CC BY 4.0",
+                    credit="DEP / SPC Digital Earth Pacific satellite-derived bathymetry (Sentinel-2, 10 m), CC BY 4.0"),
     "gebco": dict(kind="gebco", id=31, zmax=7, res_m=460, year="2026", offset=0.0,
                   name="GEBCO_2026 Grid", datum="mean sea level (approximate)",
                   licence="GEBCO licence: free to use with credit",
@@ -171,6 +188,11 @@ REGIONS = {
     # lidar itself (GEBCO under it); the lidar reaches 30-50 m, so the usual deep-water rule finds the open sea.
     "nwhi-lidar": dict(box=(-168.5, 22.5, -160.5, 24.5), mhhw=0.4, zmin=8, prio=20, margin=32,
                        sources=["ngs-nwhi21"]),
+    # Digital Earth Pacific's satellite depths (plan section 97): one region across the date line (wrap: tile aprons
+    # and coarser zooms join x = 0 and x = 2^z - 1), under the US regions (prio 5), never inside their boxes.
+    "pacific-sdb": dict(box=(-180.0, -28.5, 180.0, 24.5), sources=["dep-sdb"], mhhw=0.0, zmin=8, prio=5, wrap=True,
+                        exclude=["hawaii", "marianas", "samoa", "prvi", "hawaii-lidar", "guam-lidar", "pr-lidar",
+                                 "nwhi-lidar"]),
 }
 
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
@@ -199,7 +221,7 @@ SANE_M = 12000.0       # |elevation| beyond this is a fill value
 
 def gdal_path(src):
     """The GDAL path of a source: its own `local` path when set (tests), else /vsis3/ on NOAA's bucket; None for GEBCO
-    (its files come from the downloaded archive, build_bathy --gebco)."""
+    (its files come from the downloaded archive, build_bathy --gebco) and for DEP (build_bathy writes its VRT)."""
     if src.get("local"):
         return src["local"]
     if not src.get("path"):

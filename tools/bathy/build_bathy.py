@@ -69,6 +69,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import bathy_dep as D       # noqa: E402
 import bathy_sources as S   # noqa: E402
 import bathy_tiles as T     # noqa: E402
 import bathy_water as W     # noqa: E402
@@ -157,7 +158,10 @@ def region_config(name, box=None, local=None):
     if (reg.get("fill") or sum(1 for s in own if s.get("survey_fade")) > 1) and margin_of(reg) < 3 * S.FEATHER_PX:
         raise ValueError("%s: margin %s below 3 x FEATHER_PX (the blend looks 3 x %d px around a pixel)" % (
             name, margin_of(reg), S.FEATHER_PX))
-    reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in own))
+    if any(s.get("water_all") for s in own) and not all(s.get("water_all") for s in own):
+        raise ValueError("%s: water_all must hold for every own source or none" % name)
+    reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in own), water_all=bool(own[0].get("water_all")),
+               exclude_boxes=[tuple(S.REGIONS[n]["box"]) for n in reg.get("exclude", ())])
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
     if box:
@@ -223,6 +227,8 @@ def vrt_rects(text):
 
 def footprint(src):
     """The lon/lat rectangles where a source may have data."""
+    if src.get("kind") == "dep" and not src.get("local"):
+        return D.rects(D.tiles(src.get("skip_tiles", ())))     # from DEP's tile grid, no network
     if src.get("local"):
         import rasterio
         with rasterio.open(src["gdal"]) as d:
@@ -277,7 +283,32 @@ def block_keys(reg):
                     if x0 <= x + dx <= x1 and y0 <= y + dy <= y1:
                         grown.add((x + dx, y + dy))
         keys = grown
+    if reg.get("exclude_boxes"):
+        keys = {k for k in keys if not _inside_any(bz, k, reg["exclude_boxes"])}
     return sorted(keys)
+
+
+def _inside_any(z, key, boxes):
+    """True when tile z/key lies wholly inside one of the lon/lat boxes."""
+    b = T.tile_bounds(z, key[0], key[1])
+    (lon0, lat0), (lon1, lat1) = T.xy_to_lonlat(b[0], b[1]), T.xy_to_lonlat(b[2], b[3])
+    return any(w <= lon0 and lon1 <= e and s <= lat0 and lat1 <= n for (w, s, e, n) in boxes)
+
+
+def exclude_mask(b, size, boxes):
+    """bool (size, size): the pixels of the EPSG:3857 grid b whose centre lies inside one of the lon/lat boxes
+    (longitudes taken modulo 360, so a grid reaching past +-180 is judged by its real longitude)."""
+    res = (b[2] - b[0]) / size
+    lon = np.degrees((b[0] + (np.arange(size) + 0.5) * res) / T.R)
+    lon = (lon + 180.0) % 360.0 - 180.0
+    lat = np.degrees(2 * np.arctan(np.exp((b[3] - (np.arange(size) + 0.5) * (b[3] - b[1]) / size) / T.R)) - np.pi / 2)
+    out = np.zeros((size, size), bool)
+    for (w, s, e, n) in boxes:
+        cx = (lon >= w) & (lon <= e)
+        cy = (lat >= s) & (lat <= n)
+        if cx.any() and cy.any():
+            out |= cy[:, None] & cx[None, :]
+    return out
 
 
 def _hits(rects, lonlat_box):
@@ -358,6 +389,7 @@ def read_field(reg, key):
     ground = (b[2] - b[0]) / size * math.cos(math.radians(T.xy_to_lonlat(0.0, (b[1] + b[3]) / 2)[1]))
     geoids = {}
     any_fill = False
+    ex = exclude_mask(b, size, reg["exclude_boxes"]) if reg.get("exclude_boxes") else None
     for s in reg["srcs"]:
         if "rects" in s and not _hits(s["rects"], ll):
             continue
@@ -374,6 +406,11 @@ def read_field(reg, key):
             a = a - geoids[g]                      # ellipsoid height -> geoid height; NaN where the grid has none
         a[~(np.abs(a) < S.SANE_M)] = np.nan       # after the geoid: a fill value minus N is still a fill value
         a += np.float32(s["offset"])
+        if s.get("max_depth") is not None:
+            with np.errstate(invalid="ignore"):
+                a[a < -np.float32(s["max_depth"])] = np.nan     # deeper than the source is trusted: left out
+        if ex is not None:
+            a[ex] = np.nan                                     # another region's own surveys hold this ground
         elev, ids = layers[bool(s.get("fill"))]
         if not s.get("fill") and s.get("survey_fade") and (np.isfinite(elev) & np.isfinite(a)).any():
             # an older survey meeting the newer ones: it fills their gaps and fades in at their edge (feather);
@@ -431,6 +468,12 @@ def pass1(args):
     px = T.TILE * 2 ** BLOCK_LEVELS
     m = margin_of(reg)
     core = code[m:m + px, m:m + px]
+    if reg.get("water_all"):
+        # every pixel the source gives is water (DEP masked land itself): no land, no connectivity test
+        if not (core > 0).any():
+            return key, None
+        np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
+        return key, True
     low = W.low_of(core, reg["mhhw"])
     if not low.any():
         save_land_core(reg, key, core)
@@ -519,8 +562,11 @@ def pass2(args):
     px = T.TILE * 2 ** BLOCK_LEVELS
     with np.load(_work_path(reg, key)) as f:
         code, src = f["code"], f["src"]
-    sea = W.sea_around(key, _sea_get(reg), px, margin_of(reg))
-    wet = W.low_of(code, reg["mhhw"]) & sea
+    if reg.get("water_all"):
+        wet = code > 0
+    else:
+        sea = W.sea_around(key, _sea_get(reg), px, margin_of(reg))
+        wet = W.low_of(code, reg["mhhw"]) & sea
     depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
     src = np.where(wet, src, np.where(code > 0, T.LAND_ID, 0)).astype(np.uint8)
     written = []
@@ -864,6 +910,8 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
         written = build_gebco(reg, gebco, workers, land=land)
     else:
         for s in reg["srcs"]:
+            if s.get("kind") == "dep" and not s.get("local"):
+                s["gdal"] = D.write_vrt(os.path.join(work, s["key"] + ".vrt"), D.tiles(s.get("skip_tiles", ())))
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
         bad = outside_box(S.REGIONS[name]["box"], reg["srcs"])   # the configured box, whatever --box narrowed
         if bad:
@@ -877,16 +925,18 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                 if summary is not None:
                     blocks[key] = summary
         log("pass 1: %d blocks hold low ground (%.0f s)" % (len(blocks), time.time() - t0))
-        keep = W.sea_masks(blocks)
-        with pool(workers) as ex:
-            list(ex.map(pass_sea, [(reg, k, keep[k]) for k in sorted(blocks)], chunksize=1))
+        if not reg.get("water_all"):
+            keep = W.sea_masks(blocks)
+            with pool(workers) as ex:
+                list(ex.map(pass_sea, [(reg, k, keep[k]) for k in sorted(blocks)], chunksize=1))
         written = []
         with pool(workers) as ex:
             for w in ex.map(pass2, [(reg, k) for k in sorted(blocks)], chunksize=1):
                 written += w
         log("pass 2: %d tiles at zooms %d-%d (%.0f s)" % (len(written), reg["zmax"] - BLOCK_LEVELS, reg["zmax"],
                                                          time.time() - t0))
-        written += coarse_levels(work, out, reg["zmax"] - BLOCK_LEVELS, reg["zmin"], tables=zoom_tables(reg))
+        written += coarse_levels(work, out, reg["zmax"] - BLOCK_LEVELS, reg["zmin"], wrap=bool(reg.get("wrap")),
+                                 tables=zoom_tables(reg))
     _core.cache_clear()
     index = write_index(reg, out, version)
     if not keep_work:
@@ -1006,6 +1056,14 @@ def licence_text(reg):
         lines += ["- Where two lidar surveys meet, the older one blends in under the newer one (marked blended): "
                   "within %d pixels where the newer survey ends, narrower round small gaps; the newer survey's "
                   "water never becomes land." % S.FEATHER_PX]
+    dep = [s for s in reg["srcs"] if s.get("kind") == "dep"]
+    for s in dep:
+        lines += ["- Digital Earth Pacific Satellite-Derived Bathymetry (Sentinel-2, 10 m), Pacific Community (SPC); "
+                  "%s; accessed 2026-11-15 from https://registry.opendata.aws/dep-satellite-derived-bathymetry. "
+                  "Contains modified Copernicus Sentinel data 2024. Licence: CC BY 4.0." % D.TILES_NOTE,
+                  "- A satellite estimate, often off by 2 m: depths deeper than %g m are left out (the regional grid "
+                  "shows there), every pixel DEP gives is water, and nothing is used where the US territories' own "
+                  "surveys are (%s)." % (s["max_depth"], ", ".join(reg.get("exclude", ())) or "none")]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

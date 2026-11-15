@@ -274,3 +274,31 @@ def test_a_build_judges_the_high_tide_line_per_pixel(tmp_path, monkeypatch):
         assert code > 0 and sf == 10, lon
         code, sf = at4(lon, 21.232)
         assert code == 0 and sf == T.LAND_ID, lon
+
+
+# Surveyed MSL - NAVD88 and MHHW - MSL at NOAA gauges (CO-OPS datums, metres; checked 2026-11-15) the committed grids
+# must reproduce: the grids are interpolated from these very stations, so a grid built from the wrong field, sign or
+# station set misses them by far more than the 0.05 m allowed.
+GAUGES = {"San Diego": (32.714, -117.174, 0.77, 0.85), "Seattle": (47.602, -122.339, 1.31, 1.44),
+          "Galveston": (29.310, -94.793, 0.15, 0.20), "Miami": (25.768, -80.130, -0.29, 0.38),
+          "The Battery": (40.700, -74.014, -0.06, 0.76), "Boston": (42.355, -71.052, -0.09, 1.55),
+          "Eastport": (44.904, -66.982, -0.07, 2.92)}
+
+
+def test_the_committed_datum_grids_are_the_pinned_ones_and_match_the_gauges():
+    names = {"us_msl_navd88.tif": 2, "us_mhhw_msl.tif": 3}
+    assert set(S.DATUM_GRIDS) == set(names)
+    for name, col in names.items():
+        path = os.path.join(S.DATUM_DIR, name)
+        with open(path, "rb") as f:
+            assert hashlib.sha256(f.read()).hexdigest() == S.DATUM_GRIDS[name]
+        assert B.check_datum_grid(path) == path
+        with rasterio.open(path) as d:
+            a = d.read(1)
+            assert np.isfinite(a).all()                                   # IDW everywhere: no hole in the box
+            s, w, n, e = 24.0, -125.5, 49.5, -66.5
+            assert (d.bounds.left, d.bounds.bottom, d.bounds.right, d.bounds.top) == pytest.approx((w, s, e, n))
+            for k, g in GAUGES.items():
+                r, c = d.index(g[1], g[0])
+                assert abs(float(a[r, c]) - g[col]) <= 0.05, (name, k, float(a[r, c]))
+    assert os.path.getsize(os.path.join(S.DATUM_DIR, "us_datum_stations.json")) > 100000  # the offline rebuild's input

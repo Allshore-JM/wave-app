@@ -8,6 +8,8 @@ tests/fixtures/nwps/** -text
 tests/fixtures/buoys_widen/** -text
 # Committed binary data (the Frost coast mask, plan section 69)
 tools/wind/*.bin binary
+# The bathymetry datum grids (plan section 98): pinned by hash.
+tools/bathy/*.tif binary
 tests/fixtures/keyed/** -text
 # The GFS spectra members (plan sections 53 and 77): the readers see NOAA's bytes.
 tests/fixtures/gfswinds/** -text

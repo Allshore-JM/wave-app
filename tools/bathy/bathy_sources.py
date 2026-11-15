@@ -207,7 +207,10 @@ FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 # us_msl_navd88.tif = mean sea level's height above NAVD88, us_mhhw_msl.tif = mean higher high water's height above mean
 # sea level, both from NOAA CO-OPS tide-station datums (tools/bathy/build_datum_grids.py).
 DATUM_DIR = os.path.dirname(os.path.abspath(__file__))
-DATUM_GRIDS = {}      # file name -> sha256 (filled in when the grids are built)
+DATUM_GRIDS = {      # file name -> sha256 (built 2026-11-15 from tools/bathy/us_datum_stations.json)
+    "us_msl_navd88.tif": "ea41105fd4ffa1d7e9a9c260d02bdb763cecd2b02924c83166df29ec0c6c78c5",
+    "us_mhhw_msl.tif": "72c9c37980f76c8e5112b1afa2796acf528b051106897f70a72fa4a9073f7904",
+}
 MHHW_GRID = os.path.join(DATUM_DIR, "us_mhhw_msl.tif")
 
 # Grids a source subtracts from its elevations (a source's `geoid`), GDAL paths, metres. "egm2008": the geoid height N

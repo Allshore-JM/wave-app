@@ -216,8 +216,16 @@ def test_read_field_caps_the_depth_and_excludes_other_regions_boxes(tmp_path, mo
 
 def test_a_dep_build_keeps_every_value_as_water_and_nothing_as_land(tmp_path, monkeypatch):
     local = _region(tmp_path, monkeypatch)
+    seen = []
+    coarse = B.coarse_levels
+
+    def watch(*a, **k):
+        seen.append(k.get("wrap"))
+        return coarse(*a, **k)
+    monkeypatch.setattr(B, "coarse_levels", watch)
     B._core.cache_clear()
     index = B.build("sdb", str(tmp_path / "out"), version=1, workers=1, local=local)
+    assert seen == [True]                          # the coarse zooms join across 180 degrees (a wrap region)
     B._core.cache_clear()
     out = os.path.join(str(tmp_path / "out"), "sdb", "v1")
     assert set(index["sources"]) == {"12"}

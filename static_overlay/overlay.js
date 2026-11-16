@@ -4128,6 +4128,17 @@
   var BATHY_VIEW_MS = 300;                                  // the sources line and the credit follow the view this long after a redraw
   var BATHY_HEAD = 'Bathymetry: water depth';
   var BATHY_NOTE = 'Approximate; not for navigation. Depth below mean sea level.';
+  var BATHY_NOTE_LAKE = 'Approximate; not for navigation. Depth below the lake\u2019s Low Water Datum (its chart datum).';
+  var BATHY_NOTE_BOTH = 'Approximate; not for navigation. Depth below mean sea level; in the Great Lakes, below each lake\u2019s Low Water Datum.';
+  // A Great Lakes source: its depths are below the lake's Low Water Datum (its chart datum), not mean sea level (plan
+  // section 98). The index names each source's datum; every lake source's names "Low Water Datum".
+  function bathyLake(s) { return /low water datum/i.test(String((s && s.datum) || '')); }
+  // The panel's note for the sources in view: mean sea level, the lakes' datum, or both.
+  function bathyNote(list) {
+    var lake = false, sea = false;
+    (list || []).forEach(function (s) { if (bathyLake(s)) lake = true; else sea = true; });
+    return lake ? (sea ? BATHY_NOTE_BOTH : BATHY_NOTE_LAKE) : BATHY_NOTE;
+  }
   // A source's short name for the credit ("NOAA", "GEBCO": the credit's first word unless the index names one) and its
   // label for the readout ("NOAA CUDEM 2021").
   function bathyShort(s) { return String((s && (s.short || String(s.credit || s.name || '').split(/[\s,]+/)[0])) || 'source'); }
@@ -6996,6 +7007,7 @@
     if (this.field !== 'bathy' || this.mode !== 'obs' || !this.bathyLayer) return;
     this._attribute();
     if (this.ui && this.ui.bathySources) this.ui.bathySources.textContent = this._bathySourcesText();
+    if (this.ui && this.ui.bathyNote) this.ui.bathyNote.textContent = bathyNote(this._bathySources());
   };
   Overlay.prototype._bathySources = function () { return this.bathyLayer ? this.bathyLayer.sourcesInView() : []; };
   // "Sources here: NOAA CUDEM 2021 (3 m grid); GEBCO 2026 Grid (460 m grid)": one entry per printed text (Puerto Rico's
@@ -7013,11 +7025,11 @@
     return txt;
   };
   // "18.4 ft · NOAA CUDEM 2021 · approximate"; "· estimated" on filled pixels; "~140 ft (GEBCO, regional estimate)";
-  // "dries at mean sea level"; nothing where no depth is drawn.
+  // "dries at mean sea level" ("at the lake's Low Water Datum" on a Great Lakes source); nothing where no depth is drawn.
   Overlay.prototype._bathyReadout = function (r) {
     if (!r || r.kind !== 'depth') return null;
     var unit = this.opts.getUnit(), s = r.src;
-    if (!(r.depth > 0)) return 'dries at mean sea level' + (s ? ' · ' + bathyLabel(s) : '');
+    if (!(r.depth > 0)) return (bathyLake(s) ? 'dries at the lake\u2019s Low Water Datum' : 'dries at mean sea level') + (s ? ' · ' + bathyLabel(s) : '');
     var v = unit === 'Metric' ? r.depth : r.depth * 3.28084, lab = unit === 'Metric' ? 'm' : 'ft';
     if (r.coarse) return '~' + bathyNum(v, true) + ' ' + lab + ' (' + (s ? bathyShort(s) : 'GEBCO') + ', regional estimate)';
     var txt = bathyNum(v) + ' ' + lab;
@@ -7028,7 +7040,7 @@
     this._obsShell(st, host, compact, focusCls, mapH, BATHY_HEAD, 'Bathymetry', function (body) {
       var leg = buildLegend('bathy', BATHY_FDEF, unit); leg.className += ' ov-bathy-legend'; body.appendChild(leg);
       var src = mk('div', 'ov-meta ov-bathy-sources', self._bathySourcesText()); body.appendChild(src); self.ui.bathySources = src;
-      body.appendChild(mk('div', 'ov-meta ov-bathy-note', BATHY_NOTE));
+      var note = mk('div', 'ov-meta ov-bathy-note', bathyNote(self._bathySources())); body.appendChild(note); self.ui.bathyNote = note;
       body.appendChild(self._bathyOpacityRow());
     });
   };
@@ -9693,7 +9705,7 @@
       bathyDepths: bathyDepths, BATHY_DEPTH: BATHY_DEPTH, bathyCode: bathyCode, validBathyRegions: validBathyRegions, validBathyIndex: validBathyIndex,
       parseBathyIdx: parseBathyIdx, BathyStore: BathyStore, bathyStore: bathyStore, BathyLayer: BathyLayer, bathyAxes: bathyAxes, bathyShade: bathyShade,
       bathyPos: bathyPos, bathyPieces: bathyPieces, bathySample: bathySample, bathyLevels: bathyLevels, bathyLevel: bathyLevel, bathySmooth: bathySmooth,
-      bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyNum: bathyNum, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
+      bathyCredit: bathyCredit, bathyShort: bathyShort, bathyLabel: bathyLabel, bathyNum: bathyNum, bathyLake: bathyLake, bathyNote: bathyNote, bathyOpacityOf: bathyOpacityOf, BATHY_FDEF: BATHY_FDEF, OBS_LOAD: OBS_LOAD,
       BATHY_APRON: BATHY_APRON, bathyNeighbours: bathyNeighbours, BATHY_GEBCO_EX: BATHY_GEBCO_EX, BATHY_SHADE_FINE: BATHY_SHADE_FINE, BATHY_SHADE_COARSE: BATHY_SHADE_COARSE, BATHY_DONE_MS: BATHY_DONE_MS, BATHY_SLICE_MS: BATHY_SLICE_MS, BATHY_COST_MS: BATHY_COST_MS, BATHY_FRAME_FALLBACK_MS: BATHY_FRAME_FALLBACK_MS, bathyReady: bathyReady, bathyForget: bathyForget, bathyDeep: bathyDeep, bathyWeight: bathyWeight, BATHY_DEEP: BATHY_DEEP,
       radarPic: radarPic, RadarStore: RadarStore, radarStore: radarStore, RadarLayer: RadarLayer, RadarPlayer: RadarPlayer, validRadarPointer: validRadarPointer, radarLoopFrames: radarLoopFrames, radarCellTable: radarCellTable,
       radarBit: radarBit, radarDbz: radarDbz, radarRainWord: radarRainWord, radarViewOf: radarViewOf, radarHits: radarHits, radarWantTier: radarWantTier, radarSample: radarSample, radarLut: radarLut, radarTileGeom: radarTileGeom, radarCellRect: radarCellRect,

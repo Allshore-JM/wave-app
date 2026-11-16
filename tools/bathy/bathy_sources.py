@@ -71,6 +71,23 @@ USACE13 = dict(LIDAR, year="2013", name="USACE lidar", datum="LMSL (Hawaii local
 EGM2008 = dict(geoid="egm2008", offset=-0.3,
                datum="NAD83(PA11) ellipsoid heights to mean sea level: EGM2008 geoid, -0.3 m (approximate)")
 
+# The Lower 48 (plan section 98). Every mainland source is in NAVD88; its heights become heights above mean sea level by
+# subtracting the committed grid of mean sea level above NAVD88 (GEOIDS "msl_navd88", from NOAA CO-OPS station datums).
+# The national CUDEM sets cover every coast in one VRT each (two files per resolution, split only by how NOAA tagged
+# their CRS); `clip` = True keeps the part inside the region's box, a (west, south, east, north) box keeps the part inside
+# both (a fill that only matters where CUDEM has a gap). Within a region the lowest id wins at a pixel: CUDEM 1/9, then
+# the 1-m surveys read to zoom 15 in CUDEM's West Coast gaps, then BlueTopo 4 m, CUDEM 1/3, BlueTopo 8 m and 16 m (owner
+# decision 2026-11-15, rule A: CUDEM 1/9 everywhere to zoom 15, BlueTopo to zoom 15 only to 100 m, CUDEM 1/3 to zoom 14
+# down to 200 m).
+NAVD88 = dict(geoid="msl_navd88", offset=0.0,
+              datum="NAVD88 to mean sea level: grid from NOAA CO-OPS tide-station datums (about 0.1 m)")
+CUDEM_US = dict(CUDEM, **NAVD88, clip=True, year="2014-2024")
+CUDEM3_US = dict(CUDEM3, **NAVD88, clip=True, year="2014-2024")
+BLUETOPO = dict(NAVD88, kind="bluetopo", clip=True, nodata=float("nan"), year="2020-2026", licence="CC0 (NOAA)")
+# The 1-m surveys used as baseline fill where CUDEM 1/9 has nothing on the West Coast (Southern California, Northern
+# California north of 38.75 N, Oregon south of 43.5 N), read down to zoom 15 like the 3-m grid.
+SURVEY15 = dict(NAVD88, kind="vrt", zmax=15, res_m=1, licence="public domain (US government)")
+
 SOURCES = {
     "cudem-hawaii": dict(CUDEM, id=10, year="2021",
                          path="dem/NCEI_ninth_Topobathy_Hawaii_9428/NCEI_ninth_Topobathy_Hawaii_EPSG-4326.vrt",
@@ -156,6 +173,40 @@ SOURCES = {
                     datum="about mean sea level (FES2022 tide-corrected; satellite estimate)",
                     licence="CC BY 4.0",
                     credit="DEP / SPC Digital Earth Pacific satellite-derived bathymetry (Sentinel-2, 10 m), CC BY 4.0"),
+    # The Lower 48 (plan section 98): national sets, clipped to each region's box.
+    "cudem-us": dict(CUDEM_US, id=10, nodata=-99999.0,
+                     path="dem/NCEI_ninth_Topobathy_2014_8483/NCEI_ninth_Topobathy_2014_m8483_EPSG-4269.vrt"),
+    "cudem-us-b": dict(CUDEM_US, id=11, nodata=-99999.0,
+                       path="dem/NCEI_ninth_Topobathy_2014_8483/NCEI_ninth_Topobathy_2014_m8483_EPSG-4269_1.vrt"),
+    "coned-socal16": dict(SURVEY15, id=12, year="2016", name="USGS CoNED lidar", nodata=-32767.0,
+                          clip=(-121.0, 32.0, -116.0, 36.5),
+                          path="dem/CA_Southern_CoNED_DEM_2016_8658/CA_Southern_CoNED_DEM_2016_m8658_EPSG-26911.vrt",
+                          credit="USGS Coastal National Elevation Database (CoNED) 2016 Southern California "
+                                 "topobathymetric model (NOAA Digital Coast)"),
+    "coned-central17": dict(SURVEY15, id=13, year="2017", name="USGS CoNED lidar", nodata=-32767.0,
+                            clip=(-123.0, 34.0, -120.0, 36.5),
+                            path="dem/CA_Central_CoNED_DEM_2017_8657/CA_Central_CoNED_DEM_2017_m8657_EPSG-3717.vrt",
+                            credit="USGS Coastal National Elevation Database (CoNED) 2017 Central California "
+                                   "topobathymetric model (NOAA Digital Coast)"),
+    "coned-norcal20": dict(SURVEY15, id=14, year="2020", name="USGS CoNED lidar", nodata=-3.4028230607370965e38,
+                           clip=(-125.0, 38.75, -119.0, 42.1),
+                           path="dem/CA_north_coned_DEM_2020_9181/CA_north_coned_DEM_2020_m9181_EPSG-3717.vrt",
+                           credit="USGS Coastal National Elevation Database (CoNED) 2020 Northern California "
+                                  "topobathymetric model (NOAA Digital Coast)"),
+    "usace-or14": dict(SURVEY15, id=15, year="2014", name="USACE lidar", nodata=-3.4028234663852886e38,
+                       clip=(-125.5, 41.9, -121.0, 43.5),
+                       path="dem/USACE_OR_Topobathy_DEM_2014_6282/USACE_OR_Topobathy_DEM_2014_m6282_EPSG-6318.vrt",
+                       credit="USACE National Coastal Mapping Program 2014 Oregon topobathy lidar (NOAA Digital Coast)"),
+    "bluetopo4": dict(BLUETOPO, id=16, bt_res=(2, 4), zmax=15, res_m=4, deep=(100.0, 13), name="NOAA BlueTopo 4 m",
+                      credit="NOAA Office of Coast Survey BlueTopo national bathymetric compilation"),
+    "cudem3-us": dict(CUDEM3_US, id=20, nodata=-99999.0,
+                      path="dem/NCEI_third_Topobathy_2014_8580/NCEI_third_Topobathy_2014_m8580_EPSG-4269.vrt"),
+    "cudem3-us-b": dict(CUDEM3_US, id=21, nodata=-9999.0,
+                        path="dem/NCEI_third_Topobathy_2014_8580/NCEI_third_Topobathy_2014_m8580_EPSG-4269_1.vrt"),
+    "bluetopo8": dict(BLUETOPO, id=22, bt_res=(8,), zmax=14, res_m=8, deep=(100.0, 13), name="NOAA BlueTopo 8 m",
+                      credit="NOAA Office of Coast Survey BlueTopo national bathymetric compilation"),
+    "bluetopo16": dict(BLUETOPO, id=23, bt_res=(16,), zmax=13, res_m=16, name="NOAA BlueTopo 16 m",
+                       credit="NOAA Office of Coast Survey BlueTopo national bathymetric compilation"),
     "gebco": dict(kind="gebco", id=31, zmax=7, res_m=460, year="2026", offset=0.0,
                   name="GEBCO_2026 Grid", datum="mean sea level (approximate)",
                   licence="GEBCO licence: free to use with credit",
@@ -200,6 +251,31 @@ REGIONS = {
                                  "nwhi-lidar"]),
 }
 
+# The Lower 48's ocean coasts (plan section 98): twelve disjoint boxes, each built on its own (cut: nothing drawn outside
+# the box, so the neighbour draws there), MHHW from the committed grid. (west, south, east, north).
+US_EAST = ["cudem-us", "cudem-us-b", "bluetopo4", "cudem3-us", "cudem3-us-b", "bluetopo8", "bluetopo16"]
+US_BOXES = {
+    "us-me-nh": ((-71.2, 42.7, -66.8, 47.5), US_EAST),
+    "us-sne-ny": ((-74.3, 40.4, -69.8, 42.7), US_EAST),
+    "us-nj-ches": ((-77.7, 36.9, -73.5, 40.4), US_EAST),
+    "us-va-nc": ((-79.5, 33.7, -75.0, 36.9), US_EAST),
+    "us-sc-ga": ((-82.0, 30.7, -77.5, 33.7), US_EAST),
+    "us-fl-east": ((-81.6, 26.0, -79.7, 30.7), US_EAST),
+    "us-fl-south": ((-83.2, 24.3, -79.7, 26.0), US_EAST),
+    "us-gulf-east": ((-88.45, 26.0, -81.6, 31.2), US_EAST),
+    "us-gulf-west": ((-97.7, 25.7, -88.45, 30.6), US_EAST),
+    "us-ca-south": ((-121.0, 32.4, -116.9, 34.6),
+                    ["cudem-us", "cudem-us-b", "coned-socal16", "coned-central17", "bluetopo4", "bluetopo8",
+                     "bluetopo16"]),
+    "us-ca-north": ((-124.6, 34.6, -119.5, 42.0),
+                    ["cudem-us", "cudem-us-b", "coned-central17", "coned-norcal20", "bluetopo4", "bluetopo8",
+                     "bluetopo16"]),
+    "us-or-wa": ((-125.2, 42.0, -121.8, 49.1), ["cudem-us", "cudem-us-b", "usace-or14", "bluetopo4", "bluetopo8",
+                                                 "bluetopo16"]),
+}
+for _name, (_box, _srcs) in US_BOXES.items():
+    REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw="grid", zmin=8, prio=10, cut=True, seed="sea")
+
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 
@@ -234,6 +310,16 @@ LAND = dict(url="https://models.allshoresurf.com/static/coast/v1/world-i.bin",
             credit="Wessel, P., and W. H. F. Smith (1996), GSHHG", licence="LGPL 3")
 
 DEEP_M = 20.0          # water deeper than this seeds "the open sea" for the connectivity rule
+# A region with `seed` "sea" (or "lake") finds its open water from a shoreline file instead of water deeper than DEEP_M
+# alone: low pixels at least SEED_M from the shore on the file's water side, or deeper than DEEP_M and on its water side.
+# The Lower 48's coasts need it: lidar that stops 10-19 m deep (south Oregon) never reaches 20 m, and a deep inland
+# quarry is no sea. The shoreline files are GSHHG intermediate (about 1 km off at worst), so SEED_M stays above that.
+SEED_M = 1000.0
+LAKES = dict(url="https://models.allshoresurf.com/static/coast/lakes-v1/lakes-i.bin",
+             sha256="00fa10638529042205de0373a677d474a4791c334f01976795f8972fbd71b8ea",
+             name="GSHHG 2.3.7 Great Lakes shorelines (open-water seed)",
+             credit="Wessel, P., and W. H. F. Smith (1996), GSHHG", licence="LGPL 3")
+SEED_FILES = {"sea": ("land-world-i.bin", LAND), "lake": ("lakes-i.bin", LAKES)}
 SANE_M = 12000.0       # |elevation| beyond this is a fill value
 
 

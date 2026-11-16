@@ -7007,7 +7007,10 @@
     if (this.field !== 'bathy' || this.mode !== 'obs' || !this.bathyLayer) return;
     this._attribute();
     if (this.ui && this.ui.bathySources) this.ui.bathySources.textContent = this._bathySourcesText();
-    if (this.ui && this.ui.bathyNote) this.ui.bathyNote.textContent = bathyNote(this._bathySources());
+    if (this.ui && this.ui.bathyNote) {
+      var note = bathyNote(this._bathySources());
+      if (this.ui.bathyNote.textContent !== note) this.ui.bathyNote.textContent = note;
+    }
   };
   Overlay.prototype._bathySources = function () { return this.bathyLayer ? this.bathyLayer.sourcesInView() : []; };
   // "Sources here: NOAA CUDEM 2021 (3 m grid); GEBCO 2026 Grid (460 m grid)": one entry per printed text (Puerto Rico's
@@ -9505,7 +9508,7 @@
     var fold = function (keepToggle) {
       if (!keepToggle && btn.parentNode) head.removeChild(btn);
       title.textContent = summary; if (title.classList) title.classList.remove('ov-model');
-      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.radarOpacity = null; self.ui.bathySources = null; self.ui.bathyOpacity = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
+      self.ui.collapsed = true; self.ui.radarLine = null; self.ui.radarLoop = null; self.ui.radarNote = null; self.ui.radarOpacity = null; self.ui.bathySources = null; self.ui.bathyNote = null; self.ui.bathyOpacity = null; self.ui.satLine = null; self.ui.satSeg = null; self.ui.gridBox = null; self.ui.gridNote = null;
     };
     this._say('');                                           // shown: the "Loading..." status goes (G31-11)
     if (compact && cap - host.offsetHeight - 8 < 40) { fold(false); this._layoutSheet(); this._refocus(focusCls); return; }

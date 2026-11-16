@@ -28,8 +28,14 @@ def deep_code():
     return int(T.encode_depth(np.array([float(S.DEEP_M)]))[0])
 
 
+def low_by(code, thr):
+    """Low pixels for a threshold CODE (low_code's value): one number for the region, or one per pixel (a region whose
+    mhhw is "grid": the Lower-48 grid of MHHW above mean sea level, build_bathy.low_threshold)."""
+    return np.asarray(code) >= thr
+
+
 def low_of(code, mhhw):
-    return np.asarray(code) >= low_code(mhhw)
+    return low_by(code, low_code(mhhw))
 
 
 def deep_of(code):

@@ -496,8 +496,9 @@ RADAR_NOTICE = "\n".join([
 ])
 
 
-# The bathymetry notice the map credit links (plan sections 93b and 96): NOAA's and USACE's data is public domain and NOAA asks for attribution and
-# that modified data not pass as the original; GEBCO asks for its citation and that modified data say so.
+# The bathymetry notice the map credit links (plan sections 93b, 96, 97 and 98): NOAA's, USACE's and USGS's data is public domain (BlueTopo
+# CC0) and NOAA asks for attribution and that modified data not pass as the original; GEBCO and DEP ask for their citations and that modified
+# data say so.
 BATHY_NOTICE = "\n".join([
     "Bathymetry (water depth) in the Allshore Surf map (allshoresurf.com)",
     "",
@@ -519,6 +520,29 @@ BATHY_NOTICE = "\n".join([
     "1/9 arc-second (about 3 m) topobathy tiles, doi:10.25921/ds9v-ky35, and, where the 1/9 arc-second grid has no",
     "value, NOAA's 1/3 arc-second (about 10 m) CUDEM tiles; through the NOAA Open Data Dissemination Program on AWS.",
     "Public domain; NOAA is credited at its request. This is not an official NOAA product and has not been reviewed by NOAA.",
+    "",
+    "The US mainland coasts (the Lower 48), best first at each point:",
+    "NOAA NCEI CUDEM 1/9 arc-second (about 3 m) topobathy, doi:10.25921/ds9v-ky35; where it has no value, 1-m topobathy",
+    "models read at about 3 m: US Geological Survey (USGS) Coastal National Elevation Database (CoNED) 2016 Southern",
+    "California, 2017 Central California and 2020 Northern California topobathymetric models, and the USACE National",
+    "Coastal Mapping Program 2014 Oregon topobathy lidar; then NOAA Office of Coast Survey BlueTopo (4 m, CC0), CUDEM",
+    "1/3 arc-second (about 10 m), and BlueTopo 8 m and 16 m. Through NOAA's Digital Coast and the NOAA Open Data",
+    "Dissemination Program on AWS. Public domain (BlueTopo CC0); NOAA, USACE and USGS are credited. Not an official",
+    "product of any of them and not reviewed by them. These sources give heights above NAVD88: Allshore Surf converted",
+    "them to mean sea level with a grid of mean sea level above NAVD88 interpolated from NOAA CO-OPS tide-station datums",
+    "(about 0.1 m either way near the gauges, more far from them).",
+    "",
+    "The Great Lakes (depth below each lake's Low Water Datum, its chart datum, not mean sea level):",
+    "NOAA NCEI (formerly NGDC) lake bathymetry: 1996 Lake Michigan (doi:10.7289/V5B85627), 1999 Lake Huron",
+    "(doi:10.7289/V5G15XS5), 1999 Lake Erie and Lake St. Clair (doi:10.7289/V5KS6PHK), 1999 Lake Ontario",
+    "(doi:10.7289/V56H4FBH) and the draft Lake Superior compilation, downloaded from www.ngdc.noaa.gov. Lake St Clair is",
+    "drawn from Lake Erie's grid, 0.9 m lower (St Clair's datum is 0.9 m above Erie's). Close in, 1-m topobathy lidar",
+    "read at about 3 m: USACE National Coastal Mapping Program 2018-2020 surveys of Lakes Superior, Michigan, Huron,",
+    "St. Clair, Erie and Ontario, USACE 2022 Keweenaw stamp sands, NOAA 2023 Lake Superior Whitefish Bay and Michigan's",
+    "2016 upper Lake Michigan islands survey, through NOAA's Digital Coast. Low Water Datum (IGLD 1985): Superior 183.2 m,",
+    "Michigan-Huron 176.0 m, St Clair 174.4 m, Erie 173.5 m, Ontario 74.2 m; the lidar's heights are taken below it (the",
+    "two NAVD88 surveys 0.01 m lower). Public domain; NOAA and USACE are credited; not an official product of either.",
+    "The lakes' water usually stands a few tenths of a metre above the datum and changes from year to year.",
     "",
     "Other Pacific islands (shallow reefs only, a satellite estimate):",
     "Digital Earth Pacific Satellite-Derived Bathymetry (Sentinel-2, 10 m), Pacific Community (SPC), version 0-0-1",
@@ -542,8 +566,8 @@ BATHY_NOTICE = "\n".join([
     "source its nearest value is carried one or two cells onto its land so the coastline decides the edge; those cells are drawn",
     "slightly darker. Within 24 pixels of a lidar survey's edge the depth blends into the grid beneath it, and where two",
     "lidar surveys meet the older one blends in under the newer one the same way (the newer survey's water stays water:",
-    "the blend never lifts it above mean sea level). Depths are below mean sea level as each source gives it; surveys are",
-    "years old and sand moves.",
+    "the blend never lifts it above mean sea level). Depths are below mean sea level as each source gives it (in the Great",
+    "Lakes, below the lake's Low Water Datum); surveys are years old and sand moves.",
     "Approximate: do not use this for navigation or safety decisions.",
     "",
 ])

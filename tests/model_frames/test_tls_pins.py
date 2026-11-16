@@ -77,6 +77,14 @@ def test_the_real_hosts_include_coast_builds_downloads():
         assert host in tls_check.REAL
 
 
+def test_the_real_hosts_include_the_great_lakes_grids():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("bathy_lakes", os.path.join(ROOT, "tools", "bathy", "bathy_lakes.py"))
+    lakes = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lakes)
+    assert lakes.URL.split("/")[2] in tls_check.REAL
+
+
 def test_unreachable_real_hosts_are_reported_not_failed(monkeypatch, capsys):
     monkeypatch.setattr(tls_check, "contexts", lambda: {"certifi": "/c.pem"})
     monkeypatch.setattr(__import__("time"), "sleep", lambda s: None)          # connect_retry's pause

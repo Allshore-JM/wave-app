@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       region:
-        description: "hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar or pacific-sdb (tools/bathy/bathy_sources.py)"
+        description: "hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar, pacific-sdb, a US coast region us-* or a Great Lakes region lake-* (tools/bathy/bathy_sources.py)"
         default: "hawaii"
       version:
         description: "the region's data version (static/bathy/<region>/v<N>)"
@@ -59,7 +59,7 @@ jobs:
           REGION: ${{ github.event.inputs.region }}
           VERSION: ${{ github.event.inputs.version }}
         run: |
-          case "$REGION" in hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb) ;; *) echo "region must be hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar or pacific-sdb"; exit 2;; esac
+          case "$REGION" in hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem) ;; *) echo "region must be hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar, pacific-sdb, a US coast region (us-me-nh ... us-or-wa) or a Great Lakes region (lake-superior ... lake-ontario-dem)"; exit 2;; esac
           [[ "$VERSION" =~ ^[1-9][0-9]*$ ]] || { echo "version must be a whole number from 1, no leading zero"; exit 2; }
           nproc; df -h . | tail -1
       - name: Download GEBCO 2026 (region gebco)

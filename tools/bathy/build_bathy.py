@@ -69,7 +69,9 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import bathy_bluetopo as BT  # noqa: E402
 import bathy_dep as D       # noqa: E402
+import bathy_lakes as L     # noqa: E402
 import bathy_sources as S   # noqa: E402
 import bathy_tiles as T     # noqa: E402
 import bathy_water as W     # noqa: E402
@@ -82,7 +84,7 @@ PREFIX = "static/bathy"
 
 GDAL_ENV = {
     "AWS_NO_SIGN_REQUEST": "YES", "AWS_REGION": "us-east-1", "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.TIF,.vrt,.zip", "GDAL_HTTP_MAX_RETRY": "5", "GDAL_HTTP_RETRY_DELAY": "3",
+    "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.TIF,.tiff,.TIFF,.vrt,.zip", "GDAL_HTTP_MAX_RETRY": "5", "GDAL_HTTP_RETRY_DELAY": "3",
     "VSI_CACHE": "TRUE", "VSI_CACHE_SIZE": "200000000", "GDAL_CACHEMAX": "512",
 }
 
@@ -143,6 +145,8 @@ def region_config(name, box=None, local=None):
         s["gdal"] = S.gdal_path(s)
         if s.get("geoid"):
             s["geoid_path"] = (local or {}).get("geoid:" + s["geoid"]) or S.GEOIDS[s["geoid"]]
+            if not (local and "geoid:" + s["geoid"] in local) and committed_grid(s["geoid_path"]):
+                check_datum_grid(s["geoid_path"])
         srcs.append(s)
     srcs.sort(key=lambda s: s["id"])          # best first = the lowest id first, whatever order the region lists them in
     ids = [s["id"] for s in srcs]
@@ -162,12 +166,77 @@ def region_config(name, box=None, local=None):
         raise ValueError("%s: water_all must hold for every own source or none" % name)
     reg.update(name=name, srcs=srcs, zmax=max(s["zmax"] for s in own), water_all=bool(own[0].get("water_all")),
                exclude_boxes=[tuple(S.REGIONS[n]["box"]) for n in reg.get("exclude", ())])
+    if reg.get("cut"):
+        reg["keep_box"] = tuple(S.REGIONS[name]["box"])     # the configured box, whatever --box narrowed
+    r = reg.get("reach", 0)
+    if isinstance(r, bool) or not isinstance(r, (int, float)) or not 0 <= r <= 2:
+        raise ValueError("%s: reach %r must be degrees, 0-2" % (name, r))
+    if r and not reg.get("cut"):
+        raise ValueError("%s: reach needs cut (what is read past the box is cut after the water rule)" % name)
+    if reg.get("exclude_late") and not reg.get("exclude_boxes"):
+        raise ValueError("%s: exclude_late without exclude" % name)
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
+    seed = reg.get("seed")
+    if seed is not None:
+        if seed not in S.SEED_FILES:
+            raise ValueError("%s: seed %r must be one of %s" % (name, seed, sorted(S.SEED_FILES)))
+        if reg["water_all"]:
+            raise ValueError("%s: seed has no meaning for a water_all region (no connectivity test)" % name)
+        sm = reg.get("seed_m", S.SEED_M)
+        if isinstance(sm, bool) or not isinstance(sm, (int, float)) or not 100.0 <= sm <= 20000.0:
+            raise ValueError("%s: seed_m %r must be metres, 100-20000" % (name, sm))
+        if local and "seed:" + seed in local:
+            reg["seed_path"] = local["seed:" + seed]
+    mh = reg.get("mhhw")
+    if mh == "grid":
+        reg["mhhw_path"] = (local or {}).get("mhhw:grid") or S.MHHW_GRID
+        if not (local and "mhhw:grid" in local):
+            check_datum_grid(reg["mhhw_path"])
+    elif isinstance(mh, bool) or not isinstance(mh, (int, float)) or not -1.0 <= mh <= 5.0:
+        raise ValueError('%s: mhhw %r must be metres above mean sea level (-1..5) or "grid"' % (name, mh))
     if box:
         b = reg["box"]
         reg["box"] = (max(b[0], box[0]), max(b[1], box[1]), min(b[2], box[2]), min(b[3], box[3]))
+    if r:
+        reg["reach_box"] = reach_box(reg["box"], r)
     return reg
+
+
+def reach_box(box, r):
+    """The box grown by r degrees each way (latitudes held inside +-85): what a region with `reach` reads, so a river or
+    bay whose mouth lies in the neighbour's box still joins the sea; the part outside the region's own box is cut after
+    the water rule (keep_box)."""
+    w, s, e, n = box
+    return (w - r, max(s - r, -85.0), e + r, min(n + r, 85.0))
+
+
+def read_box(reg):
+    """The lon/lat box a region reads: its box, grown by its reach (reach_box)."""
+    return reg.get("reach_box") or reg["box"]
+
+
+def committed_grid(path):
+    """A datum grid committed beside the source table (bathy_sources.DATUM_DIR), as opposed to a remote geoid such as
+    "/vsicurl/https://cdn.proj.org/..." (which os.path.isabs calls absolute on Linux)."""
+    if path.startswith("/vsi"):
+        return False
+    return os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(os.path.abspath(S.DATUM_DIR))
+
+
+def check_datum_grid(path):
+    """A committed datum grid must be the one pinned in bathy_sources.DATUM_GRIDS: a changed grid moves every depth."""
+    name = os.path.basename(path)
+    want = S.DATUM_GRIDS.get(name)
+    if not want:
+        raise ValueError("%s: no pinned sha256 in bathy_sources.DATUM_GRIDS" % name)
+    if not os.path.exists(path):
+        raise ValueError("%s: the datum grid is missing (tools/bathy/build_datum_grids.py writes it)" % path)
+    with open(path, "rb") as f:
+        got = hashlib.sha256(f.read()).hexdigest()
+    if got != want:
+        raise ValueError("%s: hash %s is not the pinned %s" % (name, got[:16], want[:16]))
+    return path
 
 
 # A named client: the frame host's edge refuses Python's default "Python-urllib" user agent (HTTP 403).
@@ -227,6 +296,8 @@ def vrt_rects(text):
 
 def footprint(src):
     """The lon/lat rectangles where a source may have data."""
+    if src.get("tiles") is not None:                    # a tiled source (BlueTopo): its tiles' outlines
+        return [r for (_, r) in src["tiles"]]
     if src.get("kind") == "dep" and not src.get("local"):
         return D.rects(D.tiles(src.get("skip_tiles", ())))     # from DEP's tile grid, no network
     if src.get("local"):
@@ -238,6 +309,26 @@ def footprint(src):
                 return to_lonlat(d.crs, rect)
         return rect
     return vrt_rects(_https_text("https://%s.s3.amazonaws.com/%s" % (S.BUCKET, src["path"])))
+
+
+def clip_rects(rects, box):
+    """The rectangles cut to the lon/lat box, empty ones dropped: a national set's footprint inside one region."""
+    out = []
+    for r in rects:
+        c = (max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3]))
+        if c[0] < c[2] and c[1] < c[3]:
+            out.append(c)
+    return out
+
+
+def clip_box(clip, box):
+    """The box a source's footprint is cut to: the region's (`clip` True, a national set: this region's part), or the
+    part of the source's own (west, south, east, north) `clip` inside the region's (a fill that only matters there)."""
+    if clip is True:
+        return tuple(box)
+    if not (isinstance(clip, (tuple, list)) and len(clip) == 4 and clip[0] < clip[2] and clip[1] < clip[3]):
+        raise ValueError("clip %r must be True or (west, south, east, north)" % (clip,))
+    return (max(clip[0], box[0]), max(clip[1], box[1]), min(clip[2], box[2]), min(clip[3], box[3]))
 
 
 def outside_box(box, srcs, tol=FOOT_PAD + 1e-6):
@@ -267,7 +358,7 @@ def dep_blocks(reg, src, workers):
     of its tiles inside the region's box (the satellite depths are sparse: most of a tile's footprint is empty ocean,
     and a block read costs about the same whether it holds data or not)."""
     bz = reg["zmax"] - BLOCK_LEVELS
-    tiles = D.tiles_in(D.tiles(src.get("skip_tiles", ())), reg["box"])
+    tiles = D.tiles_in(D.tiles(src.get("skip_tiles", ())), read_box(reg))
     t0 = time.time()
     found = set()
     with pool(workers) as ex:
@@ -284,7 +375,7 @@ def block_keys(reg):
     inside the region's box, plus `ring` blocks around them (read for the fill and the water rule only)."""
     bz = reg["zmax"] - BLOCK_LEVELS
     keys = set()
-    box = reg["box"]
+    box = read_box(reg)
     for src in reg["srcs"]:
         if src.get("fill"):
             continue
@@ -308,7 +399,7 @@ def block_keys(reg):
                     if x0 <= x + dx <= x1 and y0 <= y + dy <= y1:
                         grown.add((x + dx, y + dy))
         keys = grown
-    if reg.get("exclude_boxes"):
+    if reg.get("exclude_boxes") and not reg.get("exclude_late"):
         keys = {k for k in keys if not _inside_any(bz, k, reg["exclude_boxes"])}
     return sorted(keys)
 
@@ -318,6 +409,15 @@ def _inside_any(z, key, boxes):
     b = T.tile_bounds(z, key[0], key[1])
     (lon0, lat0), (lon1, lat1) = T.xy_to_lonlat(b[0], b[1]), T.xy_to_lonlat(b[2], b[3])
     return any(w <= lon0 and lon1 <= e and s <= lat0 and lat1 <= n for (w, s, e, n) in boxes)
+
+
+def bluetopo_scheme(work, local=None):
+    """A local path of BlueTopo's newest tile scheme: the tests' own ("bluetopo:scheme" in `local`), else downloaded."""
+    if local and "bluetopo:scheme" in local:
+        return local["bluetopo:scheme"]
+    dest = os.path.join(work, "bluetopo_scheme.gpkg")
+    log("BlueTopo tile scheme: %s" % BT.fetch_scheme(dest, _https_bytes))
+    return dest
 
 
 def dep_vrt(src, work):
@@ -342,9 +442,19 @@ def exclude_mask(b, size, boxes):
     return out
 
 
+def drop_mask(b, size, exclude=None, keep=None):
+    """bool (size, size) of the EPSG:3857 grid b, or None: pixels whose centre lies inside one of the `exclude` boxes
+    (another region's surveys) or outside the `keep` box (a region cut to its own box: its neighbour draws there)."""
+    m = exclude_mask(b, size, exclude) if exclude else None
+    if keep:
+        out = ~exclude_mask(b, size, [keep])
+        m = out if m is None else (m | out)
+    return m
+
+
 def _cut(depth, src, mask):
     """Nothing at the masked pixels (in place): no depth, no source."""
-    if mask.any():
+    if mask is not None and mask.any():
         depth[mask] = np.nan
         src[mask] = 0
 
@@ -408,6 +518,58 @@ def feather(main, main_id, fill, fill_id, px=None):
     return elev, ids
 
 
+def block_geom(reg, key):
+    """Block `key` at the region's finest zoom: (EPSG:3857 bounds with the margin, side px with the margin, margin px,
+    core px)."""
+    m = margin_of(reg)
+    px = T.TILE * 2 ** BLOCK_LEVELS
+    return T.tile_bounds(reg["zmax"] - BLOCK_LEVELS, key[0], key[1], apron=m, px=px), px + 2 * m, m, px
+
+
+def grid_mhhw(reg):
+    return isinstance(reg.get("mhhw"), str)
+
+
+def mhhw_field(reg, key):
+    """MHHW above mean sea level over block `key` (with its margin), metres: the region's number, or for mhhw "grid" the
+    Lower-48 grid read bilinearly onto the block (a block outside the grid stops the build)."""
+    if not grid_mhhw(reg):
+        return float(reg["mhhw"])
+    from rasterio.enums import Resampling
+    b, size, _, _ = block_geom(reg, key)
+    a = _warp(reg.get("mhhw_path") or S.MHHW_GRID, b, size, Resampling.bilinear, key="geoid")
+    if not np.isfinite(a).all():
+        raise ValueError("%s: block %s reaches outside the MHHW grid" % (reg["name"], key))
+    return a
+
+
+def low_threshold(reg, key):
+    """The smallest depth code that counts as low over block `key` (with its margin): one number, or one per pixel for a
+    region whose mhhw is "grid" (bathy_water.low_by)."""
+    if not grid_mhhw(reg):
+        return W.low_code(reg["mhhw"])
+    return T.encode_depth(-mhhw_field(reg, key))
+
+
+def _thr_of(reg, f):
+    return f["thr"] if "thr" in f.files else W.low_code(reg["mhhw"])
+
+
+def _read(s, b, size, resampling, ll):
+    """One source on the block grid: its file, or for a tiled source (BlueTopo) every tile meeting the block, the first
+    tile with a value winning (the finest resolution first: bathy_bluetopo.tiles_in)."""
+    if s.get("tiles") is None:
+        return _warp(s["gdal"], b, size, resampling, s.get("nodata"), s["key"])
+    a = np.full((size, size), np.nan, np.float32)
+    for path, r in s["tiles"]:
+        if not _hits([r], ll):
+            continue
+        t = _warp(path, b, size, resampling, s.get("nodata"), s["key"])
+        take = np.isnan(a) & np.isfinite(t)
+        a[take] = t[take]
+    return a
+
+
 def read_field(reg, key):
     """(elevation float32, source ids uint8) of block `key`, (2048 + 2 margin) px square at zoom zmax; NaN = no data.
     Own sources are merged by id (the lower id wins: the newer survey); where an older own source meets the newer
@@ -415,24 +577,22 @@ def read_field(reg, key):
     sea level (survey_fade). The fill sources are merged first-valid beneath
     them, then blended at the own sources' edge (feather)."""
     from rasterio.enums import Resampling
-    m = margin_of(reg)
-    bz = reg["zmax"] - BLOCK_LEVELS
-    px = T.TILE * 2 ** BLOCK_LEVELS
-    size = px + 2 * m
-    b = T.tile_bounds(bz, key[0], key[1], apron=m, px=px)
+    b, size, m, px = block_geom(reg, key)
     (lon0, lat0), (lon1, lat1) = T.xy_to_lonlat(b[0], b[1]), T.xy_to_lonlat(b[2], b[3])
     ll = (min(lon0, lon1), min(lat0, lat1), max(lon0, lon1), max(lat0, lat1))
     layers = {False: [np.full((size, size), np.nan, np.float32), np.zeros((size, size), np.uint8)],
               True: [np.full((size, size), np.nan, np.float32), np.zeros((size, size), np.uint8)]}
     ground = (b[2] - b[0]) / size * math.cos(math.radians(T.xy_to_lonlat(0.0, (b[1] + b[3]) / 2)[1]))
     geoids = {}
+    mhhw = None
     any_fill = False
-    ex = exclude_mask(b, size, reg["exclude_boxes"]) if reg.get("exclude_boxes") else None
+    ex = (exclude_mask(b, size, reg["exclude_boxes"]) if reg.get("exclude_boxes") and not reg.get("exclude_late")
+          else None)        # exclude_late: the water rule sees the other box's water; pass2 cuts it
     for s in reg["srcs"]:
         if "rects" in s and not _hits(s["rects"], ll):
             continue
         coarser = s["res_m"] > 1.25 * ground      # enlarging: bilinear, not "average" (which would copy 2 x 2 blocks)
-        a = _warp(s["gdal"], b, size, Resampling.bilinear if coarser else Resampling.average, s.get("nodata"), s["key"])
+        a = _read(s, b, size, Resampling.bilinear if coarser else Resampling.average, ll)
         if s.get("geoid_path"):
             if not (np.abs(a) < S.SANE_M).any():   # nothing real in the block: the geoid is never read
                 continue
@@ -452,11 +612,17 @@ def read_field(reg, key):
                 a[a < -np.float32(s["max_depth"])] = np.nan     # deeper than the source is trusted: left out
         if ex is not None:
             a[ex] = np.nan                                     # another region's own surveys hold this ground
+        if s.get("clip_area"):
+            # a source clipped to (west, south, east, north): the warp reads the whole block, so the pixels outside
+            # the clip are dropped here (a 1-m fill must not win over the 3-m grid past the edge it was clipped to)
+            a[~exclude_mask(b, size, [s["clip_area"]])] = np.nan
         elev, ids = layers[bool(s.get("fill"))]
         if not s.get("fill") and s.get("survey_fade") and (np.isfinite(elev) & np.isfinite(a)).any():
             # an older survey meeting the newer ones: it fills their gaps and fades in at their edge (feather);
             # where the two do not overlap this is the plain merge below
-            layers[False] = list(survey_fade(elev, ids, a, s["id"], reg["mhhw"]))
+            if mhhw is None:
+                mhhw = mhhw_field(reg, key)
+            layers[False] = list(survey_fade(elev, ids, a, s["id"], mhhw))
             continue
         take = np.isnan(elev) & np.isfinite(a)
         elev[take] = a[take]
@@ -472,11 +638,12 @@ def survey_fade(newer, newer_id, older, older_id, mhhw):
     """The older survey faded in under the newer ones (feather), except that a pixel the newer surveys hold as water
     (at or below `mhhw`) is never lifted above mean sea level, or above its own value when that is already higher (a
     reef flat between 0 and mhhw): the fade may make such water shallower but never turns it into land (owner,
-    2026-11-14). For mhhw below 0 the cap is mhhw itself."""
+    2026-11-14). For mhhw below 0 the cap is mhhw itself. `mhhw` is a number or one value per pixel (mhhw "grid")."""
     e, i = feather(newer, newer_id, older, np.full(older.shape, older_id, np.uint8))
+    m = np.asarray(mhhw, np.float32)
     with np.errstate(invalid="ignore"):
-        wet = np.isfinite(newer) & (newer <= np.float32(mhhw))
-        cap = np.maximum(newer, np.float32(min(0.0, mhhw)))
+        wet = np.isfinite(newer) & (newer <= m)
+        cap = np.maximum(newer, np.minimum(np.float32(0.0), m))
         lift = wet & (e > cap)
     e[lift] = cap[lift]
     return e, i
@@ -515,12 +682,56 @@ def pass1(args):
             return key, None
         np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
         return key, True
-    low = W.low_of(core, reg["mhhw"])
+    thr = low_threshold(reg, key)
+    low = W.low_by(core, thr if np.ndim(thr) == 0 else thr[m:m + px, m:m + px])
     if not low.any():
         save_land_core(reg, key, core)
         return key, None
-    np.savez_compressed(_work_path(reg, key), code=code, src=src_id)
-    return key, W.summarise(low, W.deep_of(core))
+    extra = {} if np.ndim(thr) == 0 else {"thr": thr}
+    np.savez_compressed(_work_path(reg, key), code=code, src=src_id, **extra)
+    return key, W.summarise(low, seed_of(reg, key, core))
+
+
+def seed_of(reg, key, core):
+    """The pixels of block `key`'s core that seed the open water: deeper than DEEP_M, or for a region with `seed` "sea" /
+    "lake" (bathy_sources.SEED_M) on the shoreline file's water side and either at least seed_m from its shore or
+    deeper than DEEP_M. bool (px, px) at the finest zoom; only low pixels count (bathy_water.summarise)."""
+    deep = W.deep_of(core)
+    if not reg.get("seed"):
+        return deep
+    water, far = seed_masks(reg, key)
+    return water & (far | deep)
+
+
+def seed_masks(reg, key):
+    """(water, far) of block `key`'s core at the finest zoom, from the region's shoreline file: water = the file's water
+    side ("sea": not GSHHG land; "lake": inside a lake, outside its islands), far = water at least seed_m from the
+    file's shore. Computed at the block zoom (one 256-px tile plus enough margin to see every shore within seed_m),
+    then each pixel repeated 2 ** BLOCK_LEVELS times."""
+    from scipy import ndimage
+    zb = reg["zmax"] - BLOCK_LEVELS
+    x0, y0, x1, y1 = T.tile_bounds(zb, key[0], key[1])
+    res = (x1 - x0) / T.TILE
+    lat = T.xy_to_lonlat((x0 + x1) / 2, (y0 + y1) / 2)[1]
+    ground = res * float(np.cos(np.radians(lat)))
+    seed_m = float(reg.get("seed_m", S.SEED_M))
+    k = int(np.ceil(seed_m / ground)) + 1
+    n = T.TILE + 2 * k
+    lake = reg["seed"] == "lake"
+    mask = shore_raster(reg["seed_path"], (x0 - k * res, y0 - k * res, x1 + k * res, y1 + k * res), n, holes=lake)
+    water = mask if lake else ~mask
+    if water.all():
+        far = water.copy()
+    elif not water.any():
+        far = water
+    else:
+        far = ndimage.distance_transform_edt(water) * ground >= seed_m
+    rep = 2 ** BLOCK_LEVELS
+    out = []
+    for a in (water, far):
+        c = a[k:k + T.TILE, k:k + T.TILE]
+        out.append(np.repeat(np.repeat(c, rep, axis=0), rep, axis=1))
+    return out[0], out[1]
 
 
 def _sea_path(reg, key):
@@ -535,7 +746,10 @@ def pass_sea(args):
     m = margin_of(reg)
     with np.load(_work_path(reg, key)) as f:
         core = f["code"][m:m + px, m:m + px]
-    np.save(_sea_path(reg, key), T.pack_bits(W.sea_of(W.low_of(core, reg["mhhw"]), keep)))
+        thr = _thr_of(reg, f)
+    if np.ndim(thr):
+        thr = thr[m:m + px, m:m + px]
+    np.save(_sea_path(reg, key), T.pack_bits(W.sea_of(W.low_by(core, thr), keep)))
     return key
 
 
@@ -603,15 +817,22 @@ def pass2(args):
     px = T.TILE * 2 ** BLOCK_LEVELS
     with np.load(_work_path(reg, key)) as f:
         code, src = f["code"], f["src"]
+        thr = _thr_of(reg, f)
     if reg.get("water_all"):
         wet = code > 0
     else:
         sea = W.sea_around(key, _sea_get(reg), px, margin_of(reg))
-        wet = W.low_of(code, reg["mhhw"]) & sea
+        wet = W.low_by(code, thr) & sea
     depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
     src = np.where(wet, src, np.where(code > 0, T.LAND_ID, 0)).astype(np.uint8)
-    written = []
     m, k = margin_of(reg), 2 ** BLOCK_LEVELS
+    late = reg.get("exclude_boxes") if reg.get("exclude_late") else None
+    if reg.get("keep_box") or late:
+        # outside the region's own box (or inside a box it leaves out late): nothing (the neighbouring region draws
+        # there); cut after the water rule, which needs the whole block
+        b = T.tile_bounds(reg["zmax"] - BLOCK_LEVELS, key[0], key[1], apron=m, px=T.TILE * k)
+        _cut(depth, src, drop_mask(b, depth.shape[0], late, reg.get("keep_box")))
+    written = []
     while True:
         for j in range(k):
             for i in range(k):
@@ -630,11 +851,11 @@ def pass2(args):
             break
         depth, src = T.pool2(depth, src)
         m, k, z = m // 2, k // 2, z - 1
-        if reg.get("exclude_boxes"):
-            # the cut at every zoom, not only at zmax: a coarser pixel whose centre lies in another region's box
-            # holds nothing of this region (read_field cut zmax by the same rule)
+        if reg.get("exclude_boxes") or reg.get("keep_box"):
+            # the cut at every zoom, not only at zmax: a coarser pixel whose centre lies in another region's box (or
+            # outside this region's own box, keep_box) holds nothing of this region
             b = T.tile_bounds(reg["zmax"] - BLOCK_LEVELS, key[0], key[1], apron=m, px=T.TILE * k)
-            _cut(depth, src, exclude_mask(b, depth.shape[0], reg["exclude_boxes"]))
+            _cut(depth, src, drop_mask(b, depth.shape[0], reg.get("exclude_boxes"), reg.get("keep_box")))
     os.remove(_work_path(reg, key))
     return written
 
@@ -698,9 +919,10 @@ def encode_level(work, out, z, wrap=False, tables=None):
     return written
 
 
-def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None, exclude=None):
+def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None, exclude=None, keep=None):
     """Zooms zfrom - 1 .. zmin from the saved cores of zoom zfrom: halve 2 x 2 children, save, encode. With `exclude`
-    (lon/lat boxes), a pixel whose centre lies inside one holds nothing (the same rule as at zmax, at every zoom)."""
+    (lon/lat boxes), a pixel whose centre lies inside one holds nothing; with `keep` (one box), a pixel whose centre
+    lies outside it holds nothing (the same rules as at zmax, at every zoom)."""
     written = []
     for z in range(zfrom - 1, zmin - 1, -1):
         parents = sorted({(x >> 1, y >> 1) for (x, y) in core_keys(work, z + 1)})
@@ -714,8 +936,8 @@ def coarse_levels(work, out, zfrom, zmin, wrap=False, tables=None, exclude=None)
                         big[dy * T.TILE:(dy + 1) * T.TILE, dx * T.TILE:(dx + 1) * T.TILE] = c[0]
                         bs[dy * T.TILE:(dy + 1) * T.TILE, dx * T.TILE:(dx + 1) * T.TILE] = c[1]
             d, s = T.pool2(big, bs)
-            if exclude:
-                _cut(d, s, exclude_mask(T.tile_bounds(z, px, py), T.TILE, exclude))
+            if exclude or keep:
+                _cut(d, s, drop_mask(T.tile_bounds(z, px, py), T.TILE, exclude, keep))
             if np.isfinite(d).any() or (s == T.LAND_ID).any():
                 save_core(work, z, px, py, d, s)
         written += encode_level(work, out, z, wrap=wrap, tables=tables)
@@ -758,16 +980,19 @@ def gebco_corners(path):
     return corners
 
 
-def land_file(path, work):
-    """The GSHHG land overview (coast-v1, bathy_sources.LAND): a given local file, else downloaded; checked by hash."""
+def land_file(path, work, kind="sea"):
+    """A pinned shoreline overview (coast-v1): "sea" = the GSHHG land (bathy_sources.LAND), "lake" = the Great Lakes
+    (bathy_sources.LAKES). A given local file is used as it is, else downloaded into `work`; checked by hash."""
     if not path:
-        path = os.path.join(work, "land-world-i.bin")
+        fname, spec = S.SEED_FILES[kind]
+        path = os.path.join(work, fname)
         if not os.path.exists(path):
             with open(path, "wb") as f:
-                f.write(_https_bytes(S.LAND["url"]))
+                f.write(_https_bytes(spec["url"]))
         got = hashlib.sha256(open(path, "rb").read()).hexdigest()
-        if got != S.LAND["sha256"]:
-            raise ValueError("the land overview's hash %s is not the pinned %s" % (got[:16], S.LAND["sha256"][:16]))
+        if got != spec["sha256"]:
+            raise ValueError("the %s overview's hash %s is not the pinned %s" % (
+                "land" if kind == "sea" else kind, got[:16], spec["sha256"][:16]))
     return path
 
 
@@ -792,9 +1017,21 @@ def _merc(lon, lat):
 
 def land_mask(path, z, x, y, px=T.TILE):
     """bool (px, px): True where a pixel of tile z/x/y lies on GSHHG land (a lake inside the land counts as land)."""
+    return shore_raster(path, T.tile_bounds(z, x, y), px)
+
+
+def _ring_area(lon, lat):
+    """Signed area (degrees^2) of a ring; > 0 = anticlockwise (an outer ring of coast-v1), < 0 = clockwise (a hole)."""
+    return 0.5 * float(np.sum(lon * np.roll(lat, -1) - np.roll(lon, -1) * lat))
+
+
+def shore_raster(path, bounds, px, holes=False):
+    """bool (px, px) over EPSG:3857 `bounds` (x0, y0, x1, y1; row 0 at y1): True inside the coast-v1 file's polygons.
+    holes=True (the lakes set: islands are clockwise rings of the same piece) fills the anticlockwise rings first and
+    then clears the clockwise ones; otherwise every ring is filled (the land set has no holes)."""
     from PIL import Image, ImageDraw
     boxes, rings = land_pieces(path)
-    x0, y0, x1, y1 = T.tile_bounds(z, x, y)
+    x0, y0, x1, y1 = bounds
     lon0, lat0 = T.xy_to_lonlat(x0, y0)
     lon1, lat1 = T.xy_to_lonlat(x1, y1)
     hit = np.flatnonzero((boxes[:, 0] <= lon1) & (boxes[:, 2] >= lon0) & (boxes[:, 1] <= lat1) & (boxes[:, 3] >= lat0))
@@ -802,11 +1039,17 @@ def land_mask(path, z, x, y, px=T.TILE):
     if hit.size:
         draw = ImageDraw.Draw(img)
         res = (x1 - x0) / px
+        later = []
         for i in hit:
             for lon, lat in rings[i]:
                 mx, my = _merc(lon, lat)
                 pts = list(zip(((mx - x0) / res).tolist(), ((y1 - my) / res).tolist()))
-                draw.polygon(pts, fill=1)
+                if holes and _ring_area(lon, lat) < 0:
+                    later.append(pts)
+                else:
+                    draw.polygon(pts, fill=1)
+        for pts in later:
+            draw.polygon(pts, fill=0)
     return np.asarray(img, np.uint8) > 0
 
 
@@ -958,16 +1201,39 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
             raise SystemExit("--gebco <zip or directory> is needed for the gebco region")
         written = build_gebco(reg, gebco, workers, land=land)
     else:
+        if reg.get("seed"):
+            reg["seed_path"] = land_file(reg.get("seed_path") or (land if reg["seed"] == "sea" else None), work,
+                                         reg["seed"])
+        scheme = None
+        whole = tuple(S.REGIONS[name]["box"])        # the configured box, whatever --box narrowed, grown by the reach
+        if reg.get("reach"):
+            whole = reach_box(whole, reg["reach"])
         for s in reg["srcs"]:
+            if s.get("kind") == "lakegrid" and not s.get("local"):
+                s["gdal"] = s["local"] = L.fetch(s["lake"], work, USER_AGENT)     # NCEI's archive, checked by hash
             if s.get("kind") == "dep" and not s.get("local"):
                 s["gdal"] = dep_vrt(s, work)
+            if s.get("kind") == "bluetopo":
+                if s.get("local"):          # tests: local tile files (a list, or one path)
+                    files = s["local"] if isinstance(s["local"], (list, tuple)) else [s["local"]]
+                    s["tiles"] = [(f, r) for f in files for r in footprint({"local": f, "gdal": f})]
+                else:
+                    if scheme is None:
+                        scheme = BT.read_scheme(bluetopo_scheme(work, local))
+                    s["tiles"] = BT.tiles_in(scheme, read_box(reg), s["bt_res"])
+                log("%s: %d BlueTopo tiles meet the box" % (s["key"], len(s["tiles"])))
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
+            if s.get("clip"):
+                area = clip_box(s["clip"], whole)
+                s["rects"] = clip_rects(s["rects"], area)
+                if s["clip"] is not True:
+                    s["clip_area"] = area      # cut per pixel too (read_field): a block reaches past the clip
             if s.get("kind") == "dep" and not s.get("local") and not s.get("fill"):
                 s["blocks"] = dep_blocks(reg, s, workers)
-        bad = outside_box(S.REGIONS[name]["box"], reg["srcs"])   # the configured box, whatever --box narrowed
+        bad = outside_box(whole, reg["srcs"])   # the configured box (+ reach), whatever --box narrowed
         if bad:
             raise ValueError("%s: %d footprint rectangle(s) outside the region's box %s, e.g. %s: widen the box"
-                             % (name, len(bad), S.REGIONS[name]["box"], bad[:3]))
+                             % (name, len(bad), whole, bad[:3]))
         keys = block_keys(reg)
         log("%s: %d blocks of zoom %d to read (zmax %d)" % (name, len(keys), reg["zmax"] - BLOCK_LEVELS, reg["zmax"]))
         blocks = {}
@@ -987,7 +1253,8 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
         log("pass 2: %d tiles at zooms %d-%d (%.0f s)" % (len(written), reg["zmax"] - BLOCK_LEVELS, reg["zmax"],
                                                          time.time() - t0))
         written += coarse_levels(work, out, reg["zmax"] - BLOCK_LEVELS, reg["zmin"], wrap=bool(reg.get("wrap")),
-                                 tables=zoom_tables(reg), exclude=reg.get("exclude_boxes"))
+                                 tables=zoom_tables(reg), exclude=reg.get("exclude_boxes"),
+                                 keep=reg.get("keep_box"))
     _core.cache_clear()
     index = write_index(reg, out, version)
     if not keep_work:
@@ -1115,6 +1382,12 @@ def licence_text(reg):
                   "- A satellite estimate, often off by 2 m: depths deeper than %g m are left out (the regional grid "
                   "shows there), every pixel DEP gives is water, and nothing is used where the US territories' own "
                   "surveys are (%s)." % (s["max_depth"], ", ".join(reg.get("exclude", ())) or "none")]
+    if any(s.get("kind") == "lakegrid" for s in reg["srcs"]):
+        lines += ["- Great Lakes: depths below the lake's Low Water Datum (IGLD 1985: Superior 183.2 m, Michigan-Huron "
+                  "176.0 m, St Clair 174.4 m, Erie 173.5 m, Ontario 74.2 m), the lake's chart datum, not mean sea "
+                  "level. The lake grids are NOAA NCEI's (NGDC 1996-1999 compilations, Superior a draft), downloaded "
+                  "from www.ngdc.noaa.gov; the lidar DEMs' heights are taken below the same datum (the two NAVD88 "
+                  "surveys 0.01 m lower). Lake St Clair from Lake Erie's grid, 0.9 m lower."]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

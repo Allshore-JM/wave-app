@@ -45,6 +45,8 @@ REAL = (
     "apps.des.qld.gov.au", "auswaves.org", "models.allshoresurf.com", "allshoresurf.com",
     # coast-build's downloads (curl with certifi's file): GSHHG's release (a redirect), Natural Earth, GeoNames
     "github.com", "release-assets.githubusercontent.com", "raw.githubusercontent.com", "download.geonames.org",
+    # bathy-build's Great Lakes grids (tools/bathy/bathy_lakes.py: urllib with certifi's file)
+    "www.ngdc.noaa.gov",
 )
 UNTRUSTED_ISSUER = (2, 19, 20, 21)    # unable to get issuer / self-signed in chain / no local issuer / leaf unverifiable
 

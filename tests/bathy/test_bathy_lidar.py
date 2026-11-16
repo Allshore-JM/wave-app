@@ -749,9 +749,10 @@ def test_unmarked_surveys_keep_the_plain_merge_and_the_small_margin(tmp_path, mo
 
 
 def test_every_lidar_source_is_marked_and_no_cudem_grid_is():
-    """The owner's rule applies to the lidar surveys only: the LIDAR template carries the mark, the CUDEM ones do not."""
+    """The owner's rule applies to the lidar surveys only: the LIDAR template carries the mark (the Great Lakes' 1-m
+    DEMs too, read to zoom 15), the CUDEM grids and the West Coast's baseline surveys do not."""
     for sid, s in S.SOURCES.items():
-        if s.get("zmax") == 17:
+        if s.get("zmax") == 17 or s.get("lake_lwd") is not None:
             assert s.get("survey_fade") is True, sid
         else:
             assert not s.get("survey_fade"), sid

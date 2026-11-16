@@ -168,6 +168,13 @@ def region_config(name, box=None, local=None):
                exclude_boxes=[tuple(S.REGIONS[n]["box"]) for n in reg.get("exclude", ())])
     if reg.get("cut"):
         reg["keep_box"] = tuple(S.REGIONS[name]["box"])     # the configured box, whatever --box narrowed
+    r = reg.get("reach", 0)
+    if isinstance(r, bool) or not isinstance(r, (int, float)) or not 0 <= r <= 2:
+        raise ValueError("%s: reach %r must be degrees, 0-2" % (name, r))
+    if r and not reg.get("cut"):
+        raise ValueError("%s: reach needs cut (what is read past the box is cut after the water rule)" % name)
+    if reg.get("exclude_late") and not reg.get("exclude_boxes"):
+        raise ValueError("%s: exclude_late without exclude" % name)
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
     seed = reg.get("seed")
@@ -191,7 +198,22 @@ def region_config(name, box=None, local=None):
     if box:
         b = reg["box"]
         reg["box"] = (max(b[0], box[0]), max(b[1], box[1]), min(b[2], box[2]), min(b[3], box[3]))
+    if r:
+        reg["reach_box"] = reach_box(reg["box"], r)
     return reg
+
+
+def reach_box(box, r):
+    """The box grown by r degrees each way (latitudes held inside +-85): what a region with `reach` reads, so a river or
+    bay whose mouth lies in the neighbour's box still joins the sea; the part outside the region's own box is cut after
+    the water rule (keep_box)."""
+    w, s, e, n = box
+    return (w - r, max(s - r, -85.0), e + r, min(n + r, 85.0))
+
+
+def read_box(reg):
+    """The lon/lat box a region reads: its box, grown by its reach (reach_box)."""
+    return reg.get("reach_box") or reg["box"]
 
 
 def committed_grid(path):
@@ -336,7 +358,7 @@ def dep_blocks(reg, src, workers):
     of its tiles inside the region's box (the satellite depths are sparse: most of a tile's footprint is empty ocean,
     and a block read costs about the same whether it holds data or not)."""
     bz = reg["zmax"] - BLOCK_LEVELS
-    tiles = D.tiles_in(D.tiles(src.get("skip_tiles", ())), reg["box"])
+    tiles = D.tiles_in(D.tiles(src.get("skip_tiles", ())), read_box(reg))
     t0 = time.time()
     found = set()
     with pool(workers) as ex:
@@ -353,7 +375,7 @@ def block_keys(reg):
     inside the region's box, plus `ring` blocks around them (read for the fill and the water rule only)."""
     bz = reg["zmax"] - BLOCK_LEVELS
     keys = set()
-    box = reg["box"]
+    box = read_box(reg)
     for src in reg["srcs"]:
         if src.get("fill"):
             continue
@@ -377,7 +399,7 @@ def block_keys(reg):
                     if x0 <= x + dx <= x1 and y0 <= y + dy <= y1:
                         grown.add((x + dx, y + dy))
         keys = grown
-    if reg.get("exclude_boxes"):
+    if reg.get("exclude_boxes") and not reg.get("exclude_late"):
         keys = {k for k in keys if not _inside_any(bz, k, reg["exclude_boxes"])}
     return sorted(keys)
 
@@ -564,7 +586,8 @@ def read_field(reg, key):
     geoids = {}
     mhhw = None
     any_fill = False
-    ex = exclude_mask(b, size, reg["exclude_boxes"]) if reg.get("exclude_boxes") else None
+    ex = (exclude_mask(b, size, reg["exclude_boxes"]) if reg.get("exclude_boxes") and not reg.get("exclude_late")
+          else None)        # exclude_late: the water rule sees the other box's water; pass2 cuts it
     for s in reg["srcs"]:
         if "rects" in s and not _hits(s["rects"], ll):
             continue
@@ -589,6 +612,10 @@ def read_field(reg, key):
                 a[a < -np.float32(s["max_depth"])] = np.nan     # deeper than the source is trusted: left out
         if ex is not None:
             a[ex] = np.nan                                     # another region's own surveys hold this ground
+        if s.get("clip_area"):
+            # a source clipped to (west, south, east, north): the warp reads the whole block, so the pixels outside
+            # the clip are dropped here (a 1-m fill must not win over the 3-m grid past the edge it was clipped to)
+            a[~exclude_mask(b, size, [s["clip_area"]])] = np.nan
         elev, ids = layers[bool(s.get("fill"))]
         if not s.get("fill") and s.get("survey_fade") and (np.isfinite(elev) & np.isfinite(a)).any():
             # an older survey meeting the newer ones: it fills their gaps and fades in at their edge (feather);
@@ -799,11 +826,12 @@ def pass2(args):
     depth = np.where(wet, T.DECODE[code], np.nan).astype(np.float32)
     src = np.where(wet, src, np.where(code > 0, T.LAND_ID, 0)).astype(np.uint8)
     m, k = margin_of(reg), 2 ** BLOCK_LEVELS
-    if reg.get("keep_box"):
-        # outside the region's own box: nothing (the neighbouring region draws there); cut after the water rule,
-        # which needs the whole block
+    late = reg.get("exclude_boxes") if reg.get("exclude_late") else None
+    if reg.get("keep_box") or late:
+        # outside the region's own box (or inside a box it leaves out late): nothing (the neighbouring region draws
+        # there); cut after the water rule, which needs the whole block
         b = T.tile_bounds(reg["zmax"] - BLOCK_LEVELS, key[0], key[1], apron=m, px=T.TILE * k)
-        _cut(depth, src, drop_mask(b, depth.shape[0], keep=reg["keep_box"]))
+        _cut(depth, src, drop_mask(b, depth.shape[0], late, reg.get("keep_box")))
     written = []
     while True:
         for j in range(k):
@@ -1177,6 +1205,9 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
             reg["seed_path"] = land_file(reg.get("seed_path") or (land if reg["seed"] == "sea" else None), work,
                                          reg["seed"])
         scheme = None
+        whole = tuple(S.REGIONS[name]["box"])        # the configured box, whatever --box narrowed, grown by the reach
+        if reg.get("reach"):
+            whole = reach_box(whole, reg["reach"])
         for s in reg["srcs"]:
             if s.get("kind") == "lakegrid" and not s.get("local"):
                 s["gdal"] = s["local"] = L.fetch(s["lake"], work, USER_AGENT)     # NCEI's archive, checked by hash
@@ -1189,17 +1220,20 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                 else:
                     if scheme is None:
                         scheme = BT.read_scheme(bluetopo_scheme(work, local))
-                    s["tiles"] = BT.tiles_in(scheme, reg["box"], s["bt_res"])
+                    s["tiles"] = BT.tiles_in(scheme, read_box(reg), s["bt_res"])
                 log("%s: %d BlueTopo tiles meet the box" % (s["key"], len(s["tiles"])))
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
             if s.get("clip"):
-                s["rects"] = clip_rects(s["rects"], clip_box(s["clip"], S.REGIONS[name]["box"]))
+                area = clip_box(s["clip"], whole)
+                s["rects"] = clip_rects(s["rects"], area)
+                if s["clip"] is not True:
+                    s["clip_area"] = area      # cut per pixel too (read_field): a block reaches past the clip
             if s.get("kind") == "dep" and not s.get("local") and not s.get("fill"):
                 s["blocks"] = dep_blocks(reg, s, workers)
-        bad = outside_box(S.REGIONS[name]["box"], reg["srcs"])   # the configured box, whatever --box narrowed
+        bad = outside_box(whole, reg["srcs"])   # the configured box (+ reach), whatever --box narrowed
         if bad:
             raise ValueError("%s: %d footprint rectangle(s) outside the region's box %s, e.g. %s: widen the box"
-                             % (name, len(bad), S.REGIONS[name]["box"], bad[:3]))
+                             % (name, len(bad), whole, bad[:3]))
         keys = block_keys(reg)
         log("%s: %d blocks of zoom %d to read (zmax %d)" % (name, len(keys), reg["zmax"] - BLOCK_LEVELS, reg["zmax"]))
         blocks = {}

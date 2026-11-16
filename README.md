@@ -1648,23 +1648,32 @@ Owner decisions 2026-11-15: the region split below; base rule A (CUDEM 1/9 arc-s
 zoom 15 down to 100 m, CUDEM 1/3 arc-second to zoom 14 down to 200 m); the 1-m lidar to zooms 16-17 comes later, over the
 owner's chosen areas (key surf areas, all of California to 30 m, all of Florida, the Great Lakes to 30 m).
 
-- **Ocean regions.** Twelve disjoint boxes (`bathy_sources.US_BOXES`): `us-me-nh`, `us-sne-ny`, `us-nj-ches`, `us-va-nc`,
+- **Ocean regions.** Twelve boxes (`bathy_sources.US_BOXES`): `us-me-nh`, `us-sne-ny`, `us-nj-ches`, `us-va-nc`,
   `us-sc-ga`, `us-fl-east`, `us-fl-south`, `us-gulf-east`, `us-gulf-west`, `us-ca-south`, `us-ca-north`, `us-or-wa`; each
-  priority 10, zooms 8-15, and `cut`: nothing is drawn outside the box, so its neighbour draws there.
+  priority 10, zooms 8-15, and `cut`: nothing is drawn outside the box, so its neighbour draws there. Each region reads
+  0.3 degree past its box (`reach`, `REACH_DEG`) for the water rule only, so a river or bay whose mouth lies in the
+  neighbour's box still joins the sea (the St Johns through Jacksonville, the Raritan), then cuts back to its own box at
+  every zoom. The eastern Gulf's box reaches 31.2 N; its corner east of 82.0 W and north of 30.7 N is the Georgia box's and
+  is left out only after the water rule (`exclude_late`), which needs that corner's water to join the St Marys to the sea.
+  `us-sne-ny` reaches 74.5 W (the Raritan and Arthur Kill) and 42.8 N (the Hudson's tide to Troy).
 - **Sources, best first at each pixel.** CUDEM 1/9" (NOAA's national set: two VRTs, split only by how NOAA tagged the
   files' coordinate system); where CUDEM has a gap, 1-m surveys read at zoom 15 inside `clip` boxes only (USGS CoNED 2016
-  Southern California, 2017 Central California, 2020 Northern California; the USACE 2014 Oregon lidar); NOAA BlueTopo 4 m
-  (CC0); CUDEM 1/3"; BlueTopo 8 m and 16 m. BlueTopo's 4-m and 8-m pixels deeper than 100 m earn zoom 13 only (the deep
-  water needs no fine tiles). BlueTopo comes as one GeoTIFF per tile in its UTM zone: the builder reads NOAA's newest tile
-  scheme (a GeoPackage, read with sqlite3, `bathy_bluetopo.py`) and writes one VRT per UTM zone and resolution over the
-  delivered tiles the region touches.
+  Southern California, 2017 Central California, 2020 Northern California; the USACE 2014 Oregon lidar; the clip is cut per
+  pixel: a block reaches past it, the pixels past it are dropped); NOAA BlueTopo 4 m (CC0); CUDEM 1/3"; BlueTopo 8 m and
+  16 m. BlueTopo's 4-m and 8-m pixels deeper than 100 m earn zoom 13 only (the deep water needs no fine tiles). BlueTopo
+  comes as one GeoTIFF per tile in its UTM zone: the builder reads NOAA's newest tile scheme (a GeoPackage, read with
+  sqlite3, `bathy_bluetopo.py`), takes the delivered tiles of each resolution that meet the region's box (with its reach),
+  and each block warps the tiles that meet it one by one, finest first: the first tile with a value wins each pixel (no
+  VRT is written).
 - **Datum.** Every mainland source is in NAVD88. Depth below mean sea level = -(NAVD88 height - mean sea level's height
   above NAVD88), the second term from `tools/bathy/us_msl_navd88.tif` (0.05 degree, read bilinear per pixel like a geoid).
   The water rule's high-tide line is `us_mhhw_msl.tif` (mean higher high water above mean sea level; region `mhhw: "grid"`).
   Both grids are built by `tools/bathy/build_datum_grids.py` from NOAA CO-OPS tide-station datums (1,795 stations kept in
   `us_datum_stations.json`, so a rebuild needs no network and gives the same bytes; sha256 pinned in
-  `bathy_sources.DATUM_GRIDS`). Leave-one-out check: MSL above NAVD88 median 0.023 m, p90 0.089 m; MHHW above MSL median
-  0.022 m, p90 0.122 m (the worst are river stations far inland and barrier lagoons). NOAA's VDatum grids would be finer but
+  `bathy_sources.DATUM_GRIDS`). The MSL grid leaves out, worst first, every station its neighbours predict more than
+  0.3 m off (13 river-stage gauges far inland: their mean level is the river's; Carrollton alone put Lake Pontchartrain
+  0.43 m off). Leave-one-out check: MSL above NAVD88 median 0.022 m, p90 0.079 m, max 0.29 m; MHHW above MSL median
+  0.022 m, p90 0.122 m (the worst are real tide contrasts across barriers, kept). NOAA's VDatum grids would be finer but
   refused automated download.
 - **Open water.** The Lower 48 seeds the open sea from the shoreline (`seed: "sea"`): low pixels on GSHHG's water side (the
   site's own `world-i.bin`, pinned) at least 1 km from its shore (`SEED_M`), or deeper than 20 m on that side. Lidar that
@@ -1681,7 +1690,17 @@ owner's chosen areas (key surf areas, all of California to 30 m, all of Florida,
   Michigan 0.39, Huron 0.33, St Clair 0.69, Erie 0.77, Ontario 0.49) and connected to open water seeded from the published
   Great Lakes shorelines (`static/coast/lakes-v1/lakes-i.bin`, pinned; `seed: "lake"`: inside a lake, outside its
   islands), so Erie's shallow west basin and Lake St Clair need no water deeper than 20 m. The boxes are cut at the straits
-  (Huron's box leaves out Ontario's, Erie's leaves out St Clair's) and meet no ocean box.
+  and meet no ocean box: Huron's reaches 46.6 N for the lower St Marys River (at Huron's level below the Soo locks) and
+  leaves out Superior's and Ontario's boxes; Erie's reaches 43.1 N for the Niagara River's lidar past Grand Island and
+  leaves out St Clair's and Huron's; Superior's never reaches east of 84.36 W (its grid there reads Huron-level water).
+  Not in any lake box: the head of the St Lawrence and the Thousand Islands north of 44.3 N (Ontario's grid ends at
+  44.25 N). Where a box edge crosses a connecting river the depth steps by the two datums' difference: the Detroit River
+  at St Clair's south-west edge (0.9 m), the St Clair River's head at 43.0 N (1.6 m).
+- **Known limits.** The MHHW grid knows no barriers: an ocean beach behind a barrier lagoon's gauges (the Outer Banks at
+  Rodanthe 0.13 m against the open coast's ~0.55 m) and a lagoon shore near an ocean gauge (the Indian River at Vero)
+  get a blend, so part of their intertidal fringe is judged wrongly as land or water. A lake held above the sea by locks
+  (Lake Washington, Lake Union) lies below the sea's high-tide line in NAVD88 and joins the sea through its canal: it is
+  drawn as sea, its depth below mean sea level (the lake's surface is ~4.5 m above it).
 - **Regions in all.** 34 with stage 1 (the client takes up to 64). The notice (`/notice/bathy`) names every source,
   the datum conversion and the lakes' chart datum.
 - **Before any lake upload.** The panel says "Depth below mean sea level" for every region today; the client's datum line

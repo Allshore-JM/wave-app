@@ -12,10 +12,11 @@ Great Lakes stations are left out (the lakes use their Low Water Datum). A stati
 publishes both datums of that grid.
 
 The tool prints a leave-one-out check: each station predicted from the others (the error a pixel next to it would see).
-Built 2026-11-15 from 1,795 stations: MSL-NAVD88 968 stations, leave-one-out median 0.023 m / p90 0.089 m; MHHW-MSL
-1,740 stations, median 0.022 m / p90 0.122 m. The largest errors are river stations far inland (New Orleans,
-Sacramento, Savannah) and sharp tide contrasts across barriers (Cape Cod Bay vs Nantucket Sound, lagoons), not the
-open coast. The stations are kept in us_datum_stations.json, so a rebuild needs no network and gives the same bytes
+MSL-NAVD88 leaves out, worst first, every station the others predict more than LOO_MAX off: river-stage gauges far
+inland, whose mean level is the river's (13 of 968 on 2026-11-15: Carrollton, Sacramento, the Savannah, Ashley, Pee Dee,
+Merrimack and Atchafalaya ...). Built 2026-11-15 from 1,795 stations: MSL-NAVD88 955 stations, leave-one-out median
+0.022 m / p90 0.079 m / max 0.294 m; MHHW-MSL 1,740 stations, median 0.022 m / p90 0.122 m (its largest errors are real
+tide contrasts across barriers: Cape Cod Bay vs Nantucket Sound, lagoons; not filtered). The stations are kept in us_datum_stations.json, so a rebuild needs no network and gives the same bytes
 (the pins in bathy_sources.DATUM_GRIDS).
 
   python tools/bathy/build_datum_grids.py --cache datums.json        # fetch (paced; ~10 min) or reuse the cache
@@ -39,6 +40,11 @@ NEAR = 4                                # stations per pixel
 FILES = {"msl_navd88": os.path.join(HERE, "us_msl_navd88.tif"),
          "mhhw_msl": os.path.join(HERE, "us_mhhw_msl.tif")}
 SANE = {"msl_navd88": (-3.0, 4.0), "mhhw_msl": (0.0, 4.5)}   # outside these a station's numbers are a typo
+# A station the others predict worse than this is left out, worst first, one at a time (MSL-NAVD88 only): a river-stage
+# gauge's mean level is the river's, not the sea's, and it spreads its error over the coast around it (Carrollton on the
+# Mississippi put Lake Pontchartrain's centre 0.43 m off). One at a time, because dropping the worst can bring a good
+# neighbour back in line (New Canal). MHHW-MSL is not filtered: its large errors are real tide contrasts across barriers.
+LOO_MAX = {"msl_navd88": 0.3}
 
 
 def _get(url, tries=3):
@@ -91,9 +97,9 @@ def fetch(cache):
 
 
 def points(stations, field):
-    """(lat, lon, value) arrays of the stations publishing `field`'s two datums, typos left out."""
+    """(lat, lon, value, id) arrays of the stations publishing `field`'s two datums, typos left out."""
     rows = []
-    for v in stations.values():
+    for sid, v in stations.items():
         if field == "msl_navd88":
             a, b = v.get("MSL"), v.get("NAVD88")
         else:
@@ -103,11 +109,12 @@ def points(stations, field):
         val = float(a) - float(b)
         lo, hi = SANE[field]
         if lo <= val <= hi:
-            rows.append((float(v["lat"]), float(v["lon"]), val))
+            rows.append((float(v["lat"]), float(v["lon"]), val, str(sid)))
     if len(rows) < NEAR + 1:
         raise ValueError("too few stations for %s: %d" % (field, len(rows)))
-    a = np.array(sorted(rows), dtype=np.float64)
-    return a[:, 0], a[:, 1], a[:, 2]
+    rows.sort()
+    a = np.array([r[:3] for r in rows], dtype=np.float64)
+    return a[:, 0], a[:, 1], a[:, 2], np.array([r[3] for r in rows])
 
 
 def _km(lat0, lon0, lat, lon):
@@ -139,6 +146,22 @@ def loo(slat, slon, sval, near=NEAR):
         keep = np.arange(sval.size) != i
         err[i] = abs(idw(slat[i:i + 1], slon[i:i + 1], slat[keep], slon[keep], sval[keep], near)[0] - sval[i])
     return err
+
+
+def drop_outliers(slat, slon, sval, ids, limit, near=NEAR):
+    """Leave out the station the others predict worst while that error is above `limit`, one at a time (each removal
+    changes its neighbours' predictions). Returns (lat, lon, value, id) of the kept stations and [(id, error)] dropped."""
+    keep = np.ones(sval.size, bool)
+    dropped = []
+    while keep.sum() > near + 1:
+        idx = np.flatnonzero(keep)
+        err = loo(slat[idx], slon[idx], sval[idx], near)
+        j = int(np.argmax(err))
+        if not err[j] > limit:
+            break
+        dropped.append((str(ids[idx[j]]), float(err[j])))
+        keep[idx[j]] = False
+    return slat[keep], slon[keep], sval[keep], ids[keep], dropped
 
 
 def grid_axes():
@@ -178,7 +201,12 @@ def main(argv=None):
     lat, lon = grid_axes()
     glat, glon = np.meshgrid(lat, lon, indexing="ij")
     for field, path in FILES.items():
-        slat, slon, sval = points(stations, field)
+        slat, slon, sval, ids = points(stations, field)
+        if field in LOO_MAX:
+            slat, slon, sval, ids, dropped = drop_outliers(slat, slon, sval, ids, LOO_MAX[field])
+            for sid, e in dropped:
+                print("  %s: left out %s %s (the others predict it %.2f m off)"
+                      % (field, sid, stations.get(sid, {}).get("name", ""), e), flush=True)
         err = loo(slat, slon, sval)
         print("%s: %d stations, leave-one-out |error| median %.3f m, p90 %.3f m, max %.3f m"
               % (field, sval.size, np.median(err), np.percentile(err, 90), err.max()), flush=True)

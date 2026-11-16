@@ -353,12 +353,16 @@ REGIONS = {
                                  "nwhi-lidar"]),
 }
 
-# The Lower 48's ocean coasts (plan section 98): twelve disjoint boxes, each built on its own (cut: nothing drawn outside
-# the box, so the neighbour draws there), MHHW from the committed grid. (west, south, east, north).
+# The Lower 48's ocean coasts (plan section 98): twelve boxes, each built on its own (cut: nothing drawn outside the box,
+# so the neighbour draws there), MHHW from the committed grid. (west, south, east, north). Each reads REACH_DEG past its
+# box (reach) for the water rule only: a river or bay whose mouth lies in the neighbour's box still joins the sea
+# (the St Johns at Jacksonville, the Raritan); what lies outside the box is cut after the water rule.
+REACH_DEG = 0.3
 US_EAST = ["cudem-us", "cudem-us-b", "bluetopo4", "cudem3-us", "cudem3-us-b", "bluetopo8", "bluetopo16"]
 US_BOXES = {
-    "us-me-nh": ((-71.2, 42.7, -66.8, 47.5), US_EAST),
-    "us-sne-ny": ((-74.3, 40.4, -69.8, 42.7), US_EAST),
+    "us-me-nh": ((-71.2, 42.8, -66.8, 47.5), US_EAST),
+    # to 74.5 W: the Raritan and Arthur Kill; to 42.8 N: the Hudson's tidal reach to Troy (42.74 N)
+    "us-sne-ny": ((-74.5, 40.4, -69.8, 42.8), US_EAST),
     "us-nj-ches": ((-77.7, 36.9, -73.5, 40.4), US_EAST),
     "us-va-nc": ((-79.5, 33.7, -75.0, 36.9), US_EAST),
     "us-sc-ga": ((-82.0, 30.7, -77.5, 33.7), US_EAST),
@@ -376,7 +380,12 @@ US_BOXES = {
                                                  "bluetopo16"]),
 }
 for _name, (_box, _srcs) in US_BOXES.items():
-    REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw="grid", zmin=8, prio=10, cut=True, seed="sea")
+    REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw="grid", zmin=8, prio=10, cut=True, seed="sea",
+                          reach=REACH_DEG)
+# The eastern Gulf's box reaches north to 31.2 N (the St Marys and the Okefenokee's rivers meet the sea at Fernandina);
+# its corner east of 82.0 W and north of 30.7 N is the Georgia box's: left out, but only after the water rule
+# (exclude_late), which needs the corner's water to join the St Marys to the sea.
+REGIONS["us-gulf-east"].update(exclude=["us-sc-ga"], exclude_late=True)
 
 # The Great Lakes (plan section 98): per lake (box, the lake's mean level above its datum, its grid, its lidar DEMs,
 # the lake regions its box must leave out).
@@ -384,11 +393,16 @@ LAKE_BOXES = {
     "lake-superior": ((-92.4, 46.38, -84.36, 49.1), 0.19, "lakegrid-superior",
                       ["noaa-whitefish23", "usace-stampsands22", "usace-superior19a", "usace-superior19b"], []),
     "lake-michigan": ((-88.1, 41.6, -84.5, 46.2), 0.39, "lakegrid-michigan", ["usace-michigan20", "mi-islands16"], []),
-    "lake-huron": ((-84.5, 43.0, -79.6, 46.38), 0.33, "lakegrid-huron",
-                   ["usace-huron19a", "usace-huron19b", "usace-huron18"], ["lake-ontario"]),
+    # to 46.6 N: the lower St Marys River (at Lake Huron's level below the Soo locks); its corner west of 84.36 W is
+    # Superior's (left out: exclude). Superior's box never reaches east of 84.36 W: its grid there reads Huron-level
+    # water and low land below Superior's datum as water.
+    "lake-huron": ((-84.5, 43.0, -79.6, 46.6), 0.33, "lakegrid-huron",
+                   ["usace-huron19a", "usace-huron19b", "usace-huron18"], ["lake-ontario", "lake-superior"]),
     "lake-stclair": ((-83.05, 42.3, -82.35, 43.0), 0.69, "lakegrid-stclair", ["usace-stclair20"], []),
-    "lake-erie": ((-83.6, 41.3, -78.85, 42.95), 0.77, "lakegrid-erie", ["usace-erie20", "usace-erie18"],
-                  ["lake-stclair"]),
+    # to 43.1 N: the Niagara River's lidar past Grand Island (Erie's grid ends at 43.0 N); the strip west of 79.6 W
+    # is Huron's (exclude)
+    "lake-erie": ((-83.6, 41.3, -78.85, 43.1), 0.77, "lakegrid-erie", ["usace-erie20", "usace-erie18"],
+                  ["lake-stclair", "lake-huron"]),
     "lake-ontario": ((-79.95, 43.1, -76.0, 44.3), 0.49, "lakegrid-ontario",
                      ["usace-ontario18a", "usace-ontario18b", "usace-ontario18c"], []),
 }
@@ -406,7 +420,7 @@ FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 # sea level, both from NOAA CO-OPS tide-station datums (tools/bathy/build_datum_grids.py).
 DATUM_DIR = os.path.dirname(os.path.abspath(__file__))
 DATUM_GRIDS = {      # file name -> sha256 (built 2026-11-15 from tools/bathy/us_datum_stations.json)
-    "us_msl_navd88.tif": "ea41105fd4ffa1d7e9a9c260d02bdb763cecd2b02924c83166df29ec0c6c78c5",
+    "us_msl_navd88.tif": "c035c2648dbf8a3575f6ad6e95da7febd7dc4792ca086e01a8af02c29f49b5e1",
     "us_mhhw_msl.tif": "72c9c37980f76c8e5112b1afa2796acf528b051106897f70a72fa4a9073f7904",
 }
 MHHW_GRID = os.path.join(DATUM_DIR, "us_mhhw_msl.tif")

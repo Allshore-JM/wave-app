@@ -572,6 +572,13 @@ test('the Great Lakes: depth below the lake\'s Low Water Datum in the note and t
   assert.equal(allText(note).trim(), 'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
   ov._bathySources = () => [gebco]; ov._bathyView();
   assert.equal(allText(note).trim(), 'Approximate; not for navigation. Depth below mean sea level.');
+  // the panel is built with the note of the sources in view (with the view's own update switched off, the panel alone)
+  const w2 = world(), ov2 = ctl(w2);
+  ov2._bathySources = () => [lake, dem]; ov2._bathyView = function () {};
+  ov2.mount('bathy');
+  w2.answer(/regions\.json$/, json('regions.json')); await settle();
+  assert.equal(allText(findCls(ov2.ui.host, 'ov-bathy-note')).trim(),
+    'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
 });
 
 // ---- pins found by the mutation pass ----

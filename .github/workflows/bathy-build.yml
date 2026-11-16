@@ -3,7 +3,10 @@
 # region "gebco" from the GEBCO 2026 GeoTIFF zip, downloaded first), checked, and (only when `upload` is true) published
 # to the frames bucket under static/bathy/<region>/v<version>/ (files, LICENSE.txt, index.json last), then the region's
 # line in static/bathy/regions.json. A different build under the same version, and pointing regions.json back to an older
-# version, are refused unless `replace` is true.
+# version, are refused unless `replace` is true. `region` may name several regions (commas or spaces): they are built and
+# uploaded one after another in the order given (a matrix with max-parallel 1), and one failing does not stop the rest.
+# Dispatched runs wait for each other (workflow-level concurrency), so two runs never write regions.json at once; push
+# runs (tests only) each get a group of their own and never wait.
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: bathy-build
 on:
@@ -13,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       region:
-        description: "hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar, pacific-sdb, a US coast region us-* or a Great Lakes region lake-* (tools/bathy/bathy_sources.py)"
+        description: "one region, or several separated by commas or spaces (built one after another): hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar, pacific-sdb, a US coast region us-* or a Great Lakes region lake-* (tools/bathy/bathy_sources.py)"
         default: "hawaii"
       version:
         description: "the region's data version (static/bathy/<region>/v<N>)"
@@ -28,6 +31,9 @@ on:
         default: false
 permissions:
   contents: read
+concurrency:                             # dispatched runs one at a time; each push run its own group (never waits)
+  group: ${{ github.event_name == 'workflow_dispatch' && 'bathy-build' || format('bathy-tests-{0}', github.run_id) }}
+  cancel-in-progress: false
 jobs:
   tests:
     runs-on: ubuntu-24.04
@@ -39,12 +45,39 @@ jobs:
           python-version: "3.13"
       - run: pip install numpy==2.5.4 scipy==1.18.1 pillow==13.0.0 rasterio==1.5.2 pyproj==3.8.0 pytest==9.2.0 certifi==2026.10.23
       - run: python -m pytest -q tests/bathy
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      regions: ${{ steps.list.outputs.regions }}
+    steps:
+      - name: List the regions
+        id: list
+        shell: bash
+        env:
+          REGIONS: ${{ github.event.inputs.region }}
+        run: |
+          set -eo pipefail
+          set -f
+          seen=" "; json=""
+          for REGION in ${REGIONS//,/ }; do
+            case "$REGION" in hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem) ;; *) echo "unknown region: $REGION"; exit 2;; esac
+            case "$seen" in *" $REGION "*) echo "region named twice: $REGION"; exit 2;; esac
+            seen="$seen$REGION "; json="$json${json:+,}\"$REGION\""
+          done
+          [ -n "$json" ] || { echo "no region named"; exit 2; }
+          echo "regions=[$json]" >> "$GITHUB_OUTPUT"
+          echo "regions, in order: [$json]" >> "$GITHUB_STEP_SUMMARY"
   build:
     if: github.event_name == 'workflow_dispatch'
-    needs: tests
-    concurrency:                           # builds one at a time; the push-triggered tests never wait behind one
-      group: bathy-build
-      cancel-in-progress: false
+    needs: [tests, plan]
+    name: build ${{ matrix.region }}
+    strategy:                              # one region at a time, in the order given; a failure does not stop the rest
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        region: ${{ fromJSON(needs.plan.outputs.regions) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     steps:
@@ -56,14 +89,14 @@ jobs:
       - name: Check the inputs
         shell: bash
         env:
-          REGION: ${{ github.event.inputs.region }}
+          REGION: ${{ matrix.region }}
           VERSION: ${{ github.event.inputs.version }}
         run: |
           case "$REGION" in hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem) ;; *) echo "region must be hawaii, marianas, samoa, prvi, gebco, hawaii-lidar, guam-lidar, pr-lidar, nwhi-lidar, pacific-sdb, a US coast region (us-me-nh ... us-or-wa) or a Great Lakes region (lake-superior ... lake-ontario-dem)"; exit 2;; esac
           [[ "$VERSION" =~ ^[1-9][0-9]*$ ]] || { echo "version must be a whole number from 1, no leading zero"; exit 2; }
           nproc; df -h . | tail -1
       - name: Download GEBCO 2026 (region gebco)
-        if: github.event.inputs.region == 'gebco'
+        if: matrix.region == 'gebco'
         shell: bash
         run: |
           set -eo pipefail
@@ -74,7 +107,7 @@ jobs:
       - name: Build and check
         shell: bash
         env:
-          REGION: ${{ github.event.inputs.region }}
+          REGION: ${{ matrix.region }}
           VERSION: ${{ github.event.inputs.version }}
         run: |
           rc=0
@@ -91,7 +124,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          REGION: ${{ github.event.inputs.region }}
+          REGION: ${{ matrix.region }}
           VERSION: ${{ github.event.inputs.version }}
           REPLACE: ${{ github.event.inputs.replace }}
         run: |

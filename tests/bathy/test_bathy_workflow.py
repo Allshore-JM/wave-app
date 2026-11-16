@@ -28,8 +28,8 @@ def test_tests_on_push_build_only_on_dispatch():
     assert '"tools/bathy/**"' in text and '"tests/bathy/**"' in text and '".github/workflows/bathy-build.yml"' in text
     assert "python -m pytest -q tests/bathy" in text
     build = text.split("\n  build:\n", 1)[1]
-    assert "if: github.event_name == 'workflow_dispatch'" in build and "needs: tests" in build
-    assert "group: bathy-build" in text and "cancel-in-progress: false" in text
+    assert "if: github.event_name == 'workflow_dispatch'" in build and "needs: [tests, plan]" in build
+    assert "'bathy-build'" in text and "cancel-in-progress: false" in text
     assert "permissions:\n  contents: read" in text
 
 
@@ -49,14 +49,20 @@ def test_the_inputs_are_checked_and_the_upload_is_asked_for():
 
 
 def test_upload_and_replace_are_tick_boxes_and_only_builds_wait_for_each_other():
-    """G61a: the two switches are booleans (a typed "True" can never mean yes or no by accident); the concurrency group
-    sits on the build job, so the push-triggered tests never queue behind an hour-long build."""
+    """G61a: the two switches are booleans (a typed "True" can never mean yes or no by accident). Section 98: dispatched
+    runs share one concurrency group (one writer of regions.json at a time); every push run gets its own group, so the
+    tests never queue behind an hour-long build; inside a run the regions build one at a time and keep going on a failure."""
     text = _text()
     for name in ("upload", "replace"):
         block = re.search(r"\n      %s:\n((?:        [^\n]*\n)+)" % name, text).group(1)
         assert "type: boolean" in block and "default: false" in block, name
     head, build = text.split("\n  build:\n", 1)
-    assert "concurrency:" not in head and "group: bathy-build" in build
+    group = re.search(r"\nconcurrency:[^\n]*\n  group: ([^\n]+)\n  cancel-in-progress: false\n", head).group(1)
+    assert group == ("${{ github.event_name == 'workflow_dispatch' && 'bathy-build' || "
+                     "format('bathy-tests-{0}', github.run_id) }}")
+    assert "concurrency:" not in build                  # a job-level group would cancel the waiting matrix jobs
+    assert "max-parallel: 1" in build and "fail-fast: false" in build
+    assert "region: ${{ fromJSON(needs.plan.outputs.regions) }}" in build
 
 
 def _version_check():
@@ -91,7 +97,7 @@ def test_the_download_uses_certifis_list_and_every_action_is_pinned():
     curls = [l for l in (m.split(" #", 1)[0] for m in re.findall(r"[^\n]*\bcurl\b[^\n]*", text))
              if re.search(r"\bcurl\b", l) and not l.strip().startswith("#")]
     assert len(curls) == 1 and '--cacert "$CA" --capath "$NOCAPATH"' in curls[0]
-    assert "if: github.event.inputs.region == 'gebco'" in _steps(text)["Download GEBCO 2026 (region gebco)"]
+    assert "if: matrix.region == 'gebco'" in _steps(text)["Download GEBCO 2026 (region gebco)"]
     for pin in re.findall(r"pip install ([^\n]+)", text):
         assert "certifi==2026.10.23" in pin.split()
     pips = re.findall(r"pip install ([^\n]+)", text)
@@ -115,3 +121,39 @@ def test_the_temporary_dry_run_workflow_is_gone():
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "sdb-dryrun.yml"))
     # and section 98's runner measurement of the mainland and Great Lakes regions
     assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "mainland-dryrun.yml"))
+
+
+def _list_step():
+    plan = _text().split("\n  plan:\n", 1)[1].split("\n  build:\n", 1)[0]
+    return plan.split("        run: |\n", 1)[1]
+
+
+def test_the_region_list_names_the_builders_regions():
+    import sys
+    sys.path.insert(0, os.path.join(ROOT, "tools", "bathy"))
+    import bathy_sources as S
+    step = _list_step()
+    assert set(re.search(r"case \"\$REGION\" in ([a-z|-]+)\)", step).group(1).split("|")) == set(S.REGIONS)
+    assert "${{ matrix.region }}" in _text() and "github.event.inputs.region }}" in _text().split("\n  build:\n")[0]
+
+
+@pytest.mark.parametrize("given, out", [
+    ("us-me-nh", '["us-me-nh"]'),
+    ("us-me-nh,us-sne-ny", '["us-me-nh","us-sne-ny"]'),
+    ("us-me-nh, us-sne-ny  lake-erie", '["us-me-nh","us-sne-ny","lake-erie"]'),
+    ("lake-erie-dem,lake-erie", '["lake-erie-dem","lake-erie"]'),
+    ("us-me-nh,us-me-nh", None), ("us-me-nh,nowhere", None), ("", None), (" , ", None), ("*", None),
+    ("hawaii;rm", None)])
+def test_the_region_list_runs_as_written(tmp_path, given, out):
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("no bash here")
+    script = "\n".join(l[10:] for l in _list_step().splitlines())
+    res = subprocess.run([bash, "-c", script], cwd=tmp_path, capture_output=True, text=True,
+                         env=dict(os.environ, REGIONS=given, GITHUB_OUTPUT=str(tmp_path / "o"),
+                                  GITHUB_STEP_SUMMARY=str(tmp_path / "s")))
+    if out is None:
+        assert res.returncode != 0, (given, res.stdout)
+    else:
+        assert res.returncode == 0, (given, res.stdout, res.stderr)
+        assert (tmp_path / "o").read_text().strip() == "regions=" + out

@@ -598,6 +598,19 @@ test('the layer\'s list of sources in view carries each source\'s datum, so the 
   assert.equal(I.bathyNote(list), 'Approximate; not for navigation. Depth below mean sea level; in the Great Lakes, below each lake’s Low Water Datum.');
   delete fake._tiles.b;
   assert.equal(I.bathyNote(I.BathyLayer.prototype.sourcesInView.call(fake)), 'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
+  // the datum survives the index check (a real published index with its source's datum text changed to a lake's)
+  const regs = I.validBathyRegions(json('regions.json')), hawaii = regs[0];
+  const doc = json('hawaii_index.json'), id = Object.keys(doc.sources)[0];
+  doc.sources[id].datum = lake.datum;
+  const ix = I.validBathyIndex(doc, hawaii);
+  assert.equal(ix.sources[+id].datum, lake.datum);
+  const real = { store: { index: { ['i:' + I.BathyStore.prototype.regionKey(hawaii)]: ix }, regionKey: I.BathyStore.prototype.regionKey },
+    _tiles: { a: { coords: { x: 1, y: 1, z: 9 }, el: { _bSrc: [{ reg: hawaii, mask: 1 << +id }] } } } };
+  assert.equal(I.bathyNote(I.BathyLayer.prototype.sourcesInView.call(real)), 'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
+  // and the published Hawaii index itself reads mean sea level
+  const sx = I.validBathyIndex(json('hawaii_index.json'), hawaii);
+  real.store.index['i:' + I.BathyStore.prototype.regionKey(hawaii)] = sx;
+  assert.equal(I.bathyNote(I.BathyLayer.prototype.sourcesInView.call(real)), 'Approximate; not for navigation. Depth below mean sea level.');
 });
 
 // ---- pins found by the mutation pass ----

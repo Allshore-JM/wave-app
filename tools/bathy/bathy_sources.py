@@ -43,6 +43,18 @@ to the value after the warp averages DEP's 10-m pixels onto the tile grid (G64a 
 12 m can show and a shallow pixel beside deep water can drop out. The four turbid Torres Strait / Gulf of Papua tiles are
 left out (`skip_tiles`), and nothing is drawn inside the US regions' boxes (`exclude`, owner 2026-11-11: their own
 surveys). No bias correction (owner, 2026-11-15): DEP's numbers as published.
+
+The Great Lakes (plan section 98) have no CUDEM and GSHHG counts them as land (no GEBCO there). Each lake is two regions
+over the same box: the lake's NOAA NCEI bathymetry grid (kind "lakegrid": ~90 m, downloaded once per build by
+tools/bathy/bathy_lakes.py, zooms 5-11) and, over it (prio 12, zooms 12-15), the lake's 1-m USACE / NOAA lidar DEMs read to
+zoom 15, the grid filling their holes. Depths are below the lake's Low Water Datum (IGLD 1985: Superior 183.2 m,
+Michigan-Huron 176.0, St Clair 174.4, Erie 173.5, Ontario 74.2), the lake's chart datum: the grids are already relative to
+it, the IGLD85 lidar subtracts it (`offset`), and the two NAVD88 sets (Whitefish Bay 2023, the upper Lake Michigan islands
+2016) subtract it plus 0.01 m. Lake St Clair has no grid of its own: Lake Erie's covers it, 0.9 m lower (St Clair's datum is
+0.9 m above Erie's). `mhhw` is the lake's mean level above its datum (NOAA's monthly means, 1991-2020, rounded up: the
+water's edge), and the open water is seeded from the published Great Lakes shorelines (seed "lake"), so the shallow west
+basin of Erie and Lake St Clair need no water deeper than 20 m. Boxes cut at the straits so they do not overlap (the Huron
+box leaves out the Ontario one; the Erie box the St Clair one).
 """
 
 import os
@@ -87,6 +99,28 @@ BLUETOPO = dict(NAVD88, kind="bluetopo", clip=True, nodata=float("nan"), year="2
 # The 1-m surveys used as baseline fill where CUDEM 1/9 has nothing on the West Coast (Southern California, Northern
 # California north of 38.75 N, Oregon south of 43.5 N), read down to zoom 15 like the 3-m grid.
 SURVEY15 = dict(NAVD88, kind="vrt", zmax=15, res_m=1, licence="public domain (US government)")
+
+# The Great Lakes (plan section 98). LWD = each lake's Low Water Datum, IGLD 1985 metres.
+LAKE_LWD = {"superior": 183.2, "michigan": 176.0, "huron": 176.0, "stclair": 174.4, "erie": 173.5, "ontario": 74.2}
+LAKEGRID = dict(kind="lakegrid", id=20, zmax=11, res_m=90, nodata=-9999.0, clip=True, offset=0.0,
+                datum="Low Water Datum (IGLD 1985)", name="NOAA NCEI Great Lakes bathymetry",
+                licence="public domain (NOAA)")
+NAVD88_IGLD85_M = 0.01      # NAVD88 heights read 0.01 m above IGLD 1985 at the lake surveys checked (plan section 98)
+USACE_NCMP = "USACE National Coastal Mapping Program %s topobathy lidar (NOAA Digital Coast)"
+
+
+def lake_dem(lwd, navd88=False):
+    """A lake's 1-m lidar DEM read to zoom 15 (heights in IGLD 1985, or NAVD88 when `navd88`), brought to depth below
+    the lake's Low Water Datum `lwd` by `offset`."""
+    if navd88:
+        return dict(SURVEY15_LAKE, lake_lwd=lwd, offset=-round(lwd + NAVD88_IGLD85_M, 3), nodata=-3.4028234663852886e38,
+                    datum="NAVD88 to the lake's Low Water Datum (IGLD 1985 %.1f m, less %.2f m)" % (
+                        lwd, NAVD88_IGLD85_M))
+    return dict(SURVEY15_LAKE, lake_lwd=lwd, offset=-lwd, nodata=-3.4028234663852886e38,
+                datum="IGLD 1985 to the lake's Low Water Datum (%.1f m)" % lwd)
+
+
+SURVEY15_LAKE = dict(LIDAR, zmax=15, clip=True)
 
 SOURCES = {
     "cudem-hawaii": dict(CUDEM, id=10, year="2021",
@@ -207,6 +241,74 @@ SOURCES = {
                       credit="NOAA Office of Coast Survey BlueTopo national bathymetric compilation"),
     "bluetopo16": dict(BLUETOPO, id=23, bt_res=(16,), zmax=13, res_m=16, name="NOAA BlueTopo 16 m",
                        credit="NOAA Office of Coast Survey BlueTopo national bathymetric compilation"),
+    # The Great Lakes (plan section 98). The NCEI grids: one per lake, below the lake's Low Water Datum, land positive.
+    "lakegrid-superior": dict(LAKEGRID, lake="superior", year="draft", credit="NOAA NCEI (NGDC) Bathymetry of Lake "
+                              "Superior, draft compilation (no DOI)"),
+    "lakegrid-michigan": dict(LAKEGRID, lake="michigan", year="1996", credit="NOAA NCEI (NGDC) 1996 Bathymetry of "
+                              "Lake Michigan, doi:10.7289/V5B85627"),
+    "lakegrid-huron": dict(LAKEGRID, lake="huron", year="1999", credit="NOAA NCEI (NGDC) 1999 Bathymetry of Lake "
+                           "Huron, doi:10.7289/V5G15XS5"),
+    "lakegrid-erie": dict(LAKEGRID, lake="erie", year="1999", credit="NOAA NCEI (NGDC) 1999 Bathymetry of Lake Erie "
+                          "and Lake St. Clair, doi:10.7289/V5KS6PHK"),
+    "lakegrid-stclair": dict(LAKEGRID, lake="erie", year="1999", offset=-0.9,
+                             datum="Low Water Datum of Lake St Clair (IGLD 1985, 174.4 m): Lake Erie's grid less 0.9 m",
+                             credit="NOAA NCEI (NGDC) 1999 Bathymetry of Lake Erie and Lake St. Clair, "
+                                    "doi:10.7289/V5KS6PHK"),
+    "lakegrid-ontario": dict(LAKEGRID, lake="ontario", year="1999", credit="NOAA NCEI (NGDC) 1999 Bathymetry of Lake "
+                             "Ontario, doi:10.7289/V56H4FBH"),
+    # The lakes' 1-m lidar DEMs, read to zoom 15 (newest survey first: the lowest id wins).
+    "noaa-whitefish23": dict(lake_dem(183.2, navd88=True), id=1, year="2023", name="NOAA lidar",
+                             nodata=-3.40282306073709653e38,
+                             path="dem/NOAA_LakeSup_Whitefish_DEM_2023_10250/"
+                                  "NOAA_LakeSup_Whitefish_DEM_2023_m10250_EPSG-26916.vrt",
+                             credit="NOAA 2023 Lake Superior Whitefish Bay topobathy lidar (NOAA Digital Coast)"),
+    "usace-stampsands22": dict(lake_dem(183.2), id=2, year="2022", name="USACE lidar",
+                               path="dem/USACE_StampSands_MI_DEM_2022_10028/"
+                                    "USACE_StampSands_MI_DEM_2022_m10028_EPSG-6345.vrt",
+                               credit="USACE 2022 Keweenaw stamp sands topobathy lidar (NOAA Digital Coast)"),
+    "usace-superior19a": dict(lake_dem(183.2), id=3, year="2019", name="USACE lidar",
+                              path="dem/USACE_Superior_DEM_2019_9185/USACE_Superior_DEM_2019_m9185_EPSG-6344.vrt",
+                              credit=USACE_NCMP % "2019 Lake Superior"),
+    "usace-superior19b": dict(lake_dem(183.2), id=4, year="2019", name="USACE lidar",
+                              path="dem/USACE_Superior_DEM_2019_9185/USACE_Superior_DEM_2019_m9185_EPSG-6345.vrt",
+                              credit=USACE_NCMP % "2019 Lake Superior"),
+    "usace-michigan20": dict(lake_dem(176.0), id=1, year="2020", name="USACE lidar",
+                             path="dem/USACE_Lake_Mich_IL_IN_MI_WI_DEM_2020_9970/"
+                                  "USACE_Lake_Mich_IL_IN_MI_WI_DEM_2020_m9970_EPSG-6345.vrt",
+                             credit=USACE_NCMP % "2020 Lake Michigan"),
+    "mi-islands16": dict(lake_dem(176.0, navd88=True), id=2, year="2016", name="Michigan lidar",
+                         path="dem/MI_Upper_Lake_MI_Islands_Topobathy_DEM_2016_6195/"
+                              "MI_Upper_Lake_MI_Islands_Topobathy_DEM_2016_m6195_EPSG-26916.vrt",
+                         credit="Michigan 2016 upper Lake Michigan islands topobathy lidar (NOAA Digital Coast)"),
+    "usace-huron19a": dict(lake_dem(176.0), id=1, year="2019", name="USACE lidar",
+                           path="dem/USACE_Lake_Huron_MI_DEM_2019_9944/USACE_Lake_Huron_MI_DEM_2019_m9944_EPSG-6345.vrt",
+                           credit=USACE_NCMP % "2019 Lake Huron (Michigan)"),
+    "usace-huron19b": dict(lake_dem(176.0), id=2, year="2019", name="USACE lidar",
+                           path="dem/USACE_Lake_Huron_MI_DEM_2019_9944/USACE_Lake_Huron_MI_DEM_2019_m9944_EPSG-6346.vrt",
+                           credit=USACE_NCMP % "2019 Lake Huron (Michigan)"),
+    "usace-huron18": dict(lake_dem(176.0), id=3, year="2018", name="USACE lidar",
+                          path="dem/USACE_Huron_DEM_2018_9657/USACE_Huron_DEM_2018_m9657_EPSG-6346.vrt",
+                          credit=USACE_NCMP % "2018 Lake Huron"),
+    "usace-stclair20": dict(lake_dem(174.4), id=1, year="2020", name="USACE lidar",
+                            path="dem/USACE_Lake_StClair_MI_DEM_2020_9972/"
+                                 "USACE_Lake_StClair_MI_DEM_2020_m9972_EPSG-6346.vrt",
+                            credit=USACE_NCMP % "2020 Lake St. Clair"),
+    "usace-erie20": dict(lake_dem(173.5), id=1, year="2020", name="USACE lidar",
+                         path="dem/USACE_Lake_Erie_MI_OH_DEM_2020_9971/USACE_Lake_Erie_MI_OH_DEM_2020_m9971_EPSG-6346.vrt",
+                         credit=USACE_NCMP % "2020 Lake Erie (Michigan, Ohio)"),
+    "usace-erie18": dict(lake_dem(173.5), id=2, year="2018", name="USACE lidar",
+                         path="dem/USACE_Lake_Erie_NY_OH_PA_DEM_2018_9945/"
+                              "USACE_Lake_Erie_NY_OH_PA_DEM_2018_m9945_EPSG-6346.vrt",
+                         credit=USACE_NCMP % "2018 Lake Erie (New York, Ohio, Pennsylvania)"),
+    "usace-ontario18a": dict(lake_dem(74.2), id=1, year="2018", name="USACE lidar",
+                             path="dem/USACE_NY_Ontario_DEM_2018_8981/USACE_NY_Ontario_DEM_2018_m8981_EPSG-26918.vrt",
+                             credit=USACE_NCMP % "2018 Lake Ontario (New York)"),
+    "usace-ontario18b": dict(lake_dem(74.2), id=2, year="2018", name="USACE lidar",
+                             path="dem/USACE_NY_Ontario_DEM_2018_8981/USACE_NY_Ontario_DEM_2018_m8981_EPSG-6346.vrt",
+                             credit=USACE_NCMP % "2018 Lake Ontario (New York)"),
+    "usace-ontario18c": dict(lake_dem(74.2), id=3, year="2018", name="USACE lidar",
+                             path="dem/USACE_NY_Ontario_DEM_2018_8981/USACE_NY_Ontario_DEM_2018_m8981_EPSG-6347.vrt",
+                             credit=USACE_NCMP % "2018 Lake Ontario (New York)"),
     "gebco": dict(kind="gebco", id=31, zmax=7, res_m=460, year="2026", offset=0.0,
                   name="GEBCO_2026 Grid", datum="mean sea level (approximate)",
                   licence="GEBCO licence: free to use with credit",
@@ -275,6 +377,26 @@ US_BOXES = {
 }
 for _name, (_box, _srcs) in US_BOXES.items():
     REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw="grid", zmin=8, prio=10, cut=True, seed="sea")
+
+# The Great Lakes (plan section 98): per lake (box, the lake's mean level above its datum, its grid, its lidar DEMs,
+# the lake regions its box must leave out).
+LAKE_BOXES = {
+    "lake-superior": ((-92.4, 46.38, -84.36, 49.1), 0.19, "lakegrid-superior",
+                      ["noaa-whitefish23", "usace-stampsands22", "usace-superior19a", "usace-superior19b"], []),
+    "lake-michigan": ((-88.1, 41.6, -84.5, 46.2), 0.39, "lakegrid-michigan", ["usace-michigan20", "mi-islands16"], []),
+    "lake-huron": ((-84.5, 43.0, -79.6, 46.38), 0.33, "lakegrid-huron",
+                   ["usace-huron19a", "usace-huron19b", "usace-huron18"], ["lake-ontario"]),
+    "lake-stclair": ((-83.05, 42.3, -82.35, 43.0), 0.69, "lakegrid-stclair", ["usace-stclair20"], []),
+    "lake-erie": ((-83.6, 41.3, -78.85, 42.95), 0.77, "lakegrid-erie", ["usace-erie20", "usace-erie18"],
+                  ["lake-stclair"]),
+    "lake-ontario": ((-79.95, 43.1, -76.0, 44.3), 0.49, "lakegrid-ontario",
+                     ["usace-ontario18a", "usace-ontario18b", "usace-ontario18c"], []),
+}
+for _name, (_box, _level, _grid, _dems, _ex) in LAKE_BOXES.items():
+    REGIONS[_name] = dict(box=_box, sources=[_grid], mhhw=_level, zmin=5, prio=10, cut=True, seed="lake",
+                          exclude=list(_ex))
+    REGIONS[_name + "-dem"] = dict(box=_box, sources=list(_dems), fill=[_grid], mhhw=_level, zmin=12, prio=12, ring=1,
+                                   margin=72, cut=True, seed="lake", exclude=[e + "-dem" for e in _ex] + list(_ex))
 
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)

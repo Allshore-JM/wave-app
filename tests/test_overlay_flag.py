@@ -430,7 +430,14 @@ def test_the_bathy_notice_the_credit_links():
                  # the Pacific satellite depths (section 97): DEP's citation, licence, what was changed, how good it is
                  "Digital Earth Pacific Satellite-Derived Bathymetry (Sentinel-2, 10 m), Pacific Community (SPC)",
                  "registry.opendata.aws/dep-satellite-derived-bathymetry", "Contains modified Copernicus Sentinel data 2024",
-                 "CC BY 4.0", "depths deeper than 12 m left", "often off by 2 m"):
+                 "CC BY 4.0", "depths deeper than 12 m left", "often off by 2 m",
+                 # the Lower 48 and the Great Lakes (section 98): each source, the datum conversion, the lakes' chart datum
+                 "Coastal National Elevation Database (CoNED)", "BlueTopo (4 m, CC0)", "Coastal Mapping Program 2014 Oregon",
+                 "mean sea level above NAVD88 interpolated from NOAA CO-OPS tide-station datums",
+                 "below each lake's Low Water Datum", "doi:10.7289/V5B85627", "doi:10.7289/V5G15XS5",
+                 "doi:10.7289/V5KS6PHK", "doi:10.7289/V56H4FBH", "draft Lake Superior compilation",
+                 "Lake St Clair is", "Erie's grid, 0.9 m lower", "Superior 183.2 m", "Ontario 74.2 m",
+                 "NOAA 2023 Lake Superior Whitefish Bay", "in the Great", "Lakes, below the lake's Low Water Datum"):
         assert need in body, need
     js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert 'href="/notice/bathy"' in js, "the credit's link opens this notice"

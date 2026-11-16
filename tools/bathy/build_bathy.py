@@ -71,6 +71,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bathy_bluetopo as BT  # noqa: E402
 import bathy_dep as D       # noqa: E402
+import bathy_lakes as L     # noqa: E402
 import bathy_sources as S   # noqa: E402
 import bathy_tiles as T     # noqa: E402
 import bathy_water as W     # noqa: E402
@@ -1177,6 +1178,8 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                                          reg["seed"])
         scheme = None
         for s in reg["srcs"]:
+            if s.get("kind") == "lakegrid" and not s.get("local"):
+                s["gdal"] = s["local"] = L.fetch(s["lake"], work, USER_AGENT)     # NCEI's archive, checked by hash
             if s.get("kind") == "dep" and not s.get("local"):
                 s["gdal"] = dep_vrt(s, work)
             if s.get("kind") == "bluetopo":
@@ -1345,6 +1348,12 @@ def licence_text(reg):
                   "- A satellite estimate, often off by 2 m: depths deeper than %g m are left out (the regional grid "
                   "shows there), every pixel DEP gives is water, and nothing is used where the US territories' own "
                   "surveys are (%s)." % (s["max_depth"], ", ".join(reg.get("exclude", ())) or "none")]
+    if any(s.get("kind") == "lakegrid" for s in reg["srcs"]):
+        lines += ["- Great Lakes: depths below the lake's Low Water Datum (IGLD 1985: Superior 183.2 m, Michigan-Huron "
+                  "176.0 m, St Clair 174.4 m, Erie 173.5 m, Ontario 74.2 m), the lake's chart datum, not mean sea "
+                  "level. The lake grids are NOAA NCEI's (NGDC 1996-1999 compilations, Superior a draft), downloaded "
+                  "from www.ngdc.noaa.gov; the lidar DEMs' heights are taken below the same datum (the two NAVD88 "
+                  "surveys 0.01 m lower). Lake St Clair from Lake Erie's grid, 0.9 m lower."]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

@@ -1503,6 +1503,10 @@ depths are below mean sea level with no offsets.
   `--box=...`). A real region: the `bathy-build` workflow (Actions: run
   workflow; inputs region, version, upload, replace). The R2 keys live only in GitHub. A first run with `upload` false shows
   the build's time, memory, disk and counts in the summary.
+- **Passing faults.** A download that meets HTTP 429 / 5xx or a dropped connection, and an upload that meets the store's
+  "slow down" / "unavailable" answers, are tried again after 5, 15, 45 and 120 s (`RETRY_WAITS`); a lasting fault (404,
+  403, a refused key) fails at once. GDAL's own reads retry 5 times (`GDAL_HTTP_MAX_RETRY`). Added 2026-11-16 after one
+  NOAA HTTP 500 and one R2 slow-down each ended a region's build.
 - **Measured.** A Hawaii box (Oahu's north shore) 427 tiles, 14 MB, 61 s on this laptop; tiles read back against the CUDEM
   grid with an independent reader: median error 3 mm, p95 under 4.3 cm (the merge averages a 3-m grid into each pixel).
 

@@ -243,12 +243,60 @@ def check_datum_grid(path):
 USER_AGENT = "allshoresurf-bathy-build/1.0"
 
 
+# Waits between tries of a download or an upload that met a passing fault (2026-11-16: NOAA's bucket answered one
+# HTTP 500 to a VRT read; R2 answered "Reduce your concurrent request rate" to one upload): five tries in ~3 minutes.
+RETRY_WAITS = (5, 15, 45, 120)
+_sleep = time.sleep              # tests replace it
+STORAGE_BUSY_CODES = ("ServiceUnavailable", "SlowDown", "TooManyRequests", "RequestLimitExceeded", "InternalError")
+
+
+def http_transient(exc):
+    """A download fault worth another try: HTTP 429 or 5xx, a dropped or timed-out connection. Not 4xx: a missing or
+    refused file stays missing."""
+    import http.client
+    import urllib.error
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429 or exc.code >= 500
+    return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException))
+
+
+def storage_busy(exc):
+    """An upload fault worth another try: the store's slow-down / unavailable answers that outlasted botocore's own
+    quick retries, or a dropped connection."""
+    response = getattr(exc, "response", None)
+    code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
+    if code in STORAGE_BUSY_CODES:
+        return True
+    try:
+        from botocore.exceptions import ConnectionError as BotoConnectionError, ReadTimeoutError
+    except ImportError:
+        return isinstance(exc, (ConnectionError, TimeoutError))
+    return isinstance(exc, (BotoConnectionError, ReadTimeoutError, ConnectionError, TimeoutError))
+
+
+def retrying(fn, transient, what, waits=None, log_fn=print):
+    """fn() once, then again after each wait while it fails with a passing fault; anything else, or the last try's
+    fault, is raised as it came."""
+    waits = RETRY_WAITS if waits is None else waits
+    for wait in tuple(waits) + (None,):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001: classified by `transient`
+            if wait is None or not transient(exc):
+                raise
+            log_fn("%s: %s: %s; trying again in %d s" % (what, type(exc).__name__, str(exc)[:200], wait))
+            _sleep(wait)
+
+
 def _https_bytes(url, timeout=60):
     import certifi
     ctx = ssl.create_default_context(cafile=certifi.where())
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, context=ctx, timeout=timeout) as r:
-        return r.read()
+
+    def once():
+        with urllib.request.urlopen(req, context=ctx, timeout=timeout) as r:
+            return r.read()
+    return retrying(once, http_transient, "download " + url.split("?")[0])
 
 
 def _https_text(url, timeout=60):
@@ -1513,9 +1561,12 @@ def upload(out, store=None, replace=False, workers=16, log_fn=print):
     same = have is not None and have.get("digest") == index["digest"]
     files = [] if same else data_files(out)
 
+    def put_key(key, body, ct, cache):
+        retrying(lambda: store.put(key, body, ct, cache), storage_busy, "upload " + key, log_fn=log_fn)
+
     def put(rel):
         ct = "image/png" if rel.endswith(".png") else "application/octet-stream"
-        store.put(prefix + "/" + rel, open(os.path.join(out, rel), "rb").read(), ct, IMMUTABLE)
+        put_key(prefix + "/" + rel, open(os.path.join(out, rel), "rb").read(), ct, IMMUTABLE)
 
     if not same:
         done = 0
@@ -1530,9 +1581,9 @@ def upload(out, store=None, replace=False, workers=16, log_fn=print):
             if extra:
                 store.delete_keys(extra, prefix)
                 log_fn("deleted %d files of the replaced build" % len(extra))
-        store.put(prefix + "/LICENSE.txt", open(os.path.join(out, "LICENSE.txt"), "rb").read(),
+        put_key(prefix + "/LICENSE.txt", open(os.path.join(out, "LICENSE.txt"), "rb").read(),
                   "text/plain; charset=utf-8", IMMUTABLE)
-        store.put(prefix + "/index.json", open(os.path.join(out, "index.json"), "rb").read(), "application/json",
+        put_key(prefix + "/index.json", open(os.path.join(out, "index.json"), "rb").read(), "application/json",
                   IMMUTABLE)
     back = store.get_json(prefix + "/index.json")
     if not back or back.get("digest") != index["digest"]:
@@ -1542,7 +1593,7 @@ def upload(out, store=None, replace=False, workers=16, log_fn=print):
         "v": version, "box": index["box"], "zmin": index["zmin"], "zmax": index["zmax"],
         "prio": reg["prio"], "digest": index["digest"][:16], "built": index["built_utc"]}
     regions["updated_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    store.put(REGIONS_KEY, json.dumps(regions, indent=1, sort_keys=True).encode(), "application/json", POINTER)
+    put_key(REGIONS_KEY, json.dumps(regions, indent=1, sort_keys=True).encode(), "application/json", POINTER)
     if (store.get_json(REGIONS_KEY) or {}).get("regions", {}).get(name, {}).get("v") != version:
         raise RuntimeError("regions.json read back does not name this version")
     if same:

@@ -456,6 +456,35 @@ def test_upload_writes_files_then_licence_then_index_then_regions(region):
     assert st.order == [B.REGIONS_KEY]
 
 
+def test_upload_asks_again_when_the_store_says_slow_down(region, monkeypatch):
+    """R2's "Reduce your concurrent request rate" (2026-11-16, us-or-wa) on a tile, the index and regions.json: each
+    put is tried again after a pause and the upload completes in the usual order."""
+    waits = []
+    monkeypatch.setattr(B, "_sleep", waits.append)
+
+    class Busy(Exception):
+        response = {"Error": {"Code": "ServiceUnavailable"}}
+
+    class BusyStore(FakeStore):
+        def __init__(self):
+            super().__init__()
+            self.refused = set()
+
+        def put(self, key, body, content_type, cache_control):
+            first = key.endswith("/" + png)
+            if (first or key.endswith("index.json") or key == B.REGIONS_KEY) and key not in self.refused:
+                self.refused.add(key)
+                raise Busy("Reduce your concurrent request rate for the same object")
+            super().put(key, body, content_type, cache_control)
+
+    png = [r for r in B.data_files(region["out"]) if r.endswith(".png")][0]
+    st = BusyStore()
+    assert B.upload(region["out"], store=st, workers=4, log_fn=lambda s: None)
+    assert len(st.refused) == 3 and len(waits) == 3
+    assert st.order[-1] == B.REGIONS_KEY and st.order[-2].endswith("index.json")
+    assert len(st.order) == region["index"]["count"] + 3
+
+
 def test_upload_refuses_a_different_build_under_the_same_version(region):
     st = FakeStore()
     pre = "static/bathy/synth/v3/"

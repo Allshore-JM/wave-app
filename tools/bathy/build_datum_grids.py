@@ -34,7 +34,9 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 MD = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi"
 UA = "allshoresurf.com bathymetry build (datum grid)"
-BOX = (24.0, -125.5, 49.5, -66.5)       # S, W, N, E: the Lower 48 and its offshore band
+BOX = (23.0, -127.0, 50.5, -65.0)       # S, W, N, E: the Lower 48, its offshore band and a margin for the
+#                                         regions' blocks (a block reaches past its box: us-fl-south to 23.97 N, us-me-nh
+#                                         to 66.45 W, us-or-wa to 125.51 W on 2026-11-16)
 STEP = 0.05                             # degrees
 NEAR = 4                                # stations per pixel
 FILES = {"msl_navd88": os.path.join(HERE, "us_msl_navd88.tif"),

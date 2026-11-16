@@ -20,6 +20,7 @@ import bathy_sources as S  # noqa: E402
 import bathy_tiles as T  # noqa: E402
 import bathy_water as W  # noqa: E402
 import build_bathy as B  # noqa: E402
+import build_datum_grids as G  # noqa: E402
 
 BOX = (-158.25, 21.20, -158.0, 21.24)          # open sea south-west of Oahu (as the lidar tests)
 SPLIT = -158.125                               # the datum grids change here
@@ -296,9 +297,38 @@ def test_the_committed_datum_grids_are_the_pinned_ones_and_match_the_gauges():
         with rasterio.open(path) as d:
             a = d.read(1)
             assert np.isfinite(a).all()                                   # IDW everywhere: no hole in the box
-            s, w, n, e = 24.0, -125.5, 49.5, -66.5
+            s, w, n, e = G.BOX
             assert (d.bounds.left, d.bounds.bottom, d.bounds.right, d.bounds.top) == pytest.approx((w, s, e, n))
             for k, g in GAUGES.items():
                 r, c = d.index(g[1], g[0])
                 assert abs(float(a[r, c]) - g[col]) <= 0.05, (name, k, float(a[r, c]))
     assert os.path.getsize(os.path.join(S.DATUM_DIR, "us_datum_stations.json")) > 100000  # the offline rebuild's input
+
+
+def test_every_grid_datum_region_s_blocks_lie_inside_the_datum_grids():
+    """A block reaches past its region's box (the reach for the water rule, then whole tiles at the block zoom): run #50
+    (2026-11-16) stopped us-fl-south (23.97 N), us-me-nh (66.45 W) and would have stopped us-or-wa (125.51 W) at the old
+    grid edge. Every block of the full box, corner to corner, must read the grids with at least one grid cell to spare."""
+    import math
+    from pyproj import Transformer
+    tr = Transformer.from_crs(3857, 4326, always_xy=True)
+    s0, w0, n0, e0 = G.BOX
+    m = G.STEP
+    names = [n for n, r in S.REGIONS.items() if isinstance(r.get("mhhw"), str)]
+    assert len(names) >= 12
+    for name in names:
+        r = B.region_config(name)
+        z = r["zmax"] - B.BLOCK_LEVELS
+        w, s, e, n = r["box"]
+        rc = r.get("reach", 0)
+        k = 2 ** z
+        x0, x1 = int((w - rc + 180) / 360 * k), int((e + rc + 180) / 360 * k)
+
+        def ty(lat):
+            return int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * k)
+
+        for key in [(x0, ty(n + rc)), (x1, ty(s - rc))]:
+            b = B.block_geom(r, key)[0]
+            lon, lat = tr.transform([b[0], b[2]], [b[1], b[3]])
+            assert w0 + m <= min(lon) and max(lon) <= e0 - m, (name, key, lon)
+            assert s0 + m <= min(lat) and max(lat) <= n0 - m, (name, key, lat)

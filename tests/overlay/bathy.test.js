@@ -581,6 +581,25 @@ test('the Great Lakes: depth below the lake\'s Low Water Datum in the note and t
     'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
 });
 
+test('the layer\'s list of sources in view carries each source\'s datum, so the panel can say "below the lake\'s Low Water Datum" (section 98)', () => {
+  const lake = { name: 'NOAA NCEI Great Lakes bathymetry', year: '1999', res_m: 90, credit: 'NOAA NCEI', licence: 'public domain', datum: 'Low Water Datum (IGLD 1985)' };
+  const sea = { name: 'NOAA CUDEM', year: '2014', res_m: 3, credit: 'NOAA', licence: 'public domain', datum: 'NAVD88 to mean sea level' };
+  const reg = (name) => ({ name, v: 1 });
+  const fake = {
+    store: { index: { 'i:lake-michigan@1': { sources: { 3: lake } }, 'i:us-sne-ny@1': { sources: { 1: sea } } },
+      regionKey: I.BathyStore.prototype.regionKey },
+    _tiles: {
+      a: { coords: { x: 1, y: 1, z: 9 }, el: { _bSrc: [{ reg: reg('lake-michigan'), mask: 1 << 3 }] } },
+      b: { coords: { x: 2, y: 1, z: 9 }, el: { _bSrc: [{ reg: reg('us-sne-ny'), mask: 1 << 1 }] } }
+    }
+  };
+  const list = I.BathyLayer.prototype.sourcesInView.call(fake);
+  assert.deepEqual(list.map((s) => s.datum), [sea.datum, lake.datum]);
+  assert.equal(I.bathyNote(list), 'Approximate; not for navigation. Depth below mean sea level; in the Great Lakes, below each lake’s Low Water Datum.');
+  delete fake._tiles.b;
+  assert.equal(I.bathyNote(I.BathyLayer.prototype.sourcesInView.call(fake)), 'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
+});
+
 // ---- pins found by the mutation pass ----
 
 // Overzoomed by 2 (s = 2): pixel 0 sits between nodes 0 and 1 at 0.75 of the way, pixel 1 at 0.25 past node 1.

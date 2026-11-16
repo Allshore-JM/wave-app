@@ -1755,7 +1755,7 @@ choice, the imagery under it). Unset, the page is unchanged.
   "Approximate; not for
   navigation. Depth below mean sea level." (in the Great Lakes, "Depth below the lake's Low Water Datum (its chart datum)";
   with both in view, both; it follows the view like the sources line, from each source's datum in the region index, and a
-  lake's dry ground reads "dries at the lake's Low Water Datum": overlay asset 2.27.7, section 98); a transparency slider (20-100 % opacity, default 85 %, kept on the device as
+  lake's dry ground reads "dries at the lake's Low Water Datum": overlay asset 2.27.8, section 98); a transparency slider (20-100 % opacity, default 85 %, kept on the device as
   `allshore.bathyOpacity.v1`).
 - **Credit.** "Bathymetry: NOAA · GEBCO" by the sources in view (29 visible characters at most, else "Bathymetry: N
   sources", "1 source"), linking `/notice/bathy`: CIRES and NOAA NCEI's CUDEM (1/9 and 1/3 arc-second) with its DOI and

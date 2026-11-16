@@ -5032,7 +5032,7 @@
             var key = e.reg.name + ':' + id, s = ix.sources[id];
             if (seen[key] || !s) continue;
             seen[key] = true;
-            out.push({ name: s.name, year: s.year, res_m: s.res_m, credit: s.credit, licence: s.licence, region: e.reg.name });
+            out.push({ name: s.name, year: s.year, res_m: s.res_m, credit: s.credit, licence: s.licence, datum: s.datum, region: e.reg.name });
           }
         }
       }

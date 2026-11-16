@@ -548,6 +548,32 @@ test('the readout\'s words: depth in feet / metres, the source and year, "estima
   assert.equal(m._bathyReadout({ kind: 'depth', depth: 812.4, src: gebco, filled: false, coarse: true }), '~812 m (GEBCO, regional estimate)');
 });
 
+test('the Great Lakes: depth below the lake\'s Low Water Datum in the note and the dry-ground words; mean sea level elsewhere; both when both are in view (section 98)', async () => {
+  const cudem = json('hawaii_index.json').sources['10'], gebco = json('gebco_index.json').sources['31'];
+  const lake = { name: 'NOAA NCEI Great Lakes bathymetry', year: '1999', res_m: 90, credit: 'NOAA NCEI', datum: 'Low Water Datum (IGLD 1985)' };
+  const dem = { name: 'USACE lidar', year: '2020', res_m: 1, credit: 'USACE', datum: 'NAVD88 to the lake\'s Low Water Datum (IGLD 1985 176.0 m, less 0.01 m)' };
+  const sea = { name: 'NOAA CUDEM', year: '2014', res_m: 3, credit: 'NOAA', datum: 'NAVD88 to mean sea level: grid from NOAA CO-OPS tide-station datums (about 0.1 m)' };
+  assert.equal(I.bathyLake(lake), true); assert.equal(I.bathyLake(dem), true);
+  [cudem, gebco, sea, null, {}].forEach((s) => assert.equal(I.bathyLake(s), false));
+  assert.equal(I.bathyNote([]), 'Approximate; not for navigation. Depth below mean sea level.');
+  assert.equal(I.bathyNote([cudem, gebco, sea]), 'Approximate; not for navigation. Depth below mean sea level.');
+  assert.equal(I.bathyNote([lake, dem]), 'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
+  assert.equal(I.bathyNote([gebco, lake]), 'Approximate; not for navigation. Depth below mean sea level; in the Great Lakes, below each lake’s Low Water Datum.');
+  const w = world(), ov = ctl(w);
+  assert.equal(ov._bathyReadout({ kind: 'depth', depth: -0.2, src: dem, filled: false, coarse: false }), 'dries at the lake’s Low Water Datum · USACE lidar 2020');
+  assert.equal(ov._bathyReadout({ kind: 'depth', depth: 3.05, src: lake, filled: false, coarse: false }), '10.0 ft · NOAA Great Lakes bathymetry 1999 · approximate');
+  // the panel's note follows the view, in place
+  ov.mount('bathy');
+  w.answer(/regions\.json$/, json('regions.json')); await settle();
+  const note = findCls(ov.ui.host, 'ov-bathy-note');
+  assert.equal(allText(note).trim(), 'Approximate; not for navigation. Depth below mean sea level.');
+  ov._bathySources = () => [lake, dem]; ov._bathyView();
+  assert.equal(findCls(ov.ui.host, 'ov-bathy-note'), note, 'the same element, rewritten');
+  assert.equal(allText(note).trim(), 'Approximate; not for navigation. Depth below the lake’s Low Water Datum (its chart datum).');
+  ov._bathySources = () => [gebco]; ov._bathyView();
+  assert.equal(allText(note).trim(), 'Approximate; not for navigation. Depth below mean sea level.');
+});
+
 // ---- pins found by the mutation pass ----
 
 // Overzoomed by 2 (s = 2): pixel 0 sits between nodes 0 and 1 at 0.75 of the way, pixel 1 at 0.25 past node 1.

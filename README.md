@@ -1689,7 +1689,9 @@ choice, the imagery under it). Unset, the page is unchanged.
 - **Panel.** The depth scale; "Sources here:" (the sources drawn in view, with year and grid size, each printed text
   once; "loading…" while files are on the way; a note while a file a tile in view asked for is waiting out its retry);
   "Approximate; not for
-  navigation. Depth below mean sea level."; a transparency slider (20-100 % opacity, default 85 %, kept on the device as
+  navigation. Depth below mean sea level." (in the Great Lakes, "Depth below the lake's Low Water Datum (its chart datum)";
+  with both in view, both; it follows the view like the sources line, from each source's datum in the region index, and a
+  lake's dry ground reads "dries at the lake's Low Water Datum": overlay asset 2.27.7, section 98); a transparency slider (20-100 % opacity, default 85 %, kept on the device as
   `allshore.bathyOpacity.v1`).
 - **Credit.** "Bathymetry: NOAA · GEBCO" by the sources in view (29 visible characters at most, else "Bathymetry: N
   sources", "1 source"), linking `/notice/bathy`: CIRES and NOAA NCEI's CUDEM (1/9 and 1/3 arc-second) with its DOI and

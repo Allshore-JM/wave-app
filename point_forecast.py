@@ -961,11 +961,13 @@ def hour_slots(steps, run_dt, tz):
     return [_labels(run_dt, h, tz) + (at.get(h),) for h in range(steps[0], steps[-1] + 1)]
 
 
-def point_rows(codes, steps, run_dt, tz):
+def point_rows(codes, steps, run_dt, tz, wind_over=None, extra_wind=False):
     """The forecast rows in the bulletin parsers' 23-column shape: [date, time, 6 x (height ft, peak period s,
     direction deg FROM), wind m/s, wind direction deg FROM, combined height ft], times in the pytz zone `tz`.
     codes: [field][step]; steps: forecast hours; run_dt: the cycle (naive UTC). The systems of a row are in rank
-    order (rank_groups), packed from the left."""
+    order (rank_groups), packed from the left.
+    extra_wind (RRFS on, plan section 99): the 25-column shape, wind as [speed, dir, gust, source label] like the
+    stations'; wind_over {naive UTC hour: (speed, dir, gust, label)} replaces the model's wind where it has the hour."""
     PF = pointfmt()
     ix = {n: i for i, n in enumerate(PF.FIELD_NAMES)}
     rows = []
@@ -975,10 +977,15 @@ def point_rows(codes, steps, run_dt, tz):
         for g in rank_groups(groups + [(None, None, None)] * (NCOL - len(groups))):
             row.extend(g)
         wind, wdir = int(codes[ix["wind"]][si]), int(codes[ix["wdir"]][si])
-        if wind == PF.MISSING:
-            row.extend((None, None))
+        over = (wind_over or {}).get(run_dt + timedelta(hours=int(hour))) if extra_wind else None
+        if over:
+            row.extend((over[0], over[1], over[2], over[3]))
+        elif wind == PF.MISSING:
+            row.extend((None, None, None, None) if extra_wind else (None, None))
         else:
             row.extend((wind / PF.KINDS["speed"]["scale"], None if wdir == PF.MISSING else wdir % 360))
+            if extra_wind:
+                row.extend((None, None))
         hs = int(codes[ix["hs"]][si])
         row.append(None if hs == PF.MISSING else round(hs / PF.KINDS["height"]["scale"] * M_TO_FT, 2))
         rows.append(row)

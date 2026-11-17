@@ -29,6 +29,7 @@ import wind_keyed
 import wind_sources
 import alert_sources
 import weather_sources
+import rrfs_wind
 
 app = Flask(__name__)
 
@@ -870,6 +871,43 @@ def _capped_get_once(url, max_bytes, headers, timeout, deadline, session, byte_r
 
 POINTS = point_forecast.PointSource(_points_root, _points_fetch)
 
+# NOAA RRFS wind in the forecast tables (plan section 99): the RRFS job's objects in the same public bucket as the
+# points. RRFS_WIND=1 turns it on; unset = every table byte for byte as before. One ranged GET per point and source.
+RRFS = rrfs_wind.RrfsWinds(
+    _points_root, lambda url, cap: _points_fetch(url, cap),
+    lambda url, a, b: _capped_get(url, b - a + 1, None, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S, byte_range=(a, b)))
+
+
+def _rrfs_wind_on() -> bool:
+    return os.environ.get("RRFS_WIND", "") == "1"
+
+
+def _rrfs_key() -> tuple:
+    """What the tables' cache keys gain with RRFS on: the newest RRFS source, so a new hourly cycle rebuilds a table
+    at its next request instead of after the cache's 30 min. () with RRFS off (the keys as before)."""
+    return (RRFS.newest() or "",) if _rrfs_wind_on() else ()
+
+
+def _with_rrfs_station(station_id, wind_map):
+    """A station table's wind map with RRFS's hours over GFS's (rrfs_wind.merge); the map unchanged with RRFS off,
+    outside RRFS's grids, or when RRFS cannot be read (the table never waits for RRFS: GFS stays)."""
+    if not _rrfs_wind_on():
+        return wind_map
+    try:
+        r = RRFS.station(station_id)
+    except Exception as exc:                                  # noqa: BLE001
+        logger.warning("RRFS station %s: %s", station_id, exc)
+        r = {}
+    return rrfs_wind.merge(wind_map, r) if r else wind_map
+
+
+def _rrfs_point(lat, lon):
+    try:
+        return RRFS.point(lat, lon)
+    except Exception as exc:                                  # noqa: BLE001
+        logger.warning("RRFS point %.3f,%.3f: %s", lat, lon, exc)
+        return {}
+
 # ---- Weather at land forecast points (plan section 91): Open-Meteo (GFS, ECMWF IFS, DWD ICON, ECMWF AIFS) and the NWS
 # grid forecast at US points. LAND_WEATHER=1 turns it on (unset: a land click is refused as before). Open-Meteo's
 # forecast is asked by the VISITOR'S BROWSER (section 91c: its free limit is per IP, Render's outbound address is
@@ -937,7 +975,7 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         man = POINTS.manifest()
     except point_forecast.PointError as exc:
         return _point_failure(str(exc))
-    key = (man["run"], station_id, tz_name or "")
+    key = (man["run"], station_id, tz_name or "") + _rrfs_key()
 
     def cached():
         with _CACHE_LOCK:
@@ -954,7 +992,11 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
             zone = pytz.timezone(tz_eff)
         except Exception:
             tz_eff, zone = 'UTC', UTC
-        rows = point_forecast.point_rows(codes, man["steps"], man["run_dt"], zone)
+        if _rrfs_wind_on():
+            rows = point_forecast.point_rows(codes, man["steps"], man["run_dt"], zone,
+                                             wind_over=_rrfs_point(lat, lon), extra_wind=True)
+        else:
+            rows = point_forecast.point_rows(codes, man["steps"], man["run_dt"], zone)
         cycle_str, location_str = point_forecast.point_headers(man["run"], lat, lon, cell)
         meta = {"id": station_id, "lat": lat, "lon": lon, "cell_lat": round(cell["lat"], 4),
                 "cell_lon": round(cell["lon"], 4), "cell_km": round(cell["km"], 1), "grid": cell["grid"],
@@ -2368,13 +2410,32 @@ def get_station_wind(station_id: str, date_str: str | None = None,
 
 
 def _wind_row_cells(wind_map: dict, dt_utc: datetime) -> list:
+    """[u10_ms|None, dir_deg_int|None] for a forecast row, joined on the UTC hour. With RRFS_WIND on (plan section 99)
+    four cells: + [gust m/s | None, source label | None] (a wind map value may carry them: (speed, dir, gust, label));
+    wind stays at row[20]/row[21], gust row[22], the label row[23], combined row[-1]."""
+    cells = _wind_row_cells_2(wind_map, dt_utc)
+    if not _rrfs_wind_on():
+        return cells
+    hit = wind_map.get(dt_utc.replace(minute=0, second=0, microsecond=0)) if wind_map and dt_utc is not None else None
+    gust = src = None
+    if cells[0] is not None and hit and len(hit) >= 4:
+        try:
+            g = hit[2]
+            gust = float(g) if g is not None and math.isfinite(float(g)) else None
+        except (TypeError, ValueError):
+            gust = None
+        src = hit[3] if isinstance(hit[3], str) else None
+    return cells + [gust, src]
+
+
+def _wind_row_cells_2(wind_map: dict, dt_utc: datetime) -> list:
     """[u10_ms|None, dir_deg_int|None] for a forecast row, joined on the UTC hour."""
     if not wind_map or dt_utc is None:
         return [None, None]
     hit = wind_map.get(dt_utc.replace(minute=0, second=0, microsecond=0))
     if not hit:
         return [None, None]
-    u10, udir = hit
+    u10, udir = hit[0], hit[1]
     try:
         if u10 is None or not math.isfinite(float(u10)):
             return [None, None]
@@ -2475,8 +2536,13 @@ def parse_bull(station_id: str, target_tz_name: str | None = None):
     the single cached forecast path; a future JSON endpoint should call this too
     so both share one cache rather than re-fetching/parsing NOAA per request.
     """
-    key = (station_id, target_tz_name or "", "GFS")
+    key = _bull_key(station_id, target_tz_name)
     return _forecast_singleflight(key, lambda: _parse_bull_uncached(station_id, target_tz_name))
+
+
+def _bull_key(station_id, tz):
+    """parse_bull's cache key (shared with _drop_old_bull); + the newest RRFS source with RRFS on (plan section 99)."""
+    return (station_id, tz or "", "GFS") + _rrfs_key()
 
 
 _FORECAST_INFLIGHT = {}     # key -> Lock: collapse concurrent cold misses (singleflight)
@@ -2599,7 +2665,7 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
 
     # GFS wind for the Wind table columns -- pinned to the SAME cycle as this
     # bull so the two can never skew across a run rollover. {} on failure.
-    wind_map = get_station_wind(station_id, date_str, run_str)
+    wind_map = _with_rrfs_station(station_id, get_station_wind(station_id, date_str, run_str))
     return _parse_bull_text(text, station_id, target_tz_name, date_str, run_str, wind_map)
 
 
@@ -3270,7 +3336,7 @@ def parse_nwps(station_id: str, target_tz_name: str | None = None):
     """Cached NWPS forecast (the parse_bull() 6-tuple), keyed (station, tz, "NWPS", the run the held pointer names for
     the station): a new run, or an office coming back after the 72-h hide, is built at once rather than after the
     cache's 30 min (G41 re-check F-1, K-1)."""
-    key = (station_id, target_tz_name or "", "NWPS", _nwps_held_run(station_id))
+    key = (station_id, target_tz_name or "", "NWPS", _nwps_held_run(station_id)) + _rrfs_key()
     return _forecast_singleflight(key, lambda: _parse_nwps_uncached(station_id, target_tz_name))
 
 
@@ -3321,7 +3387,7 @@ def _parse_nwps_uncached(station_id: str, target_tz_name: str | None = None):
         local_tz = UTC
     run_dt = datetime.strptime(doc["run"], "%Y%m%d%H")
     first = next((run_dt + timedelta(hours=h) for h, v in zip(doc["hours"], doc["hs"]) if v is not None), None)
-    rows = nwps_rows(doc, local_tz, _gfs_wind_cover(station_id, first))
+    rows = nwps_rows(doc, local_tz, _with_rrfs_station(station_id, _gfs_wind_cover(station_id, first)))
     if not rows:
         return None, None, None, None, effective_tz_name, f"No NWPS forecast found for {station_id}"
     location_str = f"Location : {station_id} ({_nwps_point_str(doc, st)})"    # the point the numbers are for (G41 B-3)
@@ -3636,7 +3702,7 @@ def _parse_gfs_spectral_uncached(station_id: str, target_tz_name: str | None, ru
         local_tz = UTC
     run_dt = datetime.strptime(run, "%Y%m%d%H")
     # the wind of THIS run (the winds product publishes it minutes before the spectral one); {} on failure
-    wind = get_station_wind(station_id, run[:8], run[8:])
+    wind = _with_rrfs_station(station_id, get_station_wind(station_id, run[:8], run[8:]))
     rows = gspec_rows(dec, run_dt, local_tz, wind)
     if not rows:
         return None, None, None, None, effective_tz_name, f"No spectral forecast for {station_id} in run {run}"
@@ -3649,7 +3715,7 @@ def _parse_gfs_spectral_uncached(station_id: str, target_tz_name: str | None, ru
 def _drop_old_bull(station_id, tz, site_run):
     """parse_bull's own entry (sid, tz, "GFS") carries no run and lives 30 min: when its cycle run is behind the site's,
     drop it, so NOAA's split served meanwhile (and by the button) is the NEW run's (owner decision 2; G48 A P3-1)."""
-    key = (station_id, tz or "", "GFS")
+    key = _bull_key(station_id, tz)
     with _CACHE_LOCK:
         entry = _FORECAST_CACHE.get(key)
         if not entry or not site_run:
@@ -3697,7 +3763,7 @@ def parse_gfs_spectral(station_id: str, target_tz_name: str | None = None):
     tz = target_tz_name or ""
     prior = _gspec_prior_note(spectral_run, site_run) if spectral_run is not None and site_run is not None else None
     if spectral_run is not None and (site_run is None or spectral_run >= site_run or prior):
-        key = (station_id, tz, "GFSS", spectral_run, site_run or "")
+        key = (station_id, tz, "GFSS", spectral_run, site_run or "") + _rrfs_key()
         data = _forecast_singleflight(key, lambda: _parse_gfs_spectral_uncached(station_id, target_tz_name, spectral_run))
         if data and not data[-1]:
             with _GSPEC_LOCK:
@@ -3713,7 +3779,7 @@ def parse_gfs_spectral(station_id: str, target_tz_name: str | None = None):
     _drop_old_bull(station_id, tz, site_run)
     # The fallback's OWN key: never parse_bull's (sid, tz, "GFS"), whose build this build calls under the key's lock
     # (the same key would deadlock every GFS request thread; G48 A P4-3).
-    key = (station_id, tz, "GFSN", spectral_run or "", site_run)
+    key = (station_id, tz, "GFSN", spectral_run or "", site_run) + _rrfs_key()
     data = _forecast_singleflight(key, lambda: parse_bull(station_id, target_tz_name), ttl=_GSPEC_FALLBACK_TTL)
     with _GSPEC_LOCK:
         _GSPEC["fallback"] += 1
@@ -3937,7 +4003,7 @@ def parse_swan(station_id: str, target_tz_name: str | None = None):
     Only successful parses are cached.
     """
     held = _swan_held_updated(station_id)
-    key = (station_id, target_tz_name or "", "SWAN", held)
+    key = (station_id, target_tz_name or "", "SWAN", held) + _rrfs_key()
     data = _forecast_singleflight(key, lambda: _parse_swan_uncached(station_id, target_tz_name))
     if held is None and data and not data[-1]:
         now_held = _swan_held_updated(station_id)          # the build just recorded the region's publish time:
@@ -3981,7 +4047,7 @@ def _parse_swan_uncached(station_id: str, target_tz_name: str | None = None):
     # SWAN rows predating it -- the PacIOOS table starts at 06Z of its publish day, up to ~30 h before the latest
     # GFS run, and those rows used to render blank. The newest run wins where both cover an hour. {} on any
     # failure -- never blocks waves; a failed back-fill leaves those early rows blank as before.
-    wind_map = _gfs_wind_cover(station_id, _swan_first_row_utc(resp.text))
+    wind_map = _with_rrfs_station(station_id, _gfs_wind_cover(station_id, _swan_first_row_utc(resp.text)))
 
     return _parse_swan_table_text(resp.text, station_id, target_tz_name, updated_utc,
                                   wind=wind_map)
@@ -4212,6 +4278,45 @@ def _sun_cell(info) -> str:
     return _ascii("<br>".join(parts))
 
 
+def _wind_label(row):
+    """The source of a row's wind (plan section 99): the RRFS label, 'GFS' for a model hour, None without wind."""
+    if row[20] is None:
+        return None
+    return (row[23] if len(row) >= 25 else None) or "GFS"
+
+
+def _wind_handovers(rows):
+    """Indices of the rows whose wind source differs from the previous row with wind."""
+    out, prev = set(), None
+    for i, r in enumerate(rows):
+        lab = _wind_label(r)
+        if lab is None:
+            continue
+        if prev is not None and lab != prev:
+            out.add(i)
+        prev = lab
+    return out
+
+
+def _wind_source_line(rows):
+    """'Wind: RRFS 15Z to Tue 11/18 9 AM · RRFS 12Z to Fri 11/21 12 AM · then GFS' (the sources in row order, each to
+    its last row)."""
+    segs = []
+    for r in rows:
+        lab = _wind_label(r)
+        if lab is None:
+            continue
+        if segs and segs[-1][0] == lab:
+            segs[-1][1] = r
+        else:
+            segs.append([lab, r])
+    if not segs:
+        return ""
+    parts = [f"{lab} to {_short_date(r[0])} {r[1]}" for lab, r in segs[:-1]]
+    parts.append(("then " if parts else "") + segs[-1][0])
+    return "Wind: " + " · ".join(parts)
+
+
 def build_html_table(cycle_str: str, location_str: str, model_run_str: str | None,
                      rows: list[list], tz_label: str, unit: str, *, compact: bool = False,
                      groups: list[int] | None = None, sky: list | None = None) -> str:
@@ -4228,6 +4333,9 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     borders and night rows dashed; without sky data the classes come from the fixed 6 AM - 7 PM clock rule. The
     classic table keeps that rule inline, as always."""
     sky = sky if compact and sky and len(sky) == len(rows) else None
+    # RRFS (plan section 99): rows of 25 cells carry gust (22) and the source (23); a table with any RRFS hour shows
+    # Spd | Gust | Dir, a source line above it and a top border on each row where the wind's source changes
+    rrfs = any(len(r) >= 25 and r[23] for r in rows)
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
         {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},
@@ -4244,11 +4352,14 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     pad = '' if compact else ' padding:4px 8px;'
     html = ('<table class="table table-bordered table-sm forecast-compact">\n' if compact
             else '<table class="table table-bordered table-sm">\n')
+    if rrfs:
+        html += ('<caption class="wind-source" style="caption-side:top; text-align:left; font-size:0.85em; '
+                 f'padding:2px 0;">{html_escape(_wind_source_line(rows)).replace(chr(183), "&middot;")}</caption>\n')
     # Everything that should stay locked while the body scrolls lives in <thead>
     # (position: sticky): the Cycle/Location/TZ info rows first (not in the compact
     # table), then the two column-header rows.
     gs = list(range(len(group_colors))) if groups is None else [g for g in groups if 0 <= g < len(group_colors)]
-    n_cols = 2 + len(gs) * 3 + 1 + 2  # + Combined + Wind (Spd, Dir)
+    n_cols = 2 + len(gs) * 3 + 1 + 2 + (1 if rrfs else 0)  # + Combined + Wind (Spd, [Gust,] Dir)
     html += '<thead>\n'
     if not compact:
         html += f'<tr><td colspan="{n_cols}" class="forecast-info">{cycle_str}</td></tr>\n'
@@ -4272,7 +4383,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     if not compact:
         html += comb_th
     last = ' class="col-last"' if compact and not sky else ''  # the window table's right-edge cells draw that edge
-    html += f'<th colspan="2" scope="colgroup"{last} style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
+    html += f'<th colspan="{3 if rrfs else 2}" scope="colgroup"{last} style="background-color:{wind_colors["header"]}; color:white; text-align:center;">Wind</th>'
     if sky:                                                    # the last column (owner, plan section 35)
         html += '<th rowspan="2" scope="col" class="col-sun col-last" title="Sun and moon">Sun/Moon</th>'
     html += '</tr>\n'
@@ -4293,12 +4404,15 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     if not compact:
         html += comb_sub
     html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Spd<br>{wind_spd_label}</th>'
+    if rrfs:
+        html += f'<th scope="col" style="background-color:{wind_colors["subheader"]}; text-align:center;">Gust<br>{wind_spd_label}</th>'
     html += f'<th scope="col"{last} style="background-color:{wind_colors["subheader"]}; text-align:center;">Dir</th>'
     html += '</tr>\n'
     html += '</thead>\n'
 
     # rows
     html += '<tbody>\n'
+    handovers = _wind_handovers(rows) if rrfs else set()
     for ri, row in enumerate(rows):
         info = sky[ri] if sky else None
         border_style = ""
@@ -4368,14 +4482,19 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
         # and converted here, like heights' /3.28084 above.
         wind_style = (f'background-color:{wind_colors["data"]}; text-align:right;' if plain else
                       f'background-color:{wind_colors["data"]}; text-align:right; font-weight:{fw}; {border_style}{pad}')
+        if rrfs and ri in handovers:
+            wind_style += f' border-top:2px solid {wind_colors["header"]};'
+
+        def _wspd(v):
+            if v is None:
+                return ""
+            return f"{int(round(v * 2.23694))}" if unit == 'US' else f"{int(round(v * 3.6))}"
+
         wspd = row[20]
-        if wspd is None:
-            spd_str = ""
-        elif unit == 'US':
-            spd_str = f"{int(round(wspd * 2.23694))}"
-        else:
-            spd_str = f"{int(round(wspd * 3.6))}"
+        spd_str = _wspd(wspd)
         html += f'<td style="{wind_style}">{spd_str}</td>'
+        if rrfs:
+            html += f'<td style="{wind_style}">{_wspd(row[22] if len(row) >= 25 else None)}</td>'
         wdir = row[21]
         dir_str = "" if wdir is None else (_dir_cell(wdir) if compact else f"{wdir}&deg; {_compass16(wdir)}")
         html += f'<td{last} style="{wind_style} white-space:nowrap;">{dir_str}</td>'
@@ -4521,6 +4640,9 @@ def summary_days(rows, ann, days, unit):
             sp = [to_w(r[20]) for r in ws]
             day["wind"] = {"min": int(round(min(sp))), "max": int(round(max(sp))),
                            "dir": _circular_mean([r[21] for r in ws], [1.0] * len(ws))}
+            gu = [to_w(r[22]) for r in ws if len(r) >= 25 and r[22] is not None]     # RRFS hours (plan section 99)
+            if gu:
+                day["wind"]["gust"] = int(round(max(gu)))
         out.append(day)
     return out
 
@@ -4567,7 +4689,8 @@ def build_summary_html(rows, ann, days, unit, tz_label=None) -> str:
         w = day["wind"]
         if w:
             spd = f"{w['min']}" if w["min"] == w["max"] else f"{w['min']}&ndash;{w['max']}"
-            html += f'<td>{spd} {w_unit} &middot; {_dir_cell(w["dir"]) if w["dir"] is not None else ""}</td>'
+            gust = f' &middot; gusts {w["gust"]}' if w.get("gust") is not None else ""
+            html += f'<td>{spd} {w_unit}{gust} &middot; {_dir_cell(w["dir"]) if w["dir"] is not None else ""}</td>'
         else:
             html += "<td></td>"
         for k in ("sunrise", "sunset"):
@@ -7363,6 +7486,7 @@ def healthz():
         "nwps": _nwps_health(),                   # section 59: the NWPS tables' pointer; reported only
         "swan": _swan_health(),                   # section 64: the SWAN tables' publish times; reported only
         "alerts": _alerts_health(),               # section 90: the NWS coastal hazards; reported only
+        "rrfs": (dict(RRFS.health(), enabled=True) if _rrfs_wind_on() else {"enabled": False}),  # section 99
         "weather": _weather_health(),             # section 91: land weather (Open-Meteo, NWS); reported only
     }
     resp = jsonify(body)

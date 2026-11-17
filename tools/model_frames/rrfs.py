@@ -38,6 +38,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
@@ -63,6 +64,11 @@ KEEP_CELLS = {"run": 2, "cycle": 3}
 MISSING = 65535
 MISSING8 = 255
 BUILD_BUDGET_S = 25 * 60
+RUN_MIN_LEFT_S = 15 * 60             # an 84-h run is started in a tick only with this much of the budget left (G66a P2-1)
+STALE_H = {"cycle": 8, "run": 24}    # hours after its cycle time the newest source of a kind may be (G66a P1-1): an hourly
+                                     # cycle lands ~2.5 h after its hour, a run ~3.7 h; so 8 h = ~5 cycles missed and
+                                     # 24 h = 3 runs missed
+NOTREADY_WARN = 6                    # NotReady / budget exits in a row for one cycle before the run fails loud (run.py's rule)
 FAILED_RETRY_AFTER_S = 1800
 FAILED_MAX_ATTEMPTS = 6
 WORKERS = 8
@@ -270,19 +276,27 @@ def head_ok(url, opener=urllib.request.urlopen):
             last = f"HTTP {e.code}"
         except Exception as e:                       # noqa: BLE001
             last = repr(e)
-        time.sleep(2 * (attempt + 1))
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))
     raise TransportError(f"HEAD {url}: {last}")
 
 
-def content_length(url, opener=urllib.request.urlopen):
-    """An object's size (HEAD); NotReady on 403/404."""
-    try:
-        with opener(urllib.request.Request(url, headers=UA, method="HEAD"), timeout=30) as r:
-            return int(r.headers["Content-Length"])
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 404):
-            raise NotReady(f"{e.code} {url}") from None
-        raise TransportError(f"HEAD {url}: HTTP {e.code}") from None
+def content_length(url, opener=urllib.request.urlopen, tries=3):
+    """An object's size (HEAD); NotReady on 403/404; retried, then TransportError."""
+    last = None
+    for attempt in range(tries):
+        try:
+            with opener(urllib.request.Request(url, headers=UA, method="HEAD"), timeout=30) as r:
+                return int(r.headers["Content-Length"])
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404):
+                raise NotReady(f"{e.code} {url}") from None
+            last = f"HTTP {e.code}"
+        except Exception as e:                       # noqa: BLE001
+            last = repr(e)
+        if attempt + 1 < tries:
+            time.sleep(2 * (attempt + 1))
+    raise TransportError(f"HEAD {url}: {last}")
 
 
 def complete(cycle_dt, head=head_ok):
@@ -310,11 +324,35 @@ def newest_complete(now, kind, head=head_ok):
 
 # ------------------------------------------------------------------------------------------------------------ decoding
 
-def decode(msg, grid, step_check=None):
-    """values (ny, nx) float64, NaN for missing, of one GRIB message, its geometry checked against the pin."""
+# What each record must say about itself (eccodes keys, steps in hours), so a .idx that does not match its GRIB file
+# can never put one field in another's place (G66a P2-2): name -> (shortName, level, span) where span "hour" = over the
+# hour ending at the step, "total" = from the cycle's start, None = instantaneous at the step.
+IDENTITY = {"u": ("10u", 10, None), "v": ("10v", 10, None), "gust": ("gust", 0, None), "tmp": ("2t", 2, None),
+            "dpt": ("2d", 2, None), "crain": ("crain", 0, None), "csnow": ("csnow", 0, None),
+            "cfrzr": ("cfrzr", 0, None), "cicep": ("cicep", 0, None), "tcdc": ("tcc", 0, None),
+            "apcp": ("tp", 0, "hour"), "ltng": ("ltng", 0, "hour"), "apcp_total": ("tp", 0, "total")}
+
+
+def check_identity(g, ec, name, cycle_dt, step):
+    """Raise ValueError unless the open message g is field `name` of cycle_dt at `step` (hours)."""
+    short, level, span = IDENTITY[name]
+    ec.codes_set(g, "stepUnits", "h")
+    got = (ec.codes_get(g, "shortName"), ec.codes_get(g, "level"), ec.codes_get(g, "startStep"),
+           ec.codes_get(g, "endStep"), ec.codes_get(g, "dataDate"), ec.codes_get(g, "dataTime"))
+    start = step - 1 if span == "hour" else 0 if span == "total" else step
+    want = (short, level, start, step, int(f"{cycle_dt:%Y%m%d}"), cycle_dt.hour * 100)
+    if got != want:
+        raise ValueError(f"record {name} of {cycle_name(cycle_dt)} f{step:03d} is {got}, not {want}")
+
+
+def decode(msg, grid, expect=None):
+    """values (ny, nx) float64, NaN for missing, of one GRIB message, its geometry checked against the pin and, with
+    expect = (name, cycle_dt, step), its identity (field, level, step range, cycle)."""
     import eccodes as ec
     g = ec.codes_new_from_message(msg)
     try:
+        if expect is not None:
+            check_identity(g, ec, *expect)
         meta = {}
         for k in ("gridType", "Nx", "Ny", "latitudeOfFirstGridPointInDegrees", "longitudeOfFirstGridPointInDegrees",
                   "LaDInDegrees", "LoVInDegrees", "Latin1InDegrees", "Latin2InDegrees", "DxInMetres", "DyInMetres",
@@ -377,6 +415,7 @@ def step_record(f, grid, lon, prev_total=None):
     rec = np.empty(spd.size, dtype=CELL_DTYPE)
     rec["spd"] = _u16(spd, 100).ravel()
     rec["dir"] = _u16(np.where(np.round(dirn * 10) >= 3600, 0.0, dirn), 10).ravel()
+    rec["dir"][rec["spd"] == 0] = MISSING            # a calm has no direction (atan2(-0, -0) would say 180)
     rec["gust"] = _u16(f["gust"], 100).ravel()
     rec["tmp"] = _u16(f["tmp"], 10).ravel()
     rec["dpt"] = _u16(f["dpt"], 10).ravel()
@@ -419,37 +458,60 @@ def fetch_step(cycle_dt, grid, step, get=http_get, size_of=None):
 
 def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print, workers=WORKERS):
     """Fetch and decode every step of one grid; write the cell-major series to work/<grid>.bin. Returns (path,
-    {sid: [steps x (spd, dir, gust)]}) for the stations on this grid."""
+    {sid: [steps x (spd, dir, gust)]}) for the stations on this grid.
+
+    The series is built in RAM (CONUS run 2.3 GB; one grid at a time on a 16 GB runner) and written once: a file-backed
+    map would dirty every page of the file at every step (14 B at a 1,190-B stride), G66a P1-2. Fetches run ahead of
+    the decoding in a window of 2 x workers steps; decoding (eccodes) stays on this thread, in step order (hourly
+    cycles difference their precipitation totals)."""
     steps = steps_of(cycle_dt)
     gpin = G.GRIDS[grid]
     ny, nx = gpin["Ny"], gpin["Nx"]
     path = os.path.join(work, f"{grid}.bin")
-    arr = np.memmap(path, mode="w+", dtype=CELL_DTYPE, shape=(ny * nx, len(steps)))    # the file IS the product
+    arr = np.empty((ny * nx, len(steps)), dtype=CELL_DTYPE)
+    t0 = time.monotonic()
+
     def one(step):
         if time.monotonic() > deadline:
             raise BudgetExceeded("the build budget ran out")
         return fetch_step(cycle_dt, grid, step, get)
 
-    # fetch a batch in parallel, decode it in step order (hourly cycles difference their precipitation totals); a batch
-    # at a time keeps the undecoded messages to 2 x workers steps (CONUS ~14 MB a step)
-    lon, total, done = None, None, 0
+    lon, total, waits = None, None, 0.0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for b0 in range(0, len(steps), 2 * workers):
-            batch = steps[b0:b0 + 2 * workers]
-            for k, m in enumerate(ex.map(one, batch)):
+        ahead = deque()
+        pending = iter(steps)
+
+        def fill():
+            while len(ahead) < 2 * workers:
+                s = next(pending, None)
+                if s is None:
+                    return
+                ahead.append((s, ex.submit(one, s)))
+
+        fill()
+        try:
+            for k, step in enumerate(steps):
+                s, fut = ahead.popleft()
+                if s != step:
+                    raise RuntimeError(f"step order {s} != {step}")
+                w = time.monotonic()
+                m = fut.result()
+                waits += time.monotonic() - w
+                fill()
                 if lon is None:
                     lon = grid_lonlat(m["u"], grid)[1]
-                fields = {name: decode(b, grid) for name, b in m.items()}
+                fields = {name: decode(b, grid, (name, cycle_dt, step)) for name, b in m.items()}
                 rec, total = step_record(fields, grid, lon, total)
-                arr[:, b0 + k] = rec
-                done += 1
-    if done != len(steps):
-        raise ValueError(f"{grid}: {done} of {len(steps)} steps decoded")
-    arr.flush()
+                arr[:, k] = rec
+        finally:
+            for _, fut in ahead:
+                fut.cancel()
+    with open(path, "wb") as fh:
+        arr.tofile(fh)
     st = {sid: np.array(arr[j * nx + i][["spd", "dir", "gust"]]) for sid, (j, i) in stations.items()}
-    arr._mmap.close()                                    # Windows keeps a mapped file open until the map is closed
     del arr
-    log(f"{cycle_name(cycle_dt)} {grid}: {len(steps)} steps, {os.path.getsize(path)} B, {len(stations)} stations")
+    log(f"{cycle_name(cycle_dt)} {grid}: {len(steps)} steps, {os.path.getsize(path)} B, {len(stations)} stations, "
+        f"{time.monotonic() - t0:.0f} s ({waits:.0f} s waiting for downloads)")
     return path, st
 
 
@@ -561,7 +623,7 @@ def publish(store, cycle_dt, files, docs, latest):
              "cells": {g: cells_index_key(cyc, g) for g in G.ORDER if cells_index_key(cyc, g) in docs} or None}
     sources = [s for s in (latest.get("sources") or []) if s.get("cycle") != cyc] + [entry]
     sources = keep_sources(sources)
-    pointer = {"format": "rrfs-pointer-v1", "published_utc": _now(), "run": newest(sources), "sources": sources}
+    pointer = {"format": "rrfs-pointer-v1", "published_utc": _now(), "newest": newest(sources), "sources": sources}
     store.put(P.latest_key(PREFIX), json.dumps(pointer, sort_keys=True).encode(), "application/json", P.POINTER)
     return pointer
 
@@ -586,18 +648,18 @@ def keep_sources(sources):
     return out
 
 
-def prune(store, pointer):
-    """Delete every object under <PREFIX>/<10 digits>/ the pointer does not name (cells of dropped sources included);
-    a cycle newer than the pointer's newest is left alone (a later build may still be writing). Old failed/notready
-    records go too."""
+def prune(store, pointer, previous=None):
+    """Delete every object under <PREFIX>/<10 digits>/ that neither the new pointer nor the one it replaced names
+    (a site may still hold the previous pointer for a few minutes: G66a P2-3); a cycle newer than the pointer's newest
+    is left alone (a later build may still be writing). Old failed/notready records go too."""
     named = set()
-    for s in pointer.get("sources", []):
+    for s in (pointer.get("sources") or []) + ((previous or {}).get("sources") or []):
         named.add(s["stations"])
         named.add(s["stations"].replace("stations.json", "stations.bin"))
         for key in (s.get("cells") or {}).values():
             named.add(key)
             named.add(key[:-len(".json")] + ".bin")
-    top = pointer.get("run") or ""
+    top = pointer.get("newest") or ""
     dead = []
     for k in store.list_keys(PREFIX + "/"):
         name, _, rest = k[len(PREFIX) + 1:].partition("/")
@@ -641,9 +703,48 @@ def _summary(line):
             fh.write(line + "\n")
 
 
-def _stale(store, latest, situation):
+def stale_kinds(latest, now):
+    """[(kind, newest cycle or None, age h or None)] of the kinds whose newest live source is older than STALE_H[kind]
+    hours after its cycle time (or missing). Every hourly cycle refreshes the pointer, so its publish time cannot tell a
+    run that stopped (G66a P1-1)."""
+    out = []
+    for kind in ("cycle", "run"):
+        cycles = [s["cycle"] for s in latest.get("sources") or [] if s.get("kind") == kind]
+        if not cycles:
+            out.append((kind, None, None))
+            continue
+        newest_c = max(cycles)
+        age = (now - datetime.strptime(newest_c, "%Y%m%d%H").replace(tzinfo=timezone.utc)).total_seconds() / 3600
+        if age >= STALE_H[kind]:
+            out.append((kind, newest_c, age))
+    return out
+
+
+def _stale(store, latest, situation, now=None):
+    """1 (the workflow fails, GitHub mails the owner) with a summary WARNING when a kind is stale, at most once every
+    run.STALE_ALARM_EVERY_H hours (one record under the prefix, run.py's rule); else None."""
     import run as R
-    return R._stale_check(store, SRC, latest, situation)
+    now = now or datetime.now(timezone.utc)
+    stale = stale_kinds(latest, now)
+    if not stale:
+        return None
+    key = R.stale_alarm_key(PREFIX)
+    rec = store.get_json(key) or {}
+    try:
+        last = datetime.strptime(rec["last_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        if (now - last).total_seconds() < R.STALE_ALARM_EVERY_H * 3600:
+            print(f"stale RRFS already reported at {rec['last_utc']}")
+            return None
+    except (KeyError, TypeError, ValueError):
+        pass
+    what = "; ".join(f"no {k} live" if c is None else f"newest {k} {c} is {a:.0f} h old (limit {STALE_H[k]} h)"
+                     for k, c, a in stale)
+    msg = f"{situation}: {what}: NOAA's RRFS files may have moved or stopped, or the build cannot finish"
+    print(msg)
+    _summary("WARNING: " + msg)
+    store.put(key, json.dumps({"last_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "message": msg},
+                              sort_keys=True).encode(), "application/json", P.POINTER)
+    return 1
 
 
 def todo(latest, now, head=head_ok):
@@ -683,14 +784,18 @@ def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords
                 log(f"dry run: files kept in {work}")
                 work = None
             return 0, latest
+        previous = latest
         latest = publish(store, cycle_dt, files, docs, latest)
-        deleted = P.safe_prune(lambda: prune(store, latest), store.bucket, _summary)
+        deleted = P.safe_prune(lambda: prune(store, latest, previous), store.bucket, _summary)
         log(f"published {cyc}; pruned {len(deleted or [])} objects")
         return 0, latest
     except (NotReady, BudgetExceeded) as exc:
         log(f"{cyc}: {exc.__class__.__name__}: {exc}; the next tick tries again")
         if live:
-            P.record_notready(store, cyc, str(exc), PREFIX)
+            rec = P.record_notready(store, cyc, str(exc), PREFIX)
+            if rec["count"] == NOTREADY_WARN:
+                _summary(f"WARNING: RRFS {cyc} not built {rec['count']} times in a row: {exc}")
+                return 1, latest
         return 3, latest
     except Exception as exc:                         # noqa: BLE001 - a layout change, a bad record, a stalled read
         if live and P.is_storage_busy(exc):
@@ -745,16 +850,22 @@ def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=
     except TransportError as exc:
         log(f"discovery failed: {exc}")
         return 1
+    clock = now or datetime.now(timezone.utc)
     if not plan:
         log("nothing new")
-        return (_stale(store, latest, "no newer RRFS source") or 0) if live else 0
+        return (_stale(store, latest, "no newer RRFS source", clock) or 0) if live else 0
     codes = []
     for c in plan:
+        left = BUILD_BUDGET_S - (time.monotonic() - t0)
+        if codes and is_run(c) and left < RUN_MIN_LEFT_S:
+            log(f"{cycle_name(c)}: {left:.0f} s of the budget left after the hourly cycle; the run waits for the next "
+                f"tick (G66a P2-1)")
+            continue
         code, latest = build_one(c, store, latest, live, a.out, t0, get, log, coords, grids)
         codes.append(code)
     rc = 1 if 1 in codes else 3 if 3 in codes else 0
-    if rc == 3 and live:
-        rc = _stale(store, latest, "the newest RRFS source cannot be built now") or 3
+    if live and rc != 1:
+        rc = _stale(store, latest, "RRFS", clock) or rc
     return rc
 
 

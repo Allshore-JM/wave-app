@@ -28,7 +28,9 @@ GRIDS = {
     "ak": {"gridType": "polar_stereographic", "Nx": 1649, "Ny": 1105, "lat1": 40.53, "lon1": 181.429, "LaD": 60.0,
            "LoV": 210.0, "Dx": 2976.0, "Dy": 2976.0},
 }
-ORDER = ("hi", "pr", "conus", "ak")           # the first grid that holds a point serves it (fine grids do not overlap)
+ORDER = ("hi", "pr", "conus", "ak")           # the first grid that holds a point serves it: CONUS and Alaska OVERLAP
+                                              # off Washington and British Columbia (e.g. 48.4 N 124.7 W is in both); CONUS
+                                              # wins there. Every user of these grids (tables, points, overlay) must use locate()
 SCANNING_MODE = 64
 SHAPE_OF_THE_EARTH = 6
 

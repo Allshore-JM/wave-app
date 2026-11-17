@@ -432,7 +432,8 @@
           return omOnce(d, signal);
         });
       }).catch(function (err) {
-        if (err && err.omFail && !err.omBusy) omReport(err.omReason);
+        // a load that was superseded meanwhile reports nothing (G66 P3-4)
+        if (err && err.omFail && !err.omBusy && !(signal && signal.aborted)) omReport(err.omReason);
         throw err;
       });
     }

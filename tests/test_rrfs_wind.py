@@ -3,6 +3,7 @@ build() + publish() (fields faked, no eccodes, no network), so the job <-> site 
 reader then reads them back from a fake bucket: the newest-source-per-hour merge, the stations and the ranged cell
 reads, the checks, the failure memory and the GFS merge."""
 import io
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ import publish as P  # noqa: E402
 import rrfs as J  # noqa: E402
 import rrfs_wind as W  # noqa: E402
 
+WALL = datetime(2026, 11, 17, 16)                # the readers' "now": the sources are fresh (G66 P2-2)
 HONOLULU = (21.30, -157.87)                          # a sea cell off Honolulu, inside the Hawaii grid
 COORDS = {"51201": (21.671, -158.118)}
 
@@ -91,7 +93,7 @@ def reader(objects, calls=None, root="https://models.example"):
             calls.append(("range", key, a, b))
         return objects[key][a:b + 1]
 
-    return W.RrfsWinds(lambda: root, get_bytes, get_range)
+    return W.RrfsWinds(lambda: root, get_bytes, get_range, wall=lambda: WALL)
 
 
 def test_station_newest_source_wins_per_hour(bucket):
@@ -142,7 +144,8 @@ def test_uses_only_the_newest_three_cycles_and_two_runs():
     doc = {"format": "rrfs-pointer-v1", "sources": [
         {"cycle": f"20261117{h:02d}", "kind": "run" if h % 6 == 0 else "cycle", "stations": "x",
          "cells": {"hi": "y"} if h >= 10 else None} for h in range(0, 24)]}
-    r = W.RrfsWinds(lambda: "https://m", lambda url, cap: __import__("json").dumps(doc).encode(), None)
+    r = W.RrfsWinds(lambda: "https://m", lambda url, cap: __import__("json").dumps(doc).encode(), None,
+                    wall=lambda: datetime(2026, 11, 17, 23, 30))
     assert [s["cycle"][-2:] for s in r.sources()] == ["23", "22", "21", "18", "12"]
     assert r.newest() == "2026111723"
 
@@ -180,3 +183,146 @@ def test_merge_with_gfs():
     t = datetime(2026, 11, 17, 18)
     m = W.merge({t: (5.0, 90), t + timedelta(hours=1): (6.0, 100)}, {t: (7.0, 80, 9.0, "RRFS 13Z")})
     assert m == {t: (7.0, 80, 9.0, "RRFS 13Z"), t + timedelta(hours=1): (6.0, 100, None, None)}
+
+
+# ------------------------------------------------------------------------------------------- G66 review fixes
+
+def test_stale_sources_are_not_used():
+    """A stalled job: cycles over 8 h and runs over 18 h past their cycle time are left out (G66 P2-2)."""
+    doc = {"format": "rrfs-pointer-v1", "sources": [
+        {"cycle": "2026111714", "kind": "cycle", "stations": "x"}, {"cycle": "2026111712", "kind": "run", "stations": "x"}]}
+
+    def at(h):
+        return W.RrfsWinds(lambda: "https://m", lambda url, cap: json.dumps(doc).encode(), None,
+                           wall=lambda: datetime(2026, 11, 17) + timedelta(hours=h))
+
+    assert [s["cycle"] for s in at(20).sources()] == ["2026111714", "2026111712"]
+    assert [s["cycle"] for s in at(22.5).sources()] == ["2026111712"]              # the cycle is 8.5 h old
+    assert at(30.5).sources() == [] and at(30.5).station("51201") == {}             # the run 18.5 h old too
+
+
+def test_pointer_is_read_once_kept_through_a_failure_then_dropped():
+    calls, clock = [], {"t": 0.0}
+    state = {"fail": False}
+    doc = {"format": "rrfs-pointer-v1", "published_utc": "P1",
+           "sources": [{"cycle": "2026111714", "kind": "cycle", "stations": "x"}]}
+
+    def get(url, cap):
+        calls.append(url)
+        if state["fail"]:
+            raise IOError("bucket blip")
+        return json.dumps(doc).encode()
+
+    r = W.RrfsWinds(lambda: "https://m", get, None, clock=lambda: clock["t"], wall=lambda: datetime(2026, 11, 17, 16))
+    assert r.pointer()["published_utc"] == "P1" and len(calls) == 1
+    r.pointer()
+    assert len(calls) == 1                                                  # cached POINTER_TTL_S
+    state["fail"] = True
+    clock["t"] = W.POINTER_TTL_S + 1
+    assert r.pointer()["published_utc"] == "P1"                             # the blip keeps the last good pointer
+    assert r.version().startswith("P1|")                                    # so the tables' keys do not change
+    n = len(calls)
+    r.pointer()
+    assert len(calls) == n                                                  # retried after POINTER_FAIL_TTL_S only
+    clock["t"] = W.POINTER_KEEP_S + 10
+    assert r.pointer() is None and r.version() == ""                        # an hour on: given up
+
+
+def test_pointer_refresh_is_single_flight():
+    """While one request refreshes the pointer the others keep the last good one (G66 P2-4)."""
+    import threading
+    clock = {"t": 0.0}
+    gate, entered = threading.Event(), threading.Event()
+    doc = {"format": "rrfs-pointer-v1", "published_utc": "P1", "sources": []}
+    n = {"calls": 0}
+
+    def get(url, cap):
+        n["calls"] += 1
+        if n["calls"] > 1:
+            entered.set()
+            gate.wait(5)
+        return json.dumps(doc).encode()
+
+    r = W.RrfsWinds(lambda: "https://m", get, None, clock=lambda: clock["t"])
+    r.pointer()
+    clock["t"] = W.POINTER_TTL_S + 1
+    th = threading.Thread(target=r.pointer)
+    th.start()
+    assert entered.wait(5)
+    assert r.pointer()["published_utc"] == "P1" and n["calls"] == 2         # served at once, no second fetch
+    gate.set()
+    th.join(5)
+
+
+def test_version_changes_when_a_late_run_lands():
+    """A run published after a newer hourly cycle changes the key (G66 P2-5): newest() alone would not."""
+    docs = [{"format": "rrfs-pointer-v1", "published_utc": "T1", "sources": [
+        {"cycle": "2026111714", "kind": "cycle", "stations": "x"}, {"cycle": "2026111706", "kind": "run", "stations": "x"}]},
+        {"format": "rrfs-pointer-v1", "published_utc": "T2", "sources": [
+            {"cycle": "2026111714", "kind": "cycle", "stations": "x"}, {"cycle": "2026111712", "kind": "run", "stations": "x"},
+            {"cycle": "2026111706", "kind": "run", "stations": "x"}]}]
+    clock = {"t": 0.0, "i": 0}
+    r = W.RrfsWinds(lambda: "https://m", lambda url, cap: json.dumps(docs[clock["i"]]).encode(), None,
+                    clock=lambda: clock["t"], wall=lambda: datetime(2026, 11, 17, 16))
+    v1, n1 = r.version(), r.newest()
+    clock.update(t=W.POINTER_TTL_S + 1, i=1)
+    assert r.newest() == n1 and r.version() != v1
+
+
+def test_degraded_when_a_source_cannot_be_read(bucket):
+    objs = dict(bucket)
+    objs["rrfs/v1/2026111714/stations.bin"] = b"junk"
+    r = reader(objs)
+    w = r.station("51201")
+    assert w and w.degraded and all(v[3] != "RRFS 14Z" for v in w.values())
+    assert r.station("51201").degraded                                       # remembered: still left out, still marked
+    assert not reader(bucket).station("51201").degraded
+
+    def bad_range(url, a, b):
+        if "/2026111713/" in url:
+            raise IOError("timeout")
+        return bucket[url.split("models.example/", 1)[1]][a:b + 1]
+
+    r2 = W.RrfsWinds(lambda: "https://models.example", lambda url, cap: bucket[url.split("models.example/", 1)[1]],
+                     bad_range, wall=lambda: WALL)
+    p = r2.point(*HONOLULU)
+    assert p and p.degraded and all(v[3] != "RRFS 13Z" for v in p.values())
+    assert not reader(bucket).point(*HONOLULU).degraded
+
+
+def test_a_bad_station_slot_drops_only_that_source(bucket):
+    objs = dict(bucket)
+    key = "rrfs/v1/2026111714/stations.json"
+    doc = json.loads(objs[key])
+    doc["stations"]["51201"][0] = 999                                        # past the end of stations.bin
+    objs[key] = json.dumps(doc).encode()
+    w = reader(objs).station("51201")
+    assert w.degraded and {v[3] for v in w.values()} == {"RRFS 13Z", "RRFS 12Z"}  # the others still read (G66 P3-3)
+
+
+def test_the_runs_f000_takes_the_older_sources_precipitation(tmp_path, bucket):
+    """The newest run's f000 has no precipitation; the older run's same hour fills it (and its type), so the 24-h
+    totals are not blank for a day (G66 P2-1)."""
+    c = datetime(2026, 11, 17, 6, tzinfo=timezone.utc)
+    work = tmp_path / "w06"
+    work.mkdir()
+    store = P.Store(FakeClient(), "b")
+    store.client.objects.update(bucket)
+    latest = json.loads(bucket["rrfs/v1/latest.json"])
+    files, docs = J.build(c, str(work), COORDS, 1e18, log=lambda s: None, grids=("hi",))
+    J.publish(store, c, files, docs, latest)
+    cells = reader(store.client.objects).point_cells(*HONOLULU)
+    v = cells[datetime(2026, 11, 17, 12)]
+    assert v["label"] == "RRFS 12Z" and v["apcp_mm"] == pytest.approx(0.5) and v["type"] == 1
+    assert v["spd"] == pytest.approx(12.0)                                   # the newest source's own fields stay
+
+
+def test_held_cells_need_no_thread_pool(bucket, monkeypatch):
+    r = reader(bucket)
+    r.point(*HONOLULU)
+
+    def boom(*a, **k):
+        raise AssertionError("a pool for cells already held")
+
+    monkeypatch.setattr(W, "ThreadPoolExecutor", boom)
+    assert r.point(*HONOLULU)                                                # G66 P3-5

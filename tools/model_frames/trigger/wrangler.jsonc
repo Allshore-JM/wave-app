@@ -16,10 +16,10 @@
   },
   "vars": {
     "GH_REPO": "Allshore-JM/wave-app",
-    "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml",
+    "GH_WORKFLOW": "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml,model-rrfs.yml",
     "GH_REF": "Live-Buoy-Update",
     // every workflow once per 10 minutes, at its own minute; the radar job keeps :05, :15 ... (its slot timing assumes
-    // it), the others take minutes 0-4 and 6-9 in GH_WORKFLOW's order (worker.js)
+    // it), the others take minutes 0-4 and 6-9 in GH_WORKFLOW's order (worker.js); the eleventh, model-rrfs.yml (plan section 99), wraps onto minute 0 beside model-frames.yml
     "GH_PERIOD": "10",
     "GH_MINUTE": "model-radar.yml=5",
     // dispatched at minute 5 of each hour only: the daily SST day needs no 10-minute polling (worker.js)

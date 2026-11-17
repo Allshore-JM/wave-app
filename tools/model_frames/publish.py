@@ -25,6 +25,7 @@ GFSWINDS_PREFIX = "gfswave/winds/v1"    # the GFS stations' winds from the spect
 NWPS_PREFIX = "nwps/v1"                 # the NWPS forecast tables (plan section 59)
 GFSSPEC_PREFIX = "gfswave/spectral/v1"  # the GFS stations' own swell split from the spectra (plan section 77)
 RADAR_PREFIX = "radar/v1"               # the radar frames (plan section 85)
+RRFS_PREFIX = "rrfs/v1"                 # NOAA RRFS station winds + cell series (plan section 99)
 LATEST_KEY = f"{PREFIX}/latest.json"
 
 

@@ -119,6 +119,7 @@ test("GH_HOURLY is added on the hour's first tick only, once, after the 10-minut
 
 // ---------------------------------------------------------------- plan section 94: spread over the period + the cap
 const TEN = "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml";
+const ELEVEN = TEN + ",model-rrfs.yml";                     // plan section 99: RRFS wraps onto minute 0
 const SPREAD = { ...ENV, GH_WORKFLOW: TEN, GH_PERIOD: "10", GH_MINUTE: "model-radar.yml=5", GH_HOURLY: "model-sst.yml" };
 const at = (h, m) => new Date(Date.UTC(2026, 10, 11, h, m));
 
@@ -293,12 +294,16 @@ test("the deployed configuration: every minute, ten workflows spread, radar pinn
   const v = (k) => (cfg.match(new RegExp(`"${k}":\\s*"([^"]*)"`)) || [])[1];
   assert.match(cfg, /"crons":\s*\["[*] [*] [*] [*] [*]"\]/);
   const env = { GH_WORKFLOW: v("GH_WORKFLOW"), GH_PERIOD: v("GH_PERIOD"), GH_MINUTE: v("GH_MINUTE"), GH_HOURLY: v("GH_HOURLY"), GH_MAX_ACTIVE: v("GH_MAX_ACTIVE") };
-  assert.equal(env.GH_WORKFLOW, TEN);
+  assert.equal(env.GH_WORKFLOW, ELEVEN);
   assert.equal(periodOf(env), 10);
   assert.equal(maxActive(env), 12);
   const m = minutesOf(env);
   assert.equal(m.get("model-radar.yml"), 5);
-  assert.equal(new Set(m.values()).size, 10);                     // one workflow per minute
+  assert.equal(new Set(m.values()).size, 10);                     // every minute used
+  // the eleventh (RRFS, plan section 99) shares minute 0 with the frames job; nobody else moves
+  assert.equal(m.get("model-rrfs.yml"), 0);
+  assert.deepEqual([...minutesOf({ ...env, GH_WORKFLOW: TEN }).entries()].filter(([w]) => w !== "model-rrfs.yml"),
+    [...m.entries()].filter(([w]) => w !== "model-rrfs.yml"));
   for (let h = 0; h < 2; h++) {
     for (let mm = 0; mm < 60; mm++) assert.ok(tickWorkflows(env, at(h, mm)).length >= 1);
   }

@@ -1,0 +1,90 @@
+# Publishes NOAA RRFS (plan section 99) to R2 under rrfs/v1/: per hourly cycle (f001-f018) and per 84-h run (00/06/12/18Z,
+# f000-f084) a station-winds table and one cell-major series file per fine grid (Hawaii, Puerto Rico, CONUS, Alaska) for
+# the forecast tables, forecast points and the land-weather RRFS tab. Byte ranges of NOAA's AWS copy (noaa-rrfs-ops-pds);
+# eccodes 2.48 decodes the four grids. Each tick builds at most the newest complete hourly cycle and the newest complete
+# run; between them the job short-circuits after a few HEAD requests. The trigger Worker dispatches it every 10 minutes.
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: model-rrfs
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      cycle:
+        description: "YYYYMMDDHH (blank = the newest complete hourly cycle and run)"
+        default: ""
+      dry_run:
+        description: "no uploads (true/false)"
+        default: "false"
+      grids:
+        description: "dry run only: comma list of hi,pr,conus,ak (blank = all four)"
+        default: ""
+concurrency:
+  group: model-rrfs
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40                    # an 84-h run ~10 min (to measure); the job's own budget stops at 25 min
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        id: env
+        continue-on-error: true   # a failed download skips this tick (the Set-up check step below), it does not fail the run
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+          cache-environment: true
+          # a fixed address for the micromamba binary (see model-glwu.yml; tests/model_frames/test_ci_robust.py)
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Set-up check
+        if: steps.env.outcome != 'success'
+        shell: bash
+        run: |
+          # The set-up itself failed: the next tick retries by itself, so a skipped tick costs nothing (model-glwu.yml).
+          # It fails loud only at the first tick of 00 and 12 UTC, so a set-up broken for good still mails twice a day.
+          echo "set-up failed: this tick is skipped (the next tick retries)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::warning::micromamba set-up failed (the download from GitHub); this tick is skipped"
+          hm=$(date -u +%H%M)
+          case "$hm" in
+            000[0-9]|120[0-9]) echo "::error::micromamba set-up failed at a reporting tick ($hm UTC)"; exit 1 ;;
+          esac
+      - name: Record environment
+        if: steps.env.outcome == 'success'
+        shell: bash -l {0}
+        run: |
+          echo "env: $(micromamba list | awk '$1 ~ /^(python|eccodes|python-eccodes|numpy|pillow|boto3|certifi|ca-certificates)$/ {printf "%s=%s ", $1, $2}')" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Publish RRFS
+        if: steps.env.outcome == 'success'
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          CYCLE: ${{ github.event.inputs.cycle }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          GRIDS: ${{ github.event.inputs.grids }}
+        run: |
+          if [ -n "$CYCLE" ] && ! [[ "$CYCLE" =~ ^[0-9]{10}$ ]]; then echo "bad cycle input"; exit 2; fi
+          if [ -n "$GRIDS" ] && ! [[ "$GRIDS" =~ ^[a-z,]+$ ]]; then echo "bad grids input"; exit 2; fi
+          ARGS=()
+          [ -n "$CYCLE" ] && ARGS+=(--cycle "$CYCLE")
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          [ -n "$GRIDS" ] && ARGS+=(--grids "$GRIDS" --dry-run)      # a grid subset is only ever a dry run
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/rrfs.py "${ARGS[@]}" || rc=$?
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          df -h . | tail -1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          if [ "$rc" -eq 3 ]; then echo "nothing complete or servable yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          exit "$rc"

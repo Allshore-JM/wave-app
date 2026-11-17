@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       max-parallel: 4                      # leave the account's other jobs room (plan section 94)
       matrix:
-        region: [ca-c]
+        region: [ca-s2w, ca-s2e]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0

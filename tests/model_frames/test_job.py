@@ -352,6 +352,7 @@ def test_completeness_from_listing_and_pagination(monkeypatch):
 def test_latest_complete_run_walks_back_and_raises_on_transport(monkeypatch):
     complete = {datetime(2026, 9, 22, 12, tzinfo=timezone.utc)}
     monkeypatch.setattr(F, "run_is_complete", lambda dt: dt in complete)
+    monkeypatch.setattr(F, "missing_objects", lambda dt: ["gap"] * (F.NOMADS_MAX_GAPS + 1))   # holes too big to borrow
     now = datetime(2026, 9, 23, 1, 30, tzinfo=timezone.utc)
     assert F.latest_complete_run(now) == datetime(2026, 9, 22, 12, tzinfo=timezone.utc)
 

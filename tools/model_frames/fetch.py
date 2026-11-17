@@ -1,6 +1,9 @@
 """NOAA open-data access for the overlay job: run discovery + GRIB record byte-range reads.
 
-Only the anonymous S3 bucket is used (never NOMADS, which rate-limits at 120 hits/min).
+The anonymous S3 bucket is used. NOMADS (which rate-limits at 120 hits/min) only fills a gap: a run that is complete on
+S3 but for at most NOMADS_MAX_GAPS objects, at least NOMADS_GRACE_H hours after its cycle, whose missing objects NOMADS
+has, reads those few steps from NOMADS (2026-11-17: S3 lacked the 12Z run's atmos f119 while NOMADS had it, so the
+overlay stayed on the 06Z run until 18Z was complete).
 
 Completeness rule (G1 review): NOAA does not publish steps in order -- the first steps routinely
 land 13-16 minutes after their neighbours -- so a run counts as complete only when EVERY needed
@@ -15,6 +18,11 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 
 S3 = "https://noaa-gfs-bdp-pds.s3.amazonaws.com"
+NOMADS = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod"
+NOMADS_GRACE_H = 6                 # S3 completes a run ~4.5-5 h after its cycle: past this a gap is not lag but a hole
+NOMADS_MAX_GAPS = 4                # objects (grib + idx) a run may borrow; more is an outage, not a hole
+UA = {"User-Agent": "allshoresurf.com model frames job (https://allshoresurf.com)"}
+BORROWED = {}                      # run name -> keys read from NOMADS (set by latest_complete_run)
 # The models' full output (plan section 22): GFS-Wave 0.25 and GFS pgrb2 0.25 are hourly to +120 h, then every
 # 3 h to +384 h (16 days). 209 frames.
 STEPS = list(range(0, 121)) + list(range(123, 385, 3))
@@ -41,12 +49,20 @@ def _atmos_prefix(run_dt):
     return f"gfs.{d}/{h}/atmos/gfs.t{h}z.pgrb2.0p25.f"
 
 
+def _host(run_dt, key):
+    """S3, or NOMADS for an object of this run that S3 lacks (BORROWED); the grib and its .idx go together."""
+    gaps = BORROWED.get(f"{run_dt:%Y%m%d%H}", ())
+    return NOMADS if (key in gaps or key + ".idx" in gaps) else S3
+
+
 def wave_url(run_dt, step):
-    return f"{S3}/{_wave_prefix(run_dt)}{step:03d}.grib2"
+    key = f"{_wave_prefix(run_dt)}{step:03d}.grib2"
+    return f"{_host(run_dt, key)}/{key}"
 
 
 def atmos_url(run_dt, step):
-    return f"{S3}/{_atmos_prefix(run_dt)}{step:03d}"
+    key = f"{_atmos_prefix(run_dt)}{step:03d}"
+    return f"{_host(run_dt, key)}/{key}"
 
 
 def needed_keys(run_dt):
@@ -63,7 +79,7 @@ def _request(url, rng=None, timeout=60, tries=4, method="GET"):
     last = None
     for attempt in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"Range": rng} if rng else {}, method=method)
+            req = urllib.request.Request(url, headers=dict(UA, **({"Range": rng} if rng else {})), method=method)
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.status, (r.read() if method == "GET" else b"")
         except urllib.error.HTTPError as e:
@@ -115,10 +131,29 @@ def candidate_runs(now=None, lookback_cycles=8):
     return out
 
 
-def latest_complete_run(now=None, lookback_cycles=8):
-    """Newest cycle with every needed object present. Transport failures raise (never 'absent')."""
+def nomads_has(key, request=None):
+    """True when NOMADS answers 200 to a HEAD of the object; False on 403/404 or any failure (a gap stays a gap)."""
+    try:
+        status, _ = (request or _request)(f"{NOMADS}/{key}", method="HEAD", tries=2)
+        return status == 200
+    except Exception:                                # noqa: BLE001
+        return False
+
+
+def latest_complete_run(now=None, lookback_cycles=8, has=nomads_has):
+    """Newest cycle with every needed object present on S3, or (NOMADS_GRACE_H after its cycle) every one but at most
+    NOMADS_MAX_GAPS that NOMADS has: those are recorded in BORROWED and read from NOMADS. Transport failures raise
+    (never 'absent')."""
+    now = now or datetime.now(timezone.utc)
     for cand in candidate_runs(now, lookback_cycles):
         if run_is_complete(cand):
+            return cand
+        if now - cand < timedelta(hours=NOMADS_GRACE_H):
+            continue                                 # still arriving: lag, not a hole
+        miss = missing_objects(cand)
+        if 0 < len(miss) <= NOMADS_MAX_GAPS and all(has(k) for k in miss):
+            BORROWED[f"{cand:%Y%m%d%H}"] = set(miss)
+            print(f"{cand:%Y%m%d%H}: S3 lacks {len(miss)} object(s), read from NOMADS instead: {', '.join(miss)}")
             return cand
     return None
 

@@ -1282,7 +1282,7 @@
           || (WEATHER_MODELS.indexOf(m) >= 0 && !(wx && wx.indexOf(m) >= 0));
       });
     }
-    function setMeta(h, tail, wx) {
+    function setMeta(h, tail, wx, windSrc) {
       var m = els.meta; if (!m) return;
       clearNode(m);
       if (!h) return;
@@ -1295,6 +1295,8 @@
       });
       // the weather's source and licence (plan section 91): the server's own fixed credit line with its links
       if (wx && typeof wx.credit === 'string' && wx.credit) { var c = doc.createElement('div'); c.className = 'wx-credit'; c.innerHTML = wx.credit; m.appendChild(c); }
+      // where the table's wind comes from (plan section 99: RRFS, then GFS), on its own line; text, never markup
+      if (typeof windSrc === 'string' && windSrc) { var w = doc.createElement('div'); w.className = 'wind-source'; w.textContent = windSrc; m.appendChild(w); }
     }
     // A line of news for the visitor in the window (a point that could not be kept, G22 B-3; a removed default or
     // favorites, G35 B-8): shown until another station or point is on screen. Several for the station on screen are kept,
@@ -1359,7 +1361,7 @@
               if (noteFor !== null && noteFor !== st.station) note(null);
               if (!landed) { landed = true; notePending.splice(0).forEach(function (m) { note(m, null); }); }   // the notes that waited for a forecast
               if (els.title) els.title.title = label; if (els.cycle) els.cycle.title = els.old ? cyc + ageNote : cyc;
-              setMeta(d.graph_header, oldNote + splitNote, d.kind === 'weather' ? d.weather : null);                       // the split note whole on the meta line too (§77c: the bar can cut it on phones)
+              setMeta(d.graph_header, oldNote + splitNote, d.kind === 'weather' ? d.weather : null, d.kind === 'weather' ? null : d.wind_source);                       // the split note whole on the meta line too (§77c: the bar can cut it on phones)
               var landing = st.station + '|' + (d.model || st.model);         // once per station (or point) and model, not on a unit / zone change:
               // a model switch at the same station keeps the table's time position (the first row showing under the frozen
               // header stays the first row, by its time): read before the new table replaces the old one

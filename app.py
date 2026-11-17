@@ -602,7 +602,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.31.0"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.31.1"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -4430,11 +4430,22 @@ def _wind_handovers(rows):
     return out
 
 
-def _wind_source_line(rows):
+def _wind_source_line(rows, tz_name=None, now=None):
     """'Wind: RRFS 15Z to Tue 11/18 9 AM · RRFS 12Z to Fri 11/21 12 AM · then GFS' (the sources in row order, each to
-    its last row)."""
+    its last row), from the current hour on when the rows' zone is known (the past rows' older sources are noise: test-site
+    check, section 99)."""
+    cut = None
+    if tz_name:
+        try:
+            cut = (now or datetime.now(pytz.timezone(tz_name))).replace(minute=0, second=0, microsecond=0, tzinfo=None)
+        except Exception:                                      # an unknown zone: every row
+            cut = None
     segs = []
     for r in rows:
+        if cut is not None:
+            t = _row_datetime(r)
+            if t is not None and t < cut:
+                continue
         lab = _wind_label(r)
         if lab is None:
             continue
@@ -4443,7 +4454,7 @@ def _wind_source_line(rows):
         else:
             segs.append([lab, r])
     if not segs:
-        return ""
+        return _wind_source_line(rows) if cut is not None else ""   # a table wholly in the past: all its rows
     parts = [f"{lab} to {_short_date(r[0])} {r[1]}" for lab, r in segs[:-1]]
     parts.append(("then " if parts else "") + segs[-1][0])
     return "Wind: " + " · ".join(parts)
@@ -4484,9 +4495,9 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     pad = '' if compact else ' padding:4px 8px;'
     html = ('<table class="table table-bordered table-sm forecast-compact">\n' if compact
             else '<table class="table table-bordered table-sm">\n')
-    if rrfs:
+    if rrfs and not compact:                                   # the window shows it on its meta line (wind_source)
         html += ('<caption class="wind-source" style="caption-side:top; text-align:left; font-size:0.85em; '
-                 f'padding:2px 0;">{html_escape(_wind_source_line(rows)).replace(chr(183), "&middot;")}</caption>\n')
+                 f'padding:2px 0;">{html_escape(_wind_source_line(rows, tz_label)).replace(chr(183), "&middot;")}</caption>\n')
     # Everything that should stay locked while the body scrolls lives in <thead>
     # (position: sticky): the Cycle/Location/TZ info rows first (not in the compact
     # table), then the two column-header rows.
@@ -5350,6 +5361,8 @@ def compute_forecast_payload(station: str, tz: str | None, unit: str, model: str
     sky_rows = _sky_for(rows, sky_lat, sky_lon, tz_label) if compact else None
     out["table_html"] = build_html_table(cycle_str, location_str, model_run_str, rows, tz_label, unit, compact=compact,
                                          groups=week if compact else None, sky=sky_rows)
+    if any(len(r) >= 25 and r[23] for r in rows):              # RRFS hours (plan section 99): the window's meta line
+        out["wind_source"] = _wind_source_line(rows, tz_label)
     if sky_rows:                                               # the window's Summary view (plan section 35)
         try:
             dates = sorted({t.date() for t in (_row_datetime(r) for r in rows) if t is not None})

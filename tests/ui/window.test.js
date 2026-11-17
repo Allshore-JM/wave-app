@@ -1884,6 +1884,20 @@ test('weather (section 91): a land point\'s answer shows GFS with the offered we
   assert.ok(credit && /open-meteo\.com/.test(credit.innerHTML), 'the source\'s credit with its link');
   assert.equal(/Cycle\s*:\s*([^|\n]*)/.exec(meta.textContent)[1].trim().indexOf('Weather'), 0, 'the overlay\'s pageCycle sees a weather table');
   assert.equal(seen[0].kind, 'weather'); assert.equal(seen[0].ok, true, 'a land point\'s weather is a forecast on screen (the page keeps the point)');
+  assert.ok(!meta.children.find((c) => c.className === 'wind-source'), 'a weather table has no wind source line');
+});
+
+test('RRFS (section 99): a table with RRFS wind says where its wind comes from on the meta line, as text', async () => {
+  const b = boot({ search: '?station=51201' });
+  await settle();
+  b.fs_.last().release(payload({ station: '51201', model: 'GFS', wind_source: 'Wind: RRFS 21Z to Wed 11/18 3:00 AM · then <b>GFS</b>' })); await settle();
+  const meta = b.doc.getElementById('forecastMeta');
+  const line = meta.children.find((c) => c.className === 'wind-source');
+  assert.ok(line, 'the line is shown');
+  assert.equal(line.textContent, 'Wind: RRFS 21Z to Wed 11/18 3:00 AM · then <b>GFS</b>', 'text, never markup');
+  b.fs_.last().release && b.app.loader.load({ station: '13130' }); await settle();
+  b.fs_.last().release(payload({ station: '13130', model: 'GFS' })); await settle();
+  assert.ok(!b.doc.getElementById('forecastMeta').children.find((c) => c.className === 'wind-source'), 'no RRFS: no line');
 });
 
 test('weather (section 91): one offered model is no choice: the bar stays hidden; a weather answer never shows the swell buttons', async () => {

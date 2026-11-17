@@ -173,3 +173,112 @@ def test_healthz_reports_rrfs(on, monkeypatch):
 
 def test_merge_helper_is_the_readers():
     assert A.rrfs_wind.merge is rrfs_wind.merge
+
+
+# ------------------------------------------------------------------- the land-weather RRFS tab (plan section 99, step 7)
+
+import weather_sources as WS  # noqa: E402
+
+LAND = "pt_21450N_158000W"                    # central Oahu (the land-weather tests' point)
+NOW = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+
+
+def _cells(base=None, hours=30, cycle_label="RRFS 18Z", kind="run", cloud=40):
+    base = base or NOW - timedelta(hours=26)
+    out = {}
+    for h in range(hours + 26):
+        t = base + timedelta(hours=h)
+        out[t] = {"spd": 6.0, "dir": 70, "gust": 9.0, "tmp_k": 298.15, "dpt_k": 291.15, "apcp_mm": 0.5 if h % 2 else 0.0,
+                  "cloud": cloud, "type": 1 if h % 2 else 0, "label": cycle_label, "kind": kind,
+                  "cycle": (base).strftime("%Y%m%d%H")}
+    return out
+
+
+class FakeCells(FakeRrfs):
+    def __init__(self, cells):
+        super().__init__()
+        self.cells = cells
+
+    def point_cells(self, lat, lon):
+        self.asked.append(("cells", lat, lon))
+        return self.cells
+
+
+def test_rrfs_rows():
+    rows = WS.rrfs_rows(_cells(), NOW)
+    assert rows[0]["t"] == NOW and all(r["step"] == 1 for r in rows)
+    r = rows[0]
+    assert r["temp"] == 25.0 and r["dew"] == 18.0 and 64 < r["rh"] < 66            # 25 C / 18 C dew point: ~65 %
+    assert r["wind"] == 6.0 and r["gust"] == 9.0 and r["dir"] == 70 and r["cloud"] == 40 and r["src"] == "RRFS 18Z"
+    wet = [x for x in rows if x["p"] == 0.5]
+    assert wet and all(x["type"] == "Rain" for x in wet)
+    assert all(x["type"] == "" for x in rows if x["p"] == 0.0)
+    assert all(x["p24"] == 6.0 for x in rows)                                        # 12 wet hours of 0.5 in every 24
+    gap = _cells()
+    del gap[NOW - timedelta(hours=3)]
+    assert WS.rrfs_rows(gap, NOW)[0]["p24"] is None                                   # a missing hour: no total
+    assert WS.rh_from(20.0, 20.0) == 100.0 and WS.rh_from(None, 1.0) is None
+
+
+@pytest.fixture
+def wx(monkeypatch):
+    monkeypatch.setenv("LAND_WEATHER", "1")
+    monkeypatch.setenv("RRFS_WEATHER", "1")
+    fake = FakeCells(_cells())
+    monkeypatch.setattr(A, "RRFS", fake)
+    return fake
+
+
+def _blank(station=LAND):
+    return {"station": station, "error": None, "table_html": None, "model": "GFS"}
+
+
+def test_rrfs_tab_offered_inside_the_grids_only(wx, monkeypatch):
+    out = A._weather_payload(_blank(), LAND, None, "US", "GFS")
+    assert out["weather_models"] == ["GFS", "ECMWF", "ICON", "AIFS", "RRFS", "NWS"]
+    paris = "pt_48850N_2350E"
+    out = A._weather_payload(_blank(paris), paris, None, "US", "RRFS")
+    assert "RRFS" not in out["weather_models"] and out["model"] == "GFS" and "om_url" in out
+    monkeypatch.delenv("RRFS_WEATHER")
+    out = A._weather_payload(_blank(), LAND, None, "US", "RRFS")
+    assert out["weather_models"] == ["GFS", "ECMWF", "ICON", "AIFS", "NWS"] and out["model"] == "GFS"
+
+
+def test_rrfs_tab_is_built_by_the_server_without_open_meteo(wx):
+    out = A._weather_payload(_blank(), LAND, None, "US", "RRFS")
+    assert out["model"] == "RRFS" and out["error"] is None and "om_url" not in out
+    assert out["table_html"] and "NOAA RRFS" in out["weather"]["credit"]
+    assert out["graph_header"]["cycle"] == "Weather · NOAA RRFS 18Z"
+    assert wx.asked == [("cells", 21.45, -158.0)]
+    assert out["weather"]["first"].endswith(":00 AM") or out["weather"]["first"].endswith(":00 PM")
+
+
+def test_rrfs_tab_sources_line_and_failure(wx, monkeypatch):
+    cells = _cells()
+    for t in list(cells)[:40]:
+        cells[t] = dict(cells[t], label="RRFS 19Z")
+    monkeypatch.setattr(A, "RRFS", FakeCells(cells))
+    out = A._weather_payload(_blank(), LAND, None, "US", "RRFS")
+    assert out["graph_header"]["cycle"].startswith("Weather · NOAA RRFS 19Z to ")
+    assert out["graph_header"]["cycle"].endswith(", then RRFS 18Z")
+    monkeypatch.setattr(A, "RRFS", FakeCells({}))
+    out = A._weather_payload(_blank(), LAND, None, "US", "RRFS")
+    assert out["error"] == A.WEATHER_DOWN and not out.get("table_html") and "om_url" not in out
+
+
+def test_rrfs_is_never_posted(wx):
+    r = A.app.test_client().post(f"/api/forecast/weather?station={LAND}&model=RRFS", data=b"{}",
+                                 headers={"Content-Type": "text/plain"})
+    assert r.status_code == 400
+
+
+def test_browser_open_meteo_failures_are_counted(monkeypatch):
+    monkeypatch.setattr(A, "_OM_FAILS", {})
+    c = A.app.test_client()
+    for reason in ("timeout", "network", "http-503", "timeout"):
+        assert c.post(f"/api/weather-fail?reason={reason}").status_code == 204
+    for bad in ("", "x" * 40, "http-99", "%3Cscript%3E", "timeout%26x"):
+        assert c.post("/api/weather-fail?reason=" + bad).status_code == 400, bad
+    assert c.get("/api/weather-fail?reason=timeout").status_code == 405
+    w = c.get("/healthz").get_json()["weather"]
+    assert w["browser_om_fails"] == {"timeout": 2, "network": 1, "http-503": 1}

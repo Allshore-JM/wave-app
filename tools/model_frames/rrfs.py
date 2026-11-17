@@ -75,6 +75,11 @@ FAILED_MAX_ATTEMPTS = 6
 WORKERS = 8
 STALL_S = 60
 PART_BYTES = 100 * 1024 * 1024
+# The cell files are read by byte range only. Cloudflare in front of the public bucket caches a .bin it may cache (up to
+# 512 MB) WHOLE on the first ranged read: a new hourly cycle's 480 MB CONUS / Alaska file made the first point read of
+# each hour wait ~16 s, past the site's 8-s cap (plan section 99, step 7 live check). no-store: every range goes
+# straight to R2 (0.35-1.3 s measured on the 2.3 GB run files, which are too big to cache anyway).
+CELLS_CACHE = "no-store"
 UA = {"User-Agent": "allshoresurf.com RRFS job (https://allshoresurf.com)"}
 
 CELL_DTYPE = np.dtype([("spd", "<u2"), ("dir", "<u2"), ("gust", "<u2"), ("tmp", "<u2"), ("dpt", "<u2"),
@@ -598,24 +603,29 @@ def _now():
 
 # ----------------------------------------------------------------------------------------------------------- publish
 
-def put_file(store, key, path):
+def put_file(store, key, path, cache=P.IMMUTABLE):
     """A large object by multipart upload (boto3's managed transfer); a store without a client (tests) gets put()."""
     client = getattr(store, "client", None)
     if client is not None and hasattr(client, "upload_file"):
         from boto3.s3.transfer import TransferConfig
         client.upload_file(path, store.bucket, key, ExtraArgs={"ContentType": "application/octet-stream",
-                                                               "CacheControl": P.IMMUTABLE},
+                                                               "CacheControl": cache},
                            Config=TransferConfig(multipart_threshold=PART_BYTES, multipart_chunksize=PART_BYTES,
                                                  max_concurrency=4))
     else:
         with open(path, "rb") as f:
-            store.put(key, f.read(), "application/octet-stream", P.IMMUTABLE)
+            store.put(key, f.read(), "application/octet-stream", cache)
+
+
+def cache_of(key):
+    """The Cache-Control of a data object: the cell files no-store (CELLS_CACHE), the small station tables immutable."""
+    return P.IMMUTABLE if key.endswith("/stations.bin") else CELLS_CACHE
 
 
 def publish(store, cycle_dt, files, docs, latest):
     """The data objects, then the documents, then the pointer (last). Returns the new pointer."""
     for key, path in files.items():
-        put_file(store, key, path)
+        put_file(store, key, path, cache_of(key))
     for key, doc in docs.items():
         store.put(key, json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
     cyc = cycle_name(cycle_dt)

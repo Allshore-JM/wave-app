@@ -64,7 +64,7 @@
           var m = (p.get('model') || 'GFS').trim().toUpperCase();
           return m === 'SWAN' && swan.indexOf(station) >= 0 ? 'SWAN' : m === 'NWPS' && nwps.indexOf(station) >= 0 ? 'NWPS'
             : m === 'GFSB' && GFSB && station.indexOf('pt_') !== 0 ? 'GFSB'
-            : WX && station.indexOf('pt_') === 0 && ['ECMWF', 'ICON', 'AIFS', 'NWS'].indexOf(m) >= 0 ? m : 'GFS';   // the loader's normalise() (sections 77, 91)
+            : WX && station.indexOf('pt_') === 0 && ['ECMWF', 'ICON', 'AIFS', 'RRFS', 'NWS'].indexOf(m) >= 0 ? m : 'GFS';   // the loader's normalise() (sections 77, 91, 99)
         }
         function start(station) {
           var q = new URLSearchParams({
@@ -1142,13 +1142,14 @@
           <button type="button" class="btn btn-outline-secondary{% if selected_view == 'Graph' %} active{% endif %}" data-view="Graph" aria-pressed="{{ 'true' if selected_view == 'Graph' else 'false' }}">Graph</button>
         </div>
         <div class="btn-group btn-group-sm" role="group" aria-label="Model" id="modelBar"{% if not (swan_available or nwps_available or gfsb_available or weather_models) %} hidden{% endif %}>
-          <button type="button" class="btn btn-outline-secondary{% if selected_model not in ('SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'NWS') %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model in ('SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'NWS') else 'true' }}">GFS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model not in ('SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'RRFS', 'NWS') %} active{% endif %}" data-model="GFS" aria-pressed="{{ 'false' if selected_model in ('SWAN', 'NWPS', 'GFSB', 'ECMWF', 'ICON', 'AIFS', 'RRFS', 'NWS') else 'true' }}">GFS</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'GFSB' %} active{% endif %}" data-model="GFSB" aria-pressed="{{ 'true' if selected_model == 'GFSB' else 'false' }}"{% if not gfsb_available %} hidden{% endif %} title="NOAA's bulletin: its own swell split of the same GFS run (the GFS table splits the swells from the station's spectra itself)">GFS (Bulletin)</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'SWAN' %} active{% endif %}" data-model="SWAN" aria-pressed="{{ 'true' if selected_model == 'SWAN' else 'false' }}"{% if not swan_available %} hidden{% endif %}>SWAN</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'NWPS' %} active{% endif %}" data-model="NWPS" aria-pressed="{{ 'true' if selected_model == 'NWPS' else 'false' }}"{% if not nwps_available %} hidden{% endif %} title="NOAA NWPS: the National Weather Service's nearshore SWAN model">NWPS</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'ECMWF' %} active{% endif %}" data-model="ECMWF" aria-pressed="{{ 'true' if selected_model == 'ECMWF' else 'false' }}"{% if not (weather_models and 'ECMWF' in weather_models) %} hidden{% endif %} title="ECMWF IFS: the European centre's weather model">ECMWF</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'ICON' %} active{% endif %}" data-model="ICON" aria-pressed="{{ 'true' if selected_model == 'ICON' else 'false' }}"{% if not (weather_models and 'ICON' in weather_models) %} hidden{% endif %} title="DWD ICON: the German weather service's model">ICON</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'AIFS' %} active{% endif %}" data-model="AIFS" aria-pressed="{{ 'true' if selected_model == 'AIFS' else 'false' }}"{% if not (weather_models and 'AIFS' in weather_models) %} hidden{% endif %} title="ECMWF AIFS: the European centre's AI weather model">AIFS</button>
+          <button type="button" class="btn btn-outline-secondary{% if selected_model == 'RRFS' %} active{% endif %}" data-model="RRFS" aria-pressed="{{ 'true' if selected_model == 'RRFS' else 'false' }}"{% if not (weather_models and 'RRFS' in weather_models) %} hidden{% endif %} title="NOAA RRFS: the 2.5-3 km model updated every hour (Hawaii, Puerto Rico, the US and Alaska)">RRFS</button>
           <button type="button" class="btn btn-outline-secondary{% if selected_model == 'NWS' %} active{% endif %}" data-model="NWS" aria-pressed="{{ 'true' if selected_model == 'NWS' else 'false' }}"{% if not (weather_models and 'NWS' in weather_models) %} hidden{% endif %} title="NOAA National Weather Service: its forecasters' grid (US only)">NWS</button>
         </div>
         <div class="btn-group btn-group-sm" role="group" aria-label="Table mode" id="modeBar" hidden>

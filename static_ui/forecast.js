@@ -65,7 +65,9 @@
   // when: gfsb_on, gfsb_available).
   // ECMWF / ICON / AIFS / NWS: the weather tabs of a forecast point on land (plan section 91; GFS is the first tab
   // there too). The server judges land; the page keeps them only for a point (pt_ ids) where land weather is on.
-  var WEATHER_MODELS = ['ECMWF', 'ICON', 'AIFS', 'NWS'];
+  // RRFS (plan section 99): NOAA's hourly-updated 2.5-3 km model inside its grids, built by the server from the site's
+  // own RRFS files (no Open-Meteo request from the browser, like NWS).
+  var WEATHER_MODELS = ['ECMWF', 'ICON', 'AIFS', 'RRFS', 'NWS'];
   var MODELS = ['GFS', 'SWAN', 'NWPS', 'GFSB'].concat(WEATHER_MODELS);
   function modelOf(v) { var m = typeof v === 'string' ? v.trim().toUpperCase() : ''; return MODELS.indexOf(m) >= 0 ? m : 'GFS'; }
   function resolveInitialState(search, stored, server, dflt) {
@@ -301,6 +303,10 @@
   var WEATHER_API = '/api/forecast/weather', OM_HOST = 'https://api.open-meteo.com/';
   var OM_BODY_MAX = 1200000, OM_TIMEOUT_MS = 20000, OM_HELD_MAX = 8, OM_HELD_MS = 30 * 60 * 1000;
   var OM_BUSY = 'Weather is busy right now; try again in a moment', OM_DOWN = 'Weather temporarily unavailable';
+  // Open-Meteo sometimes fails to load for a point (owner, 2026-11-17): a network error, a 5xx or the deadline is asked
+  // once more after OM_RETRY_MS (never a 429: the visitor's own limit); a failure that stands is reported, its reason
+  // only, to OM_FAIL_API (counted in /healthz: plan section 99).
+  var OM_RETRY_MS = 2000, OM_FAIL_API = '/api/weather-fail';
   var POST_AGAIN = [502, 503, 504, 520, 521, 522, 523, 524];          // the POST asked once more on these (G60 B-2)
   // ... after a short pause (a restarting gateway answers 503 for a few seconds): the answer's Retry-After when it
   // gives one, between POST_PAUSE_MS and POST_PAUSE_MAX_MS (G60 re-check F-4)
@@ -405,11 +411,32 @@
     var omHeld = new Map();                           // om_url -> { key: om_key, text, ts }
     var setT = deps.setTimer || function (f, ms) { return setTimeout(f, ms); };
     var clearT = deps.clearTimer || function (t) { clearTimeout(t); };
-    function omFail(busy) { var e = new Error(busy ? 'busy' : 'down'); e.omBusy = !!busy; e.omFail = true; return e; }
+    function omFail(busy, reason, again) {
+      var e = new Error(busy ? 'busy' : 'down'); e.omBusy = !!busy; e.omFail = true;
+      e.omReason = reason || 'network'; e.omAgain = !!again; return e;
+    }
+    function omReport(reason) {
+      try {
+        var p = deps.fetch(OM_FAIL_API + '?reason=' + encodeURIComponent(reason), { method: 'POST', keepalive: true });
+        if (p && typeof p.catch === 'function') p.catch(function () {});
+      } catch (e) { /* a report never matters to the page */ }
+    }
     function omText(d, signal) {
       var h = omHeld.get(d.om_url), now = deps.now();
       if (h && h.key === d.om_key && now - h.ts < OM_HELD_MS) return Promise.resolve(h.text);
       if (d.om_url.indexOf(OM_HOST) !== 0) return Promise.reject(omFail(false));   // never another host
+      return omOnce(d, signal).catch(function (err) {
+        if (!err || !err.omFail || !err.omAgain || (signal && signal.aborted)) throw err;
+        return wait(OM_RETRY_MS).then(function () {
+          if (signal && signal.aborted) { var a = new Error('aborted'); a.name = 'AbortError'; throw a; }
+          return omOnce(d, signal);
+        });
+      }).catch(function (err) {
+        if (err && err.omFail && !err.omBusy) omReport(err.omReason);
+        throw err;
+      });
+    }
+    function omOnce(d, signal) {
       var c = new AbortController(), timedOut = false;
       var timer = setT(function () { timedOut = true; c.abort(); }, OM_TIMEOUT_MS);
       function off() { c.abort(); }
@@ -417,13 +444,13 @@
       function done() { clearT(timer); if (signal) signal.removeEventListener('abort', off); }
       return deps.fetch(d.om_url, { signal: c.signal, credentials: 'omit' }).then(function (r) {
         if (r.status === 429) throw omFail(true);                             // the visitor's own Open-Meteo limit
-        if (!r.ok) throw omFail(false);
+        if (!r.ok) throw omFail(false, 'http-' + r.status, r.status >= 500);
         var len = Number(r.headers && r.headers.get ? r.headers.get('content-length') : NaN);
-        if (len > OM_BODY_MAX) throw omFail(false);
+        if (len > OM_BODY_MAX) throw omFail(false, 'size');
         return r.text();
       }).then(function (text) {
         done();
-        if (typeof text !== 'string' || !text || text.length > OM_BODY_MAX) throw omFail(false);
+        if (typeof text !== 'string' || !text || text.length > OM_BODY_MAX) throw omFail(false, text ? 'size' : 'empty');
         omHeld.delete(d.om_url);
         omHeld.set(d.om_url, { key: d.om_key, text: text, ts: deps.now() });
         while (omHeld.size > OM_HELD_MAX) omHeld.delete(omHeld.keys().next().value);
@@ -432,7 +459,7 @@
         done();
         if (err && err.omFail) throw err;
         if (err && err.name === 'AbortError' && !timedOut) throw err;          // the load was superseded
-        throw omFail(false);                                                   // no answer, or too slow
+        throw omFail(false, timedOut ? 'timeout' : 'network', true);           // no answer, or too slow: once more
       });
     }
     // d: the /api/forecast answer; q: its query. -> the weather answer, or d with the error to show (Retry).
@@ -1580,7 +1607,7 @@
       resolveInitialState: resolveInitialState, queryFor: queryFor, urlFor: urlFor, keyOf: keyOf,
       clampGeometry: clampGeometry, resizeGeometry: resizeGeometry, dateTick: dateTick, rowAt: rowAt, rowMode: rowMode, slotted: slotted, periodFloor: periodFloor, swellKeys: swellKeys, readJson: readJson, writeJson: writeJson, shortCycle: shortCycle, modelOf: modelOf, parseLabel: parseLabel, rangeWindow: rangeWindow,
       TABLE_MODE_KEY: TABLE_MODE_KEY, readTableMode: readTableMode, hasSky: hasSky, skyOf: skyOf, skyBands: skyBands, viewRange: viewRange, makeNightShade: makeNightShade, dirTick: dirTick,
-      createLoader: createLoader, needsOm: needsOm, WEATHER_API: WEATHER_API, OM_BUSY: OM_BUSY, OM_DOWN: OM_DOWN, OM_BODY_MAX: OM_BODY_MAX, OM_HELD_MAX: OM_HELD_MAX, OM_HELD_MS: OM_HELD_MS, OM_TIMEOUT_MS: OM_TIMEOUT_MS, POST_AGAIN: POST_AGAIN, POST_PAUSE_MS: POST_PAUSE_MS, POST_PAUSE_MAX_MS: POST_PAUSE_MAX_MS, postPause: postPause, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
+      createLoader: createLoader, needsOm: needsOm, WEATHER_API: WEATHER_API, OM_BUSY: OM_BUSY, OM_DOWN: OM_DOWN, OM_BODY_MAX: OM_BODY_MAX, OM_HELD_MAX: OM_HELD_MAX, OM_HELD_MS: OM_HELD_MS, OM_TIMEOUT_MS: OM_TIMEOUT_MS, OM_RETRY_MS: OM_RETRY_MS, OM_FAIL_API: OM_FAIL_API, POST_AGAIN: POST_AGAIN, POST_PAUSE_MS: POST_PAUSE_MS, POST_PAUSE_MAX_MS: POST_PAUSE_MAX_MS, postPause: postPause, ttlOf: ttlOf, recheckMs: recheckMs, recheckAfter: recheckAfter, RECHECK_SOON_MS: RECHECK_SOON_MS, RECHECK_LATE_MS: RECHECK_LATE_MS, RECHECK_MAX_MS: RECHECK_MAX_MS, BUSY_TRIES: BUSY_TRIES, BUSY_WAIT_MS: BUSY_WAIT_MS, createForecastGraphs: createForecastGraphs, FloatingWindow: FloatingWindow, createSettings: createSettings, PANEL_OPEN: PANEL_OPEN,
       createLiveWindow: createLiveWindow, LIVE_WINDOW_KEY: LIVE_WINDOW_KEY, createStationWindow: createStationWindow,
       createTideWindow: createTideWindow, TIDE_WINDOW_KEY: TIDE_WINDOW_KEY, createWindWindow: createWindWindow, WIND_WINDOW_KEY: WIND_WINDOW_KEY,
       STATION_STALE_MS: STATION_STALE_MS, REFRESH_TITLE: REFRESH_TITLE, REFRESH_FAILED: REFRESH_FAILED,

@@ -1813,6 +1813,21 @@ cycle and the rest to +84 h from the newest run.
 - Failure: an unreadable pointer or object leaves the table on GFS (remembered 1-2 min); `/healthz` `rrfs` reports reads,
   failures, the newest source and the pointer's publish time (never part of `ok`).
 - numpy is loaded on the first POINT read only (the app's import stays numpy-free).
+- A point reads its sources side by side (`READ_WORKERS` 5). The job uploads the cell files with
+  `Cache-Control: no-store`: Cloudflare in front of the bucket would otherwise cache a new hourly cycle's 480 MB file
+  WHOLE on its first ranged read (~16 s, past the 8-s cap); the station tables and indexes stay immutable.
+
+**The land-weather RRFS tab** (`RRFS_WEATHER=1`, with `LAND_WEATHER=1`): at a land point inside a fine grid the bar gains
+RRFS (between AIFS and NWS). The server builds it from the same cell series (`RRFS.point_cells`,
+`weather_sources.rrfs_rows`): hourly rows to +84 h, newest source per hour, temperature and dew point (RH computed), RRFS's
+1-h precipitation and its 24-h sum, cloud (an hourly cycle's hours take the run's), RRFS's type (thunder from
+lightning, ice, mix, snow, rain), wind, gust, direction. No Open-Meteo request: the browser fetches nothing and posts
+nothing for this tab. The cycle line names the sources ("Weather · NOAA RRFS 20Z to Wed 11/18 4:00 AM, then RRFS 18Z").
+
+**Open-Meteo retry** (UI 1.31.0): the browser's Open-Meteo request for the other weather tabs is asked once more after
+2 s on a network error, a 5xx or the 20-s deadline (never on a 429, the visitor's own limit). A failure that stands
+is reported by reason only (`POST /api/weather-fail?reason=timeout|network|empty|size|http-NNN`), counted in
+`/healthz` `weather.browser_om_fails`.
 
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 

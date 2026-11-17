@@ -451,6 +451,10 @@ def test_main_publishes_cycle_and_run_pointer_last(tmp_path, monkeypatch):
     first = puts.index("rrfs/v1/latest.json")
     assert puts.index("rrfs/v1/2026111713/hi.bin") < puts.index("rrfs/v1/2026111713/hi.json") < first
     assert puts.index("rrfs/v1/2026111712/hi.bin") > first and puts[-1] == "rrfs/v1/latest.json"
+    cc = {k: v["cc"] for k, v in st.client.objects.items()}
+    assert cc["rrfs/v1/2026111713/hi.bin"] == "no-store"                        # ranged reads go straight to R2
+    assert cc["rrfs/v1/2026111713/stations.bin"] == P.IMMUTABLE
+    assert cc["rrfs/v1/2026111713/hi.json"] == P.IMMUTABLE and cc["rrfs/v1/latest.json"] == P.POINTER
     assert J.main([], head=BOTH, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 0   # nothing new
 
 

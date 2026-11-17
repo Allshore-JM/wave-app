@@ -44,7 +44,8 @@ function stub() {
     calls.push(c);
   });
   return { fetch, calls, last: () => calls[calls.length - 1],
-    kinds: () => calls.map((c) => (c.url.startsWith('https://api.open-meteo.com/') ? 'om' : c.url.startsWith('/api/forecast/weather') ? 'post' : 'get')) };
+    kinds: () => calls.map((c) => (c.url.startsWith('https://api.open-meteo.com/') ? 'om' : c.url.startsWith('/api/forecast/weather') ? 'post'
+      : c.url.startsWith('/api/weather-fail') ? 'fail' : 'get')) };
 }
 function fakeTimers() {
   const all = [];
@@ -123,28 +124,74 @@ test('another tab, unit or Retry reuses the held Open-Meteo answer; a new model 
 function I_held(t) { return t.I.OM_HELD_MS; }
 
 test('Open-Meteo refusing the visitor (429) says busy; no answer says unavailable; neither is posted or kept', async () => {
-  for (const [how, want] of [['429', 'OM_BUSY'], ['500', 'OM_DOWN'], ['net', 'OM_DOWN'], ['empty', 'OM_DOWN']]) {
+  // plan section 99: a 5xx or a dropped connection is asked once more after OM_RETRY_MS; a failure that stands is
+  // reported (its reason only); a 429 (the visitor's own limit) is neither retried nor reported
+  for (const [how, want, kinds, reason] of [
+    ['429', 'OM_BUSY', ['get', 'om'], null],
+    ['500', 'OM_DOWN', ['get', 'om', 'om', 'fail'], 'http-500'],
+    ['net', 'OM_DOWN', ['get', 'om', 'om', 'fail'], 'network'],
+    ['empty', 'OM_DOWN', ['get', 'om', 'fail'], 'empty'],
+    ['404', 'OM_DOWN', ['get', 'om', 'fail'], 'http-404']]) {
     const t = setup();
     const { p: p } = await landLoad(t);
-    const om = t.f.last();
-    if (how === 'net') om.fail(); else if (how === 'empty') om.text(''); else om.text('{"error":true}', Number(how));
+    const answer = (om) => { if (how === 'net') om.fail(); else if (how === 'empty') om.text(''); else om.text('{"error":true}', Number(how)); };
+    answer(t.f.last()); await settle();
+    if (kinds.filter((k) => k === 'om').length === 2) { answer(t.f.last()); await settle(); }
     const d = await p;
     assert.equal(d.error, t.I[want], how); assert.ok(!d.om_url, 'the answer shown never asks again by itself');
-    assert.deepEqual(t.f.kinds(), ['get', 'om'], `${how}: nothing posted`);
+    assert.deepEqual(t.f.kinds(), kinds, `${how}: nothing posted`);
+    if (kinds.length > 2 && kinds[2] === 'om') assert.ok(t.waits.includes(t.I.OM_RETRY_MS), `${how}: the pause before the retry`);
+    if (reason) {
+      const rep = t.f.calls.find((c) => c.url.startsWith(t.I.OM_FAIL_API));
+      assert.equal(rep.url, t.I.OM_FAIL_API + '?reason=' + reason); assert.equal(rep.o.method, 'POST'); assert.equal(rep.o.keepalive, true);
+      assert.equal(rep.o.body, undefined, 'only the reason: nothing of the visitor\'s');
+    }
     assert.equal(t.L.cache.size, 0, `${how}: not kept`);
     assert.equal(t.u.applied[0][0].error, t.I[want]);
   }
 });
 
-test('Open-Meteo slower than the deadline: the request is aborted and the weather is unavailable', async () => {
+test('Open-Meteo failing once then answering: the retry builds the table and nothing is reported (plan section 99)', async () => {
+  for (const how of ['net', '503', 'deadline']) {
+    const t = setup();
+    const { p } = await landLoad(t);
+    if (how === 'net') t.f.last().fail();
+    else if (how === '503') t.f.last().text('{"error":true}', 503);
+    else t.timers.fire(t.I.OM_TIMEOUT_MS);
+    await settle();
+    assert.deepEqual(t.f.kinds(), ['get', 'om', 'om'], how);
+    t.f.last().text(OM_TEXT); await settle();
+    assert.deepEqual(t.f.kinds(), ['get', 'om', 'om', 'post'], how);
+    t.f.last().json(weatherAnswer());
+    assert.equal((await p).table_html, weatherAnswer().table_html, how);
+  }
+});
+
+test('a newer load during the pause before the retry sends no second Open-Meteo request', async () => {
+  const t = setup();
+  t.hold.on = true;
+  const { p } = await landLoad(t);
+  t.f.last().fail(); await settle();
+  assert.ok(t.waits.includes(t.I.OM_RETRY_MS));
+  const p2 = t.L.load({ unit: 'Metric' }); await settle();
+  t.hold.list.forEach((res) => res()); await settle();
+  assert.equal(t.f.kinds().filter((k) => k === 'om').length, 1, 'the superseded load does not retry');
+  assert.equal(t.f.kinds().filter((k) => k === 'fail').length, 0, 'nor report');
+  void p; void p2;
+});
+
+test('Open-Meteo slower than the deadline twice: aborted, retried once, then unavailable and reported as a timeout', async () => {
   const t = setup();
   const { p: p } = await landLoad(t);
   const om = t.f.last();
   assert.equal(t.timers.all.filter((x) => x.on && x.ms === t.I.OM_TIMEOUT_MS).length, 1);
   t.timers.fire(t.I.OM_TIMEOUT_MS); await settle();
   assert.equal(om.aborted, true);
+  assert.deepEqual(t.f.kinds(), ['get', 'om', 'om']);
+  t.timers.fire(t.I.OM_TIMEOUT_MS); await settle();
   assert.equal((await p).error, t.I.OM_DOWN);
-  assert.deepEqual(t.f.kinds(), ['get', 'om']);
+  assert.deepEqual(t.f.kinds(), ['get', 'om', 'om', 'fail']);
+  assert.equal(t.f.last().url, t.I.OM_FAIL_API + '?reason=timeout');
 });
 
 test('an answer over the size cap is never posted (by its header, or by its text)', async () => {
@@ -154,7 +201,8 @@ test('an answer over the size cap is never posted (by its header, or by its text
     if (big === 'header') t.f.last().text(OM_TEXT, 200, t.I.OM_BODY_MAX + 1);
     else t.f.last().text('x'.repeat(t.I.OM_BODY_MAX + 1));
     assert.equal((await p).error, t.I.OM_DOWN, big);
-    assert.deepEqual(t.f.kinds(), ['get', 'om']);
+    assert.deepEqual(t.f.kinds(), ['get', 'om', 'fail'], 'not retried; reported as size (plan section 99)');
+    assert.equal(t.f.last().url, t.I.OM_FAIL_API + '?reason=size');
   }
 });
 
@@ -262,7 +310,7 @@ test('a refused POST (the server would not build it) is shown with Retry and the
   assert.equal(d.error, 'Weather temporarily unavailable'); assert.equal(t.L.cache.size, 0);
   const { p: p2 } = await landLoad(t);
   assert.equal(t.f.kinds().slice(-1)[0], 'om', 'asked again: the refused answer was not kept');
-  t.f.last().fail(); await p2;
+  t.f.last().fail(); await settle(); t.f.last().fail(); await p2;      // the retry fails too (plan section 99)
 });
 
 test('the POST answering busy waits quietly and asks again (the Open-Meteo answer is reused)', async () => {
@@ -300,7 +348,7 @@ test('the held answers are capped at OM_HELD_MAX points', async () => {
   // the first point's held answer went (the oldest), the last one's stayed
   t.L.cache.clear();
   const { p: p0 } = await landLoad(t, { station: 'pt_20000N_158000W', unit: 'Metric' }, { om_url: OM_URL + '&p=0' });
-  assert.equal(t.f.kinds().slice(-1)[0], 'om'); t.f.last().fail(); await p0;
+  assert.equal(t.f.kinds().slice(-1)[0], 'om'); t.f.last().fail(); await settle(); t.f.last().fail(); await p0;
   const { p: pn } = await landLoad(t, { station: `pt_2${t.I.OM_HELD_MAX}000N_158000W`, unit: 'US' }, { om_url: OM_URL + '&p=' + t.I.OM_HELD_MAX });
   assert.equal(t.f.kinds().slice(-1)[0], 'post'); t.f.last().json(weatherAnswer()); await pn;
 });

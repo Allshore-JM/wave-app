@@ -602,7 +602,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.30.6"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.31.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -974,7 +974,52 @@ WEATHER_CREDIT = {
                    " rows at the model's own steps)"),
     "nws": ('Weather: <a href="https://www.weather.gov/" target="_blank" rel="noopener">NOAA National Weather Service</a>'
             ' grid forecast'),
+    "rrfs": ('Weather: <a href="https://gsl.noaa.gov/rrfs/" target="_blank" rel="noopener">NOAA RRFS</a>'
+             " (2.5-3 km, updated every hour; hourly rows)"),
 }
+
+
+def _rrfs_weather_on() -> bool:
+    """The land-weather RRFS tab (plan section 99): RRFS_WEATHER=1; unset = the tabs as before."""
+    return os.environ.get("RRFS_WEATHER", "") == "1"
+
+
+def _rrfs_weather_here(lat, lon) -> bool:
+    if not _rrfs_weather_on():
+        return False
+    try:
+        return rrfs_wind._grid().locate(lat, lon) is not None
+    except Exception:                                          # noqa: BLE001
+        return False
+
+
+def _rrfs_weather_table(lat, lon):
+    """The RRFS weather table of a land point from the RRFS job's cell series (our own bucket: no Open-Meteo, no
+    browser fetch; plan section 99): {"model", "run", "rows", "elev", "source"}; WeatherError without rows."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        cells = RRFS.point_cells(lat, lon)
+    except Exception as exc:                                   # noqa: BLE001
+        raise weather_sources.WeatherError(f"RRFS: {exc}") from exc
+    rows = weather_sources.rrfs_rows(cells, now)
+    if not rows:
+        raise weather_sources.WeatherError("no RRFS rows")
+    newest = max(cells[r["t"]]["cycle"] for r in rows)
+    return {"model": "RRFS", "run": datetime.strptime(newest, "%Y%m%d%H"), "rows": rows, "elev": None,
+            "source": "rrfs"}
+
+
+def _rrfs_sources_text(lrows):
+    """'RRFS 19Z to Wed 11/18 3:00 AM, then RRFS 18Z': the sources of an RRFS weather table in row order."""
+    segs = []
+    for r, d, t, _ in lrows:
+        lab = r.get("src") or "RRFS"
+        if segs and segs[-1][0] == lab:
+            segs[-1][1] = (d, t)
+        else:
+            segs.append([lab, (d, t)])
+    parts = [f"{lab} to {_short_date(d)} {t}" for lab, (d, t) in segs[:-1]]
+    return ", ".join(parts + [("then " if parts else "") + segs[-1][0]]) if segs else "RRFS"
 
 
 def _land_weather_on() -> bool:
@@ -989,10 +1034,20 @@ def _weather_fetch(url: str, max_bytes: int, headers=None) -> bytes:
 WEATHER = weather_sources.WeatherService(_weather_fetch)
 
 
+# Open-Meteo failures the visitors' browsers report after their one automatic retry (plan section 99: the owner saw
+# points fail to load): counted by reason, never the request (it is the visitor's). POST /api/weather-fail?reason=...
+OM_FAIL_REASONS = re.compile(r"^(timeout|network|empty|size|http-[1-5][0-9][0-9])$")
+_OM_FAILS = {}
+_OM_FAILS_LOCK = threading.Lock()
+
+
 def _weather_health():
-    """/healthz's weather key (plan section 91): the flag, today's counted Open-Meteo calls, cache sizes, last error."""
+    """/healthz's weather key (plan section 91): the flag, today's counted Open-Meteo calls, cache sizes, last error;
+    the browsers' reported Open-Meteo failures by reason (section 99)."""
     try:
-        return dict(WEATHER.health(), enabled=_land_weather_on())
+        with _OM_FAILS_LOCK:
+            fails = dict(_OM_FAILS)
+        return dict(WEATHER.health(), enabled=_land_weather_on(), browser_om_fails=fails, rrfs_tab=_rrfs_weather_on())
     except Exception as exc:                                   # never let a report cost /healthz
         return {"enabled": _land_weather_on(), "error": str(exc)[:200]}
 
@@ -1610,7 +1665,7 @@ _SWAN_CYCLE_RE = re.compile(r"PacIOOS SWAN updated (\d{8}) (\d{2}) UTC")
 _SWAN_BG = {"thread": None, "started": 0}
 SWAN_PROBE = os.environ.get("SWAN_PROBE", "1") != "0"   # the background HEADs (off in the tests: conftest)
 
-VALID_MODELS = ("GFS", "SWAN", "GLWU", "NWPS", "GFSB", "ECMWF", "ICON", "AIFS", "NWS")
+VALID_MODELS = ("GFS", "SWAN", "GLWU", "NWPS", "GFSB", "ECMWF", "ICON", "AIFS", "NWS", "RRFS")
 # GFSB = NOAA's own swell split (plan section 77); ECMWF / ICON / AIFS / NWS = the weather tables of a land forecast
 # point (plan section 91): only point ids ask for them, and only a point on land answers with them
 WEATHER_MODELS = weather_sources.MODELS
@@ -4996,7 +5051,9 @@ def _weather_payload(out, station, tz, unit, model, om=None):
     `om` (/api/forecast/weather), checked here before anything is built from it. Never cached: it is the visitor's."""
     lat, lon = point_forecast.parse_point_id(station)
     tz_name, zone = _weather_zone(tz, lat, lon)
-    offered = [m for m in WEATHER_MODELS if m != "NWS" or weather_sources.nws_box(lat, lon)]
+    rrfs_here = _rrfs_weather_here(lat, lon)
+    offered = [m for m in WEATHER_MODELS if (m != "NWS" or weather_sources.nws_box(lat, lon))
+               and (m != "RRFS" or rrfs_here)]
     if model not in offered:
         model = "GFS"
     out.update({"kind": "weather", "model": model, "weather_models": offered, "lat": lat, "lon": lon,
@@ -5005,7 +5062,7 @@ def _weather_payload(out, station, tz, unit, model, om=None):
     for k in ("split", "split_note", "final", "reason"):
         out.pop(k, None)
     doc = None
-    if model != "NWS":
+    if model not in ("NWS", "RRFS"):                           # RRFS: our own bucket, the server reads it (section 99)
         if om is None:                                         # the browser asks Open-Meteo, then POSTs it back
             out["om_url"] = weather_sources.om_url(lat, lon)
             out["om_key"] = WEATHER.om_key()
@@ -5020,7 +5077,7 @@ def _weather_payload(out, station, tz, unit, model, om=None):
         out["error"], out["busy"] = WEATHER_BUSY, True
         return out
     try:
-        table = WEATHER.table(model, lat, lon, om=doc)
+        table = _rrfs_weather_table(lat, lon) if model == "RRFS" else WEATHER.table(model, lat, lon, om=doc)
         if table is None and model == "NWS":                  # the NWS has no grid here after all: GFS, from the browser
             out["weather_models"] = [m for m in offered if m != "NWS"]
             out["model"] = "GFS"
@@ -5058,6 +5115,7 @@ def _weather_payload(out, station, tz, unit, model, om=None):
     run_txt = f"{run:%Y-%m-%d %H} UTC" if run else "latest"
     label = weather_sources.LABEL[model]
     cycle = (f"Weather · NWS grid forecast updated {run_txt}" if model == "NWS"
+             else f"Weather · NOAA {_rrfs_sources_text(lrows)}" if model == "RRFS"
              else f"Weather · {label} run {run_txt}")
     elev = table.get("elev")
     elev_txt = ""                                               # the ground height the temperatures are for
@@ -5367,6 +5425,20 @@ def api_forecast():
 
 # Open-Meteo's answer for a land point, fetched by the visitor's browser (plan section 91c), at most this many bytes
 WEATHER_POST_MAX = weather_sources.OM_MAX_BYTES
+
+
+@app.route("/api/weather-fail", methods=["POST"])
+def api_weather_fail():
+    """A visitor's browser could not load Open-Meteo for a land point, after its one automatic retry (plan section 99):
+    the reason is counted for /healthz (weather.browser_om_fails) and logged; nothing else is kept."""
+    reason = (request.args.get("reason") or "").strip().lower()[:16]
+    if not OM_FAIL_REASONS.match(reason):
+        return ("", 400)
+    with _OM_FAILS_LOCK:
+        if reason in _OM_FAILS or len(_OM_FAILS) < 64:
+            _OM_FAILS[reason] = _OM_FAILS.get(reason, 0) + 1
+    logger.info("Open-Meteo failed in a browser: %s", reason)
+    return ("", 204)
 
 
 @app.route("/api/forecast/weather", methods=["POST"])
@@ -7413,6 +7485,8 @@ def _live_after_fork():
     _GSPEC["thread"] = None
     ALERTS.after_fork()                           # the coastal hazards' lock and reader (plan section 90)
     WEATHER.reset_after_fork()                    # the land weather's locks (plan section 91)
+    global _OM_FAILS_LOCK
+    _OM_FAILS_LOCK = threading.Lock()             # the browsers' Open-Meteo failure counts (plan section 99)
     _WINDS_LOCK = threading.Lock()              # the wind history service and providers reset their own
     _WIND_BUILD_LOCK = threading.Lock()
     _LIVE_BG_LOCK = threading.Lock()

@@ -24,6 +24,7 @@ import struct
 import threading
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 # numpy and rrfs_grid load on the first POINT read only: importing the app must not load numpy (the web process pays
@@ -55,6 +56,7 @@ def _grid():
 LRU_INDEXES = 32
 LRU_STATIONS = 8
 LRU_CELLS = 1024
+READ_WORKERS = 5
 
 
 def label(cycle):
@@ -262,18 +264,27 @@ class RrfsWinds:
         if hit is None:
             return {}
         grid, j, i = hit
-        out = {}
-        for src in self.sources(need_cells=True):
-            if grid not in (src.get("cells") or {}):
-                continue
-            key = ("cells", src["cycle"], grid)
-            if self._failing(key):
-                continue
+        srcs = [s for s in self.sources(need_cells=True) if grid in (s.get("cells") or {})
+                and not self._failing(("cells", s["cycle"], grid))]
+
+        def read(src):
             try:
-                steps, arr = self._cell_series(src, grid, j, i)
+                return self._cell_series(src, grid, j, i)
             except Exception as exc:                 # noqa: BLE001
-                self._fail(key, exc)
+                self._fail(("cells", src["cycle"], grid), exc)
+                return None
+
+        # the sources side by side (each a ranged GET straight to R2, ~0.3-1.3 s): a point waits for the slowest only
+        if len(srcs) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(srcs), READ_WORKERS)) as pool:
+                series = list(pool.map(read, srcs))
+        else:
+            series = [read(s) for s in srcs]
+        out = {}
+        for src, got in zip(srcs, series):
+            if got is None:
                 continue
+            steps, arr = got
             with self._lock:
                 self.stats["reads_ok"] += 1
             base = cycle_dt(src["cycle"])
@@ -283,6 +294,8 @@ class RrfsWinds:
                     continue
                 t = base + timedelta(hours=int(h))
                 if t in out:
+                    if out[t]["cloud"] is None and r["cloud"] != MISSING8:
+                        out[t]["cloud"] = int(r["cloud"])         # an hourly cycle's hour: the run's cloud
                     continue
                 u = lambda v, s: None if v == MISSING else v / s       # noqa: E731
                 out[t] = {"spd": r["spd"] / 100, "dir": None if r["dir"] == MISSING else int(round(r["dir"] / 10)) % 360,

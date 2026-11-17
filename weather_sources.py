@@ -32,13 +32,15 @@ OM_HEADERS = {"User-Agent": USER_AGENT}
 NWS_HEADERS = {"User-Agent": USER_AGENT, "Accept": "application/geo+json"}
 
 OM_MODELS = ("GFS", "ECMWF", "ICON", "AIFS")                 # the Open-Meteo tabs, in the bar's order
-MODELS = OM_MODELS + ("NWS",)                                 # NWS only at US points
+MODELS = OM_MODELS + ("RRFS", "NWS")                         # RRFS inside its grids (plan section 99), NWS at US points
 OM_NAME = {"GFS": "gfs_global", "ECMWF": "ecmwf_ifs025", "ICON": "icon_global", "AIFS": "ecmwf_aifs025_single"}
 # the metadata files that give each model's run (the first names the run shown; GFS's global model takes its surface
 # fields from two grids that finish at different times: both are in the cache key)
 OM_META_NAMES = {"GFS": ("ncep_gfs013", "ncep_gfs025"), "ECMWF": ("ecmwf_ifs025",), "ICON": ("dwd_icon",),
                  "AIFS": ("ecmwf_aifs025_single",)}
-LABEL = {"GFS": "GFS", "ECMWF": "ECMWF IFS", "ICON": "DWD ICON", "AIFS": "ECMWF AIFS", "NWS": "NWS"}
+LABEL = {"GFS": "GFS", "ECMWF": "ECMWF IFS", "ICON": "DWD ICON", "AIFS": "ECMWF AIFS", "NWS": "NWS",
+         "RRFS": "NOAA RRFS"}
+RRFS_TYPE = {0: "", 1: "Rain", 2: "Snow", 3: "Mix", 4: "Ice", 5: "Thunder"}     # the RRFS job's type codes
 OM_VARS = ("temperature_2m", "dew_point_2m", "relative_humidity_2m", "cloud_cover", "precipitation", "rain",
            "showers", "snowfall", "weather_code", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m")
 OM_DAYS = 16
@@ -273,6 +275,42 @@ def om_rows(doc, model, init, now):
                      "p": None if p is None else round(p, 2), "p24": _round(summed(window(t, 24), "precipitation")),
                      "type": precip_type(p, codes, rain, snow), "wind": wind,
                      "gust": val("wind_gusts_10m", i), "dir": val("wind_direction_10m", i)})
+    return rows
+
+
+def rh_from(temp_c, dew_c):
+    """Relative humidity (%) from temperature and dew point (Magnus, Alduchov-Eskridge); None when either is."""
+    if temp_c is None or dew_c is None:
+        return None
+    a, b = 17.625, 243.04
+    rh = 100.0 * math.exp(a * dew_c / (b + dew_c)) / math.exp(a * temp_c / (b + temp_c))
+    return round(min(100.0, max(0.0, rh)), 1)
+
+
+def rrfs_rows(cells, now):
+    """RRFS's hourly rows from `now` (UTC naive, floored), from rrfs_wind.point_cells' {hour: fields} (the newest
+    source per hour; an hourly cycle's hours carry the run's cloud): the rows of om_rows / nws_rows plus "src"
+    (the source's label). The hour's precipitation is RRFS's own 1-h amount; the 24-h total sums the 24 hours ending
+    at the row (None while any is missing); the type is RRFS's (thunder > ice > mix > snow > rain), blank under
+    TYPE_MIN_MM."""
+    start = now.replace(minute=0, second=0, microsecond=0)
+    rows = []
+    for t in sorted(cells):
+        if t < start:
+            continue
+        v = cells[t]
+        if v.get("tmp_k") is None or v.get("spd") is None:
+            continue
+        temp = round(v["tmp_k"] - 273.15, 1)
+        dew = None if v.get("dpt_k") is None else round(v["dpt_k"] - 273.15, 1)
+        p = v.get("apcp_mm")
+        hrs = [cells.get(t - timedelta(hours=k)) for k in range(24)]
+        p24 = (round(sum(h["apcp_mm"] for h in hrs), 2)
+               if all(h is not None and h.get("apcp_mm") is not None for h in hrs) else None)
+        typ = RRFS_TYPE.get(v.get("type"), "") if p is not None and p >= TYPE_MIN_MM else ""
+        rows.append({"t": t, "step": 1, "temp": temp, "dew": dew, "rh": rh_from(temp, dew), "cloud": v.get("cloud"),
+                     "p": None if p is None else round(p, 2), "p24": p24, "type": typ, "wind": v["spd"],
+                     "gust": v.get("gust"), "dir": v.get("dir"), "src": v.get("label")})
     return rows
 
 

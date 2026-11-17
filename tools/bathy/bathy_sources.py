@@ -501,10 +501,14 @@ for _name, (_box, _level, _grid, _dems, _ex) in LAKE_BOXES.items():
 # sources, less any that read the same file as one of the region's surveys or lie outside its box.
 WEST_FILL = ["cudem-us", "cudem-us-b", "bluetopo4", "bluetopo8", "bluetopo16"]
 LIDAR98_BOXES = {
-    # California: the four boxes tile us-ca-south (split at 119.0 W) and the coast of us-ca-north
+    # California: five boxes tile us-ca-south (split at 119.8 W and 119.0 W) and the coast of us-ca-north. The
+    # Point Conception to Ventura box was split at 119.8 W (half its blocks each side): as one it took 2 h 10 min on the
+    # runner (section 98 dry run, 2026-11-17).
     "ca-s1": ((-119.0, 32.4, -116.9, 34.6), ["coned-socal16-l", "noaa-ca11b"], WEST_FILL, "us-ca-south"),
-    "ca-s2": ((-121.0, 32.4, -119.0, 34.6), ["coned-central17-l", "coned-socal16-l", "noaa-ca11a", "noaa-ca11b"],
-              WEST_FILL, "us-ca-south"),
+    "ca-s2w": ((-121.0, 32.4, -119.8, 34.6), ["coned-central17-l", "coned-socal16-l", "noaa-ca11a", "noaa-ca11b"],
+               WEST_FILL, "us-ca-south"),
+    # (the 2017 Central California model and the 2011 merge's zone-10 VRT hold nothing east of 119.8 W)
+    "ca-s2e": ((-119.8, 32.4, -119.0, 34.6), ["coned-socal16-l", "noaa-ca11b"], WEST_FILL, "us-ca-south"),
     "ca-c": ((-123.2, 34.6, -120.0, 38.3), ["coned-norcal20-l", "coned-central17-l", "noaa-ca11a"], WEST_FILL,
              "us-ca-north"),
     "ca-n": ((-124.6, 38.3, -122.0, 42.0), ["coned-norcal20-l", "noaa-ca11a"], WEST_FILL, "us-ca-north"),

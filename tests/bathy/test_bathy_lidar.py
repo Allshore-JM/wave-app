@@ -21,8 +21,8 @@ import build_bathy as B  # noqa: E402
 
 LIDAR_REGIONS = ("hawaii-lidar", "guam-lidar", "pr-lidar", "nwhi-lidar")
 # the Lower 48 (plan section 98, step 6): over the US base regions, read only where they hold water
-MAINLAND_LIDAR = ("ca-s1", "ca-s2", "ca-c", "ca-n", "key-or", "key-wa", "key-nc", "key-nj", "key-ny-rock",
-                  "key-ny-mtk", "key-ri", "key-nh", "key-fl-space")
+MAINLAND_LIDAR = ("ca-s1", "ca-s2w", "ca-s2e", "ca-c", "ca-n", "key-or", "key-wa", "key-nc", "key-nj",
+                  "key-ny-rock", "key-ny-mtk", "key-ri", "key-nh", "key-fl-space")
 
 
 # ---------------------------------------------------------------- the real regions' settings

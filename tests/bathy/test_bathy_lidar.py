@@ -20,12 +20,15 @@ import bathy_tiles as T  # noqa: E402
 import build_bathy as B  # noqa: E402
 
 LIDAR_REGIONS = ("hawaii-lidar", "guam-lidar", "pr-lidar", "nwhi-lidar")
+# the Lower 48 (plan section 98, step 6): over the US base regions, read only where they hold water
+MAINLAND_LIDAR = ("ca-s1", "ca-s2w", "ca-s2e", "ca-c", "ca-n", "key-or", "key-wa", "key-nc", "key-nj",
+                  "key-ny-rock", "key-ny-mtk", "key-ri", "key-nh", "key-fl-space")
 
 
 # ---------------------------------------------------------------- the real regions' settings
 
 def test_the_lidar_regions_are_set_up_as_planned():
-    for name in LIDAR_REGIONS:
+    for name in LIDAR_REGIONS + MAINLAND_LIDAR:
         reg = B.region_config(name)
         own = [s for s in reg["srcs"] if not s["fill"]]
         fill = [s for s in reg["srcs"] if s["fill"]]
@@ -35,9 +38,20 @@ def test_the_lidar_regions_are_set_up_as_planned():
         assert all(s["zmax"] == 17 and s["res_m"] == 1 for s in own), name
         assert all(f["id"] > max(s["id"] for s in own) for f in fill), name
         for s in own:                              # the client's short credit and label (overlay.js bathyShort / bathyLabel)
-            assert s["credit"].split()[0] in ("NOAA", "USACE") and "topobathy" not in s["name"].lower(), s["key"]
+            assert s["credit"].split()[0] in ("NOAA", "USACE", "USGS") and "topobathy" not in s["name"].lower(), s["key"]
             assert s.get("nodata") is not None, s["key"]
-        if name == "nwhi-lidar":
+        if name in MAINLAND_LIDAR:
+            base = reg["presence"][0]
+            assert reg["zmin"] == 16 and reg.get("ring") == 1 and reg["cut"] and len(reg["presence"]) == 1, name
+            box, bbox = S.REGIONS[name]["box"], S.REGIONS[base]["box"]
+            assert bbox[0] <= box[0] < box[2] <= bbox[2] and bbox[1] <= box[1] < box[3] <= bbox[3], name
+            assert {f["key"] for f in fill} <= set(S.REGIONS[base]["sources"]), name
+            assert not {f["path"] for f in fill if f.get("path")} & {s["path"] for s in own}, name
+            assert all(s["geoid"] == "msl_navd88" and s["clip"] is True for s in own), name
+            assert all(s.get("deep") == (None if name == "key-fl-space" else (30.0, 15)) for s in own), name
+            years = [int(s["year"]) for s in own]
+            assert years == sorted(years, reverse=True), name          # the newest survey has the lowest id
+        elif name == "nwhi-lidar":
             assert reg["zmin"] == 8 and not fill and not reg.get("ring")
         else:
             assert reg["zmin"] == 16 and reg.get("ring") == 1 and {f["key"].split("-")[0] for f in fill} == {"cudem",

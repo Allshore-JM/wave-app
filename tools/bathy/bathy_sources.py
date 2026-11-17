@@ -331,7 +331,7 @@ SOURCES = {
                             path="dem/CA_Southern_CoNED_DEM_2016_8658/CA_Southern_CoNED_DEM_2016_m8658_EPSG-26911.vrt",
                             credit="USGS Coastal National Elevation Database (CoNED) 2016 Southern California "
                                    "topobathymetric model (NOAA Digital Coast)"),
-    # NOAA's 2011 California topobathy merge, in two VRTs split by UTM zone (10 north of ~34.5 N and 11 south)
+    # NOAA's 2011 California topobathy merge, in two VRTs split by UTM zone (10 west of 120 W, 11 east of it)
     "noaa-ca11a": dict(LIDAR98, id=4, year="2011", name="NOAA lidar", nodata=-3.4028234663852886e38,
                        path="dem/California_Topobathy_DEM_2011_2616/California_Topobathy_DEM_2011_m2616_EPSG-26910.vrt",
                        credit=NOAA_CA11),
@@ -499,18 +499,18 @@ for _name, (_box, _level, _grid, _dems, _ex) in LAKE_BOXES.items():
 # The Lower 48's 1-m lidar regions (plan section 98, step 6): over the US base regions (prio 20 against their 10), each
 # cut to its box, reading only where its base region has published water (`presence`). `fill` = the base region's
 # sources, less any that read the same file as one of the region's surveys or lie outside its box.
-CA_FILL = ["cudem-us", "cudem-us-b", "bluetopo4", "bluetopo8", "bluetopo16"]
+WEST_FILL = ["cudem-us", "cudem-us-b", "bluetopo4", "bluetopo8", "bluetopo16"]
 LIDAR98_BOXES = {
     # California: the four boxes tile us-ca-south (split at 119.0 W) and the coast of us-ca-north
-    "ca-s1": ((-119.0, 32.4, -116.9, 34.6), ["coned-socal16-l", "noaa-ca11b"], CA_FILL, "us-ca-south"),
+    "ca-s1": ((-119.0, 32.4, -116.9, 34.6), ["coned-socal16-l", "noaa-ca11b"], WEST_FILL, "us-ca-south"),
     "ca-s2": ((-121.0, 32.4, -119.0, 34.6), ["coned-central17-l", "coned-socal16-l", "noaa-ca11a", "noaa-ca11b"],
-              CA_FILL, "us-ca-south"),
-    "ca-c": ((-123.2, 34.6, -120.0, 38.3), ["coned-norcal20-l", "coned-central17-l", "noaa-ca11a"], CA_FILL,
+              WEST_FILL, "us-ca-south"),
+    "ca-c": ((-123.2, 34.6, -120.0, 38.3), ["coned-norcal20-l", "coned-central17-l", "noaa-ca11a"], WEST_FILL,
              "us-ca-north"),
-    "ca-n": ((-124.6, 38.3, -122.0, 42.0), ["coned-norcal20-l", "noaa-ca11a"], CA_FILL, "us-ca-north"),
+    "ca-n": ((-124.6, 38.3, -122.0, 42.0), ["coned-norcal20-l", "noaa-ca11a"], WEST_FILL, "us-ca-north"),
     # the key surf areas
-    "key-or": ((-124.10, 44.55, -123.90, 46.05), ["usace-or14-l", "usace-orwa10"], CA_FILL, "us-or-wa"),
-    "key-wa": ((-124.20, 46.80, -124.05, 46.95), ["usace-wa20", "usace-orwa10"], CA_FILL, "us-or-wa"),
+    "key-or": ((-124.10, 44.55, -123.90, 46.05), ["usace-or14-l", "usace-orwa10"], WEST_FILL, "us-or-wa"),
+    "key-wa": ((-124.20, 46.80, -124.05, 46.95), ["usace-wa20", "usace-orwa10"], WEST_FILL, "us-or-wa"),
     "key-nc": ((-75.80, 35.20, -75.40, 36.20), ["ngs-vasc20", "usace-nc19", "usace-east18", "usace-east17"], US_EAST,
                "us-va-nc"),
     "key-nj": ((-74.35, 39.45, -73.95, 40.15), ["usace-njny22", "usace-east17", "coned-njde15"], US_EAST, "us-nj-ches"),

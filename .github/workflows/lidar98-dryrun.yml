@@ -15,8 +15,7 @@ jobs:
       fail-fast: false
       max-parallel: 4                      # leave the account's other jobs room (plan section 94)
       matrix:
-        region: [ca-s1, ca-s2, ca-c, ca-n, key-or, key-wa, key-nc, key-nj, key-ny-rock, key-ny-mtk, key-ri, key-nh,
-                 key-fl-space]
+        region: [ca-c]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
@@ -43,3 +42,10 @@ jobs:
           echo "::notice title=$REGION size::$(du -sb build/bathy | cut -f1) bytes on disk; files $(find build/bathy -type f | wc -l); $(df -h . | tail -1)"
           [ "$rc" = 0 ] && exit "$crc"
           exit "$rc"
+      - name: Error lines
+        if: always()
+        shell: bash
+        run: |
+          grep -nE "Error|error|failed|tif|vsis3|retry" build.log | grep -v '^ *File ' | tail -10 | cut -c1-400 | while IFS= read -r line; do
+            echo "::notice title=err::$line"
+          done

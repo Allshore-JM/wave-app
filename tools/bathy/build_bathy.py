@@ -175,6 +175,14 @@ def region_config(name, box=None, local=None):
         raise ValueError("%s: reach needs cut (what is read past the box is cut after the water rule)" % name)
     if reg.get("exclude_late") and not reg.get("exclude_boxes"):
         raise ValueError("%s: exclude_late without exclude" % name)
+    pr = reg.get("presence")
+    if pr is not None:
+        if (not isinstance(pr, (list, tuple)) or not pr or any(n not in S.REGIONS or n == name for n in pr)
+                or len(set(pr)) != len(pr)):
+            raise ValueError("%s: presence %r must list other regions by name" % (name, pr))
+        if any(max(S.SOURCES[k]["zmax"] for k in S.REGIONS[n]["sources"]) < reg["zmax"] - BLOCK_LEVELS for n in pr):
+            raise ValueError("%s: a presence region ends before zoom %d" % (name, reg["zmax"] - BLOCK_LEVELS))
+        reg["presence"] = list(pr)
     if not 0 <= reg["zmin"] <= reg["zmax"]:
         raise ValueError("%s: zmin %s outside 0..zmax %d" % (name, reg["zmin"], reg["zmax"]))
     seed = reg.get("seed")
@@ -392,6 +400,72 @@ def outside_box(box, srcs, tol=FOOT_PAD + 1e-6):
     return bad
 
 
+PUBLIC = "https://models.allshoresurf.com"     # the bucket's public host: what the site itself reads
+
+
+def idx_offsets(zmax):
+    """{zoom: (byte offset, byte length)} of each zoom's bitset inside an idx file of a region whose finest zoom is
+    zmax: zooms 11..zmax, one bit per tile of the zoom-10 cell's k x k (k = 2 ** (z - 10)), each zoom's bits padded to
+    whole bytes (bathy_tiles.pack_bits)."""
+    out, off = {}, 0
+    for z in range(11, zmax + 1):
+        n = ((2 ** (z - 10)) ** 2 + 7) // 8
+        out[z] = (off, n)
+        off += n
+    return out
+
+
+def published_presence(names, z, fetch=None, root=PUBLIC, workers=8):
+    """{(x, y)} of the tiles of zoom z (11 or finer) holding a PUBLISHED tile of any of the named regions, at zoom z or
+    any finer zoom (a finer tile marks its parent), read from the bucket as the site reads it: regions.json -> each
+    region's index.json -> its idx files. A lidar region reads only the blocks where the published base map has water
+    (its `presence`): most of a lidar survey's footprint is land. Raises when a region is not published or a file is
+    damaged: an empty set would build nothing without a word."""
+    fetch = fetch or _https_bytes
+    if not 11 <= z <= 20:
+        raise ValueError("presence: zoom %r must be 11-20 (the idx files hold zooms 11 and finer)" % (z,))
+    reg_doc = json.loads(fetch("%s/%s" % (root, REGIONS_KEY)).decode("utf-8"))
+    jobs = []
+    for name in names:
+        ent = (reg_doc.get("regions") or {}).get(name)
+        if not ent:
+            raise ValueError("presence: region %s is not published (regions.json)" % name)
+        base = "%s/%s/%s/v%d" % (root, PREFIX, name, int(ent["v"]))
+        index = json.loads(fetch(base + "/index.json").decode("utf-8"))
+        zmax = int(index["zmax"])
+        if zmax < z:
+            raise ValueError("presence: region %s ends at zoom %d, before %d" % (name, zmax, z))
+        if not index.get("idx") or index["idx"].get("zooms") != [11, zmax]:
+            raise ValueError("presence: region %s has no idx files for zooms 11-%d" % (name, zmax))
+        for cell in index.get("t10") or ():
+            cx, cy = (int(v) for v in cell.split("_"))
+            jobs.append((name, base + "/%s/%s.bin" % (index["idx"]["dir"], cell), cx, cy, zmax))
+
+    def one(job):
+        name, url, cx, cy, zmax = job
+        data = fetch(url)
+        offs = idx_offsets(zmax)
+        want = sum(n for (_, n) in offs.values())
+        if len(data) != want:
+            raise ValueError("presence: %s: %d bytes, expected %d" % (url, len(data), want))
+        got = set()
+        for zz in range(z, zmax + 1):
+            k = 2 ** (zz - 10)
+            o, n = offs[zz]
+            m = T.unpack_bits(data[o:o + n], (k, k))
+            rows, cols = np.nonzero(m)
+            sh = zz - z
+            for r, c in zip(rows.tolist(), cols.tolist()):
+                got.add(((cx * k + c) >> sh, (cy * k + r) >> sh))
+        return got
+
+    out = set()
+    with ThreadPoolExecutor(max(1, workers)) as ex:
+        for got in ex.map(one, jobs):
+            out |= got
+    return out
+
+
 def rects_of(src):
     """The source's footprint: worked out once (build() stores it in the source), else read now."""
     return src["rects"] if "rects" in src else footprint(src)
@@ -418,9 +492,10 @@ def dep_blocks(reg, src, workers):
     return found
 
 
-def block_keys(reg):
+def block_keys(reg, presence=None):
     """The blocks (tiles of zoom zmax - 3) under the footprint of any of the region's OWN sources (never a fill source's),
-    inside the region's box, plus `ring` blocks around them (read for the fill and the water rule only)."""
+    inside the region's box, plus `ring` blocks around them (read for the fill and the water rule only). With
+    `presence` (a set of blocks: published_presence) only the footprint blocks in it are kept, before the ring."""
     bz = reg["zmax"] - BLOCK_LEVELS
     keys = set()
     box = read_box(reg)
@@ -437,6 +512,8 @@ def block_keys(reg):
                 continue
             x0, y0, x1, y1 = T.tiles_in_box(c, bz)
             keys.update((x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1))
+    if presence is not None:
+        keys &= presence
     ring = reg.get("ring", 0)
     if ring and keys:
         x0, y0, x1, y1 = T.tiles_in_box(box, bz)
@@ -1282,7 +1359,12 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
         if bad:
             raise ValueError("%s: %d footprint rectangle(s) outside the region's box %s, e.g. %s: widen the box"
                              % (name, len(bad), whole, bad[:3]))
-        keys = block_keys(reg)
+        pres = None
+        if reg.get("presence"):
+            pres = published_presence(reg["presence"], reg["zmax"] - BLOCK_LEVELS)
+            log("%s: %d blocks of zoom %d hold published water of %s" % (name, len(pres), reg["zmax"] - BLOCK_LEVELS,
+                                                                         ", ".join(reg["presence"])))
+        keys = block_keys(reg, pres)
         log("%s: %d blocks of zoom %d to read (zmax %d)" % (name, len(keys), reg["zmax"] - BLOCK_LEVELS, reg["zmax"]))
         blocks = {}
         with pool(workers) as ex:

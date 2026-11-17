@@ -1794,6 +1794,26 @@ next tick retries), 1 a failure (`failed/<CYCLE>.json`, retried after 30 min, at
 new source for 6 h). Manual: `python tools/model_frames/rrfs.py --dry-run --cycle 2026111713 --grids hi --out DIR`.
 Fixtures: `tests/capture_rrfs_fixtures.py`; the decode tests need eccodes (skipped in the tests CI, run locally).
 
+### RRFS wind in the forecast tables (plan section 99, the site)
+
+With `RRFS_WIND=1` (unset = every table byte for byte as before) the station and forecast-point tables inside RRFS's
+four fine grids (Hawaii, Puerto Rico, CONUS, Alaska: `rrfs_grid.locate`, CONUS wins where it overlaps Alaska) take
+their wind from RRFS for the hours RRFS covers and from GFS after. `rrfs_wind.py` reads the job's objects from the
+points bucket (`POINTS_ROOT` / `MODEL_FRAMES_BASE`): the pointer (cached 2 min), the stations table of each source
+(sha256 checked), and for a point ONE ranged GET per source of its cell's series. Per forecast hour the newest source
+wins; a table uses the newest 3 hourly cycles and the newest 2 runs, so the next ~16 h come from the newest hourly
+cycle and the rest to +84 h from the newest run.
+
+- Rows: wind at `row[20]`/`row[21]` as before, gust `row[22]`, the source label `row[23]`, combined `row[-1]` (25 cells
+  with the flag on; `_wind_row_cells`, `point_forecast.point_rows(..., extra_wind=True)`).
+- Table: Wind = Spd | Gust | Dir when any row has an RRFS hour, a caption "Wind: RRFS 19Z to Wed 11/18 3:00 AM &middot;
+  RRFS 18Z to Fri 11/20 8:00 PM &middot; then GFS" and a top border on the wind cells of each row where the source
+  changes. The Summary view adds the day's peak gust. GLWU (Great Lakes) tables keep their NDFD wind.
+- Cache: the tables' keys gain the newest RRFS source, so a new hourly cycle rebuilds a table at its next request.
+- Failure: an unreadable pointer or object leaves the table on GFS (remembered 1-2 min); `/healthz` `rrfs` reports reads,
+  failures, the newest source and the pointer's publish time (never part of `ok`).
+- numpy is loaded on the first POINT read only (the app's import stays numpy-free).
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

@@ -109,14 +109,16 @@ def test_bulletin_rows_carry_gust_and_source_and_keep_combined_last(on):
 
 def test_table_gust_column_source_line_and_handovers(on):
     c, loc, run, rows, tz = _rows()
-    html = A.build_html_table(c, loc, run, rows, tz, "US", compact=True)
+    window = A.build_html_table(c, loc, run, rows, tz, "US", compact=True)
+    assert "<caption" not in window and window.count("Gust<br>(mph)") == 1   # the window: the line on its meta line
+    html = A.build_html_table(c, loc, run, rows, tz, "US", compact=False)
     assert html.count("Gust<br>(mph)") == 1 and 'colspan="3" scope="colgroup"' in html
     cap = re.search(r'<caption class="wind-source"[^>]*>(.*?)</caption>', html).group(1)
     assert cap.startswith("Wind: RRFS 12Z to ") and "RRFS 13Z to " in cap and cap.endswith("then GFS")
     assert " &middot; " in cap and all(ord(ch) < 128 for ch in cap)        # ASCII on the page, as every table
     assert html.count("border-top:2px solid #546E7A") == 3 * 3            # 12Z->13Z, 13Z->12Z, 12Z->GFS: 3 cells each
     # gust in mph: 14.0 m/s -> 31, 7.5 -> 17
-    assert ">31</td>" in html and ">17</td>" in html
+    assert ">31<" in window and ">17<" in window
     metric = A.build_html_table(c, loc, run, rows, tz, "SI", compact=False)
     assert "Gust<br>(km/h)" in metric and ">50</td>" in metric           # 14.0 m/s = 50 km/h
     assert metric.count("<caption") == 1
@@ -324,3 +326,24 @@ def test_weather_fail_logs_once_a_minute_per_reason(monkeypatch, caplog):
         c.post("/api/weather-fail?reason=network")
     lines = [r.getMessage() for r in caplog.records if "Open-Meteo failed in a browser" in r.getMessage()]
     assert len(lines) == 2 and A._OM_FAILS == {"timeout": 5, "network": 1}  # G66 P3-4
+
+
+def test_source_line_from_the_current_hour(on):
+    """The line names the sources from the current hour on (the past rows' sources are noise: test-site check)."""
+    c, loc, run, rows, tz = _rows()
+    whole = A._wind_source_line(rows)
+    later = A._wind_source_line(rows, "UTC", now=RUN + timedelta(hours=6))
+    assert whole.startswith("Wind: RRFS 12Z to ") and later.startswith("Wind: RRFS 13Z to ")
+    assert later.endswith("then GFS") and A._wind_source_line(rows, "Not/AZone") == whole
+
+
+def test_payload_carries_wind_source_for_the_window(on, monkeypatch):
+    monkeypatch.setattr(A, "parse_bull", lambda sid, tz=None: _rows_tuple())
+    monkeypatch.setattr(A, "_gspec_held_for", lambda sid: (None, None), raising=False)
+    out = A.compute_forecast_payload("51201", "UTC", "US", "GFSB", compact=True)
+    assert out.get("wind_source", "").startswith("Wind: RRFS") and "<caption" not in (out.get("table_html") or "")
+
+
+def _rows_tuple():
+    wind = A._with_rrfs_station("51201", _gfs_map())
+    return A._parse_bull_text(BULL, "51201", "UTC", "20261001", "12", wind)

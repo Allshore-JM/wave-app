@@ -396,11 +396,21 @@ def test_build_grid_budget_runs_out(tmp_path, monkeypatch):
 # ----------------------------------------------------------------------------------- publish, pointer, prune, main
 
 def test_keep_sources_rule():
-    srcs = [{"cycle": f"20261117{h:02d}", "kind": "run" if h % 6 == 0 else "cycle", "stations": "s",
-             "cells": {"hi": "c"}} for h in range(0, 24)]
+    """Station tables 3 days + margin (13 runs, 64 hourly cycles); the large cell files only the newest 2 runs and 3
+    cycles (plan section 99)."""
+    srcs = []
+    for d in range(14, 19):                                              # five days of every hour
+        for h in range(24):
+            srcs.append({"cycle": f"202611{d:02d}{h:02d}", "kind": "run" if h % 6 == 0 else "cycle", "stations": "s",
+                         "cells": {"hi": "c"}})
     kept = J.keep_sources(srcs)
-    assert [s["cycle"][-2:] for s in kept] == ["23", "22", "21", "20", "19", "18", "17", "16", "15", "12"]
-    assert [s["cycle"][-2:] for s in kept if s["cells"]] == ["23", "22", "21", "18", "12"]
+    runs = [s["cycle"] for s in kept if s["kind"] == "run"]
+    cycles = [s["cycle"] for s in kept if s["kind"] == "cycle"]
+    assert len(runs) == 13 and len(cycles) == 64
+    assert runs[0] == "2026111818" and runs[-1] == "2026111518"           # 13 runs = 3 days + one
+    assert cycles[0] == "2026111823" and cycles[-1] == "2026111520"       # 64 hourly cycles = 3 days + 4
+    assert [s["cycle"] for s in kept] == sorted([s["cycle"] for s in kept], reverse=True)
+    assert [s["cycle"][-4:] for s in kept if s["cells"]] == ["1823", "1822", "1821", "1818", "1812"]
 
 
 def _fake_build(c, work, coords, deadline, get=None, log=None, grids=None):

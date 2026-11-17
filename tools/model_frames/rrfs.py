@@ -59,7 +59,8 @@ RUN_STEPS = list(range(0, 85))
 CYCLE_STEPS = list(range(1, 19))
 RUN_LOOKBACK = 4                     # synoptic cycles looked at
 CYCLE_LOOKBACK = 8                   # hourly cycles looked at
-KEEP_STATIONS = {"run": 2, "cycle": 8}
+KEEP_STATIONS = {"run": 13, "cycle": 64}  # 3 days + margin of the small station tables (~5 MB): the accuracy
+                                          # gate reads them all at once (owner 2026-11-17, plan section 99)
 KEEP_CELLS = {"run": 2, "cycle": 3}
 MISSING = 65535
 MISSING8 = 255

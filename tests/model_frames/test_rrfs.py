@@ -220,6 +220,7 @@ def test_run_products_equal_an_independent_eccodes_read(tmp_path):
     assert J._sha256(files[J.cells_key(cyc, "hi")]) == doc["sha256"]
     U, V, GU, T, D = (ecc("hi_f006", v) for v in ("UGRD", "VGRD", "GUST", "TMP", "DPT"))
     AP, TC, CR, LT = (ecc("hi_f006", v) for v in ("APCP", "TCDC", "CRAIN", "LTNG"))
+    SN, FR, IP = (ecc("hi_f006", v) for v in ("CSNOW", "CFRZR", "CICEP"))
     rng = np.random.default_rng(7)
     for _ in range(500):
         j, i = int(rng.integers(0, 225)), int(rng.integers(0, 321))
@@ -233,7 +234,18 @@ def test_run_products_equal_an_independent_eccodes_read(tmp_path):
         assert abs(r["tmp"] / 10 - T[j, i]) <= 0.051 and abs(r["dpt"] / 10 - D[j, i]) <= 0.051
         assert abs(r["apcp"] / 100 - AP[j, i]) <= 0.0051
         assert r["cloud"] == round(TC[j, i])
-        want = 0 if AP[j, i] < 0.1 else 5 if LT[j, i] > 0 else 1 if CR[j, i] >= 0.5 else r["type"]
+        if AP[j, i] < 0.1:
+            want = 0
+        elif LT[j, i] > 0:
+            want = 5
+        elif FR[j, i] >= 0.5 or IP[j, i] >= 0.5:
+            want = 4
+        elif CR[j, i] >= 0.5 and SN[j, i] >= 0.5:
+            want = 3
+        elif SN[j, i] >= 0.5:
+            want = 2
+        else:
+            want = 1
         assert r["type"] == want
 
 
@@ -303,6 +315,84 @@ def test_geometry_change_fails_the_decode():
     assert J.decode(_read("hi_f006_UGRD.grib2"), "hi").shape == (225, 321)
 
 
+# ------------------------------------------------------------------------------- identity, calm, multi-step wiring
+
+@needs_ec
+def test_every_fixture_record_passes_its_identity_check_and_a_swap_fails():
+    for cyc, prefix in ((RUN, "hi_f006"), (CYC, "hi_subh_t13z_f006")):
+        for name, _ in J.wanted(cyc, 6):
+            J.decode(_read(f"{prefix}_{VAR[name]}.grib2"), "hi", (name, cyc, 6))
+    with pytest.raises(ValueError, match="record tmp"):                 # DPT where TMP should be (G66a P2-2)
+        J.decode(_read("hi_f006_DPT.grib2"), "hi", ("tmp", RUN, 6))
+    with pytest.raises(ValueError):                                     # the run total read as the hour's amount
+        J.decode(_read("hi_subh_t13z_f006_APCP.grib2"), "hi", ("apcp", CYC, 6))
+    with pytest.raises(ValueError):                                     # another step
+        J.decode(_read("hi_f006_UGRD.grib2"), "hi", ("u", RUN, 7))
+    with pytest.raises(ValueError):                                     # another cycle
+        J.decode(_read("hi_f006_UGRD.grib2"), "hi", ("u", datetime(2026, 11, 17, 18, tzinfo=timezone.utc), 6))
+
+
+def test_a_calm_has_no_direction():
+    f = {k: np.zeros((1, 2)) for k in ("gust", "tmp", "dpt", "crain", "csnow", "cfrzr", "cicep")}
+    f.update(u=np.array([[0.0, 0.0]]), v=np.array([[0.0, -3.0]]))
+    rec, _ = J.step_record(f, "hi", np.zeros((1, 2)))
+    assert rec["dir"][0] == J.MISSING and rec["spd"][0] == 0
+    assert rec["dir"][1] == 0 and rec["spd"][1] == 300                  # 3 m/s from the north
+
+
+def _fake_fields(monkeypatch, order=None):
+    """fetch_step / decode / grid_lonlat replaced: every field of step s holds known values (no eccodes, no network):
+    tmp = 250 + s K; the hourly cycle's precipitation total = s * (s + 1) / 2 mm (so the hour's amount is s mm); the
+    run's hourly amount = s / 10 mm. `order` records the steps in the order they are decoded."""
+    g = J.G.GRIDS["hi"]
+    shape = (g["Ny"], g["Nx"])
+    monkeypatch.setattr(J, "grid_lonlat", lambda msg, grid: (np.zeros(shape), np.zeros(shape)))
+    monkeypatch.setattr(J, "fetch_step", lambda c, grid, step, get=None: {n: (n, step) for n, _ in J.wanted(c, step)})
+
+    def decode(token, grid, expect=None):
+        name, step = token
+        assert expect is not None and expect[0] == name and expect[2] == step
+        if order is not None and name == "u":
+            order.append(step)
+        val = {"tmp": 250.0 + step, "apcp_total": step * (step + 1) / 2, "apcp": step / 10, "u": 1.0, "v": 0.0,
+               "gust": 2.0, "dpt": 240.0, "tcdc": 50.0}.get(name, 0.0)
+        return np.full(shape, val)
+
+    monkeypatch.setattr(J, "decode", decode)
+
+
+def test_build_grid_wiring_over_several_fetch_windows(tmp_path, monkeypatch):
+    """20 hourly-cycle steps with workers=2 (a window of 4): every column holds its own step, in order, and the hour's
+    precipitation is each total minus the one before (G66a P3: the one-step fixtures could not see this)."""
+    monkeypatch.setattr(J, "CYCLE_STEPS", list(range(1, 21)))
+    order = []
+    _fake_fields(monkeypatch, order)
+    path, st = J.build_grid(CYC, "hi", {"51201": (100, 100)}, str(tmp_path), 1e18, log=lambda s: None, workers=2)
+    assert order == list(range(1, 21))
+    arr = np.fromfile(path, dtype=J.CELL_DTYPE).reshape(-1, 20)
+    assert list(arr[12345]["tmp"]) == [round((250 + s) * 10) for s in range(1, 21)]
+    assert list(arr[12345]["apcp"]) == [s * 100 for s in range(1, 21)]
+    assert (arr["cloud"] == J.MISSING8).all()
+    assert list(st["51201"]["spd"]) == [100] * 20 and list(st["51201"]["dir"]) == [2700] * 20
+
+
+def test_build_grid_run_steps_from_f000(tmp_path, monkeypatch):
+    monkeypatch.setattr(J, "RUN_STEPS", list(range(0, 21)))
+    _fake_fields(monkeypatch)
+    path, _ = J.build_grid(RUN, "hi", {}, str(tmp_path), 1e18, log=lambda s: None, workers=2)
+    arr = np.fromfile(path, dtype=J.CELL_DTYPE).reshape(-1, 21)
+    assert list(arr[7]["tmp"]) == [round((250 + s) * 10) for s in range(0, 21)]
+    assert arr[7]["apcp"][0] == J.MISSING and list(arr[7]["apcp"][1:]) == [s * 10 for s in range(1, 21)]
+    assert (arr["cloud"] == 50).all()
+
+
+def test_build_grid_budget_runs_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(J, "CYCLE_STEPS", list(range(1, 21)))
+    _fake_fields(monkeypatch)
+    with pytest.raises(J.BudgetExceeded):
+        J.build_grid(CYC, "hi", {}, str(tmp_path), deadline=0.0, log=lambda s: None, workers=2)
+
+
 # ----------------------------------------------------------------------------------- publish, pointer, prune, main
 
 def test_keep_sources_rule():
@@ -313,73 +403,135 @@ def test_keep_sources_rule():
     assert [s["cycle"][-2:] for s in kept if s["cells"]] == ["23", "22", "21", "18", "12"]
 
 
-@needs_ec
-def test_main_publishes_cycle_and_run_pointer_last_and_prunes(tmp_path, monkeypatch):
-    st = store()
-
-    def fake_build(c, work, coords, deadline, get=None, log=None, grids=None):
-        return _orig_build(c, work, COORDS, deadline, get=FakeNoaa(), log=lambda s: None, grids=("hi",))
-
-    monkeypatch.setattr(J, "build", fake_build)
-    now = datetime(2026, 11, 17, 16, 0, tzinfo=timezone.utc)
-    head = lambda url: ("t13z" in url) or ("t12z" in url)                # noqa: E731
-    rc = J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None)
-    assert rc == 0
-    log = [k for op, k in st.client.log if op == "put"]
-    assert log[-1] == "rrfs/v1/latest.json"
-    ptr = st.get_json("rrfs/v1/latest.json")
-    assert [s["cycle"] for s in ptr["sources"]] == ["2026111713", "2026111712"]
-    assert ptr["sources"][0]["kind"] == "cycle" and ptr["sources"][1]["kind"] == "run"
-    assert ptr["run"] == "2026111713"
-    # each source: its bins before its documents, its documents before the pointer that names it
-    first_ptr = log.index("rrfs/v1/latest.json")
-    assert log.index("rrfs/v1/2026111713/hi.bin") < log.index("rrfs/v1/2026111713/hi.json") < first_ptr
-    # again: nothing new
-    assert J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None) == 0
-    # a stray older cycle not named by the pointer is pruned at the next publish
-    st.put("rrfs/v1/2026111701/stations.bin", b"x", "application/octet-stream", P.IMMUTABLE)
-    J.prune(st, ptr)
-    assert "rrfs/v1/2026111701/stations.bin" not in st.client.objects
-    assert "rrfs/v1/2026111712/hi.bin" in st.client.objects
+def _fake_build(c, work, coords, deadline, get=None, log=None, grids=None):
+    """A build without eccodes or network: tiny files under the real keys."""
+    cyc = J.cycle_name(c)
+    files, docs = {}, {}
+    for key in (J.cells_key(cyc, "hi"), J.stations_key(cyc)):
+        path = os.path.join(work, key.rsplit("/", 1)[-1])
+        with open(path, "wb") as f:
+            f.write(cyc.encode())
+        files[key] = path
+    docs[J.cells_index_key(cyc, "hi")] = {"format": "rrfs-cells-v1", "cycle": cyc}
+    docs[J.stations_index_key(cyc)] = {"format": "rrfs-stations-v1", "cycle": cyc, "count": 1}
+    return files, docs
 
 
-_orig_build = J.build
+def _ptr(st):
+    return st.get_json("rrfs/v1/latest.json")
 
 
-def test_main_not_served_is_exit_3_with_a_record(monkeypatch):
-    st = store()
-    now = datetime(2026, 11, 17, 16, 0, tzinfo=timezone.utc)
-    head = lambda url: "t13z" in url                                    # noqa: E731
-    monkeypatch.setattr(J, "build", lambda *a, **k: (_ for _ in ()).throw(J.NotReady("404 x")))
-    st.put("rrfs/v1/latest.json", json.dumps({"published_utc": datetime.now(timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"), "sources": []}).encode(), "application/json", P.POINTER)
-    assert J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None) == 3
-    assert st.get_json("rrfs/v1/notready/2026111713.json")["count"] == 1
-
-
-def test_main_bad_data_is_exit_1_with_a_failure_record_then_waits(monkeypatch):
-    st = store()
-    now = datetime(2026, 11, 17, 16, 0, tzinfo=timezone.utc)
-    head = lambda url: "t13z" in url                                    # noqa: E731
-    monkeypatch.setattr(J, "build", lambda *a, **k: (_ for _ in ()).throw(ValueError("layout")))
-    st.put("rrfs/v1/latest.json", json.dumps({"published_utc": datetime.now(timezone.utc).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"), "sources": []}).encode(), "application/json", P.POINTER)
-    assert J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None) == 1
-    assert st.get_json("rrfs/v1/failed/2026111713.json")["attempts"] == 1
-    assert J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None) == 3   # waits, no new attempt
-    assert st.get_json("rrfs/v1/failed/2026111713.json")["attempts"] == 1
-
-
-def test_main_stale_alarm_when_nothing_new_for_hours():
-    st = store()
-    st.put("rrfs/v1/latest.json", json.dumps({"published_utc": "2026-11-16T00:00:00Z", "run": "2026111600",
-                                              "sources": [{"cycle": "2026111713", "kind": "cycle"},
-                                                          {"cycle": "2026111712", "kind": "run"}]}).encode(),
+def _fresh_pointer(st, sources, published="2026-11-17T15:00:00Z"):
+    st.put("rrfs/v1/latest.json", json.dumps({"published_utc": published, "sources": sources}).encode(),
            "application/json", P.POINTER)
-    now = datetime(2026, 11, 17, 16, 0, tzinfo=timezone.utc)
-    head = lambda url: ("t13z" in url) or ("t12z" in url)                # noqa: E731
-    assert J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None) == 1
-    assert J.main([], head=head, store=st, now=now, coords=COORDS, log=lambda s: None) == 0   # once every 6 h
+
+
+NOW = datetime(2026, 11, 17, 16, 0, tzinfo=timezone.utc)
+BOTH = lambda url: ("t13z" in url) or ("t12z" in url)                     # noqa: E731
+
+
+def test_main_publishes_cycle_and_run_pointer_last(tmp_path, monkeypatch):
+    st = store()
+    monkeypatch.setattr(J, "build", _fake_build)
+    assert J.main([], head=BOTH, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 0
+    puts = [k for op, k in st.client.log if op == "put"]
+    ptr = _ptr(st)
+    assert [s["cycle"] for s in ptr["sources"]] == ["2026111713", "2026111712"]
+    assert [s["kind"] for s in ptr["sources"]] == ["cycle", "run"] and ptr["newest"] == "2026111713"
+    first = puts.index("rrfs/v1/latest.json")
+    assert puts.index("rrfs/v1/2026111713/hi.bin") < puts.index("rrfs/v1/2026111713/hi.json") < first
+    assert puts.index("rrfs/v1/2026111712/hi.bin") > first and puts[-1] == "rrfs/v1/latest.json"
+    assert J.main([], head=BOTH, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 0   # nothing new
+
+
+def test_the_run_waits_when_the_cycle_used_the_budget(monkeypatch):
+    st = store()
+    monkeypatch.setattr(J, "build", _fake_build)
+    monkeypatch.setattr(J, "RUN_MIN_LEFT_S", J.BUILD_BUDGET_S + 1)       # never enough left after a cycle
+    _fresh_pointer(st, [{"cycle": "2026111706", "kind": "run", "stations": "x"}])
+    assert J.main([], head=BOTH, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 0
+    assert [s["cycle"] for s in _ptr(st)["sources"]] == ["2026111713", "2026111706"]
+    assert J.main([], head=BOTH, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 0   # next tick: the run
+    assert [s["cycle"] for s in _ptr(st)["sources"]] == ["2026111713", "2026111712", "2026111706"]
+
+
+def test_prune_keeps_what_either_pointer_names_and_newer_cycles():
+    st = store()
+    for k in ("rrfs/v1/2026111701/stations.bin", "rrfs/v1/2026111710/hi.bin", "rrfs/v1/2026111710/hi.json",
+              "rrfs/v1/2026111711/stations.json", "rrfs/v1/2026111799/hi.bin"):
+        st.put(k, b"x", "application/octet-stream", P.IMMUTABLE)
+    new = {"newest": "2026111711", "sources": [{"cycle": "2026111711", "kind": "cycle",
+                                                 "stations": "rrfs/v1/2026111711/stations.json", "cells": None}]}
+    old = {"newest": "2026111710", "sources": [{"cycle": "2026111710", "kind": "cycle",
+                                                 "stations": "rrfs/v1/2026111710/stations.json",
+                                                 "cells": {"hi": "rrfs/v1/2026111710/hi.json"}}]}
+    J.prune(st, new, old)
+    left = set(st.client.objects)
+    assert "rrfs/v1/2026111701/stations.bin" not in left                    # named by neither: gone
+    assert {"rrfs/v1/2026111710/hi.bin", "rrfs/v1/2026111710/hi.json"} <= left   # the previous pointer's: kept
+    assert "rrfs/v1/2026111711/stations.json" in left
+    assert "rrfs/v1/2026111799/hi.bin" in left                              # newer than the pointer: a build writing
+    J.prune(st, new)                                                        # once the old pointer is gone too
+    assert "rrfs/v1/2026111710/hi.bin" not in st.client.objects
+
+
+def test_publish_then_prune_drops_cells_only_after_the_next_publish(tmp_path, monkeypatch):
+    st = store()
+    monkeypatch.setattr(J, "build", _fake_build)
+    hours = [7, 8, 9, 10, 11]
+    for h in hours:
+        c = datetime(2026, 11, 17, h, tzinfo=timezone.utc)
+        assert J.main(["--cycle", J.cycle_name(c)], head=lambda u: True, store=st, now=NOW, coords=COORDS,
+                      log=lambda s: None) in (0, 1)
+    with_cells = [s["cycle"] for s in _ptr(st)["sources"] if s["cells"]]
+    assert with_cells == ["2026111711", "2026111710", "2026111709"]
+    # 08's cells left the pointer at the 11 publish but the pointer before it (published at 10) named them: kept
+    assert "rrfs/v1/2026111708/hi.bin" in st.client.objects
+    assert "rrfs/v1/2026111707/hi.bin" not in st.client.objects
+
+
+def test_not_served_is_exit_3_then_loud_at_the_sixth(monkeypatch):
+    st = store()
+    _fresh_pointer(st, [{"cycle": "2026111712", "kind": "run", "stations": "x"},
+                        {"cycle": "2026111712", "kind": "cycle", "stations": "x"}])
+    head = lambda url: "t13z" in url                                        # noqa: E731
+    monkeypatch.setattr(J, "build", lambda *a, **k: (_ for _ in ()).throw(J.NotReady("404 x")))
+    codes = [J.main([], head=head, store=st, now=NOW, coords=COORDS, log=lambda s: None) for _ in range(7)]
+    assert codes == [3, 3, 3, 3, 3, 1, 3]
+    assert st.get_json("rrfs/v1/notready/2026111713.json")["count"] == 7
+
+
+def test_bad_data_is_exit_1_with_a_failure_record_then_waits(monkeypatch):
+    st = store()
+    _fresh_pointer(st, [{"cycle": "2026111712", "kind": "run", "stations": "x"},
+                        {"cycle": "2026111712", "kind": "cycle", "stations": "x"}])
+    head = lambda url: "t13z" in url                                        # noqa: E731
+    monkeypatch.setattr(J, "build", lambda *a, **k: (_ for _ in ()).throw(ValueError("layout")))
+    assert J.main([], head=head, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 1
+    assert st.get_json("rrfs/v1/failed/2026111713.json")["attempts"] == 1
+    assert J.main([], head=head, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 3   # waits, no new attempt
+    assert st.get_json("rrfs/v1/failed/2026111713.json")["attempts"] == 1
+
+
+def test_stale_per_kind():
+    hourly_ok = [{"cycle": "2026111713", "kind": "cycle"}]
+    assert J.stale_kinds({"sources": hourly_ok + [{"cycle": "2026111712", "kind": "run"}]}, NOW) == []
+    old_run = J.stale_kinds({"sources": hourly_ok + [{"cycle": "2026111612", "kind": "run"}]}, NOW)
+    assert [(k, c) for k, c, _ in old_run] == [("run", "2026111612")]          # 28 h: the hourly cycles hide nothing
+    assert [k for k, c, _ in J.stale_kinds({"sources": [{"cycle": "2026111706", "kind": "run"}]}, NOW)] == ["cycle"]
+    assert [k for k, c, _ in J.stale_kinds({}, NOW)] == ["cycle", "run"]
+
+
+def test_stale_alarm_once_every_6_hours_even_while_cycles_publish(monkeypatch):
+    st = store()
+    monkeypatch.setattr(J, "build", _fake_build)
+    _fresh_pointer(st, [{"cycle": "2026111612", "kind": "run", "stations": "x"}], published="2026-11-17T15:55:00Z")
+    head = lambda url: "t13z" in url                                        # the hourly cycles go on; no run
+    assert J.main([], head=head, store=st, now=NOW, coords=COORDS, log=lambda s: None) == 1
+    later = datetime(2026, 11, 17, 17, 0, tzinfo=timezone.utc)
+    assert J.main([], head=head, store=st, now=later, coords=COORDS, log=lambda s: None) == 0
+    much_later = datetime(2026, 11, 17, 22, 30, tzinfo=timezone.utc)
+    assert J.main([], head=lambda u: False, store=st, now=much_later, coords=COORDS, log=lambda s: None) == 1
 
 
 def test_dry_run_flags():
@@ -415,4 +567,11 @@ def test_trigger_keepalive_and_tests_paths():
     tests = _text(".github", "workflows", "model-frames-tests.yml")
     assert tests.count('".github/workflows/model-rrfs.yml"') == 2 and tests.count('"tests/fixtures/rrfs/**"') == 2
     assert tests.count('"rrfs_grid.py"') == 2
+    assert "python -m pytest -q tests/model_frames tests/test_rrfs_grid.py" in tests       # the grid tests run in CI
     assert P.RRFS_PREFIX == "rrfs/v1"
+
+
+def test_u16_boundaries():
+    """65535 is the missing code: a value that would round to it is missing, never a real 655.35 (G66a P3)."""
+    assert list(J._u16(np.array([655.34, 655.35, 700.0, -0.001, -0.01, np.nan]), 100)) == [65534, 65535, 65535, 0,
+                                                                                        65535, 65535]

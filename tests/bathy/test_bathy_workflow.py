@@ -36,7 +36,7 @@ def test_tests_on_push_build_only_on_dispatch():
 def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     steps = _steps(_text())
     check = steps["Check the inputs"]
-    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem)" in check
+    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem|ca-s1|ca-s2|ca-c|ca-n|key-or|key-wa|key-nc|key-nj|key-ny-rock|key-ny-mtk|key-ri|key-nh|key-fl-space)" in check
     assert '[[ "$VERSION" =~ ^[1-9][0-9]*$ ]]' in check
     up = steps["Upload to R2"]
     assert "if: github.event.inputs.upload == 'true'" in up
@@ -45,7 +45,7 @@ def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     import sys
     sys.path.insert(0, os.path.join(ROOT, "tools", "bathy"))
     import bathy_sources as S
-    assert set(re.search(r"case \"\$REGION\" in ([a-z|-]+)\)", check).group(1).split("|")) == set(S.REGIONS)
+    assert set(re.search(r"case \"\$REGION\" in ([a-z0-9|-]+)\)", check).group(1).split("|")) == set(S.REGIONS)
 
 
 def test_upload_and_replace_are_tick_boxes_and_only_builds_wait_for_each_other():
@@ -133,7 +133,7 @@ def test_the_region_list_names_the_builders_regions():
     sys.path.insert(0, os.path.join(ROOT, "tools", "bathy"))
     import bathy_sources as S
     step = _list_step()
-    assert set(re.search(r"case \"\$REGION\" in ([a-z|-]+)\)", step).group(1).split("|")) == set(S.REGIONS)
+    assert set(re.search(r"case \"\$REGION\" in ([a-z0-9|-]+)\)", step).group(1).split("|")) == set(S.REGIONS)
     assert "${{ matrix.region }}" in _text() and "github.event.inputs.region }}" in _text().split("\n  build:\n")[0]
 
 

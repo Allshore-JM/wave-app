@@ -122,6 +122,12 @@ def lake_dem(lwd, navd88=False):
 
 SURVEY15_LAKE = dict(LIDAR, zmax=15, clip=True)
 
+# The Lower 48's 1-m lidar (plan section 98, step 6): NAVD88 like the base map, cut to each lidar region's box, and
+# (except Florida) kept to 0-30 m: deeper than 30 m a pixel is drawn only to zoom 15, which the base region draws.
+LIDAR98_ALL = dict(LIDAR, **NAVD88, clip=True)
+LIDAR98 = dict(LIDAR98_ALL, deep=(30.0, 15))
+NOAA_CA11 = "NOAA Office for Coastal Management 2011 California topobathy merge (NOAA Digital Coast)"
+
 SOURCES = {
     "cudem-hawaii": dict(CUDEM, id=10, year="2021",
                          path="dem/NCEI_ninth_Topobathy_Hawaii_9428/NCEI_ninth_Topobathy_Hawaii_EPSG-4326.vrt",
@@ -309,6 +315,84 @@ SOURCES = {
     "usace-ontario18c": dict(lake_dem(74.2), id=3, year="2018", name="USACE lidar",
                              path="dem/USACE_NY_Ontario_DEM_2018_8981/USACE_NY_Ontario_DEM_2018_m8981_EPSG-6347.vrt",
                              credit=USACE_NCMP % "2018 Lake Ontario (New York)"),
+    # The Lower 48's 1-m lidar (plan section 98, owner 2026-11-15/17): read at zooms 16-17 over the US base regions in
+    # the key surf areas, all of California and Florida's Space Coast. Ids count within a region (the newest survey
+    # lowest, so it wins); a survey used by several regions keeps one id that fits each. `deep`: California and the key
+    # areas are kept to 0-30 m; the Space Coast keeps every depth (owner: Florida all depths).
+    "coned-norcal20-l": dict(LIDAR98, id=1, year="2020", name="USGS CoNED lidar", nodata=-3.4028230607370965e38,
+                             path="dem/CA_north_coned_DEM_2020_9181/CA_north_coned_DEM_2020_m9181_EPSG-3717.vrt",
+                             credit="USGS Coastal National Elevation Database (CoNED) 2020 Northern California "
+                                    "topobathymetric model (NOAA Digital Coast)"),
+    "coned-central17-l": dict(LIDAR98, id=2, year="2017", name="USGS CoNED lidar", nodata=-32767.0,
+                              path="dem/CA_Central_CoNED_DEM_2017_8657/CA_Central_CoNED_DEM_2017_m8657_EPSG-3717.vrt",
+                              credit="USGS Coastal National Elevation Database (CoNED) 2017 Central California "
+                                     "topobathymetric model (NOAA Digital Coast)"),
+    "coned-socal16-l": dict(LIDAR98, id=3, year="2016", name="USGS CoNED lidar", nodata=-32767.0,
+                            path="dem/CA_Southern_CoNED_DEM_2016_8658/CA_Southern_CoNED_DEM_2016_m8658_EPSG-26911.vrt",
+                            credit="USGS Coastal National Elevation Database (CoNED) 2016 Southern California "
+                                   "topobathymetric model (NOAA Digital Coast)"),
+    # NOAA's 2011 California topobathy merge, in two VRTs split by UTM zone (10 north of ~34.5 N and 11 south)
+    "noaa-ca11a": dict(LIDAR98, id=4, year="2011", name="NOAA lidar", nodata=-3.4028234663852886e38,
+                       path="dem/California_Topobathy_DEM_2011_2616/California_Topobathy_DEM_2011_m2616_EPSG-26910.vrt",
+                       credit=NOAA_CA11),
+    "noaa-ca11b": dict(LIDAR98, id=5, year="2011", name="NOAA lidar", nodata=-3.4028234663852886e38,
+                       path="dem/California_Topobathy_DEM_2011_2616/California_Topobathy_DEM_2011_m2616_EPSG-26911.vrt",
+                       credit=NOAA_CA11),
+    "usace-wa20": dict(LIDAR98, id=1, year="2020", name="USACE lidar", nodata=-3.4028234663852886e38,
+                       path="dem/USACE_WA_DEM_2020_10116/USACE_WA_DEM_2020_m10116_EPSG-6339.vrt",
+                       credit=USACE_NCMP % "2020 Washington"),
+    # the same VRT as usace-or14 (the base map's zoom-15 fill south of 43.5 N), here at zooms 16-17
+    "usace-or14-l": dict(LIDAR98, id=2, year="2014", name="USACE lidar", nodata=-3.4028234663852886e38,
+                         path="dem/USACE_OR_Topobathy_DEM_2014_6282/USACE_OR_Topobathy_DEM_2014_m6282_EPSG-6318.vrt",
+                         credit=USACE_NCMP % "2014 Oregon"),
+    "usace-orwa10": dict(LIDAR98, id=3, year="2010", name="USACE lidar", nodata=-9999.0,
+                         path="dem/USACE_OR_WA_DEM_2010_9443/USACE_OR_WA_DEM_2010_m9443_EPSG-4269.vrt",
+                         credit=USACE_NCMP % "2010 Oregon and Washington"),
+    "ngs-vasc20": dict(LIDAR98, id=1, year="2020", name="NOAA NGS lidar", nodata=-999999.0,
+                       path="dem/NGS_VAtoSC_Topobathy_DEM_2020_9468/NGS_VAtoSC_Topobathy_DEM_2020_m9468_EPSG-6347.vrt",
+                       credit="NOAA NGS 2020 Virginia to South Carolina topobathy lidar (NOAA Digital Coast)"),
+    "usace-nc19": dict(LIDAR98, id=2, year="2019", name="USACE lidar", nodata=-3.4028234663852886e38,
+                       path="dem/USACE_Topobathy_NC_DEM_2019_9001/USACE_Topobathy_NC_DEM_2019_m9001_EPSG-6318.vrt",
+                       credit=USACE_NCMP % "2019 North Carolina"),
+    # the 2018 East Coast set's two UTM VRTs hold nothing inside the key areas: only the geographic one is read
+    "usace-east18": dict(LIDAR98, id=3, year="2018", name="USACE lidar", nodata=-3.4028234663852886e38,
+                         path="dem/USACE_EastCoast_DEM_2018_8691/USACE_EastCoast_DEM_2018_m8691_EPSG-6318.vrt",
+                         credit=USACE_NCMP % "2018 East Coast"),
+    "usace-east17": dict(LIDAR98, id=4, year="2017", name="USACE lidar", nodata=-3.4028234663852886e38,
+                         path="dem/USACE_East_Coast_DEM_2017_8517/USACE_East_Coast_DEM_2017_m8517_EPSG-6318.vrt",
+                         credit=USACE_NCMP % "2017 East Coast"),
+    # the zone-19 VRT of the 2022 New Jersey / New York set holds nothing inside the New Jersey box
+    "usace-njny22": dict(LIDAR98, id=1, year="2022", name="USACE lidar", nodata=-3.4028234663852886e38,
+                         path="dem/USACE_NJ_NY_DEM_2022_9851/USACE_NJ_NY_DEM_2022_m9851_EPSG-6347.vrt",
+                         credit=USACE_NCMP % "2022 New Jersey and New York"),
+    # the set's other VRT (no "m") lists the same 50 tiles inside the New Jersey box
+    "coned-njde15": dict(LIDAR98, id=5, year="2015", name="USGS CoNED lidar", nodata=-3.4028234663852886e38,
+                         path="dem/NewJersey_Delaware_Coned_Topobathy_DEM_2015_5040/"
+                              "NewJersey_Delaware_Coned_Topobathy_DEM_2015_m5040_EPSG-26918.vrt",
+                         credit="USGS Coastal National Elevation Database (CoNED) 2015 New Jersey and Delaware "
+                                "topobathymetric model (NOAA Digital Coast)"),
+    # the set's 1-tile m6194_EPSG-26918 VRT is left out
+    "coned-ne16": dict(LIDAR98, id=6, year="2016", name="USGS CoNED lidar", nodata=-3.4028230607370965e38,
+                       path="dem/New_England_Coned_Topobathy_DEM_2016_6194/"
+                            "New_England_Coned_Topobathy_DEM_2016_m6194_EPSG-26918_1.vrt",
+                       credit="USGS Coastal National Elevation Database (CoNED) 2016 New England topobathymetric "
+                              "model (NOAA Digital Coast)"),
+    "ngs-lis23": dict(LIDAR98, id=1, year="2023", name="NOAA NGS lidar", nodata=-999999.0,
+                      path="dem/NGS_LongIslandSound_NY_Topobathy_2023_10274/"
+                           "NGS_LongIslandSound_NY_Topobathy_2023_m10274_EPSG-6347.vrt",
+                      credit="NOAA NGS 2023 Long Island Sound topobathy lidar (NOAA Digital Coast)"),
+    "ngs-maine22": dict(LIDAR98, id=1, year="2022", name="NOAA NGS lidar", nodata=-999999.0,
+                        path="dem/NGS_CoastalMaine_Topobathy_2022_10422/"
+                             "NGS_CoastalMaine_Topobathy_2022_m10422_EPSG-6348.vrt",
+                        credit="NOAA NGS 2022 coastal Maine topobathy lidar (NOAA Digital Coast)"),
+    # Florida's Space Coast, every depth. The post-Nicole 2022 set (10011) holds nothing inside the box: left out.
+    "usace-milton24": dict(LIDAR98_ALL, id=1, year="2024", name="USACE lidar", nodata=-3.4028234663852886e38,
+                           path="dem/USACE_Post_Milton_DEM_2024_10208/USACE_Post_Milton_DEM_2024_m10208_EPSG-6346.vrt",
+                           credit=USACE_NCMP % "2024 post-Milton Florida"),
+    "usace-irma17": dict(LIDAR98_ALL, id=2, year="2017", name="USACE lidar", nodata=-3.4028234663852886e38,
+                         path="dem/USACE_FL_Post_Irma_Topobathy_DEM_2017_8388/"
+                              "USACE_FL_Post_Irma_Topobathy_DEM_2017_m8388_EPSG-6318.vrt",
+                         credit=USACE_NCMP % "2017 post-Irma Florida"),
     "gebco": dict(kind="gebco", id=31, zmax=7, res_m=460, year="2026", offset=0.0,
                   name="GEBCO_2026 Grid", datum="mean sea level (approximate)",
                   licence="GEBCO licence: free to use with credit",
@@ -411,6 +495,35 @@ for _name, (_box, _level, _grid, _dems, _ex) in LAKE_BOXES.items():
                           exclude=list(_ex))
     REGIONS[_name + "-dem"] = dict(box=_box, sources=list(_dems), fill=[_grid], mhhw=_level, zmin=12, prio=12, ring=1,
                                    margin=72, cut=True, seed="lake", exclude=[e + "-dem" for e in _ex] + list(_ex))
+
+# The Lower 48's 1-m lidar regions (plan section 98, step 6): over the US base regions (prio 20 against their 10), each
+# cut to its box, reading only where its base region has published water (`presence`). `fill` = the base region's
+# sources, less any that read the same file as one of the region's surveys or lie outside its box.
+CA_FILL = ["cudem-us", "cudem-us-b", "bluetopo4", "bluetopo8", "bluetopo16"]
+LIDAR98_BOXES = {
+    # California: the four boxes tile us-ca-south (split at 119.0 W) and the coast of us-ca-north
+    "ca-s1": ((-119.0, 32.4, -116.9, 34.6), ["coned-socal16-l", "noaa-ca11b"], CA_FILL, "us-ca-south"),
+    "ca-s2": ((-121.0, 32.4, -119.0, 34.6), ["coned-central17-l", "coned-socal16-l", "noaa-ca11a", "noaa-ca11b"],
+              CA_FILL, "us-ca-south"),
+    "ca-c": ((-123.2, 34.6, -120.0, 38.3), ["coned-norcal20-l", "coned-central17-l", "noaa-ca11a"], CA_FILL,
+             "us-ca-north"),
+    "ca-n": ((-124.6, 38.3, -122.0, 42.0), ["coned-norcal20-l", "noaa-ca11a"], CA_FILL, "us-ca-north"),
+    # the key surf areas
+    "key-or": ((-124.10, 44.55, -123.90, 46.05), ["usace-or14-l", "usace-orwa10"], CA_FILL, "us-or-wa"),
+    "key-wa": ((-124.20, 46.80, -124.05, 46.95), ["usace-wa20", "usace-orwa10"], CA_FILL, "us-or-wa"),
+    "key-nc": ((-75.80, 35.20, -75.40, 36.20), ["ngs-vasc20", "usace-nc19", "usace-east18", "usace-east17"], US_EAST,
+               "us-va-nc"),
+    "key-nj": ((-74.35, 39.45, -73.95, 40.15), ["usace-njny22", "usace-east17", "coned-njde15"], US_EAST, "us-nj-ches"),
+    "key-ny-rock": ((-73.95, 40.55, -73.55, 40.62), ["usace-east17", "coned-ne16"], US_EAST, "us-sne-ny"),
+    "key-ny-mtk": ((-72.05, 40.98, -71.85, 41.10), ["ngs-lis23", "coned-ne16"], US_EAST, "us-sne-ny"),
+    "key-ri": ((-71.70, 41.35, -71.30, 41.50), ["usace-east18", "coned-ne16"], US_EAST, "us-sne-ny"),
+    "key-nh": ((-70.85, 42.85, -70.70, 43.05), ["ngs-maine22"], US_EAST, "us-me-nh"),
+    # Cape Canaveral, Cocoa Beach, Sebastian Inlet (inside us-fl-east), every depth
+    "key-fl-space": ((-80.70, 27.80, -80.30, 28.65), ["usace-milton24", "usace-irma17"], US_EAST, "us-fl-east"),
+}
+for _name, (_box, _srcs, _fill, _base) in LIDAR98_BOXES.items():
+    REGIONS[_name] = dict(box=_box, mhhw="grid", zmin=16, prio=20, ring=1, margin=72, cut=True, seed="sea",
+                          sources=list(_srcs), fill=list(_fill), presence=[_base])
 
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)

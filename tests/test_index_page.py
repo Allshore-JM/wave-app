@@ -1430,12 +1430,12 @@ def test_section_91_land_weather_on_the_page(client, monkeypatch):
     follows the flag."""
     src = open(os.path.join(A.app.root_path, "templates", "index.html"), encoding="utf-8").read()
     assert "var WX = {{ initial_state.land_weather|tojson }};" in src
-    assert "WX && station.indexOf('pt_') === 0 && ['ECMWF', 'ICON', 'AIFS', 'NWS'].indexOf(m) >= 0 ? m : 'GFS'" in src
+    assert "WX && station.indexOf('pt_') === 0 && ['ECMWF', 'ICON', 'AIFS', 'RRFS', 'NWS'].indexOf(m) >= 0 ? m : 'GFS'" in src
     assert r"if (/^\s*Weather\b/.test(m[1])) return null;" in src
     assert src.index(r"if (/^\s*Weather\b/.test(m[1]))") < src.index("if (/NWPS/.test(m[1]))")
     assert "landWeather: {{ initial_state.land_weather|tojson }}," in src
     b = client.get("/?station=51201").get_data(as_text=True)
-    for m in ("ECMWF", "ICON", "AIFS", "NWS"):
+    for m in ("ECMWF", "ICON", "AIFS", "RRFS", "NWS"):
         assert re.search(r'data-model="%s" aria-pressed="false" hidden' % m, b), m
         assert '<option value="%s"' % m not in b
     assert "var WX = false;" in b and initial(b)["land_weather"] is False

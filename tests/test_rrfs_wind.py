@@ -129,7 +129,7 @@ def test_point_cells_carry_every_field(bucket):
     v = cells[datetime(2026, 11, 17, 20)]
     assert v["tmp_k"] == pytest.approx(300.0) and v["dpt_k"] == pytest.approx(290.0)
     assert v["apcp_mm"] == pytest.approx(0.5) and v["type"] == 1 and v["kind"] == "cycle"
-    assert v["cloud"] is None                                                 # hourly cycles have no cloud
+    assert v["cloud"] == 40                                                   # an hourly cycle has none: the run's fills in
     assert cells[datetime(2026, 11, 17, 12)]["cloud"] == 40                   # the run's
 
 

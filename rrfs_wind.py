@@ -25,7 +25,7 @@ import threading
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # numpy and rrfs_grid load on the first POINT read only: importing the app must not load numpy (the web process pays
 # its ~25 MB only when somebody asks for a point; tests/test_point_forecast.py pins it). The stations need neither.
@@ -34,6 +34,10 @@ PREFIX = "rrfs/v1"
 USE = {"cycle": 3, "run": 2}               # sources a table uses (the job keeps cell files for exactly these)
 POINTER_TTL_S = 120
 POINTER_FAIL_TTL_S = 60
+POINTER_KEEP_S = 3600                      # a failed refresh keeps serving the last good pointer this long (G66 P2-4)
+STALE_H = {"cycle": 8, "run": 18}          # a source older than this past its cycle time is not used: a stalled job
+                                           # must never put day-old RRFS over a fresh GFS run (G66 P2-2). Normal ages:
+                                           # the newest cycle ~2.5-3.5 h, the newest run ~3.5-9.5 h.
 SOURCE_FAIL_TTL_S = 60
 POINTER_MAX = 256 * 1024
 INDEX_MAX = 256 * 1024
@@ -85,12 +89,26 @@ class _Lru:
             self.d.popitem(last=False)
 
 
+class Merged(dict):
+    """A merged {hour: ...} map; `degraded` = a source the table should have had was left out (a failed or
+    remembered-failed read), so the app does not cache the table for long (G66 P2-3)."""
+    degraded = False
+
+
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class RrfsWinds:
-    def __init__(self, root, get_bytes, get_range, clock=time.monotonic):
-        """root: () -> the public bucket's base URL ('' = none configured: everything answers empty)."""
-        self._root, self._get, self._range, self._clock = root, get_bytes, get_range, clock
+    def __init__(self, root, get_bytes, get_range, clock=time.monotonic, wall=_utcnow):
+        """root: () -> the public bucket's base URL ('' = none configured: everything answers empty). clock: monotonic
+        seconds (caches); wall: naive UTC now (the sources' ages)."""
+        self._root, self._get, self._range, self._clock, self._wall = root, get_bytes, get_range, clock, wall
         self._lock = threading.Lock()
-        self._pointer = None                       # (expires, doc or None)
+        self._ptr_doc = None                       # the last good pointer document
+        self._ptr_good = None                      # clock() when it was read
+        self._ptr_expires = 0.0                    # clock() until which no refresh is tried
+        self._ptr_busy = False                     # one refresh at a time (G66 P2-4)
         self._indexes = _Lru(LRU_INDEXES)          # key -> doc
         self._stations = _Lru(LRU_STATIONS)        # cycle -> (doc, bytes)
         self._cells = _Lru(LRU_CELLS)              # (cycle, grid, j, i) -> structured array
@@ -115,11 +133,33 @@ class RrfsWinds:
             return t is not None and self._clock() < t
 
     def pointer(self):
-        """The pointer document (cached POINTER_TTL_S; a failure remembered POINTER_FAIL_TTL_S), or None."""
+        """The pointer document, or None. Read again after POINTER_TTL_S by ONE request at a time (the others keep the
+        last good document meanwhile); a failed read is tried again after POINTER_FAIL_TTL_S and keeps the last good
+        document up to POINTER_KEEP_S (a blip in the bucket must not change every table's cache key: G66 P2-4)."""
         with self._lock:
-            if self._pointer and self._clock() < self._pointer[0]:
-                return self._pointer[1]
+            now = self._clock()
+            if now < self._ptr_expires:
+                return self._ptr_doc
+            if self._ptr_busy:
+                return self._ptr_doc if self._ptr_good is not None and now - self._ptr_good < POINTER_KEEP_S else None
+            self._ptr_busy = True
         url = self._url(f"{PREFIX}/latest.json")
+        doc = None
+        try:
+            doc = self._read_pointer(url) if url else None
+        finally:
+            with self._lock:
+                now = self._clock()
+                self._ptr_busy = False
+                if doc is not None:
+                    self._ptr_doc, self._ptr_good, self._ptr_expires = doc, now, now + POINTER_TTL_S
+                else:
+                    self._ptr_expires = now + POINTER_FAIL_TTL_S
+                    if self._ptr_good is None or now - self._ptr_good >= POINTER_KEEP_S:
+                        self._ptr_doc = None
+                return self._ptr_doc
+
+    def _read_pointer(self, url):
         doc = None
         if url:
             try:
@@ -138,19 +178,21 @@ class RrfsWinds:
             else:
                 with self._lock:
                     self.stats["pointer_ok"] += 1
-        with self._lock:
-            self._pointer = (self._clock() + (POINTER_TTL_S if doc else POINTER_FAIL_TTL_S), doc)
         return doc
 
     def sources(self, need_cells=False):
-        """The sources a table uses, newest first: the newest USE[kind] of each kind (with cells when asked)."""
+        """The sources a table uses, newest first: the newest USE[kind] of each kind (with cells when asked), none
+        older than STALE_H[kind] hours past its cycle time."""
         doc = self.pointer()
         if not doc:
             return []
+        now = self._wall()
         seen = {"run": 0, "cycle": 0}
         out = []
         for s in sorted(doc["sources"], key=lambda s: s["cycle"], reverse=True):
             if need_cells and not s.get("cells"):
+                continue
+            if (now - cycle_dt(s["cycle"])).total_seconds() > STALE_H[s["kind"]] * 3600:
                 continue
             seen[s["kind"]] += 1
             if seen[s["kind"]] <= USE[s["kind"]]:
@@ -160,6 +202,14 @@ class RrfsWinds:
     def newest(self):
         srcs = self.sources()
         return srcs[0]["cycle"] if srcs else None
+
+    def version(self):
+        """What the tables' cache keys carry: the pointer's publish time and the sources in use. A run published after
+        a newer hourly cycle changes it (G66 P2-5); so does a source ageing out."""
+        doc = self.pointer()
+        if not doc:
+            return ""
+        return f"{doc.get('published_utc', '')}|" + ",".join(s["cycle"] for s in self.sources())
 
     def _index(self, key, check):
         with self._lock:
@@ -196,24 +246,27 @@ class RrfsWinds:
         return doc, body
 
     def station(self, sid):
-        """{UTC hour: (speed, dir | None, gust | None, label)}, newest source first per hour; {} when none."""
-        out = {}
+        """{UTC hour: (speed, dir | None, gust | None, label)}, newest source first per hour; {} when none
+        (a Merged: .degraded when a source was left out)."""
+        out = Merged()
         for src in self.sources():
             key = ("stations", src["cycle"])
             if self._failing(key):
+                out.degraded = True
                 continue
             try:
                 doc, body = self._station_table(src)
+                ent = doc["stations"].get(sid)
+                if not ent:
+                    continue
+                slot, steps, rb = ent[0], doc["steps"], doc["record_bytes"]
+                flat = struct.unpack(f"<{3 * len(steps)}H", body[slot * rb:(slot + 1) * rb])   # inside: G66 P3-3
             except Exception as exc:                 # noqa: BLE001
                 self._fail(key, exc)
+                out.degraded = True
                 continue
             with self._lock:
                 self.stats["reads_ok"] += 1
-            ent = doc["stations"].get(sid)
-            if not ent:
-                continue
-            slot, steps, rb = ent[0], doc["steps"], doc["record_bytes"]
-            flat = struct.unpack(f"<{3 * len(steps)}H", body[slot * rb:(slot + 1) * rb])
             base = cycle_dt(src["cycle"])
             lab = label(src["cycle"])
             for h, spd, d, gu in zip(steps, flat[0::3], flat[1::3], flat[2::3]):
@@ -264,8 +317,15 @@ class RrfsWinds:
         if hit is None:
             return {}
         grid, j, i = hit
-        srcs = [s for s in self.sources(need_cells=True) if grid in (s.get("cells") or {})
-                and not self._failing(("cells", s["cycle"], grid))]
+        out = Merged()
+        srcs = []
+        for s in self.sources(need_cells=True):
+            if grid not in (s.get("cells") or {}):
+                continue
+            if self._failing(("cells", s["cycle"], grid)):
+                out.degraded = True
+                continue
+            srcs.append(s)
 
         def read(src):
             try:
@@ -274,15 +334,21 @@ class RrfsWinds:
                 self._fail(("cells", src["cycle"], grid), exc)
                 return None
 
-        # the sources side by side (each a ranged GET straight to R2, ~0.3-1.3 s): a point waits for the slowest only
-        if len(srcs) > 1:
-            with ThreadPoolExecutor(max_workers=min(len(srcs), READ_WORKERS)) as pool:
-                series = list(pool.map(read, srcs))
+        # the sources side by side (each a ranged GET straight to R2, ~0.3-1.3 s): a point waits for the slowest only;
+        # the ones already held need no thread (G66 P3-5)
+        with self._lock:
+            series = [self._cells.get((s["cycle"], grid, j, i)) for s in srcs]
+        miss = [k for k, v in enumerate(series) if v is None]
+        if len(miss) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(miss), READ_WORKERS)) as pool:
+                for k, got in zip(miss, pool.map(read, [srcs[k] for k in miss])):
+                    series[k] = got
         else:
-            series = [read(s) for s in srcs]
-        out = {}
+            for k in miss:
+                series[k] = read(srcs[k])
         for src, got in zip(srcs, series):
             if got is None:
+                out.degraded = True
                 continue
             steps, arr = got
             with self._lock:
@@ -294,8 +360,14 @@ class RrfsWinds:
                     continue
                 t = base + timedelta(hours=int(h))
                 if t in out:
-                    if out[t]["cloud"] is None and r["cloud"] != MISSING8:
-                        out[t]["cloud"] = int(r["cloud"])         # an hourly cycle's hour: the run's cloud
+                    # an hour the newer source leaves blank, the older one fills: an hourly cycle has no cloud, a run's
+                    # f000 no precipitation or type (G66 P2-1: the 24-h totals were blank for ~20 rows)
+                    o = out[t]
+                    if o["cloud"] is None and r["cloud"] != MISSING8:
+                        o["cloud"] = int(r["cloud"])
+                    if o["apcp_mm"] is None and r["apcp"] != MISSING:
+                        o["apcp_mm"] = r["apcp"] / 100
+                        o["type"] = None if r["type"] == MISSING8 else int(r["type"])
                     continue
                 u = lambda v, s: None if v == MISSING else v / s       # noqa: E731
                 out[t] = {"spd": r["spd"] / 100, "dir": None if r["dir"] == MISSING else int(round(r["dir"] / 10)) % 360,
@@ -307,11 +379,14 @@ class RrfsWinds:
 
     def point(self, lat, lon):
         """{UTC hour: (speed, dir | None, gust | None, label)} at a point inside a fine grid; {} outside."""
-        return {t: (v["spd"], v["dir"], v["gust"], v["label"]) for t, v in self.point_cells(lat, lon).items()}
+        cells = self.point_cells(lat, lon)
+        out = Merged((t, (v["spd"], v["dir"], v["gust"], v["label"])) for t, v in cells.items())
+        out.degraded = getattr(cells, "degraded", False)
+        return out
 
     def health(self):
         with self._lock:
-            ptr = self._pointer[1] if self._pointer else None
+            ptr = self._ptr_doc
             return dict(self.stats, newest=(max((s["cycle"] for s in ptr["sources"]), default=None) if ptr else None),
                         pointer_published=(ptr or {}).get("published_utc"), cached_cells=len(self._cells.d),
                         cached_stations=len(self._stations.d))

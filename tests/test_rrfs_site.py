@@ -44,6 +44,9 @@ class FakeRrfs:
     def newest(self):
         return "2026100113"
 
+    def version(self):
+        return "2026-10-01T15:50:00Z|2026100113,2026100112"
+
     def health(self):
         return {"pointer_ok": 1}
 
@@ -134,7 +137,9 @@ def test_summary_shows_peak_gusts(on):
     ann = A.sky.annotate_rows(times, 21.67, -158.12, "Pacific/Honolulu")
     dates = sorted({t.date() for t in times if t is not None})
     html = A.build_summary_html(rows, ann, A.sky.day_summary(21.67, -158.12, "Pacific/Honolulu", dates), "US")
-    assert "gusts 31" in html                                               # 14.0 m/s, the day's peak, in mph
+    # the first day's daylight hours are all RRFS 13Z (gust 7.5 m/s = 17 mph); the second day hands over to GFS, so it
+    # shows no gusts (a gust lower than the GFS hours' speeds would mislead: G66 P3-2)
+    assert "gusts 17" in html and html.count("gusts") == 1
 
 
 def test_point_rows_extra_wind():
@@ -158,7 +163,7 @@ def test_point_rows_extra_wind():
 
 
 def test_cache_keys(on, monkeypatch):
-    assert A._bull_key("51201", "UTC") == ("51201", "UTC", "GFS", "2026100113")
+    assert A._bull_key("51201", "UTC") == ("51201", "UTC", "GFS", "2026-10-01T15:50:00Z|2026100113,2026100112")
     monkeypatch.delenv("RRFS_WIND")
     assert A._bull_key("51201", "UTC") == ("51201", "UTC", "GFS")
 
@@ -282,3 +287,40 @@ def test_browser_open_meteo_failures_are_counted(monkeypatch):
     assert c.get("/api/weather-fail?reason=timeout").status_code == 405
     w = c.get("/healthz").get_json()["weather"]
     assert w["browser_om_fails"] == {"timeout": 2, "network": 1, "http-503": 1}
+
+
+# --------------------------------------------------------------------------------------------- G66 review fixes
+
+def test_a_degraded_build_is_cached_only_briefly(on, monkeypatch):
+    class Degraded(FakeRrfs):
+        def station(self, sid):
+            m = rrfs_wind.Merged(super().station(sid))
+            m.degraded = True
+            return m
+
+    def build():
+        A._with_rrfs_station("51201", _gfs_map())
+        return ("c", "l", None, [], "UTC", None)
+
+    monkeypatch.setattr(A, "RRFS", Degraded())
+    key = ("TEST", "UTC", "GFS", "deg")
+    A._forecast_singleflight(key, build)
+    assert A._FORECAST_CACHE[key]["ttl"] == A._WIND_NEG_TTL                 # G66 P2-3
+    monkeypatch.setattr(A, "RRFS", FakeRrfs())
+    key2 = ("TEST", "UTC", "GFS", "ok")
+    A._forecast_singleflight(key2, build)
+    assert A._FORECAST_CACHE[key2]["ttl"] != A._WIND_NEG_TTL
+    for k in (key, key2):
+        A._FORECAST_CACHE.pop(k, None)
+
+
+def test_weather_fail_logs_once_a_minute_per_reason(monkeypatch, caplog):
+    monkeypatch.setattr(A, "_OM_FAILS", {})
+    monkeypatch.setattr(A, "_OM_FAILS_LOGGED", {})
+    c = A.app.test_client()
+    with caplog.at_level("INFO", logger="waveapp"):
+        for _ in range(5):
+            c.post("/api/weather-fail?reason=timeout")
+        c.post("/api/weather-fail?reason=network")
+    lines = [r.getMessage() for r in caplog.records if "Open-Meteo failed in a browser" in r.getMessage()]
+    assert len(lines) == 2 and A._OM_FAILS == {"timeout": 5, "network": 1}  # G66 P3-4

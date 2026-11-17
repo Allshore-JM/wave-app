@@ -932,9 +932,24 @@ def _rrfs_wind_on() -> bool:
 
 
 def _rrfs_key() -> tuple:
-    """What the tables' cache keys gain with RRFS on: the newest RRFS source, so a new hourly cycle rebuilds a table
-    at its next request instead of after the cache's 30 min. () with RRFS off (the keys as before)."""
-    return (RRFS.newest() or "",) if _rrfs_wind_on() else ()
+    """What the tables' cache keys gain with RRFS on: the RRFS pointer's version (its publish time and the sources in
+    use), so a new hourly cycle or a late run rebuilds a table at its next request instead of after the cache's 30 min
+    (G66 P2-5). () with RRFS off (the keys as before)."""
+    return (RRFS.version(),) if _rrfs_wind_on() else ()
+
+
+# A table built while an RRFS source could not be read is not cached for long (G66 P2-3): the readers set this on the
+# building thread; _forecast_singleflight and the point build read it.
+_RRFS_BUILD = threading.local()
+
+
+def _rrfs_mark(degraded):
+    if degraded:
+        _RRFS_BUILD.degraded = True
+
+
+def _rrfs_degraded_build():
+    return getattr(_RRFS_BUILD, "degraded", False)
 
 
 def _with_rrfs_station(station_id, wind_map):
@@ -947,15 +962,20 @@ def _with_rrfs_station(station_id, wind_map):
     except Exception as exc:                                  # noqa: BLE001
         logger.warning("RRFS station %s: %s", station_id, exc)
         r = {}
+        _rrfs_mark(True)
+    _rrfs_mark(getattr(r, "degraded", False))
     return rrfs_wind.merge(wind_map, r) if r else wind_map
 
 
 def _rrfs_point(lat, lon):
     try:
-        return RRFS.point(lat, lon)
+        r = RRFS.point(lat, lon)
     except Exception as exc:                                  # noqa: BLE001
         logger.warning("RRFS point %.3f,%.3f: %s", lat, lon, exc)
+        _rrfs_mark(True)
         return {}
+    _rrfs_mark(getattr(r, "degraded", False))
+    return r
 
 # ---- Weather at land forecast points (plan section 91): Open-Meteo (GFS, ECMWF IFS, DWD ICON, ECMWF AIFS) and the NWS
 # grid forecast at US points. LAND_WEATHER=1 turns it on (unset: a land click is refused as before). Open-Meteo's
@@ -1038,6 +1058,7 @@ WEATHER = weather_sources.WeatherService(_weather_fetch)
 # points fail to load): counted by reason, never the request (it is the visitor's). POST /api/weather-fail?reason=...
 OM_FAIL_REASONS = re.compile(r"^(timeout|network|empty|size|http-[1-5][0-9][0-9])$")
 _OM_FAILS = {}
+_OM_FAILS_LOGGED = {}
 _OM_FAILS_LOCK = threading.Lock()
 
 
@@ -1132,11 +1153,14 @@ def point_forecast_data(station_id: str, target_tz_name: str | None = None):
         if not _POINT_BUILDS.acquire(timeout=max(0.0, deadline - time.monotonic())):
             return _point_failure(POINT_BUSY)
         try:
+            _RRFS_BUILD.degraded = False
             data = build()
         except point_forecast.PointError as exc:
             return _point_failure(str(exc))
         finally:
             _POINT_BUILDS.release()
+        if _rrfs_degraded_build():                             # an RRFS source left out: built again next time (G66 P2-3)
+            return data
         if not data[0][-1] and POINTS.current_run() == man["run"]:   # only clean results, only of the run in hand
             with _CACHE_LOCK:
                 for old in [k for k in _POINT_CACHE if k[0] < man["run"]]:
@@ -2679,12 +2703,16 @@ def _forecast_singleflight(key, build, ttl=None):
         if data is not None:
             return data
         try:
+            _RRFS_BUILD.degraded = False
             data = build()
-            # data[-1] is the error field; only cache clean results.
+            # data[-1] is the error field; only cache clean results. A table missing an RRFS source it should have
+            # had (a failed read) is kept only briefly, like a table with a wind gap (G66 P2-3).
             if data and not data[-1]:
+                life = ttl or _forecast_entry_ttl(data)
+                if _rrfs_degraded_build():
+                    life = min(life, _WIND_NEG_TTL)
                 with _CACHE_LOCK:
-                    _FORECAST_CACHE[key] = {"ts": time.time(), "data": data,
-                                            "ttl": ttl or _forecast_entry_ttl(data)}
+                    _FORECAST_CACHE[key] = {"ts": time.time(), "data": data, "ttl": life}
                     _evict_oldest(_FORECAST_CACHE, _FORECAST_CACHE_MAX)
             return data
         finally:
@@ -4115,7 +4143,7 @@ def parse_swan(station_id: str, target_tz_name: str | None = None):
             with _CACHE_LOCK:
                 entry = _FORECAST_CACHE.get(key)
                 if entry is not None:
-                    _FORECAST_CACHE[(station_id, target_tz_name or "", "SWAN", now_held)] = entry
+                    _FORECAST_CACHE[(station_id, target_tz_name or "", "SWAN", now_held) + _rrfs_key()] = entry   # G66 P3-1
     return data
 
 
@@ -4745,8 +4773,8 @@ def summary_days(rows, ann, days, unit):
             day["wind"] = {"min": int(round(min(sp))), "max": int(round(max(sp))),
                            "dir": _circular_mean([r[21] for r in ws], [1.0] * len(ws))}
             gu = [to_w(r[22]) for r in ws if len(r) >= 25 and r[22] is not None]     # RRFS hours (plan section 99)
-            if gu:
-                day["wind"]["gust"] = int(round(max(gu)))
+            if gu and len(gu) == len(ws):                  # only a day with a gust at every wind hour (G66 P3-2: a
+                day["wind"]["gust"] = int(round(max(gu)))  # handover day's GFS hours have none)
         out.append(day)
     return out
 
@@ -5434,10 +5462,15 @@ def api_weather_fail():
     reason = (request.args.get("reason") or "").strip().lower()[:16]
     if not OM_FAIL_REASONS.match(reason):
         return ("", 400)
+    now = time.monotonic()
     with _OM_FAILS_LOCK:
         if reason in _OM_FAILS or len(_OM_FAILS) < 64:
             _OM_FAILS[reason] = _OM_FAILS.get(reason, 0) + 1
-    logger.info("Open-Meteo failed in a browser: %s", reason)
+        log = now - _OM_FAILS_LOGGED.get(reason, -1e9) >= 60       # one log line per reason a minute (G66 P3-4)
+        if log:
+            _OM_FAILS_LOGGED[reason] = now
+    if log:
+        logger.info("Open-Meteo failed in a browser: %s (%d so far)", reason, _OM_FAILS.get(reason, 0))
     return ("", 204)
 
 

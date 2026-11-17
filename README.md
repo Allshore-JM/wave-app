@@ -1770,6 +1770,30 @@ choice, the imagery under it). Unset, the page is unchanged.
   on three v2 tiles built locally by the builder (`tests/fixtures/bathy/v2`: the land mark, the 1/3" fill, the apron
   across tile edges, the ready rule, the GEBCO hold, the contour seam, the store's cap / retry / stall / Off).
 
+### NOAA RRFS (plan section 99, the job)
+
+`tools/model_frames/rrfs.py`, workflow `model-rrfs.yml` (dispatched every 10 minutes by the trigger Worker; the eleventh
+entry of `GH_WORKFLOW`, sharing minute 0 with `model-frames.yml`). NOAA's RRFS has run operationally since 2026-11-03:
+every hour a cycle, the four at 00/06/12/18Z to +84 h (`2dfld.<res>.fNNN.<grid>`), the other twenty to +18 h as 15-min
+"subh" files (`2dfld.<res>.subh.fNNN.<grid>`, the whole-hour records used). The job reads NOAA's AWS copy
+(`noaa-rrfs-ops-pds`) by byte range (each step's `.idx`, adjacent records in one read, HTTP 206 with the exact length),
+for the four fine grids pinned in `rrfs_grid.py` (Hawaii and Puerto Rico Mercator 2.5 km, CONUS Lambert 3 km, Alaska
+polar stereographic 3 km; a changed grid fails loud). RRFS winds are grid-relative: CONUS and Alaska are turned to true
+north. Each tick builds the newest complete hourly cycle and the newest complete run (complete = the last step's `.idx`
+on all four grids) when newer than what is live, and publishes under `rrfs/v1/`:
+
+| Object | Contents |
+|---|---|
+| `<CYCLE>/stations.bin` + `.json` | the listed and NWPS stations inside a grid (about 340): per step speed (0.01 m/s), direction FROM (0.1 deg), gust (0.01 m/s), uint16, 65535 missing |
+| `<CYCLE>/<grid>.bin` + `.json` | every cell of the grid, cell-major (cell = j * Nx + i, row 0 south): per step 14 B = speed, direction, gust, temperature and dew point (0.1 K), the hour's precipitation (0.01 mm), cloud % (255 in hourly cycles: they carry none), type (0 none under 0.1 mm, 1 rain, 2 snow, 3 mix, 4 ice, 5 thunder; 255 unknown). The site reads one cell with one ranged GET. |
+| `latest.json` | the pointer, written last: the kept sources newest first (8 hourly cycles + 2 runs; cell files only for the newest 3 cycles + 2 runs) |
+
+Sizes: an 84-h run ~4.7 GB of cell files (CONUS 2.3 GB, Alaska 2.2 GB), an hourly cycle ~1 GB; ~12.5 GB kept. Exit
+codes as the other publishers: 0 published or nothing new, 3 not complete / not served / over the 25-min budget (the
+next tick retries), 1 a failure (`failed/<CYCLE>.json`, retried after 30 min, at most 6 times) or the stale alarm (no
+new source for 6 h). Manual: `python tools/model_frames/rrfs.py --dry-run --cycle 2026111713 --grids hi --out DIR`.
+Fixtures: `tests/capture_rrfs_fixtures.py`; the decode tests need eccodes (skipped in the tests CI, run locally).
+
 ## GFS bulletins and winds: where they come from (plan sections 40 and 53)
 
 The forecast table of a GFS station is NOAA's GFS-Wave station bulletin (`gfswave.<id>.bull`) of the newest run.

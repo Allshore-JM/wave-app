@@ -617,7 +617,7 @@ def test_trigger_worker_config_and_unit_tests():
     assert re.search(r'"crons":\s*\["\* \* \* \* \*"\]', cfg)
     for k, v in (("GH_PERIOD", "10"), ("GH_MINUTE", "model-radar.yml=5"), ("GH_MAX_ACTIVE", "12")):
         assert f'"{k}": "{v}"' in cfg, k
-    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml"), ("GH_REF", "Live-Buoy-Update")):
+    for k, v in (("GH_REPO", "Allshore-JM/wave-app"), ("GH_WORKFLOW", "model-frames.yml,model-points.yml,model-ecmwf.yml,model-glwu.yml,model-gfswinds.yml,model-gfsspec.yml,model-nwps.yml,model-alt.yml,model-sarswell.yml,model-radar.yml,model-rrfs.yml"), ("GH_REF", "Live-Buoy-Update")):
         assert f'"{k}": "{v}"' in cfg, k
     js = open(os.path.join(trigger, "worker.js"), encoding="utf-8").read()
     assert "async fetch" not in js and "GITHUB_TOKEN" in js and "/dispatches" in js

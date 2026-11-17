@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 import tls_check  # noqa: E402
 
 WF = os.path.join(ROOT, ".github", "workflows")
-PUBLISHERS = ("frames", "ecmwf", "points", "sst", "glwu", "gfswinds", "gfsspec", "nwps", "radar")
+PUBLISHERS = ("frames", "ecmwf", "points", "sst", "glwu", "gfswinds", "gfsspec", "nwps", "radar", "rrfs")
 PIN = "2026.10.23"
 
 
@@ -192,3 +192,10 @@ def test_no_workflow_downloads_or_installs_around_the_pins():
                              text), n
     # coast-build's three downloads + bathy-build's GEBCO zip (plan section 93b); a new one must be looked at
     assert curls == 4
+
+
+def test_the_real_hosts_include_the_rrfs_bucket():
+    sys.path.insert(0, os.path.join(ROOT, "tools", "model_frames"))
+    sys.path.insert(0, ROOT)
+    import rrfs                                                           # plan section 99
+    assert rrfs.S3.split("/")[2] in tls_check.REAL

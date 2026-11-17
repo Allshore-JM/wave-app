@@ -17,7 +17,11 @@ sys.path.insert(0, ROOT)
 import publish as P  # noqa: E402
 import rrfs as J  # noqa: E402
 
-ec = pytest.importorskip("eccodes")
+try:
+    import eccodes as ec                                         # the laptop and the publisher env have it; the tests CI not
+except ImportError:                                              # (pragma: no cover)
+    ec = None
+needs_ec = pytest.mark.skipif(ec is None, reason="eccodes not installed (the model-frames-tests CI installs none)")
 
 FIX = os.path.join(ROOT, "tests", "fixtures", "rrfs")
 RUN = datetime(2026, 11, 17, 12, tzinfo=timezone.utc)
@@ -131,6 +135,7 @@ def test_wanted_records_per_kind_and_step():
     assert "tcdc" not in cyc6 and "ltng" not in cyc6 and "apcp" not in cyc6
 
 
+@needs_ec
 def test_select_records_on_the_real_idx_files():
     for cyc, name in ((RUN, "hi_f006.idx"), (CYC, "hi_subh_t13z_f006.idx")):
         rows = J.parse_idx(_read(name).decode("ascii"))
@@ -164,6 +169,7 @@ def test_ranges_merge_only_adjacent_records():
     assert J.ranges_of(recs) == [(100, 299, ["u", "v"]), (400, 499, ["g", "t"]), (1000, 1009, ["x"])]
 
 
+@needs_ec
 def test_split_grib_exact_messages():
     a, b = _read("hi_f006_UGRD.grib2"), _read("hi_f006_VGRD.grib2")
     assert J.split_grib(a + b, ["u", "v"]) == {"u": a, "v": b}
@@ -204,6 +210,7 @@ def _build(cyc, tmp_path):
     return files, docs
 
 
+@needs_ec
 def test_run_products_equal_an_independent_eccodes_read(tmp_path):
     files, docs = _build(RUN, tmp_path)
     cyc = "2026111712"
@@ -230,6 +237,7 @@ def test_run_products_equal_an_independent_eccodes_read(tmp_path):
         assert r["type"] == want
 
 
+@needs_ec
 def test_station_product_equals_the_cell(tmp_path):
     files, docs = _build(RUN, tmp_path)
     st = docs[J.stations_index_key("2026111712")]
@@ -242,6 +250,7 @@ def test_station_product_equals_the_cell(tmp_path):
     assert list(rec) == [cell["spd"], cell["dir"], cell["gust"]]
 
 
+@needs_ec
 def test_hourly_cycle_product_has_no_cloud_and_the_total_as_its_first_hour(tmp_path):
     files, docs = _build(CYC, tmp_path)
     raw = np.fromfile(files[J.cells_key("2026111713", "hi")], dtype=J.CELL_DTYPE)
@@ -286,6 +295,7 @@ def test_rotation_is_applied_for_lambert():
     assert rec["dir"][0] / 10 == pytest.approx((180 + a) % 360, abs=0.06)
 
 
+@needs_ec
 def test_geometry_change_fails_the_decode():
     """Puerto Rico's record read as Hawaii's: the geometry pin refuses it (NOAA changing a grid fails loud)."""
     with pytest.raises(J.G.GeometryError):
@@ -303,6 +313,7 @@ def test_keep_sources_rule():
     assert [s["cycle"][-2:] for s in kept if s["cells"]] == ["23", "22", "21", "18", "12"]
 
 
+@needs_ec
 def test_main_publishes_cycle_and_run_pointer_last_and_prunes(tmp_path, monkeypatch):
     st = store()
 
@@ -375,3 +386,33 @@ def test_dry_run_flags():
     assert J.main(["--out", "x"], store=store(), log=lambda s: None) == 2
     assert J.main(["--dry-run", "--grids", "mars"], log=lambda s: None) == 2
     assert J.main(["--dry-run", "--cycle", "2026"], log=lambda s: None) == 2
+
+
+# ------------------------------------------------------------------------------------------- workflow and trigger pins
+
+def _text(*parts):
+    with open(os.path.join(ROOT, *parts), encoding="utf-8") as f:
+        return f.read()
+
+
+def test_workflow_pins():
+    wf = _text(".github", "workflows", "model-rrfs.yml")
+    glwu = _text(".github", "workflows", "model-glwu.yml")
+    env = lambda s: s[s.index("create-args:"):s.index("cache-environment")]      # noqa: E731
+    assert env(wf) == env(glwu)                                    # the pinned env that decodes the RRFS grids
+    assert "group: model-rrfs" in wf and "cancel-in-progress: false" in wf and "timeout-minutes: 40" in wf
+    assert 'cron: "*/10 * * * *"' in wf and "tools/model_frames/rrfs.py" in wf
+    assert '[ "$rc" -eq 3 ]' in wf and 'ARGS+=(--grids "$GRIDS" --dry-run)' in wf
+    assert "micromamba-releases/releases/download/2.10.0-0/" in wf
+    assert J.BUILD_BUDGET_S < 40 * 60
+
+
+def test_trigger_keepalive_and_tests_paths():
+    assert '"GH_WORKFLOW": "' in _text("tools", "model_frames", "trigger", "wrangler.jsonc")
+    assert ",model-rrfs.yml\"" in _text("tools", "model_frames", "trigger", "wrangler.jsonc")
+    assert 'gh workflow enable model-rrfs.yml --repo "$GITHUB_REPOSITORY"' in _text(
+        ".github", "workflows", "model-frames-keepalive.yml")
+    tests = _text(".github", "workflows", "model-frames-tests.yml")
+    assert tests.count('".github/workflows/model-rrfs.yml"') == 2 and tests.count('"tests/fixtures/rrfs/**"') == 2
+    assert tests.count('"rrfs_grid.py"') == 2
+    assert P.RRFS_PREFIX == "rrfs/v1"

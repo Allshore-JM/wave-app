@@ -1824,6 +1824,12 @@ RRFS (between AIFS and NWS). The server builds it from the same cell series (`RR
 lightning, ice, mix, snow, rain), wind, gust, direction. No Open-Meteo request: the browser fetches nothing and posts
 nothing for this tab. The cycle line names the sources ("Weather · NOAA RRFS 20Z to Wed 11/18 4:00 AM, then RRFS 18Z").
 
+**The verification gate** (`tools/rrfs_verify.py --out DIR`): RRFS station winds (every kept source, up to 3 days) and
+the site's GFS station winds (8 runs) against NDBC real-time observations (buoys scaled from ~4 m to 10 m by the
+over-sea power law, x1.103; `--no-height` turns it off), paired by valid hour within 10 min, per grid and lead band on
+the station-hours both models have. `report.md` / `report.json`: speed MAE / bias / RMSE, direction MAE (>= 3 m/s),
+RRFS gust MAE / bias, and the gate per grid (>= 200 pairs and RRFS MAE <= GFS = pass; worse = the owner's call).
+
 **Open-Meteo retry** (UI 1.31.0): the browser's Open-Meteo request for the other weather tabs is asked once more after
 2 s on a network error, a 5xx or the 20-s deadline (never on a 429, the visitor's own limit). A failure that stands
 is reported by reason only (`POST /api/weather-fail?reason=timeout|network|empty|size|http-NNN`), counted in

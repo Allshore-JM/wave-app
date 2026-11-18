@@ -122,7 +122,11 @@ REGIONS = {
 }
 MAX_REGION_NODES = 1 << 20
 FRAME_FIELDS = ("wind", "wdir")                  # a later RRFS layer (e.g. precipitation) is a new name here + frames
-FRAME_DEFS = {n: dict(E.FIELDS[n], resolutions=("full",)) for n in FRAME_FIELDS}
+# The direction at HALF resolution (every second node of the region grid, as the GFS frames' wdir): the particles need no
+# finer, and the browser decodes a quarter of the pixels (plan section 99 D2 perf gate: the full-resolution direction
+# frames were half the heap churn at shark speed). The speed (the colours) keeps the region's full grid.
+FRAME_RES = {"wind": "full", "wdir": "half"}
+FRAME_DEFS = {n: dict(E.FIELDS[n], resolutions=(FRAME_RES[n],)) for n in FRAME_FIELDS}
 FRAME_MAX_BYTES = 2 * 1024 * 1024                # the browser decodes nothing bigger (overlay.js MAX_FRAME_BYTES)
 FRAME_WORKERS = 4                                # PNG encoders beside the decoding (Pillow / zlib release the GIL)
 UPLOAD_WORKERS = 8
@@ -497,6 +501,13 @@ def region_grid(region):
             "dlon": r["dlon"], "registration": "center", "lon_periodic": False}
 
 
+def region_grid_half(region):
+    """The half-resolution grid (every second node from the first, both ways: the same lat0 / lon0, twice the step)."""
+    r = REGIONS[region]
+    return {"cols": (r["cols"] + 1) // 2, "rows": (r["rows"] + 1) // 2, "lat0": r["lat0"], "lon0": r["lon0"],
+            "dlat": round(2 * r["dlat"], 9), "dlon": round(2 * r["dlon"], 9), "registration": "center", "lon_periodic": False}
+
+
 def _interior(grid, lat, lon):
     """(served, flat) of rrfs_grid.cell() for arrays: served = the nearest node is an interior node of `grid`; flat =
     its index j * Nx + i (0 where not served)."""
@@ -574,7 +585,9 @@ def region_values(region, rec):
 
 
 def encode_region_frame(values, field):
-    """PNG bytes of one region frame (encode.ENCODING)."""
+    """PNG bytes of one region frame (encode.ENCODING); a half-resolution field takes every second node (region_grid_half)."""
+    if FRAME_RES[field] == "half":
+        values = np.ascontiguousarray(np.asarray(values)[::2, ::2])
     q = E.quantize_circular(values) if FRAME_DEFS[field].get("circular") else \
         E.quantize(values, FRAME_DEFS[field]["lo"], FRAME_DEFS[field]["hi"])
     return E.to_png(q)
@@ -777,8 +790,9 @@ def build(cycle_dt, work, stations_coords, deadline, get=http_get, log=print, gr
 
 
 def frame_ranges():
-    """{field: [lo, hi]} of the frames' encoding (a manifest only pairs sources encoded alike)."""
-    return {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"]] for f in FRAME_FIELDS}
+    """{field: [lo, hi, resolution]} of the frames' encoding (a manifest only pairs sources encoded alike: the first
+    sources were published with a full-resolution direction and are never paired with today's)."""
+    return {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"], FRAME_RES[f]] for f in FRAME_FIELDS}
 
 
 def frameset(cycle_dt, frames, log=print):
@@ -984,7 +998,8 @@ def frames_manifest(pointer, now):
     return {
         "schema": FRAMES_SCHEMA, "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC, "complete": True,
         "run": top["cycle"], "run_utc": _iso(run_dt), "model": FRAMES_MODEL,
-        "regions": {r: {"grid": region_grid(r), "cover": region_cover(r), "fields": {f: FRAME_DEFS[f] for f in sorted(fs)}}
+        "regions": {r: {"grid": region_grid(r), "grid_half": region_grid_half(r), "cover": region_cover(r),
+                        "fields": {f: FRAME_DEFS[f] for f in sorted(fs)}}
                     for r, fs in sorted(regions.items())},
         "sources": [{"cycle": srcs[k][0]["cycle"], "kind": srcs[k][0]["kind"]} for k in used],
         "frames": frames,

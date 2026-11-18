@@ -136,8 +136,9 @@ def test_frame_encoding_is_the_gfs_frames():
     assert q.dtype == np.uint8 and q.shape == (2, 3) and q[0, 2] == 0 and q[1, 2] == 255
     back = E.dequantize(q, lo, hi)
     assert np.nanmax(np.abs(back[:, :2] - vals[:, :2])) <= E.quantum(lo, hi) / 2 + 1e-9
-    d = _png(J.encode_region_frame(np.array([[0.0, 359.9, 180.0, np.nan]]), "wdir"))
-    assert list(d[0]) == [1, 1, 128, 0]                           # circular: 0 and 360 share code 1
+    d = _png(J.encode_region_frame(np.array([[0.0, 5.0, 359.9, 5.0, 180.0, 5.0, np.nan], [9.0] * 7]), "wdir"))
+    assert d.shape == (1, 4) and list(d[0]) == [1, 1, 128, 0]      # half: every second node; circular: 0 = 360 = code 1
+    assert J.region_grid_half("hi")["cols"] == (J.region_grid("hi")["cols"] + 1) // 2 and J.region_grid_half("ak")["dlon"] == 0.14
 
 
 @needs_ec
@@ -149,7 +150,8 @@ def test_hawaii_run_frames_equal_an_independent_eccodes_read(tmp_path):
     g = J.region_grid("hi")
     q = _png(open(files[J.frame_key(cyc, "hi", "wind", 6)], "rb").read())
     qd = _png(open(files[J.frame_key(cyc, "hi", "wdir", 6)], "rb").read())
-    assert q.shape == qd.shape == (g["rows"], g["cols"])
+    gh = J.region_grid_half("hi")
+    assert q.shape == (g["rows"], g["cols"]) and qd.shape == (gh["rows"], gh["cols"])
     U, V = T.ecc("hi_f006", "UGRD"), T.ecc("hi_f006", "VGRD")
     lo, hi = E.FIELDS["wind"]["lo"], E.FIELDS["wind"]["hi"]
     rng = np.random.default_rng(3)
@@ -158,14 +160,17 @@ def test_hawaii_run_frames_equal_an_independent_eccodes_read(tmp_path):
         r, c = int(rng.integers(0, g["rows"])), int(rng.integers(0, g["cols"]))
         hit = J.G.locate(g["lat0"] + r * g["dlat"], g["lon0"] + c * g["dlon"])
         if hit is None:
-            assert q[r, c] == 0 and qd[r, c] == 0
+            assert q[r, c] == 0 and (r % 2 or c % 2 or qd[r // 2, c // 2] == 0)
             continue
         _, j, i = hit
         s = math.hypot(U[j, i], V[j, i])
         assert abs(float(E.dequantize(q[r:r + 1, c:c + 1], lo, hi)[0, 0]) - s) <= E.quantum(lo, hi) / 2 + 0.006
         if s > 0.5:
             want = (math.degrees(math.atan2(-U[j, i], -V[j, i])) + 360) % 360
-            got = (int(qd[r, c]) - 1) * 360 / 254
+            if r % 2 or c % 2:                                    # the direction lives on every second node
+                checked += 1
+                continue
+            got = (int(qd[r // 2, c // 2]) - 1) * 360 / 254
             assert abs((got - want + 180) % 360 - 180) <= 360 / 508 + 0.06
         checked += 1
 
@@ -182,7 +187,7 @@ def test_build_grid_writes_every_steps_frames(tmp_path, monkeypatch):
         q = _png(open(frames[s]["wind"][0], "rb").read())
         assert (q[~mask] == 0).all() and (q[mask] == q[mask][0]).all() and q[mask][0] > 1   # 1 m/s everywhere
         d = _png(open(frames[s]["wdir"][0], "rb").read())
-        assert (d[mask] == 1 + round(270 * 254 / 360) % 254).all()                         # u = 1, v = 0: from 270
+        assert (d[mask[::2, ::2]] == 1 + round(270 * 254 / 360) % 254).all()             # u = 1, v = 0: from 270 (half grid)
 
 
 def test_an_oversize_frame_drops_the_sources_frames(tmp_path):
@@ -552,3 +557,15 @@ def test_regions_come_from_every_source_used_and_files_change_the_signature():
     m2 = json.loads(json.dumps(m))
     m2["frames"][5]["files"]["hi"]["wind"] = "rrfs/v1/frames/2026111799/hi/wind/f001.png"
     assert J._signature(m2) != J._signature(m)
+
+
+def test_sources_with_the_first_full_resolution_direction_are_never_paired():
+    """The first production sources (2026-11-18 04-06 UTC) published wdir on the full grid: their frame ranges lack the
+    resolution, so a manifest never names them beside today's half-resolution direction (the browser would refuse the
+    size)."""
+    old = _src("2026111803", "cycle")
+    old["frames"]["ranges"] = {"wind": [J.FRAME_DEFS["wind"]["lo"], J.FRAME_DEFS["wind"]["hi"]], "wdir": [0.0, 360.0]}
+    m = J.frames_manifest({"sources": [old, _src("2026111800", "run")]}, NOW)
+    assert {f["src"] for f in m["frames"]} == {"2026111800"}
+    assert J.frame_ranges()["wdir"][2] == "half" and m["regions"]["conus"]["fields"]["wdir"]["resolutions"] == ("half",)
+    assert m["regions"]["ak"]["grid_half"] == J.region_grid_half("ak")

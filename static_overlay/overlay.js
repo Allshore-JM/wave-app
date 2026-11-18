@@ -2633,10 +2633,11 @@
   // tile coming into view): only tiles in view, one slice, the rest after the next frame.
   function slicedDrawStale(inView, deadline) {
     if (!this._staleOk()) return;
-    var range = viewRangeOf(this), left = false, drew = 0;
+    var range = viewRangeOf(this), left = false, drew = 0, viewDone = false;
     var idle = !inView && !!(deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout);
     var clock = this._clock || nowMs, t0 = clock(), cost = this._drawMs || TILE_COST_MS;
     for (var pass = 0; pass < (inView ? 1 : 2) && !left; pass++) {
+      if (pass === 1) viewDone = true;                         // every tile in view is drawn
       for (var k in this._tiles) {
         var t = this._tiles[k];
         if (!t.el || !t.coords || t.el._ovGen === this._gen) continue;
@@ -2649,8 +2650,12 @@
         cost = this._drawMs = (this._drawMs || TILE_COST_MS) * 0.8 + (clock() - a) * 0.2;
       }
     }
+    if (!left) viewDone = true;
     if (left) this._queueStale(!idle);
-    else if (!inView && this._staleNotify) { this._staleNotify = false; if (this.onRedraw) this.onRedraw(); }
+    else if (!inView && this._staleNotify) { this._staleNotify = false; this._newTileNotify = false; if (this.onRedraw) this.onRedraw(); return; }
+    // new tiles in view (plan section 100 D2): their land masks exist only once drawn, so the animator's lattice, built
+    // at moveend / zoomend before them, is told once the tiles in view are all drawn (the buffer may still be behind)
+    if (viewDone && this._newTileNotify) { this._newTileNotify = false; if (this.onRedraw) this.onRedraw(); }
   }
   // Tiles to draw again (coast data landed, a mask changed): marked behind and drawn by the sliced drawer, the tiles in
   // view first, never all in one task (G62 finding 7). pick(tile) chooses them (none = every tile); notify: the layer's
@@ -3047,7 +3052,9 @@
       if (lk > a) a = lk;
       return a >= LAND_READOUT ? v : null;
     },
-    createTile: slicedCreateTile,
+    // a new tile queued for the sliced drawer has no land mask until drawn: the particles' lattice is rebuilt once the
+    // tiles in view are drawn (plan section 100 D2; the wave layer only: the other layers' onRedraw hooks do other work)
+    createTile: function (coords, done) { var el = slicedCreateTile.call(this, coords, done); if (el._tDone) this._newTileNotify = true; return el; },
     _value: function (code) { return this._lo + (code - 1) / 254 * (this._hi - this._lo); },
     // THE sampler (sampleRow): both the tile drawing and the readout go through here, and so do the
     // particle flow's node values.
@@ -5655,6 +5662,12 @@
     }
     return out;
   }
+  // Does a lattice's flow run at every node around the screen point (x, y)? (The caller keeps x, y within its view.)
+  function flowingAt(vf, x, y) {
+    var s = vf.s, cols = vf.cols, rows = vf.rows, i0 = (x / s) | 0, j0 = (y / s) | 0, i1 = i0 + 1 < cols ? i0 + 1 : i0, j1 = j0 + 1 < rows ? j0 + 1 : j0;
+    var u = vf.u, v = vf.v, a = j0 * cols + i0, b = j0 * cols + i1, c = j1 * cols + i0, d = j1 * cols + i1;
+    return (u[a] !== 0 || v[a] !== 0) && (u[b] !== 0 || v[b] !== 0) && (u[c] !== 0 || v[c] !== 0) && (u[d] !== 0 || v[d] !== 0);
+  }
   function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
   // Safari, and every browser on iOS / iPadOS (all of them WebKit): WebKit with an iOS mark (iPad / iPhone / iPod, or
   // Chrome / Edge / Firefox for iOS: CriOS / EdgiOS / FxiOS), a Macintosh user agent on a touch screen (iPadOS asks for
@@ -5701,6 +5714,7 @@
     this.field = null; this.dir = null; this.dgrid = null; this.entry = null; this.fframe = null; this.mode = null;   // 'particles' while animating
     this.nodes = null; this.nodesFor = null; this.vf = null; this.particles = null; this.count = 0; this.target = 0;
     this.ldir = null; this.lframe = null; this.lgrid = null; this.lentry = null;   // the lake frames (plan section 50)
+    this.spot = new Float64Array(2); this._vfSpare = null;   // a birth spot; the lattice arrays a rebuild reuses (plan section 100)
     this.vel = new Float64Array(2); this.vel2 = new Float64Array(2); this.hist = null; this.histN = null; this.histT = null; this.histF = null; this.flowT = null;
     this.active = false; this.suspended = 0; this.dirty = false; this.rafId = null; this.lastT = 0;
     this.ema = 0; this.adaptAt = 0; this._listeners = [];
@@ -5803,9 +5817,11 @@
     return { active: this.active, suspended: this.suspended, dirty: this.dirty, raf: this.rafId !== null, frameAgeMs: this.lastFrameAt ? Math.round(nowMs() - this.lastFrameAt) : null,
       ctx: !!this.ctx, ctxLost: !!(this.ctx && typeof this.ctx.isContextLost === 'function' && this.ctx.isContextLost()),
       canvas: cv ? cv.width + 'x' + cv.height + (cv.style && cv.style.visibility ? ' ' + cv.style.visibility : '') : 'none', dir: !!this.dir, entry: this.entry ? this.entry.step : null,
-      mode: this.mode, count: this.count, target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(),
+      mode: this.mode, count: this.count, live: this._live(), target: this.target, rate: this.rate, ema: Math.round(this.ema * 10) / 10, healed: this.healed, busy: this._busy(),
       lake: this.ldir ? (this.lentry ? this.lentry.step : '?') : 'none', log: this.log.map(function (e) { return e[0] + '@' + e[1]; }).join(' ') };
   };
+  // How many of the drawn count are alive (not dormant, plan section 100), for the readout.
+  FlowAnimator.prototype._live = function () { var P = this.particles, n = 0; if (!P) return 0; for (var i = 0; i < this.count; i++) if (!(P[i * 4 + 2] < 0)) n++; return n; };
   FlowAnimator.prototype.detach = function () {
     var self = this;
     this.stop();
@@ -5867,7 +5883,8 @@
     this.v = v; this._place(v); this.fframe = this.layer._frame;
     if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this._clear(); return; }   // no animation at all
     this.mode = 'particles';
-    if (this.dir.regional) {                                                     // a regional model (plan section 99 D2)
+    var oldVf;                                                                   // the lattice before this rebuild (_carry compares)
+    if (this.dir.regional) {                                                  // a regional model (plan section 99 D2)
       var regs = [], parts = this.layer._regions || [], dparts = this.dir.parts, grids = [], rects = [];
       for (var ri = 0; ri < parts.length; ri++) for (var di = 0; di < dparts.length; di++) {
         if (dparts[di].name !== parts[ri].name) continue;
@@ -5877,10 +5894,10 @@
       }
       // an 8-px lattice always: the vectors only steer the particles, and a 4-px one cost ~10 % of a 1080p shark playback
       // (rebuilt every step; plan section 99 D2 test-site perf)
-      this.vf = regionFlowField(v, 8, regs, this.field, this.vf);
+      oldVf = this.vf; this.vf = regionFlowField(v, 8, regs, this.field, this._vfSpare); this._vfSpare = oldVf;
       this.spawn = rects && rects.length ? rects : regionRects(v, grids);         // born where the regions hold data (G67 P3-7)
       this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));
-      if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
+      if (!this.particles) this._seed(v); else { if (this.count > this.target) this.count = this.target; this._carry(prev, v, oldVf); }
       if (!same) this._clear();
       this._start();
       return;
@@ -5894,9 +5911,11 @@
     // nodes per point (step 6b: nothing is kept per lake node)
     var lake = null, ll = this.layer._lake;
     if (this.ldir && this.lframe && this.lentry === this.entry && ll && ll.frame === this.lframe) lake = { field: this.field, lf: this.lframe, ld: this.ldir, grid: this.lgrid, lo: this.layer._lo, hi: this.layer._hi };
-    this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this.vf, lake);
+    oldVf = this.vf;                                                             // kept intact for _carry: the spare's arrays are reused
+    this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this._vfSpare, lake);
+    this._vfSpare = oldVf;
     this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
-    if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
+    if (!this.particles) this._seed(v); else { if (this.count > this.target) this.count = this.target; this._carry(prev, v, oldVf); }
     if (!same) this._clear();                                                    // a moved view starts clean (a new step keeps the tails)
     this._start();
   };
@@ -5906,28 +5925,74 @@
     this.particles = new Float32Array(PARTICLE_MAX * 4);                     // x, y, age (ms), life (ms) per particle
     this.hist = new Float32Array(PARTICLE_MAX * TRAIL_POINTS * 2); this.histN = new Uint8Array(PARTICLE_MAX); this.histT = new Float32Array(PARTICLE_MAX);
     this.histF = new Float32Array(PARTICLE_MAX * TRAIL_POINTS); this.flowT = new Float32Array(PARTICLE_MAX);   // each point's flow time and the particle's flow clock
-    for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * this._life()[0]; }
+    for (var i = 0; i < PARTICLE_MAX; i++) this._scatter(i * 4, v);
   };
-  FlowAnimator.prototype._respawn = function (k, v) {
-    var P = this.particles, life = this._life(), sp = this.spawn;
-    if (sp && sp.length) {                                 // a regional model: born inside a region's box (by area)
+  // A fresh even scatter of one particle (the seed, a zoom): born as by _respawn, then at a random age (a live one) or a
+  // random part of its wait (a dormant one), so neither the deaths nor the returns come in one wave.
+  FlowAnimator.prototype._scatter = function (k, v) {
+    var P = this.particles;
+    this._respawn(k, v);
+    P[k + 2] = P[k + 2] < 0 ? -Math.random() * P[k + 3] : Math.random() * this._life()[0];
+  };
+  // A birth spot (out[0], out[1]): a regional model's inside a region's box (by area), else anywhere in the view.
+  FlowAnimator.prototype._spawnPoint = function (v, out) {
+    var sp = this.spawn;
+    if (sp && sp.length) {
       var tot = 0, q, r;
       for (q = 0; q < sp.length; q++) tot += (sp[q][2] - sp[q][0]) * (sp[q][3] - sp[q][1]);
       r = Math.random() * tot;
       for (q = 0; q < sp.length - 1; q++) { r -= (sp[q][2] - sp[q][0]) * (sp[q][3] - sp[q][1]); if (r < 0) break; }
-      P[k] = sp[q][0] + Math.random() * (sp[q][2] - sp[q][0]); P[k + 1] = sp[q][1] + Math.random() * (sp[q][3] - sp[q][1]);
-    } else { P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; }
-    P[k + 2] = 0;
+      out[0] = sp[q][0] + Math.random() * (sp[q][2] - sp[q][0]); out[1] = sp[q][1] + Math.random() * (sp[q][3] - sp[q][1]);
+    } else { out[0] = Math.random() * v.w; out[1] = Math.random() * v.h; }
+  };
+  // A new life at a random birth spot. Born where the flow does not run (land, a tile not drawn yet, a data edge), the
+  // particle is DORMANT for that life (plan section 100 D1: a negative age, counting up to 0; not moved, not drawn) and
+  // then tries again: it never looks for flow elsewhere at once, which crowded every particle of the view into the part
+  // that flowed (the dense blocks after a pan). So the live share is the flowing share: one density on all drawn water.
+  FlowAnimator.prototype._respawn = function (k, v) {
+    var P = this.particles, life = this._life(), S = this.spot || (this.spot = new Float64Array(2));
+    this._spawnPoint(v, S); P[k] = S[0]; P[k + 1] = S[1];
     P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
+    P[k + 2] = this.vf && this._flowing(P[k], P[k + 1]) ? 0 : -P[k + 3];
     this.histN[k >> 2] = 0; this.histT[k >> 2] = 0; this.flowT[k >> 2] = 0;     // a fresh particle has no tail
+  };
+  // The particles across a rebuild (plan section 100): a zoom (or a fresh canvas: no previous view) scatters them afresh;
+  // a pan moves every particle and its tail with the map (prev.ox - v.ox, prev.oy - v.oy: no jump at moveend), and those
+  // that left the view go dormant; then (D1b) every dormant particle tries a birth spot where the OLD lattice did not
+  // flow (the newly drawn tiles, the exposed strip), up to WAKE_TRIES draws, and lives there if the new lattice flows:
+  // the gained area is filled at once at the one density, and nothing else changes (a playback step that gains nothing
+  // wakes nothing).
+  var WAKE_TRIES = 16;
+  FlowAnimator.prototype._carry = function (prev, v, oldVf) {
+    var P = this.particles, n = this.count, i, k, q;
+    if (!prev || prev.z !== v.z) { for (i = 0; i < PARTICLE_MAX; i++) this._scatter(i * 4, v); return; }
+    var dx = prev.ox - v.ox, dy = prev.oy - v.oy;
+    if (dx || dy) {
+      var H = this.hist;
+      for (q = 0; q < H.length; q += 2) { H[q] += dx; H[q + 1] += dy; }
+      for (i = 0, k = 0; i < PARTICLE_MAX; i++, k += 4) {
+        P[k] += dx; P[k + 1] += dy;
+        if (P[k + 2] >= 0 && !(P[k] >= 0 && P[k + 1] >= 0 && P[k] < v.w && P[k + 1] < v.h)) { P[k + 2] = -P[k + 3]; this.histN[i] = 0; this.histT[i] = 0; this.flowT[i] = 0; }
+      }
+    }
+    if (!oldVf || !this.vf) return;
+    var S = this.spot || (this.spot = new Float64Array(2)), life = this._life();
+    for (i = 0, k = 0; i < n; i++, k += 4) {
+      if (!(P[k + 2] < 0)) continue;
+      var found = false;
+      for (q = 0; q < WAKE_TRIES && !found; q++) {
+        this._spawnPoint(v, S);
+        var ox = S[0] - dx, oy = S[1] - dy;                                     // the spot in the old view's pixels
+        found = !(ox >= 0 && oy >= 0 && ox < prev.w && oy < prev.h && flowingAt(oldVf, ox, oy));
+      }
+      if (!found || !this._flowing(S[0], S[1])) continue;                       // the old lattice flowed there, or the new does not
+      P[k] = S[0]; P[k + 1] = S[1]; P[k + 2] = 0; P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
+      this.histN[i] = 0; this.histT[i] = 0; this.flowT[i] = 0;
+    }
   };
   // Does the flow run at every lattice node around (x, y)? (A particle at a coast or a data edge respawns
   // before it can drift onto the undrawn side.)
-  FlowAnimator.prototype._flowing = function (x, y) {
-    var vf = this.vf, s = vf.s, cols = vf.cols, rows = vf.rows, i0 = (x / s) | 0, j0 = (y / s) | 0, i1 = i0 + 1 < cols ? i0 + 1 : i0, j1 = j0 + 1 < rows ? j0 + 1 : j0;
-    var u = vf.u, v = vf.v, a = j0 * cols + i0, b = j0 * cols + i1, c = j1 * cols + i0, d = j1 * cols + i1;
-    return (u[a] !== 0 || v[a] !== 0) && (u[b] !== 0 || v[b] !== 0) && (u[c] !== 0 || v[c] !== 0) && (u[d] !== 0 || v[d] !== 0);
-  };
+  FlowAnimator.prototype._flowing = function (x, y) { return flowingAt(this.vf, x, y); };
   // The lattice velocity at a screen point, bilinear over the four cells around it (out[0], out[1] px/s).
   FlowAnimator.prototype._velocity = function (x, y, out) {
     var vf = this.vf, s = vf.s, cols = vf.cols, rows = vf.rows, gx = x / s, gy = y / s, i0 = gx | 0, j0 = gy | 0, fx = gx - i0, fy = gy - j0;
@@ -5975,6 +6040,7 @@
     ctx.beginPath();
     for (i = 0, k = 0; i < n; i++, k += 4) {
       var x = P[k], y = P[k + 1], age = P[k + 2];
+      if (age < 0) { age += dt; if (age < 0) P[k + 2] = age; else this._respawn(k, v); continue; }   // dormant (plan section 100 D1): waits, unseen
       if (age >= P[k + 3] || !this._flowing(x, y)) { this._respawn(k, v); continue; }
       this._velocity(x, y, V1);
       var xm = x + V1[0] * half, ym = y + V1[1] * half;
@@ -10139,7 +10205,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
       PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
       workerSource: workerSource, workerMain: workerMain, FrameDecoder: FrameDecoder, getDecoder: getDecoder, disposeDecoder: disposeDecoder, resetDecoder: resetDecoder, setDecoderForTest: setDecoderForTest,
-      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, LOOK: LOOK, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
+      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, flowingAt: flowingAt, LOOK: LOOK, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
       PAINT_FALLBACK_MS: PAINT_FALLBACK_MS, BUSY_STUCK_MS: BUSY_STUCK_MS, TRAIL_SPAN_MS: TRAIL_SPAN_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,

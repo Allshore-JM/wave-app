@@ -176,7 +176,7 @@ test('wind particles: adapt their count to the frame budget, keep the trails acr
   assert.ok(fa.nodesFor === wdir2 && fa.nodes.U === nodes0.U, 'the node vectors are recomputed for the new step, in the same buffers (G11 m32 / m05)');
   const full = frame(1440, 721, () => code(270)); fa.setData(full, GRID, { step: 6 }); assert.equal(fa.nodes.cols, 1440, 'a resolution change reallocates the node buffers');
   fa.setData(wdir, HALF, { step: 9 });
-  const vf0 = fa.vf; fa._rebuild(); assert.equal(fa.vf.u, vf0.u, 'the lattice buffers are reused');
+  const vf0 = fa.vf; fa._rebuild(); assert.ok(fa.vf.u !== vf0.u && fa._vfSpare === vf0, 'the old lattice is kept intact (section 100)'); fa._rebuild(); assert.equal(fa.vf.u, vf0.u, 'the two lattice buffers alternate (no allocation)');
   map.getContainer = () => ({ clientWidth: 1600, clientHeight: 1200 }); fa._rebuild();
   assert.equal(fa.target, Math.round(1600 * 1200 / 900), 'the target follows the view'); assert.ok(fa.count <= fa.target);
   assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, clears + 1, 'a moved view starts clean');
@@ -194,7 +194,7 @@ test('suspend / resume count nested moves and zooms with a dirty flag, a view re
   const l = layer(hs, GRID, 'hs', HS); l._tileZoom = 6;
   const { fa, events, canvas, map } = animator('hs', l, pdir, HALF);
   const vf0 = fa.vf;
-  events.viewreset[0](); assert.ok(fa.vf !== vf0 && fa.vf.u === vf0.u, 'a view reset rebuilds (buffers reused)');
+  events.viewreset[0](); assert.ok(fa.vf !== vf0 && fa._vfSpare === vf0, 'a view reset rebuilds (the old lattice kept as the spare)');
   events.zoomstart[0](); events.movestart[0]();                              // a zoom fires both
   assert.equal(fa.suspended, 2); assert.equal(fa.active, false); assert.equal(canvas.style.visibility, 'hidden');
   fa.suspend();                                                              // the tab hidden meanwhile
@@ -208,7 +208,7 @@ test('suspend / resume count nested moves and zooms with a dirty flag, a view re
   fa.clearData(); assert.equal(fa.active, false); assert.equal(fa.dir, null); assert.equal(fa.nodes, null);
   fa.setData(pdir, HALF, { step: 0 }); assert.equal(fa.active, true);
   assert.equal(typeof l.onRedraw, 'function', 'the animator follows the layer');
-  const vf1 = fa.vf; l.onRedraw(); assert.ok(fa.vf !== vf1 && fa.vf.u === vf1.u, 'a coast chunk landing (tiles redrawn) rebuilds the flow');
+  const vf1 = fa.vf; l.onRedraw(); assert.ok(fa.vf !== vf1 && fa._vfSpare === vf1, 'a coast chunk landing (tiles redrawn) rebuilds the flow');
   fa.detach(); assert.equal(fa.active, false); assert.equal(fa.canvas, null); assert.equal(canvas.removed, true); assert.equal(Object.values(events).flat().length, 0, 'map listeners removed');
   assert.equal(l.onRedraw, null, 'detached from the layer');
   const l2 = layer(hs, GRID, 'hs', HS); l2._tileZoom = 6;                    // a direction delivered without a field frame cannot crash a frame
@@ -236,7 +236,7 @@ test('G11 P2-1 / P2-2: tails come from a per-particle history (cleared on respaw
   const vf = fa.vf; for (let j = 0; j < vf.rows; j++) for (let i = 0; i < vf.cols; i++) { const wall = i * vf.s >= 400; vf.u[j * vf.cols + i] = wall ? 0 : 30; vf.v[j * vf.cols + i] = 0; }
   P[0] = 396; P[1] = 300; P[2] = 0; const gone = () => !(Math.abs(P[0] - 396) < 8 && Math.abs(P[1] - 300) < 8);
   assert.equal(fa._flowing(396, 300), false); fa._renderParticles(16); assert.ok(gone(), 'respawned instead of moving onto the wall');
-  P[0] = 380; P[1] = 300; assert.equal(fa._flowing(380, 300), true); fa._renderParticles(16); assert.ok(Math.abs(P[0] - 380.5) < 0.2, 'a particle with flow on all four nodes moves');
+  P[0] = 380; P[1] = 300; P[2] = 0; assert.equal(fa._flowing(380, 300), true); fa._renderParticles(16); assert.ok(Math.abs(P[0] - 380.5) < 0.2, 'a particle with flow on all four nodes moves');
 });
 
 test('G11 P2-3: bilinear reads between lattice cells (m35), absent nodes excluded and the 0.25 rule (m36 / m07), the column wrap at the last column (m08 / m30), fractional-zoom tile keys (m13 / m14), ageing (m21 / m23)', () => {
@@ -526,4 +526,99 @@ test('section 46: the particles slider fades the whole pane by CSS opacity (the 
   assert.equal(I.particleOpacityOf(0.4), 0.4); assert.equal(I.particleOpacityOf(-1), 0); assert.equal(I.particleOpacityOf(2), 1);
   assert.equal(I.particleOpacityOf(undefined), 1); assert.equal(I.particleOpacityOf('0'), 1); assert.equal(I.particleOpacityOf(Infinity), 1);
   } finally { fa.detach(); if (fb) fb.detach(); }        // a failed assertion leaves no live animator behind
+});
+
+// ---- plan section 100: no dense blocks after a pan or zoom ----
+// Wind with data only west of 44 E: at the test view (x 10000-10800 at zoom 6: 39.7-57.3 E) about the left quarter flows.
+const QUARTER = () => frame(720, 361, (r, c) => (c < 448 ? codeOf(10, WIND) : 0));
+const liveOf = (fa) => { let n = 0; for (let i = 0; i < fa.count; i++) if (fa.particles[i * 4 + 2] >= 0) n++; return n; };
+const flowShare = (fa) => { let n = 0, m = 0; for (let y = 2; y < fa.v.h; y += 8) for (let x = 2; x < fa.v.w; x += 8) { m++; if (fa._flowing(x, y)) n++; } return n / m; };
+
+test('section 100 D1: a particle born where nothing flows is dormant for a life (never crowds into the flowing part): the live share is the flowing share, dormant particles neither move nor draw', () => {
+  const l = layer(QUARTER(), HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa, ctx } = animator('wind', l, frame(720, 361, () => code(180)), HALF);
+  const f = flowShare(fa); assert.ok(f > 0.18 && f < 0.3, 'about a quarter flows: ' + f);
+  const P = fa.particles, n = fa.count;
+  for (let i = 0; i < n; i++) assert.equal(P[i * 4 + 2] >= 0, fa._flowing(P[i * 4], P[i * 4 + 1]), 'the seed: live exactly where the flow runs');
+  assert.ok(Math.abs(liveOf(fa) / n - f) < 0.1, 'seeded live share ' + liveOf(fa) / n + ' ~ ' + f);
+  for (let t = 0; t < 300; t++) fa._renderParticles(33);                                 // ~10 s: several wind lives
+  const share = liveOf(fa) / n;
+  assert.ok(share > f - 0.12 && share < f + 0.1, 'after 10 s the live share ' + share + ' is still the flowing share ' + f + ' (production: every particle)');
+  for (let i = 0; i < n; i++) if (P[i * 4 + 2] >= 0) assert.ok(P[i * 4] < 230, 'live particles only where it flows');
+  // a dormant particle waits where it is and is not drawn; it counts its wait up in real time
+  const k = (() => { for (let i = 0; i < n; i++) if (P[i * 4 + 2] < -500) return i * 4; return -1; })(); assert.ok(k >= 0);
+  const x = P[k], y = P[k + 1], age = P[k + 2];
+  fa.count = 1; P.copyWithin(0, k, k + 4); fa.histN[0] = 0; ctx.ops.length = 0;
+  fa.rate = 4; fa._renderParticles(40);
+  assert.equal(P[0], x); assert.equal(P[1], y); assert.equal(P[2], Math.fround(age + 40), 'the wait runs in real time (rate 4 changes nothing)');
+  assert.equal(ctx.ops.filter((o) => o === 'moveTo' || o === 'lineTo').length, 0, 'nothing drawn for a dormant particle');
+  P[2] = -10; fa._renderParticles(16); assert.equal(fa.histN[0], 0); assert.ok(P[2] === 0 || P[2] < -900, 'its wait over: born again (live, or dormant for a new life)');
+});
+
+test('section 100 D1: a dormant seed waits a random part of its life (no wave of returns); a live one starts at a random age', () => {
+  const l = layer(QUARTER(), HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa } = animator('wind', l, frame(720, 361, () => code(180)), HALF);
+  const P = fa.particles, waits = [], ages = [];
+  for (let i = 0; i < I.PARTICLE_MAX; i++) { if (P[i * 4 + 2] < 0) waits.push(-P[i * 4 + 2] / P[i * 4 + 3]); else ages.push(P[i * 4 + 2]); }
+  assert.ok(waits.length > 1500 && ages.length > 300);
+  const mean = waits.reduce((a, x) => a + x, 0) / waits.length;
+  assert.ok(waits.every((w) => w >= 0 && w <= 1) && Math.abs(mean - 0.5) < 0.05, 'waits spread over the life: mean ' + mean);
+  assert.ok(Math.max(...ages) <= I.PARTICLE_LIFE_MS.wind[0] && Math.max(...ages) > 0.8 * I.PARTICLE_LIFE_MS.wind[0]);
+});
+
+test('section 100 D1b: a rebuild wakes dormant particles only into area the old lattice did not flow on (a step that gains nothing wakes nothing; newly drawn water fills at once, evenly)', () => {
+  const l = layer(QUARTER(), HALF, 'wind', WIND); l._tileZoom = 6;
+  const wdir = frame(720, 361, () => code(180)), { fa } = animator('wind', l, wdir, HALF);
+  for (let t = 0; t < 60; t++) fa._renderParticles(33);
+  const live0 = liveOf(fa), pos0 = Array.from(fa.particles);
+  fa._rebuild();                                                                         // a playback step over the same data
+  assert.equal(liveOf(fa), live0, 'nothing gained: nobody woken');
+  assert.deepEqual(Array.from(fa.particles), pos0, 'and nothing moved');
+  // the rest of the view starts to flow (the new tiles drawn): the dormant fill it at the one density, at once
+  l.setFrame(frame(720, 361, () => codeOf(10, WIND)), HALF, 'wind', WIND, I.buildLut('wind', WIND.legend), { step: 1, valid_utc: '2026-09-22T13:00:00Z' });
+  fa._rebuild();
+  const n = fa.count, live = liveOf(fa);
+  assert.ok(live > 0.88 * n, 'filled at once: ' + live + ' of ' + n);
+  let right = 0; for (let i = 0; i < n; i++) if (fa.particles[i * 4 + 2] >= 0 && fa.particles[i * 4] >= 230) right++;
+  assert.ok(Math.abs(right / live - 0.72) < 0.08, 'spread over the gained area by its share: ' + right / live);
+});
+
+test('section 100 D3: a pan moves the particles and their tails with the map (no jump at moveend); those that left wake in the exposed strip only; a zoom scatters afresh', () => {
+  const l = layer(frame(720, 361, () => codeOf(10, WIND)), HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa, map } = animator('wind', l, frame(720, 361, () => code(180)), HALF);
+  for (let t = 0; t < 20; t++) fa._renderParticles(33);
+  const P = fa.particles, n = fa.count, before = Array.from(P), H0 = Array.from(fa.hist), N0 = Array.from(fa.histN);
+  assert.equal(liveOf(fa), n, 'all live over a full field');
+  map.getPixelBounds = () => ({ min: { x: 10000 + 100, y: 9000 + 60 } }); fa._rebuild();      // a pan 100 px east, 60 px south
+  let kept = 0, left = 0, woken = 0;
+  for (let i = 0; i < n; i++) {
+    const k = i * 4, ox = before[k], oy = before[k + 1];
+    if (ox >= 100 && oy >= 60) {
+      kept++; assert.equal(P[k], Math.fround(ox - 100)); assert.equal(P[k + 1], Math.fround(oy - 60)); assert.equal(P[k + 2], before[k + 2], 'its life goes on');
+      if (N0[i] > 0) { const q = i * I.TRAIL_POINTS * 2; assert.equal(fa.hist[q], Math.fround(H0[q] - 100)); assert.equal(fa.hist[q + 1], Math.fround(H0[q + 1] - 60)); assert.equal(fa.histN[i], N0[i], 'the tail kept'); }
+    } else {
+      left++;
+      if (P[k + 2] >= 0) { woken++; assert.ok(P[k] >= 700 || P[k + 1] >= 540, 'woken in the exposed strip: ' + P[k] + ',' + P[k + 1]); assert.equal(fa.histN[i], 0); }
+    }
+  }
+  const strip = (800 * 600 - 700 * 540) / (800 * 600);
+  assert.ok(kept > 0 && Math.abs(left / n - strip) < 0.05, 'the share that left is the exposed share');
+  assert.ok(woken > 0.85 * left, 'most woken at once: ' + woken + ' of ' + left);
+  // a zoom: positions do not map; every particle scattered afresh, no tails
+  for (let t = 0; t < 20; t++) fa._renderParticles(33);
+  map.getZoom = () => 6.5; fa._rebuild();                                         // the same pixel origin: a shift would be 0
+  assert.equal(fa.histN.slice(0, n).every((m) => m === 0), true, 'no tail survives a zoom');
+  assert.ok(fa.v.z === 6.5);
+  let same = 0; for (let i = 0; i < n; i++) if (P[i * 4] === before[i * 4]) same++;
+  assert.ok(same < 3, 'scattered');
+});
+
+test('section 100 D2: a redraw of the layer while the map moves does not rebuild (the moveend resume does); the readout counts the live particles', () => {
+  const l = layer(QUARTER(), HALF, 'wind', WIND); l._tileZoom = 6;
+  const { fa } = animator('wind', l, frame(720, 361, () => code(180)), HALF);
+  let rebuilds = 0; const rb = fa._rebuild; fa._rebuild = function () { rebuilds++; return rb.apply(this, arguments); };
+  fa.suspend(); l.onRedraw(); assert.equal(rebuilds, 0);
+  fa.resume(true); assert.equal(rebuilds, 1);
+  l.onRedraw(); assert.equal(rebuilds, 2);
+  const d = fa.debugState(); assert.equal(d.live, liveOf(fa)); assert.ok(d.live < d.count);
 });

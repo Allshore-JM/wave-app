@@ -84,11 +84,13 @@ function world(opts) {
       const lmm = /\/glwu\/v1\/(\d{10})\/manifest-x\.json$/.exec(url);
       if (lmm) return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, json: () => Promise.resolve(w.lakeManifests[lmm[1]]) });
       if (url.endsWith('latest.json')) {                                     // per model (w.pointers[prefix]), else the one pointer
-        const pm = /(gfswave|ecmwf)\/0p25\/v1\/latest\.json$/.exec(url), pp = w.pointers && pm ? w.pointers[pm[1]] : undefined;
+        const pm = /(gfswave|ecmwf)\/0p25\/v1\/latest\.json$|(rrfs)\/v1\/frames\/latest\.json$/.exec(url), pp = w.pointers && pm ? w.pointers[pm[1] || pm[2]] : undefined;
         const answer = { ok: true, status: 200, json: () => Promise.resolve(pp !== undefined ? pp : w.pointer) };
         if (w.holdPointer) return new Promise((res) => { (w.heldPointers = w.heldPointers || []).push(() => res(answer)); });   // released by hand
         return Promise.resolve(answer);
       }
+      const rm = /rrfs\/v1\/frames\/(\d{10})\/manifest-x\.json$/.exec(url);           // RRFS (plan section 99 D2)
+      if (rm) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(w.manifests['rrfs/' + rm[1]]))) });
       const mm = /(gfswave|ecmwf)\/0p25\/v1\/(\d{10})\/manifest-x\.json$/.exec(url);
       if (mm) {
         const answer = { ok: true, status: 200, json: () => Promise.resolve(w.manifests[mm[1] + '/' + mm[2]] || w.manifests[mm[2]]) };
@@ -104,6 +106,8 @@ function world(opts) {
         w.pendingCoast.push(() => res(w.coastAnswer(url)));
         if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
       });
+      const rr = /\/rrfs\/v1\/frames\/(\d{10})\/([a-z]+)\//.exec(url);                // an RRFS region frame: its region's grid size
+      if (rr) { const g = RRFS_GRIDS[rr[2]]; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: g.cols, h: g.rows, tag: 40 + Number(rr[1].slice(-2)), url }) }); }
       const run = /\/v1\/(\d{10})\//.exec(url)[1], half = url.indexOf('/half/') >= 0, lake = url.indexOf('/glwu/v1/') >= 0;
       return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: lake ? LAKE_GRID.cols : half ? 720 : 1440, h: lake ? LAKE_GRID.rows : half ? 361 : 721, tag: Number(run.slice(-2)), url }) });
     },
@@ -193,6 +197,31 @@ function world(opts) {
   return w;
 }
 const A = manifest('2026092212', '2026-09-22T12:00:00Z', 12), B = manifest('2026092218', '2026-09-22T18:00:00Z', 18);
+// RRFS (plan section 99 D2): the real dry-run manifest's regions, re-timed onto run A's day; frames hourly from +1 h.
+const RRFS_FIX = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'rrfs_frames', 'manifest.json'), 'utf8'));
+const RRFS_GRIDS = Object.fromEntries(Object.entries(RRFS_FIX.regions).map(([k, v]) => [k, v.grid]));
+function rrfsManifest(run, runUtc, signature) {
+  const m = JSON.parse(JSON.stringify(RRFS_FIX)), t0 = Date.parse(runUtc);
+  m.run = run; m.run_utc = runUtc; m.signature = signature || 'a1b2c3d4e5f60718';
+  m.frames = m.frames.map((f, i) => ({ step: i + 1, valid_utc: new Date(t0 + (i + 1) * 3.6e6).toISOString().replace('.000Z', 'Z'), src: run, src_step: i + 1,
+    files: Object.fromEntries(Object.keys(f.files).map((r) => [r, { wind: `rrfs/v1/frames/${run}/${r}/wind/f${String(i + 1).padStart(3, '0')}.png`, wdir: `rrfs/v1/frames/${run}/${r}/wdir/f${String(i + 1).padStart(3, '0')}.png` }])) }));
+  return m;
+}
+const rptr = (m) => ({ run: m.run, manifest: `rrfs/v1/frames/${m.run}/manifest-x.json`, complete: true, encoding: 'u8-linear-v2', signature: m.signature, published_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z') });
+const R = rrfsManifest('2026092213', '2026-09-22T13:00:00Z');
+const THREE = ['gfswave', 'ecmwf', 'rrfs'];
+const rrfsUrls = (w) => w.fetches.filter((u) => u.includes('/rrfs/v1/frames/') && u.endsWith('.png'));
+const releaseRrfs = async (w) => { for (let k = 0; k < 6; k++) { const f = w.pendingBitmaps.filter((x) => x.blob.url.includes('/rrfs/')); w.pendingBitmaps = w.pendingBitmaps.filter((x) => !x.blob.url.includes('/rrfs/')); f.forEach((x) => x()); await settle(); } };
+async function onRrfs(w, extra) {                              // mounted on GFS wind (run A, frame 10) with RRFS published, then switched to RRFS
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + R.run] = R; w.pointers = Object.assign({ rrfs: rptr(R) }, w.pointers || {});
+  const o = w.create(Object.assign({ models: THREE }, extra || {}));
+  o.mount('wind'); await settle(); await w.release(1);
+  o.seek(10); await settle(); await w.releaseAll();
+  assert.equal(o.frameIndex, 10);
+  o.setModel('rrfs'); await settle();
+  await releaseRrfs(w);
+  return o;
+}
 
 async function mounted(w, m, extra) {
   w.pointer = ptr(m); w.manifests[m.run] = m;
@@ -3805,4 +3834,114 @@ test('section 95 (G62 finding 2): a playback step waits while a pan or pinch run
     assert.ok(o.frameIndex > i, 'a lost moveend does not stop playback for good');
     o.pause(); o.unmount();
   });
+});
+
+
+// ------------------------------------------------------------------------------------- RRFS, a regional model (99 D2)
+
+test('section 99 D2: RRFS over Oahu loads its own pointer and manifest, fetches ONLY the Hawaii frame, keeps the time, and draws the bundle', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  assert.ok(w.fetches.includes('https://x/rrfs/v1/frames/latest.json') && w.fetches.includes('https://x/' + rptr(R).manifest));
+  assert.equal(o.model, 'rrfs'); assert.equal(o.manifest.regional, true); assert.equal(o.manifest.signature, R.signature);
+  assert.ok(rrfsUrls(w).length >= 1 && rrfsUrls(w).every((u) => u.includes('/hi/wind/')), rrfsUrls(w).join(' '));
+  assert.deepEqual(o.layer._regions.map((p) => p.name), ['hi']);
+  assert.equal(o.res, 'full');
+  assert.equal(o.manifest.frames[o.frameIndex].valid_utc, A.frames[10].valid_utc, 'the time carried across the switch (+30 h)');
+  assert.ok(o._key(o.frameIndex).startsWith('rrfs/' + R.signature + '/hi/wind/'), 'keyed by the manifest\u2019s signature, never its run');
+  assert.equal(o._regionWord(21.3, -157.85), null, 'inside Hawaii\u2019s box: no word');
+  assert.equal(o._regionWord(30, -140), 'outside RRFS');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2: a pan to another region asks the step again for that region only (Hawaii\u2019s decoded frame is kept)', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  const before = rrfsUrls(w).length, idx = o.frameIndex;
+  w.view = { lat: 61.2, lng: -150 };                                     // Anchorage
+  o._syncRegions(); await settle(); await releaseRrfs(w);
+  const added = rrfsUrls(w).slice(before);
+  assert.ok(added.length >= 1 && added.every((u) => u.includes('/ak/wind/')), added.join(' '));
+  assert.ok(added.some((u) => u.endsWith('/f' + String(R.frames[idx].step).padStart(3, '0') + '.png')), 'the step on the map');
+  assert.equal(o.frameIndex, idx); assert.deepEqual(o.layer._regions.map((p) => p.name), ['ak']);
+  const n = rrfsUrls(w).length;
+  w.view = { lat: 61.3, lng: -150.1 }; o._syncRegions(); await settle();  // a small pan: the same regions, nothing asked
+  assert.equal(rrfsUrls(w).length, n);
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2: a wave layer under RRFS switches the model to GFS (time carried); RRFS is offered under Wind speed only', async () => {
+  const store = memStore({}), w = world({ storage: store });
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  assert.deepEqual(o._modelChoices(), THREE);
+  const t = Date.parse(o.manifest.frames[o.frameIndex].valid_utc);
+  o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.model, 'gfswave'); assert.equal(o.field, 'hs'); assert.equal(o.manifest.run, A.run);
+  assert.equal(Date.parse(o.manifest.frames[o.frameIndex].valid_utc), w.I.nearestIndex(A, t) !== null ? Date.parse(A.frames[w.I.nearestIndex(A, t)].valid_utc) : NaN);
+  assert.equal(JSON.parse(store.getItem(w.I.SESSION_KEY)).model, 'gfswave');
+  assert.deepEqual(o._modelChoices(), ['gfswave', 'ecmwf']);
+  o.setModel('rrfs'); await settle();
+  assert.equal(o.model, 'gfswave', 'RRFS refused under a wave layer');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2: a tab saved on RRFS that opens on a wave layer opens on GFS', async () => {
+  const w = world({ storage: memStore({ model: 'rrfs', field: 'hs' }) });
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + R.run] = R; w.pointers = { rrfs: rptr(R) };
+  const o = w.create({ models: THREE });
+  assert.equal(o.model, 'rrfs');
+  o.mount('hs', true); await settle(); await w.release(1);
+  assert.equal(o.model, 'gfswave'); assert.equal(o.manifest.run, A.run); assert.equal(rrfsUrls(w).length, 0);
+  assert.ok(!w.fetches.includes('https://x/rrfs/v1/frames/latest.json'));
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2: far from every region nothing is fetched and the step lands blank; one failing region is drawn blank, all failing is unavailable', async () => {
+  const w = world();
+  w.view = { lat: 30, lng: -25 };                                        // the open Atlantic (zoom 6: half a screen reaches 51 W)
+  const o = await onRrfs(w);
+  assert.equal(rrfsUrls(w).length, 0, rrfsUrls(w).slice(0, 3).join(' ')); assert.ok(o.frameIndex !== null); assert.deepEqual(o.layer._regions, []);
+  assert.equal(o.layer.valueAt(30, -25), null); assert.equal(o._regionWord(30, -25), 'outside RRFS');
+  w.view = { lat: 18.4, lng: -66.1 };                                    // San Juan at zoom 6: Puerto Rico + CONUS (Florida / the Bahamas)
+  const near = w.I.regionsNear(o.manifest.regionList, w.I.viewOf(w.map, o.layer));
+  assert.deepEqual(near, ['pr', 'conus']);
+  const k = (i) => String(R.frames[i].step).padStart(3, '0'), at = o.frameIndex;
+  w.failNext[`https://x/rrfs/v1/frames/${R.run}/pr/wind/f${k(at)}.png`] = 404;
+  o._syncRegions(); await settle(); await releaseRrfs(w);
+  assert.equal(o.frameIndex, at); assert.deepEqual(o.layer._regions.map((p) => p.name), ['conus'], 'the failed region is blank, the other drawn');
+  assert.equal(o.layer._frame.failed, 1);
+  const far = at + 30;                                                   // beyond the ring's prefetch
+  for (const r of near) w.failNext[`https://x/rrfs/v1/frames/${R.run}/${r}/wind/f${k(far)}.png`] = 404;
+  o.seek(far); await settle(); await releaseRrfs(w);
+  assert.ok(o._isUnavailable(far), 'every region failed: the step is unavailable'); assert.equal(o.frameIndex, at, 'the drawn step stays');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2: a new manifest with the SAME run but another signature is announced (G67a P1-1); the same signature is not', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  w.pointers.rrfs = rptr(R);
+  o._checkRun(); await settle();
+  assert.equal(o.newerRun, null);
+  const R2 = rrfsManifest(R.run, R.run_utc, 'ffffffffffff0001');
+  w.manifests['rrfs/' + R.run] = R2; w.pointers.rrfs = rptr(R2);
+  o._checkRun(); await settle();
+  assert.ok(o.newerRun && o.newerRun.signature === R2.signature, 'the same run, a new manifest: the banner');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2: a withdrawn RRFS pointer (complete false) fails the load cleanly; the dropdown offers GFS back', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.pointers = { rrfs: { complete: false, published_utc: '2026-09-22T20:00:00Z', signature: null, sources: [] } };
+  const o = w.create({ models: THREE });
+  o.mount('wind'); await settle(); await w.release(1);
+  o.setModel('rrfs'); await settle(); await settle();
+  assert.equal(o.model, 'rrfs'); assert.equal(o.manifest, null); assert.equal(o.last.state, 'error');
+  assert.deepEqual(o._modelChoices(), THREE);
+  o.pause(); clearInterval(o.runTimer); o.unmount();
 });

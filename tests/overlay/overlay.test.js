@@ -1355,7 +1355,13 @@ test('section 42: pageQuery joins the live search with the navigation entry\'s o
 
 test('section 43: MODEL_DEFS (prefixes, cycles, stale lines, the 29-character credits), modelList and modelOf, runTimes per cycle', () => {
   const D = I.MODEL_DEFS;
-  assert.deepEqual(Object.keys(D), ['gfswave', 'ecmwf']); assert.equal(I.DEFAULT_MODEL, 'gfswave');
+  assert.deepEqual(Object.keys(D), ['gfswave', 'ecmwf', 'rrfs']); assert.equal(I.DEFAULT_MODEL, 'gfswave');
+  // RRFS (plan section 99 D2): regional, Wind speed only, hourly cycles, 6-h stale line, the GFS-Wave table note
+  assert.equal(D.rrfs.prefix, 'rrfs/v1/frames'); assert.equal(D.rrfs.regional, true); assert.deepEqual(D.rrfs.fields, ['wind']);
+  assert.equal(D.rrfs.cycleMs, 3.6e6); assert.equal(D.rrfs.staleS, 6 * 3600); assert.equal(D.rrfs.table, 'model'); assert.equal(D.rrfs.short, 'RRFS');
+  assert.equal(D.rrfs.attribution.replace(/<[^>]+>/g, ''), 'Overlay: NOAA RRFS');
+  assert.equal(I.modelOffers('rrfs', 'wind'), true); assert.equal(I.modelOffers('rrfs', 'hs'), false); assert.equal(I.modelOffers('rrfs', 'tp'), false);
+  assert.equal(I.modelOffers('gfswave', 'hs'), true); assert.equal(I.modelOffers('ecmwf', 'wind'), true); assert.equal(I.modelOffers('nope', 'wind'), false);
   assert.equal(D.gfswave.prefix, 'gfswave/0p25/v1'); assert.equal(D.ecmwf.prefix, 'ecmwf/0p25/v1');
   assert.equal(D.gfswave.cycleMs, 6 * 3.6e6); assert.equal(D.ecmwf.cycleMs, 12 * 3.6e6);
   assert.equal(D.gfswave.staleS, I.STALE_AFTER_S); assert.equal(D.gfswave.staleS, 9 * 3600); assert.equal(D.ecmwf.staleS, 15 * 3600);

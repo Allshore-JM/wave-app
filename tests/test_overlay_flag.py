@@ -242,8 +242,10 @@ def test_overlay_js_syntax_and_contract_strings():
                    "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
                    "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles",                                            # section 46 step 5
                    "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "self._hpaText(latlng.lat, latlng.lng)", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX",
-                   "LAKEOUT_TIER0", "'lakeoutlines-i.bin'", "'static/coast/lakeoutlines-v1'", "setLakeOutlineCoast", "_lakeOutFor", "_syncLakeOutlines", "dropQueue", "self._syncLakeOutlines(); });",
-                   "GridStore", "'altgrid/v1'", "setSatGrid", "_syncGrid", "10.48670/moi-00180", "'Gridded map'"):                     # section 82: the gridded map
+                   "LAKEOUT_TIER0", "'lakeoutlines-i.bin'", "'static/coast/lakeoutlines-v1'", "setLakeOutlineCoast", "_lakeOutFor", "_syncLakeOutlines", "dropQueue", "self._syncLakeOutlines(); self._syncRegions(); });",
+                   "GridStore", "'altgrid/v1'", "setSatGrid", "_syncGrid", "10.48670/moi-00180", "'Gridded map'",
+                   "'rrfs/v1/frames'", "'rrfs-frames-v1'", "validateRegionalManifest", "_ensureRegional", "_syncRegions", "coverNear", "sameRun",
+                   "_leaveModelFor", "_modelChoices", "regionFlowField", "'outside '"):                                            # section 99 D2: RRFS                     # section 82: the gridded map
   # section 51 step 3   # fix round 3 (the readout's call site: its closure is not driven by the Node harness)
         assert needle in js, needle
     for gone in ("setLakeOutlines", "this.lakeOutlines",                                  # owner 2026-10-23: lake outlines always on
@@ -321,10 +323,10 @@ def test_overlay_models_env_and_the_page(monkeypatch):
     GFS frames alone. The page carries the list; the flag-off page never does."""
     _on(monkeypatch)
     for env, want in (("", ["gfswave"]), ("gfswave", ["gfswave"]), ("gfswave,ecmwf", ["gfswave", "ecmwf"]), (" ECMWF , gfswave,ecmwf ,icon", ["ecmwf", "gfswave"]),
-                      ("icon,", ["gfswave"]), ("ecmwf", ["ecmwf"])):
+                      ("icon,", ["gfswave"]), ("ecmwf", ["ecmwf"]), ("gfswave,ecmwf,rrfs", ["gfswave", "ecmwf", "rrfs"]), ("rrfs,gfswave", ["rrfs", "gfswave"])):
         monkeypatch.setenv("MODEL_OVERLAY_MODELS", env)
         assert A._overlay_models() == want, env
-    assert A.OVERLAY_MODELS == ("gfswave", "ecmwf")
+    assert A.OVERLAY_MODELS == ("gfswave", "ecmwf", "rrfs")
     monkeypatch.setenv("MODEL_OVERLAY_MODELS", "gfswave,ecmwf")
     rec = G.run_scenarios(A)
     for name, old in GOLDEN.items():

@@ -38,7 +38,12 @@
     ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model',
       attribution: 'Overlay: <a href="/notice/ecmwf" target="_blank" rel="noopener" ' +
         'title="Based on data and products of ECMWF (CC BY 4.0), modified by Allshore Surf: quantised, calm water and sea ice left empty, coast-filled and rendered. ECMWF does not endorse this product.">ECMWF</a> ' +
-        '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener license">CC BY 4.0</a>' }
+        '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener license">CC BY 4.0</a>' },
+    // NOAA RRFS (plan section 99 D): its own Wind-speed model, regional (Hawaii, Puerto Rico, CONUS, Alaska; blank
+    // elsewhere), every hourly cycle merged into one manifest by the job (the newest source per valid hour) to +84 h.
+    // fields: the only layers it offers (no waves); a wave layer switches the model to the default.
+    rrfs: { prefix: 'rrfs/v1/frames', label: 'RRFS (NOAA, 3 km)', short: 'RRFS', cycleMs: 3.6e6, staleS: 6 * 3600, table: 'model', regional: true, fields: ['wind'],
+      attribution: 'Overlay: <a href="https://registry.opendata.aws/noaa-rrfs/" target="_blank" rel="noopener" title="NOAA Rapid Refresh Forecast System (RRFS) 10-m wind via NOAA Open Data on AWS, rendered by Allshore Surf; not an official NWS product">NOAA RRFS</a>' }
   };
   var DEFAULT_MODEL = 'gfswave';
   // A model this file knows (own keys only: never 'constructor' or 'toString'; G30-9).
@@ -2038,6 +2043,168 @@
     return out;
   }
   var LAKE_FX = new Float64Array(TILE), LAKE_PX = new Int32Array(TILE);
+  // ---- a regional model (plan section 99 D2: NOAA RRFS as its OWN Wind-speed model, never drawn over GFS / ECMWF) ----
+  // One manifest (schema rrfs-frames-v1) names, per valid time, a frame per REGION (Hawaii, Puerto Rico, CONUS, Alaska),
+  // each on its own lat/lon grid (the lake grids' rules: centre-registered, row 0 north, not periodic; lon0 in [-180, 180)
+  // with the east edge allowed past 180: Alaska crosses the date line). A step's picture is a BUNDLE of the regions near
+  // the view (lakeNearView per region: regions off the view are never fetched); everything outside them is blank. The job
+  // leaves a node another region serves empty, so at most one region has data at a point; the order only breaks ties.
+  var REGIONAL_SCHEMA = 'rrfs-frames-v1', REGION_ORDER = ['hi', 'pr', 'conus', 'ak'], MAX_REGIONS = 8;
+  function validRegionGridDef(g) {
+    if (!g || typeof g !== 'object' || g.registration !== 'center' || g.lon_periodic !== false) return false;
+    if (!(Number.isInteger(g.cols) && Number.isInteger(g.rows) && g.cols >= 2 && g.rows >= 2 && g.cols * g.rows <= MAX_LAKE_NODES)) return false;
+    if (!(typeof g.lat0 === 'number' && typeof g.lon0 === 'number' && typeof g.dlat === 'number' && typeof g.dlon === 'number' && g.dlat < 0 && g.dlon > 0)) return false;
+    var latS = g.lat0 + (g.rows - 1) * g.dlat, span = (g.cols - 1) * g.dlon;
+    return isFinite(latS) && isFinite(span) && g.lat0 <= 90 && latS >= -90 && g.lon0 >= -180 && g.lon0 < 180 && span < 360;
+  }
+  function validateRegionGrid(grid, frame) {
+    var ok = validRegionGridDef(grid) && frame && frame.cols === grid.cols && frame.rows === grid.rows && frame.q && frame.q.length === grid.cols * grid.rows;
+    if (!ok) throw new Error('region frame does not match its grid');
+  }
+  // A longitude in the region's own frame [lon0, lon0 + 360): world copies and the date line sample identically.
+  function regionLon(lg, lon) { return lg.lon0 + ((((lon - lg.lon0) % 360) + 360) % 360); }
+  // Is (lat, lon) inside the region's nodes (its box)?
+  function inRegionBox(lg, lat, lon) {
+    var fy = (lg.lat0 - lat) / -lg.dlat, fx = (regionLon(lg, lon) - lg.lon0) / lg.dlon;
+    return fy >= 0 && fy <= lg.rows - 1 && fx >= 0 && fx <= lg.cols - 1;
+  }
+  // THE region sampler: the code at (lat, lon), bilinear over the present nodes with sampleLake's absent rule (weight
+  // under 0.25: 0), not periodic, 0 beyond the nodes. The tiles, the readout and the particles' speeds all read here.
+  function regionCode(lf, lg, lat, lon) {
+    var fy = (lg.lat0 - lat) / -lg.dlat, fx = (regionLon(lg, lon) - lg.lon0) / lg.dlon, cols = lg.cols, rows = lg.rows;
+    if (!(fy >= 0 && fy <= rows - 1 && fx >= 0 && fx <= cols - 1)) return 0;
+    var r0 = Math.floor(fy), r1 = r0 + 1 < rows ? r0 + 1 : r0, fr = fy - r0, c0 = Math.floor(fx), c1 = c0 + 1 < cols ? c0 + 1 : c0, fc = fx - c0, q = lf.q;
+    var a = q[r0 * cols + c0], b = q[r0 * cols + c1], c = q[r1 * cols + c0], d = q[r1 * cols + c1], w = 0, acc = 0, wt;
+    if (a) { wt = (1 - fr) * (1 - fc); acc += a * wt; w += wt; }
+    if (b) { wt = (1 - fr) * fc; acc += b * wt; w += wt; }
+    if (c) { wt = fr * (1 - fc); acc += c * wt; w += wt; }
+    if (d) { wt = fr * fc; acc += d * wt; w += wt; }
+    return w < 0.25 ? 0 : acc / w;
+  }
+  // The bundle's code at (lat, lon): the first region (in order) with data there; 0 elsewhere.
+  function regionsCode(parts, lat, lon) {
+    for (var i = 0; i < parts.length; i++) { var c = regionCode(parts[i].frame, parts[i].grid, lat, lon); if (c) return c; }
+    return 0;
+  }
+  // The bundle's codes for an n x n lattice of pixel centres at world pixels (x0 + ox + i * step + 0.5, ...) of the tile
+  // coords into out[j * n + i] (0 = blank): the tiles (0, 0, 1, TILE) and the readout (px, py, 1, 1) alike. The same values
+  // as regionsCode per pixel (the first region with data wins), computed as sampleLake does: each region's column
+  // positions once per tile, its row once per row, the bilinear inline (the per-pixel calls cost 95 % of a 1080p playback).
+  function sampleRegions(parts, coords, ox, oy, step, n, out) {
+    var nW = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE + ox, y0 = coords.y * TILE + oy, np = parts.length, i, j, p, k = 0;
+    var FX = REG_FX.length >= np * n ? REG_FX : (REG_FX = new Float64Array(np * n));
+    for (p = 0; p < np; p++) {
+      var g0 = parts[p].grid, base0 = p * n;
+      for (i = 0; i < n; i++) FX[base0 + i] = (regionLon(g0, lngOfWorldX(x0 + i * step + 0.5, nW)) - g0.lon0) / g0.dlon;
+    }
+    for (j = 0; j < n; j++, k += n) {
+      var lat = latOfWorldY(y0 + j * step + 0.5, nW);
+      out.fill(0, k, k + n);
+      for (p = 0; p < np; p++) {
+        var g = parts[p].grid, cols = g.cols, rows = g.rows, fy = (g.lat0 - lat) / -g.dlat;
+        if (!(fy >= 0 && fy <= rows - 1)) continue;
+        var q = parts[p].frame.q, r0 = Math.floor(fy), r1 = r0 + 1 < rows ? r0 + 1 : r0, fr = fy - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols, base = p * n;
+        for (i = 0; i < n; i++) {
+          if (out[k + i]) continue;                         // an earlier region has data here
+          var fx = FX[base + i];
+          if (!(fx >= 0 && fx <= cols - 1)) continue;
+          var c0 = Math.floor(fx), c1 = c0 + 1 < cols ? c0 + 1 : c0, fc = fx - c0;
+          var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1], w = 0, acc = 0, wt;
+          if (a) { wt = w0 * (1 - fc); acc += a * wt; w += wt; }
+          if (b) { wt = w0 * fc; acc += b * wt; w += wt; }
+          if (c) { wt = fr * (1 - fc); acc += c * wt; w += wt; }
+          if (d) { wt = fr * fc; acc += d * wt; w += wt; }
+          if (w >= 0.25) out[k + i] = acc / w;
+        }
+      }
+    }
+    return out;
+  }
+  var REG_FX = new Float64Array(4 * TILE);
+  // The manifest of a regional model: the regions' grids (each a valid region grid), one wind field definition shared by
+  // every region (one legend and colour table; the GFS frames' range), a direction field, <= 512 frames in strictly
+  // increasing step and time, each naming only known regions and fields, every key under the model's prefix. Normalised
+  // for the rest of the client: m.regional, m.fields (the shared definitions), m.regionList (in REGION_ORDER).
+  function validateRegionalManifest(m, prefix) {
+    if (!m || m.schema !== REGIONAL_SCHEMA) throw new Error('unsupported manifest schema');
+    if (m.encoding !== ENCODING) throw new Error('unsupported frame encoding ' + m.encoding);
+    if (m.complete !== true) throw new Error('published run is not complete');
+    if (typeof m.run !== 'string' || !/^\d{10}$/.test(m.run) || typeof m.run_utc !== 'string' || isNaN(Date.parse(m.run_utc)) ||
+      !m.regions || typeof m.regions !== 'object' || Array.isArray(m.regions) || !Array.isArray(m.frames) || !m.frames.length || m.frames.length > 512 ||
+      (m.model !== undefined && (typeof m.model !== 'object' || m.model === null))) throw new Error('manifest incomplete');
+    if (typeof m.signature !== 'string' || !/^[0-9a-f]{16}$/.test(m.signature)) throw new Error('manifest incomplete');   // its identity (G67a P1-1)
+    var names = Object.keys(m.regions), fields = null, list = [], i, k;
+    if (!names.length || names.length > MAX_REGIONS) throw new Error('manifest incomplete');
+    for (i = 0; i < names.length; i++) {
+      var r = m.regions[names[i]], fs = r && r.fields;
+      if (!/^[a-z]{1,12}$/.test(names[i]) || !r || !validRegionGridDef(r.grid) || !fs || typeof fs !== 'object' || !lakeFieldOk(fs.wind) || !dirFieldOk(fs.wdir) ||
+        fs.wdir.resolutions.indexOf('full') < 0) throw new Error('manifest incomplete');
+      if (!fields) fields = { wind: fs.wind, wdir: fs.wdir };
+      else if (!lakeFieldMatches(fs.wind, fields.wind) || fs.wind.legend[0] !== fields.wind.legend[0] || fs.wind.legend[1] !== fields.wind.legend[1]) throw new Error('regions disagree on the wind scale');
+      var cover = coverOf(r.cover);
+      if (!cover) throw new Error('manifest incomplete');
+      list.push({ name: names[i], grid: r.grid, cover: cover });
+    }
+    list.sort(function (a, b) {
+      var ia = REGION_ORDER.indexOf(a.name), ib = REGION_ORDER.indexOf(b.name);
+      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || (a.name < b.name ? -1 : 1);
+    });
+    for (i = 0; i < m.frames.length; i++) {
+      var fr = m.frames[i], prev = i ? m.frames[i - 1] : null;
+      if (!fr || !Number.isInteger(fr.step) || fr.step < 0 || typeof fr.valid_utc !== 'string' || isNaN(Date.parse(fr.valid_utc)) || !fr.files || typeof fr.files !== 'object') throw new Error('bad frame entry ' + i);
+      if (prev && !(fr.step > prev.step && Date.parse(fr.valid_utc) > Date.parse(prev.valid_utc))) throw new Error('bad frame entry ' + i);
+      for (k in fr.files) {
+        var ff = fr.files[k];
+        if (!Object.prototype.hasOwnProperty.call(m.regions, k) || !ff || typeof ff !== 'object') throw new Error('bad frame entry ' + i);
+        for (var f in ff) if ((f !== 'wind' && f !== 'wdir') || !sstKey(ff[f]) || ff[f].indexOf(prefix + '/') !== 0) throw new Error('bad frame entry ' + i);
+      }
+    }
+    m.regional = true; m.fields = fields; m.regionList = list;
+    return m;
+  }
+  // A region's coverage mask (the job's 1-degree cells holding data, hex from the north-west, 4 cells a digit) decoded:
+  // {res, lat0, lon0, rows, cols, bits: Uint8Array}, or null when malformed.
+  function coverOf(c) {
+    if (!c || typeof c !== 'object' || !(typeof c.res === 'number' && c.res > 0 && c.res <= 10) || typeof c.lat0 !== 'number' || typeof c.lon0 !== 'number' ||
+      !Number.isInteger(c.rows) || !Number.isInteger(c.cols) || c.rows < 1 || c.cols < 1 || c.rows * c.cols > 1 << 20 || typeof c.hex !== 'string' ||
+      c.hex.length !== Math.ceil(c.rows * c.cols / 4) || !/^[0-9a-f]*$/.test(c.hex)) return null;
+    var bits = new Uint8Array(c.rows * c.cols);
+    for (var i = 0; i < bits.length; i++) bits[i] = (parseInt(c.hex.charAt(i >> 2), 16) >> (3 - (i & 3))) & 1;
+    return { res: c.res, lat0: c.lat0, lon0: c.lon0, rows: c.rows, cols: c.cols, bits: bits };
+  }
+  // Has the region data within `mg` screens of the view (its coverage mask, any world copy)? A region's lat/lon box is far
+  // larger than its data (Alaska's reaches 40.5 N across the whole West Coast): only cells holding data count.
+  function coverNear(cv, view, mg) {
+    var n = TILE * Math.pow(2, view.z), x0 = view.ox - mg * view.w, x1 = view.ox + (1 + mg) * view.w;
+    var y0 = Math.max(0, view.oy - mg * view.h), y1 = Math.min(n, view.oy + (1 + mg) * view.h);
+    if (!(y1 > y0)) return false;
+    var latN = latOfWorldY(y0, n), latS = latOfWorldY(y1, n), lonW = lngOfWorldX(x0, n), lonE = lngOfWorldX(x1, n);
+    var r0 = Math.max(0, Math.floor((cv.lat0 - latN) / cv.res)), r1 = Math.min(cv.rows - 1, Math.floor((cv.lat0 - latS) / cv.res));
+    if (r1 < r0) return false;
+    var per = Math.round(360 / cv.res), all = lonE - lonW >= 360, c0 = Math.floor((((lonW - cv.lon0) % 360) + 360) % 360 / cv.res);
+    var count = all ? per : Math.min(per, Math.ceil((lonE - lonW) / cv.res) + 1);
+    for (var k = 0; k < count; k++) {
+      var c = (c0 + k) % per;
+      if (c >= cv.cols) continue;
+      for (var r = r0; r <= r1; r++) if (cv.bits[r * cv.cols + c]) return true;
+    }
+    return false;
+  }
+  var REGION_NEAR_SCREENS = 0.5;                            // a region within half a screen of the view is fetched (a pan re-checks)
+  // The key of a region's frame of a step (null: the step has none for that region).
+  function regionFrameKey(fr, region, field) { var f = fr.files[region]; return f && typeof f[field] === 'string' ? f[field] : null; }
+  // The regions of the list whose data (their coverage mask; else their box) lies within REGION_NEAR_SCREENS of the view.
+  function regionsNear(list, view) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      if (!lakeNearView(view, list[i].grid, REGION_NEAR_SCREENS)) continue;
+      if (list[i].cover && !coverNear(list[i].cover, view, REGION_NEAR_SCREENS)) continue;
+      out.push(list[i].name);
+    }
+    return out;
+  }
+  // Does a model offer this field? (RRFS: wind only; MODEL_DEFS[...].fields, absent = every field.)
+  function modelOffers(key, field) { var d = hasModel(key) ? MODEL_DEFS[key] : null; return !!d && (!d.fields || !field || d.fields.indexOf(field) >= 0); }
   // The lake run's pointer and manifest (never a frame: the scheduler decodes those like the model's). One per bucket
   // root per page; the manifest survives a field switch and Off (abortAll only stops a load in progress). A newer run is
   // NOTED by recheck() and fetched into `next`; the scheduler adopts it between landings (adoptNewer), never under a
@@ -2494,6 +2661,7 @@
       this._one = new Float64Array(1); this._oneOut = new Float64Array(1);
       this._coast = null; this._clip = false; this.onRedraw = null;
       this._contour = null; this._F = null; this._sm = null; this._sv = null;
+      this._regions = null;                                // plan section 99 D2: a regional model's parts [{name, grid, frame}]
       this._src = null; this._sq = null;                   // plan section 44: the SST store the tiles sample instead of the frame
       this._lake = null; this._lakeCoast = null; this._lakeMask = false; this._lakeBox = null; this._lq = null;   // plan section 50: the Great Lakes
       this._lakeOut = null;                                // plan section 51: the lake-outline set (lines under OUTLINE_FIELDS)
@@ -2507,9 +2675,14 @@
     // frame {q, cols, rows}; grid = the manifest grid for that resolution; fdef = the manifest field
     // lake (plan section 50): the step's lake frame {frame, grid, entry, lo, hi}, drawn in the same redraw, or none.
     setFrame: function (frame, grid, fieldName, fdef, lut, entry, lake) {
-      validateGrid(grid, frame, fdef);
+      if (frame && frame.regional) {                       // a regional model's bundle (plan section 99 D2): each region on its own grid
+        if (!(fdef && typeof fdef.lo === 'number' && typeof fdef.hi === 'number' && fdef.lo < fdef.hi && fdef.legend && fdef.legend[0] < fdef.legend[1])) throw new Error('frame does not match the manifest grid');
+        for (var ri = 0; ri < frame.parts.length; ri++) validateRegionGrid(frame.parts[ri].grid, frame.parts[ri].frame);
+        if (lake) throw new Error('no lake frames under a regional model');
+      } else validateGrid(grid, frame, fdef);
       if (lake) { validateLakeGrid(lake.grid, lake.frame); if (lake.lo !== fdef.lo || lake.hi !== fdef.hi) throw new Error('lake frame is not in the field\u2019s code space'); }
       this._frame = frame; this._grid = grid; this._lut = lut; this.field = fieldName; this.fdef = fdef; this.entry = entry || null;
+      this._regions = frame && frame.regional ? frame.parts : null;
       this._nearest = fdef.interpolation === 'nearest'; this._lo = fdef.lo; this._hi = fdef.hi; this._legend = fdef.legend;
       this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
       this._lakeMask = !!(this._lakeCoast && LAKE_UNDER[fieldName]);
@@ -2517,7 +2690,7 @@
       this._gen++;
       this._redraw(true);
     },
-    clear: function () { this._frame = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._lakeMask = false; this._lake = null; this._sm = null; this.setSource(null, true); this._redraw(); },
+    clear: function () { this._frame = null; this._regions = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._lakeMask = false; this._lake = null; this._sm = null; this.setSource(null, true); this._redraw(); },
     // The lake frame drawn under the frame on the map (plan section 50): data {frame, grid, entry, lo, hi} or null. It
     // must share the field's code space (lo / hi; the scheduler checks the manifests, this is the last line). quiet: only
     // set it, for the setFrame that follows (one redraw); else the tiles with lake water are redrawn and the particles told.
@@ -2838,6 +3011,7 @@
     _code: function (r, cpos) { this._one[0] = cpos; this._codeRow(r, this._one, 1, this._oneOut, 0); return this._oneOut[0]; },
     valueAt: function (lat, lon) {
       if (!this._frame) return null;
+      if (this._regions) { var rc = regionsCode(this._regions, lat, lon); return rc ? this._value(rc) : null; }
       var g = this._grid, f = this._frame, r = (g.lat0 - lat) / -g.dlat;
       if (!(r >= 0 && r <= f.rows - 1)) return null;
       var c = (lon - g.lon0) / g.dlon, cpos = ((c % f.cols) + f.cols) % f.cols;
@@ -2849,6 +3023,7 @@
     // lake (plan section 50): the tile's lake water coverage; the lake frame's codes replace the model's there.
     tileCodes: function (coords, out, tier, lake) {
       if (this._src) return this._src.sampleGrid(coords, 0, 0, 1, TILE, out, tier || 0);
+      if (this._regions) return sampleRegions(this._regions, coords, 0, 0, 1, TILE, out);
       var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
       var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, colPos = this._colPos;
       for (var px = 0; px < TILE; px++) {
@@ -5384,6 +5559,51 @@
     }
     return { s: s, cols: cols, rows: rows, u: u, v: v };
   }
+  // A regional model's particles (plan section 99 D2): the screen lattice every s px, each point's vector from the first
+  // region (in order) with data around it: lakeVec over that region's speed and direction frames (one grid per region),
+  // bilinear over the present nodes (weight < 0.25: none), times the Mercator stretch, as flowField. No global frame,
+  // nothing outside the regions. regions: [{lf, ld, grid, lo, hi}] (speed frame, direction frame).
+  function regionFlowField(view, s, regions, field, prev) {
+    var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
+    var u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows), i, j, p;
+    if (reuse) { u.fill(0); v.fill(0); }
+    var spd = FLOW_SPEED[field] || FLOW_SPEED.wind, lons = new Float64Array(cols);
+    for (i = 0; i < cols; i++) lons[i] = lngOfWorldX(view.ox + i * s, n);
+    for (j = 0; j < rows; j++) {
+      var lat = latOfWorldY(view.oy + j * s, n), base = j * cols, k = Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
+      for (i = 0; i < cols; i++) {
+        for (p = 0; p < regions.length; p++) {
+          var R = regions[p], g = R.grid, fy = (g.lat0 - lat) / -g.dlat, fx = (regionLon(g, lons[i]) - g.lon0) / g.dlon;
+          if (!(fy >= 0 && fy <= g.rows - 1 && fx >= 0 && fx <= g.cols - 1)) continue;
+          var r0 = Math.floor(fy), r1 = r0 + 1 < g.rows ? r0 + 1 : r0, fr = fy - r0, c0 = Math.floor(fx), c1 = c0 + 1 < g.cols ? c0 + 1 : c0, fc = fx - c0;
+          var LF = R.lf.q, LD = R.ld.q, X = 0, Y = 0, wt = 0, w;
+          if (lakeVec(LF, LD, spd, R.lo, R.hi, r0 * g.cols + c0, LV)) { w = (1 - fr) * (1 - fc); X += LV[0] * w; Y += LV[1] * w; wt += w; }
+          if (lakeVec(LF, LD, spd, R.lo, R.hi, r0 * g.cols + c1, LV)) { w = (1 - fr) * fc; X += LV[0] * w; Y += LV[1] * w; wt += w; }
+          if (lakeVec(LF, LD, spd, R.lo, R.hi, r1 * g.cols + c0, LV)) { w = fr * (1 - fc); X += LV[0] * w; Y += LV[1] * w; wt += w; }
+          if (lakeVec(LF, LD, spd, R.lo, R.hi, r1 * g.cols + c1, LV)) { w = fr * fc; X += LV[0] * w; Y += LV[1] * w; wt += w; }
+          if (wt < 0.25) continue;
+          u[base + i] = k * X / wt; v[base + i] = -k * Y / wt;
+          break;
+        }
+      }
+    }
+    return { s: s, cols: cols, rows: rows, u: u, v: v };
+  }
+  // The screen rectangles (x0, y0, x1, y1 in view px, clipped to the view) of the regions' boxes, any world copy: where
+  // the particles of a regional model are born (uniform over the view, most would die at once over a wide view).
+  function regionRects(view, grids) {
+    var out = [], sc = Math.pow(2, view.z), n = TILE * sc;
+    for (var i = 0; i < grids.length; i++) {
+      var g = grids[i], a = worldXY(g.lon0, g.lat0), b = worldXY(g.lon0 + (g.cols - 1) * g.dlon, g.lat0 + (g.rows - 1) * g.dlat);
+      var bx0 = a[0] * sc, bx1 = b[0] * sc, by0 = Math.max(0, a[1] * sc - view.oy), by1 = Math.min(view.h, b[1] * sc - view.oy);
+      if (by1 <= by0) continue;
+      for (var k = Math.floor((view.ox - bx1) / n); k <= Math.ceil((view.ox + view.w - bx0) / n); k++) {
+        var x0 = Math.max(0, bx0 + k * n - view.ox), x1 = Math.min(view.w, bx1 + k * n - view.ox);
+        if (x1 > x0) out.push([x0, by0, x1, by1]);
+      }
+    }
+    return out;
+  }
   function nowMs() { return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now(); }
   // Safari, and every browser on iOS / iPadOS (all of them WebKit): WebKit with an iOS mark (iPad / iPhone / iPod, or
   // Chrome / Edge / Firefox for iOS: CriOS / EdgiOS / FxiOS), a Macintosh user agent on a touch screen (iPadOS asks for
@@ -5596,6 +5816,23 @@
     this.v = v; this._place(v); this.fframe = this.layer._frame;
     if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this._clear(); return; }   // no animation at all
     this.mode = 'particles';
+    if (this.dir.regional) {                                                     // a regional model (plan section 99 D2)
+      var regs = [], parts = this.layer._regions || [], dparts = this.dir.parts, grids = [], fine = Infinity;
+      for (var ri = 0; ri < parts.length; ri++) for (var di = 0; di < dparts.length; di++) {
+        if (dparts[di].name !== parts[ri].name || dparts[di].grid !== parts[ri].grid) continue;
+        regs.push({ lf: parts[ri].frame, ld: dparts[di].frame, grid: parts[ri].grid, lo: this.layer._lo, hi: this.layer._hi });
+        grids.push(parts[ri].grid); fine = Math.min(fine, parts[ri].grid.dlon);
+      }
+      var rcell = isFinite(fine) ? TILE * Math.pow(2, v.z) * fine / 360 : 0;
+      this.vf = regionFlowField(v, rcell >= 16 ? 8 : 4, regs, this.field, this.vf);
+      this.spawn = regionRects(v, grids);
+      this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));
+      if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;
+      if (!same) this._clear();
+      this._start();
+      return;
+    }
+    this.spawn = null;
     var cellPx = TILE * Math.pow(2, v.z) * this.dgrid.dlon / 360;
     if (!this.nodes || this.nodesFor !== this.dir || this.nodesFrame !== this.fframe || !windowCovers(this.nodes.win, nodeWindow(v, this.dgrid, this.dir, 0), this.dir.cols)) {   // once per step, or past the window
       this.nodes = vectorNodes(this.field, this.layer, this.dir, this.dgrid, this.nodes, nodeWindow(v, this.dgrid, this.dir, 1)); this.nodesFor = this.dir; this.nodesFrame = this.fframe;
@@ -5619,7 +5856,15 @@
     for (var i = 0; i < PARTICLE_MAX; i++) { this._respawn(i * 4, v); this.particles[i * 4 + 2] = Math.random() * this._life()[0]; }
   };
   FlowAnimator.prototype._respawn = function (k, v) {
-    var P = this.particles, life = this._life(); P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; P[k + 2] = 0;
+    var P = this.particles, life = this._life(), sp = this.spawn;
+    if (sp && sp.length) {                                 // a regional model: born inside a region's box (by area)
+      var tot = 0, q, r;
+      for (q = 0; q < sp.length; q++) tot += (sp[q][2] - sp[q][0]) * (sp[q][3] - sp[q][1]);
+      r = Math.random() * tot;
+      for (q = 0; q < sp.length - 1; q++) { r -= (sp[q][2] - sp[q][0]) * (sp[q][3] - sp[q][1]); if (r < 0) break; }
+      P[k] = sp[q][0] + Math.random() * (sp[q][2] - sp[q][0]); P[k + 1] = sp[q][1] + Math.random() * (sp[q][3] - sp[q][1]);
+    } else { P[k] = Math.random() * v.w; P[k + 1] = Math.random() * v.h; }
+    P[k + 2] = 0;
     P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
     this.histN[k >> 2] = 0; this.histT[k >> 2] = 0; this.flowT[k >> 2] = 0;     // a fresh particle has no tail
   };
@@ -6682,6 +6927,7 @@
     this.abort = null; this.readout = null; this.frameIndex = null; this.res = null; this.sheet = null; this.last = null;
     this._listeners = []; this._attributed = false; this.collapsed = undefined; this._touch = null; this._onVis = null;
     this.cache = new FrameCache(MAX_DECODED); this.inflight = {}; this.unavailable = {}; this.target = null; this.dir = 1; this.n = 0;
+    this.rcache = new FrameCache(MAX_DECODED * 4); this._regionNames = null;   // a regional model's decoded region frames; the regions near the view (plan section 99 D2)
     this.playing = false; this.wasPlaying = false; this.timer = null; this.runTimer = null; this.ui = null; this._lutFor = null;
     this._due = 0;                                          // when the frame being shown was due (the drift-free cadence)
     this._painting = false; this._paintWaiting = null; this._paintRaf = null; this._paintTask = null; this._paintFallback = null;   // the paint gate
@@ -6750,6 +6996,7 @@
   Overlay.prototype._dropRun = function () {
     this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
     this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
+    this.rcache.clear(); this._regionNames = null;
     this.transientFails = 0; this._staleShown = false; this.wasPlaying = false;
     if (this.layer) this.layer.clear();
     if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
@@ -6772,6 +7019,7 @@
   // it (G30-3, G30-5); the old model's save keeps the play state meanwhile.
   Overlay.prototype.setModel = function (key) {
     if (!hasModel(key) || this.models.indexOf(key) < 0 || key === this.model) return;
+    if (this.field && this.mode !== 'obs' && !modelOffers(key, this.field)) return;   // (the dropdown never offers it: plan section 99 D2)
     if (!this.field) { this.model = key; save({ model: key }); this._dropRun(); return; }
     if (this.mode === 'obs') {                               // (no dropdown on the observation's panel: only a call does this)
       this.model = key; save({ model: key });
@@ -6791,6 +7039,23 @@
     if (t !== null) { this._carry = { t: t, playing: playing }; this._switchT = t; }
     this.mount(this.field);
   };
+  // A field the model in use does not offer (RRFS has no waves; plan section 99 D2): the first offered model that offers
+  // it takes over through setModel's own path: the time and play state carried (this._carry), the old run dropped (an
+  // RRFS cycle and a GFS run can share a run string: mount must never reuse the frame index across them).
+  Overlay.prototype._leaveModelFor = function (fieldName) {
+    var to = null;
+    for (var i = 0; i < this.models.length; i++) if (modelOffers(this.models[i], fieldName)) { to = this.models[i]; break; }
+    if (!to) to = DEFAULT_MODEL;
+    var keep = this.frameIndex !== null && this.manifest ? this._anchorIndex() : null;
+    var shown = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
+    var t = this._switchT !== null ? this._switchT : shown;
+    var playing = this.frameIndex === null && this._carry ? this._carry.playing : !!(this.playing || this.wasPlaying);
+    if (this.manifest) this.pause();
+    this.model = to; save({ model: to });
+    this.abortAll();
+    this._dropRun();
+    if (t !== null) { this._carry = { t: t, playing: playing }; this._switchT = t; }
+  };
   // restore: true on the mount the page makes after a reload (the field was saved in this tab); the
   // saved valid time and play state are then reused when they are recent (restoreIndex), by this mount
   // or, if it never lands a frame, by the next one (another field picked meanwhile, Retry) until Off.
@@ -6798,6 +7063,7 @@
     if (hasObs(fieldName)) return this._mountObs(fieldName, restore);
     if (restore) this._pendingRestore = saved();
     if (this.mode === 'obs') this._leaveObs();
+    if (!modelOffers(this.model, fieldName)) this._leaveModelFor(fieldName);
     // The time position survives a field change and even a run change (nearest valid time), like Update. A field switch
     // keeps the REQUESTED time (a scrub or step still loading) when there is one; Retry (the same field again) goes back
     // to the frame on the map, which is cached (G4 B1). Taken before anything aborts. Before any frame is on the map the
@@ -6846,7 +7112,7 @@
       var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
       idx = prevValid === null ? (carry ? nearestIndex(m, carry.t) : rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
       resume = carry ? carry.playing : rIdx !== null && st.playing === true;
-      self.res = wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'half' : 'full';
+      self.res = m.regional || !wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'full' : 'half';   // a regional model: its one grid per region
       if (!waitCoast) return [m, undefined];
       // the first frame downloads beside the coastline; the first draw waits for the coastline at most COAST_FIRST_MS
       // (owner, G34 re-check R-1: on a slow link the waves come unclipped, then clipped when the coastline lands)
@@ -7551,6 +7817,9 @@
   // kinds 'lake' / 'lakedir' (plan section 50): the lake run's field / direction frame of the SAME VALID TIME, keyed by
   // the lake run (never a model key; 'glwu/-' names no frame: a step without a lake frame).
   Overlay.prototype._key = function (idx, kind) {
+    if (this.manifest && this.manifest.regional && kind !== 'lake' && kind !== 'lakedir' && kind !== 'pres') {   // a step's bundle of the regions near the view
+      return this.model + '/' + this.manifest.signature + '/' + (this._regionsNow().join(',') || '-') + '/' + (kind === 'dir' ? 'wdir' : this.field) + '/' + this.manifest.frames[idx].step;
+    }
     if (kind === 'lake' || kind === 'lakedir') {
       var li = this._lakeIndex(idx), lm = this.lake ? this.lake.manifest : null;
       return li < 0 || !lm ? 'glwu/-' : 'glwu/' + lm.run + '/' + kind + '/' + (kind === 'lake' ? this.field : LAKE_DIR_FIELD) + '/' + lm.frames[li].step;
@@ -7766,6 +8035,7 @@
   // (err.unavailable); an abort does not.
   Overlay.prototype._ensure = function (idx, kind) {
     kind = kind === 'dir' || kind === 'pres' || kind === 'lake' || kind === 'lakedir' ? kind : 'field';
+    if (this.manifest && this.manifest.regional && (kind === 'field' || kind === 'dir')) return this._ensureRegional(idx, kind);
     var dir = kind === 'dir', pres = kind === 'pres', lake = kind === 'lake' || kind === 'lakedir', cache = this._cacheOf(kind);
     var self = this, key = this._key(idx, kind), hit = cache.get(key);
     if (hit) return Promise.resolve(hit);
@@ -7788,26 +8058,7 @@
     // moving goes on, whatever its kind and whether a picture is on the map (the first picture beside the coastline,
     // re-check R-1; every frame, the owner's call after fix round 2's verification, V2-1: the 5 s in all had thrown away
     // direction and full-resolution frames still arriving at 30-45 KB/s).
-    function attempt(n) {
-      var inner = new AbortController(), stalled = false, onOuter = function () { inner.abort(); }, limit = Math.max(STALL_MS, 4 * self._interval());
-      ctrl.signal.addEventListener('abort', onOuter);
-      var stall = function () { stalled = true; inner.abort(); }, watchdog = setTimeout(stall, limit);
-      function done() { clearTimeout(watchdog); ctrl.signal.removeEventListener('abort', onOuter); }
-      var progress = function () { clearTimeout(watchdog); watchdog = setTimeout(stall, limit); };
-      return decodeFrame(url, inner.signal, grid, function () { clearTimeout(watchdog); }, false, progress).then(function (frame) {
-        done();
-        if (lake) { try { validateLakeGrid(grid, frame); } catch (e) { throw new Error('frame decode failed: ' + e.message); } }   // (a 'decode' failure: permanent)
-        return frame;
-      }, function (err) {
-        done();
-        if (stalled && !ctrl.signal.aborted && self.manifest === m) {
-          if (n + 1 < LATE_TRIES) return attempt(n + 1);                    // late: asked again, not marked
-          err = new Error('frame stalled');
-        }
-        throw err;
-      });
-    }
-    var p = attempt(0).then(function (frame) {
+    var p = this._download(url, grid, ctrl, m, lake ? function (f) { validateLakeGrid(grid, f); } : null).then(function (frame) {
       if (mine()) delete self.inflight[key];
       // A decode cannot be cancelled: one that outlives its abort (Update, Off, field or resolution
       // change) must neither be cached nor delivered.
@@ -7830,6 +8081,101 @@
     rec = this.inflight[key] = { promise: p, abort: ctrl, key: key, kind: kindName };
     return p;
   };
+  // One frame's download + decode under the scheduler's watchdog (the attempt rule above): check(frame) throws for a frame
+  // that is not the grid it must be (a 'decode' failure: permanent).
+  Overlay.prototype._download = function (url, grid, ctrl, m, check) {
+    var self = this;
+    function attempt(n) {
+      var inner = new AbortController(), stalled = false, onOuter = function () { inner.abort(); }, limit = Math.max(STALL_MS, 4 * self._interval());
+      ctrl.signal.addEventListener('abort', onOuter);
+      var stall = function () { stalled = true; inner.abort(); }, watchdog = setTimeout(stall, limit);
+      function done() { clearTimeout(watchdog); ctrl.signal.removeEventListener('abort', onOuter); }
+      var progress = function () { clearTimeout(watchdog); watchdog = setTimeout(stall, limit); };
+      return decodeFrame(url, inner.signal, grid, function () { clearTimeout(watchdog); }, false, progress).then(function (frame) {
+        done();
+        if (check) { try { check(frame); } catch (e) { throw new Error('frame decode failed: ' + e.message); } }   // (a 'decode' failure: permanent)
+        return frame;
+      }, function (err) {
+        done();
+        if (stalled && !ctrl.signal.aborted && self.manifest === m) {
+          if (n + 1 < LATE_TRIES) return attempt(n + 1);                    // late: asked again, not marked
+          err = new Error('frame stalled');
+        }
+        throw err;
+      });
+    }
+    return attempt(0);
+  };
+  // ---- a regional model (plan section 99 D2) ----
+  // The regions near the view (their data within half a screen), in order (kept between view changes: _syncRegions;
+  // the keys of every step carry them).
+  Overlay.prototype._regionsNow = function () {
+    if (!this._regionNames) this._regionNames = this.manifest && this.manifest.regional && this.map ? regionsNear(this.manifest.regionList, viewOf(this.map, this.layer)) : [];
+    return this._regionNames;
+  };
+  // The view moved or resized: when another set of regions is near it, the step on the map (or the one requested) is asked
+  // again (its new bundle reuses every region frame already decoded: rcache) and the ring follows.
+  Overlay.prototype._syncRegions = function () {
+    if (!this.manifest || !this.manifest.regional || this.mode !== 'model' || !this.map) return;
+    var was = this._regionNames ? this._regionNames.join(',') : null;
+    this._regionNames = null;
+    if (this._regionsNow().join(',') === was || this.frameIndex === null) return;
+    var self = this, idx = this._anchorIndex();
+    this._prefetch();
+    this._goto(idx).catch(function (err) { self._afterMiss(err); });
+  };
+  // A step of a regional model: the bundle of its frames of the regions near the view (field: the layer's field;
+  // dir: wdir), each region frame decoded once (rcache) and validated against its region's grid. A region whose frame
+  // fails is left blank in the bundle; only a step whose every region fails is unavailable. Bookkeeping as _ensure.
+  Overlay.prototype._ensureRegional = function (idx, kind) {
+    var dir = kind === 'dir', cache = this._cacheOf(kind), self = this, key = this._key(idx, kind), hit = cache.get(key);
+    if (hit) return Promise.resolve(hit);
+    if (this.inflight[key]) return this.inflight[key].promise;
+    if (this._isUnavailable(idx, kind)) { var e = new Error('frame unavailable'); e.unavailable = true; return Promise.reject(e); }
+    delete this.unavailable[key];
+    var m = this.manifest, fr = m.frames[idx], names = this._regionsNow().slice(), field = dir ? 'wdir' : this.field, ctrl = new AbortController(), rec;
+    function mine() { return self.inflight[key] === rec; }
+    var jobs = names.map(function (name) {
+      var g = null, fkey = regionFrameKey(fr, name, field);
+      for (var i = 0; i < m.regionList.length; i++) if (m.regionList[i].name === name) g = m.regionList[i].grid;
+      if (!g || !fkey) return Promise.resolve(null);
+      var rk = self.model + '/' + fkey, got = self.rcache.get(rk);          // by its own file key: a manifest's run repeats (G67a P1-1)
+      if (got) return Promise.resolve({ name: name, grid: g, frame: got });
+      return self._download(self.root + '/' + fkey, g, ctrl, m, function (f) { validateRegionGrid(g, f); }).then(function (f) {
+        if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
+        self.rcache.set(rk, f);
+        return { name: name, grid: g, frame: f };
+      }, function (err) {
+        if (ctrl.signal.aborted || self.manifest !== m || (err && err.name === 'AbortError')) throw err;
+        return { failed: err };
+      });
+    });
+    var p = Promise.all(jobs).then(function (got) {
+      var parts = [], fails = [], wanted = 0;
+      for (var i = 0; i < got.length; i++) { if (!got[i]) continue; wanted++; if (got[i].failed) fails.push(got[i].failed); else parts.push(got[i]); }
+      if (wanted && !parts.length) throw fails[0];                         // every region failed: the step is unavailable
+      return { regional: true, parts: parts, names: names, failed: fails.length, cols: 0, rows: 0, q: EMPTY_Q };
+    }).then(function (frame) {
+      if (mine()) delete self.inflight[key];
+      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
+      if (!dir) self.transientFails = 0;
+      var drawn = dir ? (self.flow ? self.flow.dir : null) : (self.layer ? self.layer._frame : null);
+      cache.set(key, frame, self.frameIndex !== null ? self._key(self.frameIndex, kind) : null, self._rankMap(), drawn);
+      self._prefetch();
+      return frame;
+    }, function (err) {
+      if (mine()) delete self.inflight[key];
+      if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
+      var kind_ = failureKind(err);
+      self.unavailable[key] = kind_ === 'permanent' ? true : Date.now() + RETRY_AFTER_MS;
+      err.unavailable = true;
+      if (kind_ === 'transient' && !dir && ++self.transientFails >= MAX_TRANSIENT) err.outage = true;
+      throw err;
+    });
+    rec = this.inflight[key] = { promise: p, abort: ctrl, key: key, kind: kind };
+    return p;
+  };
+  var EMPTY_Q = new Uint8Array(0);
   // What the ring wants, in priority order: the target's field frame, its direction frame (Animation
   // on), then the ring ahead and behind, field and direction interleaved.
   // The ring budget for the moment: by speed while playing, the paused one otherwise.
@@ -7937,6 +8283,7 @@
       cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p/' + this.iso.drawn.hl + 'm ' + this.iso.lastMs + 'ms' + (this.iso.terrain ? ' terrain' : ' no-terrain') : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
+    if (this.manifest && this.manifest.regional) lines.push('regions: ' + (this._regionNames ? this._regionNames.join(',') || 'none' : '-') + ', drawn ' + (this.layer && this.layer._regions ? this.layer._regions.map(function (p) { return p.name; }).join(',') || 'none' : '-') + ', decoded ' + this.rcache.size());
     if (this.lake) lines.push('lake: ' + this.lake.status + ' ' + (this.lake.manifest ? this.lake.manifest.run : '-') + (this.lake.next ? ' next ' + this.lake.next.m.run : '') + (this._lakeNear === false ? ' (off the view)' : '') + ', drawn ' + (this.layer && this.layer._lake ? this.layer._lake.entry.step : '-') + ', cache ' + this.lcache.size() + '/' + this.ldcache.size());
     if (this.radarPlayer) { var rs = this.radar; lines.push('radar: step ' + this.radarPlayer.idx + '/' + this.radarPlayer.frames.length + (this.radarPlayer.playing ? ' playing' : '') + ', loop ' + this.radarPlayer.loopH + ' h, ' + (rs.bytes / 1048576).toFixed(1) + ' MB, stack ' + (rs.stack.t1 ? 't1' : '-') + (rs.stack.t2 ? '+t2' : '')); }
     if (this.sst) lines.push('sst: ' + this.sst.status + ' ' + (this.sst.manifest ? this.sst.manifest.run : '-') + ', cells ' + (this.sst.bytes / 1048576).toFixed(1) + ' MB, in flight ' + Object.keys(this.sst.inflight).length);
@@ -8043,7 +8390,7 @@
       if (ptr === null) return cached;
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc))) throw new Error('published run is not complete');
       self.pointerAt = Date.now();
-      if (self.manifest && self.manifest.run === ptr.run) { self.pointer = ptr; return self.manifest; }
+      if (self.manifest && sameRun(self.manifest, ptr)) { self.pointer = ptr; return self.manifest; }
       // a time position is pinned (on the map, or carried through SST: G31-8): banner only
       if (self.manifest && (self.frameIndex !== null || (self._carry && !self._carry.free))) { self.newerRun = ptr; return self.manifest; }
       return self._fetchManifest(ptr, sig).then(function (m) {
@@ -8086,15 +8433,20 @@
       }).then(function (v) { finish(resolve, v); }, function (err) { finish(reject, err); });
     });
   };
+  // Is the pointer the manifest in hand? A regional model's manifest by its signature (its run repeats when a run lands
+  // after a newer hourly cycle, and goes back when a source turns stale: G67a P1-1), the others by their run.
+  function sameRun(m, ptr) { return m.regional ? typeof ptr.signature === 'string' && ptr.signature === m.signature : m.run === ptr.run; }
   Overlay.prototype._fetchManifest = function (ptr, sig) {
+    var def = this._def();
     return this._fetchJson(this.root + '/' + ptr.manifest, {}, sig, 'manifest').then(function (m) {
-      validateManifest(m);
-      if (m.run !== ptr.run) throw new Error('manifest/pointer run mismatch');
+      if (def.regional) validateRegionalManifest(m, def.prefix); else validateManifest(m);
+      if (m.run !== ptr.run || (m.regional && m.signature !== ptr.signature)) throw new Error('manifest/pointer run mismatch');
       return m;
     });
   };
   Overlay.prototype._adopt = function (m, ptr) {
     this.manifest = m; this.pointer = ptr; this.newerRun = null; this.n = m.frames.length;
+    this.rcache.clear(); this._regionNames = null;
     this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     if (this.flow) { this.flow.clearLakeData(); this.flow.clearData(); }
     if (this.iso) this.iso.clearData();
@@ -8117,8 +8469,8 @@
       if (!ptr || !ptr.complete || !ptr.run || !ptr.manifest || isNaN(Date.parse(ptr.published_utc)) || !self.manifest) return;
       self.pointerAt = Date.now();
       var rerender = false;
-      if (ptr.run > self.manifest.run) { self.newerRun = ptr; rerender = true; }
-      else if (ptr.run === self.manifest.run) self.pointer = ptr;
+      if (self.manifest.regional ? ptr.signature !== self.manifest.signature : ptr.run > self.manifest.run) { self.newerRun = ptr; rerender = true; }
+      else if (sameRun(self.manifest, ptr)) self.pointer = ptr;
       if (self._isStale() !== self._staleShown) rerender = true;              // the 9 h banner appears without a user action
       if (rerender && self.last && self.last.state === 'ready') self.render(self.last);
       else self._refreshRunLine();                                             // "expected shortly", the weekday after midnight: in place
@@ -8324,8 +8676,8 @@
   Overlay.prototype._on = function (ev, fn) { this.map.on(ev, fn); this._listeners.push([ev, fn]); };
   Overlay.prototype._bindMap = function () {
     var self = this;
-    this._on('zoomend', function () { self._radarView(); self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); });
-    this._on('moveend', function () { self._gesture = 0; self._syncLakeGate(); self._radarView(); self._bathyViewSoon(); });
+    this._on('zoomend', function () { self._radarView(); self._checkRes(); self._syncLakeGate(); self._syncLakeOutlines(); self._syncRegions(); });
+    this._on('moveend', function () { self._gesture = 0; self._syncLakeGate(); self._radarView(); self._bathyViewSoon(); self._syncRegions(); });
     this._on('viewreset', function () { self._syncLakeGate(); });
     this._on('movestart', function () { self._gesture = nowMs(); });
     this._on('zoomstart', function () { self._gesture = nowMs(); });
@@ -8351,7 +8703,7 @@
     if (key === this._sizeKey) return;                       // the map's event, the window and the observer report one change
     var hChanged = this._sizeH !== undefined && h !== this._sizeH;
     this._sizeKey = key; this._sizeH = h;
-    this._sizeAttribution(); this._checkRes(); this._syncLakeGate();
+    this._sizeAttribution(); this._checkRes(); this._syncLakeGate(); this._syncRegions();
     if (!this.last) return;
     var compactNow = this.isCompact(), wasCompact = !!this.sheet;
     // a desktop height change re-renders too: the room for the details (and the fold) follows the map's height (G26 B-1)
@@ -8365,6 +8717,7 @@
   };
   Overlay.prototype._checkRes = function () {
     if (!this.layer || !this.layer.hasFrame() || !this.manifest || this.frameIndex === null || !this.field) return;
+    if (this.manifest.regional) return;                      // one grid per region, no half / full (plan section 99 D2)
     var z = this.map.getZoom(), w = this._dims().w, want = this.res, d = this._dirDef(), dwant = d && this.flow ? dirRes(d, z, this.dres) : this.dres;
     if (this.res === 'full' && wantHalf(z, w, this.field)) want = 'half';
     else if (this.res === 'half' && wantFull(z, w, this.field)) want = 'full';
@@ -8496,6 +8849,7 @@
   Overlay.prototype._dirDef = function () {
     var name = this.field && DIR_FIELDS[this.field], m = this.manifest, f = m && name ? m.fields[name] : null;
     if (!dirFieldOk(f)) return null;
+    if (m.regional) return f.resolutions.indexOf('full') >= 0 ? f : null;
     if (this._dirGridsFor !== m || this._dirGridsField !== f) { this._dirGridsFor = m; this._dirGridsField = f; this._dirGridsOk = dirGridsOk(m, f); }
     return this._dirGridsOk ? f : null;
   };
@@ -8767,6 +9121,14 @@
     var lm = this.lake ? this.lake.manifest : null, li = lm && this.frameIndex !== null ? this._lakeIndex(this.frameIndex) : -1;
     return li >= 0 ? lm.run + '/' + lm.frames[li].step : null;
   };
+  // A regional model's readout where the drawn bundle has no value: "outside RRFS" outside every region's box; nothing
+  // (null) inside the box of a region that is not drawn (its frame failed or is still loading) or at a node left empty.
+  Overlay.prototype._regionWord = function (lat, lng) {
+    var m = this.manifest, parts = this.layer && this.layer._regions;
+    if (!m || !m.regional || !parts) return null;
+    for (var i = 0; i < m.regionList.length; i++) if (inRegionBox(m.regionList[i].grid, lat, lng)) return null;
+    return 'outside ' + this._def().short;
+  };
   Overlay.prototype._bindReadout = function () {
     var self = this, map = this.map, el = mk('div', 'ov-readout'); el.hidden = true;
     map.getContainer().appendChild(el); this.readout = el;
@@ -8823,6 +9185,11 @@
           else if (el.textContent === '…') el.textContent = w;        // the hovered step's word (playback moved on); never over other text
         });
         place(pt); return;
+      }
+      if ((v === null || v === undefined) && layer && layer._regions && self.manifest && self.manifest.regional) {   // plan section 99 D2
+        var where = self._regionWord(latlng.lat, latlng.lng);
+        if (!where) { el.hidden = true; return; }
+        el.textContent = where; place(pt); return;
       }
       if (v === null || v === undefined) { el.hidden = true; return; }
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
@@ -9320,15 +9687,15 @@
     if (st.state === 'loading') {
       // with a choice of models the dropdown stays while one loads: a slow or stuck model can be left (G30-3)
       var obs = this.mode === 'obs', lt = obs ? 'Loading ' + OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].label + '…' : 'Loading model frame…';
-      if (this.models.length > 1 && !obs) { var lh = mk('div', 'ov-row ov-head'); lh.appendChild(this._modelSelect()); host.appendChild(lh); }
+      if (this._modelChoices().length > 1 && !obs) { var lh = mk('div', 'ov-row ov-head'); lh.appendChild(this._modelSelect()); host.appendChild(lh); }
       host.appendChild(mk('div', 'ov-meta', lt)); this._say(lt); this._layoutSheet();
-      if (focusCls === 'ov-model-sel' && this.models.length > 1 && !obs) this._refocus(focusCls, host); else this._pendingFocus = focusCls;
+      if (focusCls === 'ov-model-sel' && this._modelChoices().length > 1 && !obs) this._refocus(focusCls, host); else this._pendingFocus = focusCls;
       return;
     }
     if (st.state === 'error') {
       this._say('Overlay unavailable: ' + st.message);
       var e = mk('div', 'ov-err', 'Overlay unavailable: ' + st.message + ' ');
-      if (this.models.length > 1 && this.mode !== 'obs') e.appendChild(this._modelSelect());   // a failing model must be escapable
+      if (this._modelChoices().length > 1 && this.mode !== 'obs') e.appendChild(this._modelSelect());   // a failing model must be escapable
       e.appendChild(button('ov-retry', 'Retry', 'Retry loading the overlay', function () { self._retry(); }));
       host.appendChild(e);
       if (OV_DEBUG) { this.ui = { debug: mk('pre', 'ov-debug') }; host.appendChild(this.ui.debug); this._debugOn(); }   // the readout stays with the error (the owner's iPad)
@@ -9352,7 +9719,7 @@
     head.appendChild(btn);
     // Open, with more than one model offered: the head line is the model dropdown (its value is the model in use; its
     // options the page's list); otherwise a text span (the model's name, or the folded summary line).
-    var modelSel = !collapsed && this.models.length > 1 ? this._modelSelect() : null;
+    var modelSel = !collapsed && this._modelChoices().length > 1 ? this._modelSelect() : null;
     var title = modelSel || mk('span', 'ov-title' + (!collapsed ? ' ov-model' : ''));
     head.appendChild(title);
     host.appendChild(head);
@@ -9575,12 +9942,20 @@
   // successor in the new panel gets it back (else the play button, else the toggle). Never taken from outside the panel.
   // The model dropdown: a native select (its options are the offered models' labels, in order; the value is the model in
   // use). A change switches the model (setModel); _syncUI only ever sets its value, never its text.
+  // The models the dropdown lists: those offering the field on show (RRFS under Wind speed only: plan section 99 D2), and
+  // the one in use whatever it is.
+  Overlay.prototype._modelChoices = function () {
+    var out = [];
+    for (var i = 0; i < this.models.length; i++) if (modelOffers(this.models[i], this.field) || this.models[i] === this.model) out.push(this.models[i]);
+    return out;
+  };
   Overlay.prototype._modelSelect = function () {
     var self = this, sel = mk('select', 'ov-title ov-model ov-model-sel');
     sel.setAttribute('aria-label', 'Overlay model'); sel.setAttribute('autocomplete', 'off');
-    for (var i = 0; i < this.models.length; i++) {
-      var opt = mk('option', null, MODEL_DEFS[this.models[i]].label); opt.value = this.models[i];
-      if (this.models[i] === this.model) opt.selected = true;
+    var list = this._modelChoices();
+    for (var i = 0; i < list.length; i++) {
+      var opt = mk('option', null, MODEL_DEFS[list[i]].label); opt.value = list[i];
+      if (list[i] === this.model) opt.selected = true;
       sel.appendChild(opt);
     }
     sel.value = this.model;
@@ -9670,7 +10045,9 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
+    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions,
+      regionLon: regionLon, inRegionBox: inRegionBox, regionFlowField: regionFlowField, regionRects: regionRects, regionsNear: regionsNear, regionFrameKey: regionFrameKey, modelOffers: modelOffers, REGION_ORDER: REGION_ORDER, REGIONAL_SCHEMA: REGIONAL_SCHEMA,
+      coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,
       frameKey: frameKey, pickFrame: pickFrame, validateManifest: validateManifest, validateGrid: validateGrid,
       wantHalf: wantHalf, wantFull: wantFull, legendTicks: legendTicks, tilePixelLatLng: tilePixelLatLng,

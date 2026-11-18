@@ -2627,23 +2627,38 @@
     var n = Math.pow(2, coords.z), d = (((coords.x - range.x0) % n) + n) % n;
     return d <= range.x1 - range.x0;
   }
+  // A tile Leaflet took off the map before its first draw: its ready call is dropped with its timer (review of section
+  // 101: left running, the 2-s timer reported the tile's key ready, which marked a NEW tile made at that key meanwhile, a
+  // drag away and back, loaded while still blank).
+  function tileGone(el) {
+    if (!el || !el._tDone) return;
+    el._tDone = null;
+    clearTimeout(el._tDoneTimer); el._tDoneTimer = null;
+  }
+  function watchUnload(layer) { if (typeof layer.on === 'function') layer.on('tileunload', function (e) { tileGone(e && e.tile); }); }
   // A new tile: drawn at once when the layer has nothing to draw (a clear, no cost), else queued for the sliced drawer: a
   // tile in the view for the next screen frames (plan section 101 E1: in idle time the colours of a panned view came 1-2 s
-  // after the map's own tiles, the page being busy with the particles), a buffer tile for idle time.
+  // after the map's own tiles, the page being busy with the particles), a tile outside it for idle time. While the map
+  // animates a zoom every new tile counts as in view: Leaflet makes them for the view the zoom ends on, and the map still
+  // reports the one it started from.
   function slicedCreateTile(coords, done) {
     var el = document.createElement('canvas'); el.width = TILE; el.height = TILE; el._ovGen = -1;
     if (!this._staleOk()) { this._draw(el, coords); setTimeout(function () { done(null, el); }, 0); return el; }
     el._tDone = done;
     el._tDoneTimer = setTimeout(function () { tileReady(el); }, TILE_DONE_MS);
-    this._queueStale(tileSeen(coords, viewRangeOf(this)));
+    this._queueStale(!!(this._map && this._map._animatingZoom) || tileSeen(coords, viewRangeOf(this)));
     return el;
   }
   // Draw the tiles that are behind (a new frame or step, a new tile): those in view first, then the buffer, until the slice
-  // is used up; then the next slice after the next frame (tiles in view still waiting, or a busy page) or in idle time
-  // (only buffer tiles left). inView (the page's 'move': a buffer
+  // is used up; then the next slice after the next frame (tiles in view still waiting, or this slice itself came on a
+  // frame or after an idle wait that timed out: a busy page) or in idle time (an idle slice that left only buffer tiles).
+  // inView (the page's 'move': a buffer
   // tile coming into view): only tiles in view, one slice, the rest after the next frame.
   function slicedDrawStale(inView, deadline) {
     if (!this._staleOk()) return;
+    // the page's 'move' call while a slice already waits for this frame: that slice draws the tiles in view first, so the
+    // drag keeps to ONE slice a frame (review of section 101: on a desktop the tiles a drag uncovers were drawn by both)
+    if (inView && this._staleQ && this._staleQ.raf !== undefined) return;
     var range = viewRangeOf(this), left = false, drew = 0, viewDone = false, viewLeft = false;
     var idle = !inView && !!(deadline && typeof deadline.timeRemaining === 'function' && !deadline.didTimeout);
     var clock = this._clock || nowMs, t0 = clock(), cost = this._drawMs || TILE_COST_MS;
@@ -2718,7 +2733,9 @@
   // Are a layer's tiles made only when a pan has ended? Touch devices: yes (nothing is drawn under a finger: phones,
   // tablets, an iPad asking for desktop pages, any coarse first pointer). A desktop: no (plan section 101 E2), Leaflet's
   // own default there: the tiles a drag uncovers are made every 200 ms while it runs and drawn by the sliced drawer, as
-  // the map's own tiles load. Where Leaflet says nothing about the device (the Node stubs): yes.
+  // the map's own tiles load. Where Leaflet says nothing about the device (the Node stubs): yes. A desktop with a touch
+  // screen as well (a touch laptop, a tablet with its keyboard on) is a desktop here, and each gesture decides: see
+  // touchMoving.
   function tilesWhenIdle() {
     try {
       var B = L.Browser, nav = typeof navigator !== 'undefined' && navigator ? navigator : null;
@@ -2728,10 +2745,37 @@
       return false;
     } catch (e) { return true; }
   }
+  // What last pressed on the map: 'mouse', 'touch' or 'pen' (the container's pointerdown, touchstart where there are no
+  // pointer events); kept on the map, watched once per map.
+  function watchPointer(map) {
+    var c = map && typeof map.getContainer === 'function' ? map.getContainer() : null;
+    if (!c || typeof c.addEventListener !== 'function' || map._ovPointerOn) return;
+    map._ovPointerOn = true;
+    var opt = { capture: true, passive: true };
+    c.addEventListener('pointerdown', function (e) { map._ovPointer = e && e.pointerType ? e.pointerType : 'mouse'; }, opt);
+    c.addEventListener('touchstart', function () { map._ovPointer = 'touch'; }, opt);
+  }
+  // Is the map being moved by a finger (or a pen, or a pinch)? Then no tiles are made until the gesture ends, on any
+  // device (review of section 101: a touch laptop is a desktop to tilesWhenIdle, and a pinch there would have filled
+  // each zoomed-out view with tiles to throw away).
+  function touchMoving(map) {
+    if (!map) return false;
+    if (map._ovPointer !== undefined && map._ovPointer !== 'mouse') return true;
+    return !!(map.touchZoom && map.touchZoom._zooming);
+  }
+  // Leaflet's own move handler for a layer that updates during a pan (GridLayer.getEvents takes a ready-made _onMove):
+  // the same throttled update, skipped while a finger moves the map.
+  function moveUpdater(layer) {
+    var run = function () { if (!touchMoving(layer._map) && typeof layer._onMoveEnd === 'function') layer._onMoveEnd(); };
+    var every = layer.options && layer.options.updateInterval > 0 ? layer.options.updateInterval : 200;
+    return L.Util && typeof L.Util.throttle === 'function' ? L.Util.throttle(run, every, layer) : run;
+  }
   var ModelGridLayer = L.GridLayer.extend({
     initialize: function (opts) {
       L.GridLayer.prototype.initialize.call(this, { pane: 'modelPane', tileSize: TILE, updateWhenZooming: false,
         updateWhenIdle: tilesWhenIdle(), keepBuffer: 1, opacity: opts.opacity, className: 'ov-tiles' });
+      if (!this.options.updateWhenIdle) this._onMove = moveUpdater(this);
+      watchUnload(this);
       this._frame = null; this._grid = null; this._lut = null; this._nearest = false; this._lo = 0; this._hi = 1;
       this._legend = [0, 1]; this.field = null; this.fdef = null; this.entry = null;
       this._codes = new Float64Array(TILE * TILE); this._colPos = new Float64Array(TILE);
@@ -3001,6 +3045,10 @@
         this._draw(t.el, t.coords);
       }
       if (later) this._queueStale();
+    },
+    onAdd: function (map) {
+      watchPointer(map);
+      return L.GridLayer.prototype.onAdd.call(this, map);
     },
     onRemove: function (map) {
       this._cancelStale();
@@ -3376,6 +3424,7 @@
   var SatLayer = L.GridLayer.extend({
     initialize: function () {
       L.GridLayer.prototype.initialize.call(this, { pane: 'obsPane', tileSize: TILE, updateWhenZooming: false, updateWhenIdle: true, keepBuffer: 1, className: 'ov-sat-tiles' });
+      watchUnload(this);
       this.store = null; this.mode = 'dots'; this.win = null; this.entry = null; this._lut = buildLut('hs', SAT_FDEF.legend); this._legend = SAT_FDEF.legend;
       this._gen = 0; this._staleQ = null; this._onStore = null; this.drawn = 0;
     },
@@ -4048,6 +4097,7 @@
   var RadarLayer = L.GridLayer.extend({
     initialize: function () {
       L.GridLayer.prototype.initialize.call(this, { pane: 'obsPane', tileSize: TILE, updateWhenZooming: false, updateWhenIdle: true, keepBuffer: 1, className: 'ov-radar-tiles' });
+      watchUnload(this);
       this.store = null; this.idx = -1; this.playing = false; this._gen = 0; this._staleQ = null;
       this._lut = radarLut(); this._code = new Float32Array(TILE * TILE); this._img = null;
     },
@@ -10264,7 +10314,7 @@
       MAX_DECODED: MAX_DECODED, MAX_INFLIGHT: MAX_INFLIGHT, STALL_MS: STALL_MS, LATE_TRIES: LATE_TRIES,
       PLAY_RING: PLAY_RING, ringFor: ringFor, tileInRange: tileInRange, STALE_TILE_MS: STALE_TILE_MS, STALE_MAX_MS: STALE_MAX_MS,
       workerSource: workerSource, workerMain: workerMain, FrameDecoder: FrameDecoder, getDecoder: getDecoder, disposeDecoder: disposeDecoder, resetDecoder: resetDecoder, setDecoderForTest: setDecoderForTest,
-      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, flowingAt: flowingAt, tileSeen: tileSeen, tilesWhenIdle: tilesWhenIdle, SLICE_MS: SLICE_MS, LOOK: LOOK, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
+      decodeFrame: decodeFrame, nodeWindow: nodeWindow, windowCovers: windowCovers, flowingAt: flowingAt, tileSeen: tileSeen, tilesWhenIdle: tilesWhenIdle, tileGone: tileGone, watchPointer: watchPointer, touchMoving: touchMoving, moveUpdater: moveUpdater, SLICE_MS: SLICE_MS, LOOK: LOOK, WATCHDOG_MS: WATCHDOG_MS, isWebKit: isWebKit, OV_DEBUG: OV_DEBUG, PARTICLE_PX2: PARTICLE_PX2, FLOW_STYLE: FLOW_STYLE, pageQuery: pageQuery,
       PAINT_FALLBACK_MS: PAINT_FALLBACK_MS, BUSY_STUCK_MS: BUSY_STUCK_MS, TRAIL_SPAN_MS: TRAIL_SPAN_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,

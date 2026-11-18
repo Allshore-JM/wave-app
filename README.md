@@ -1829,6 +1829,10 @@ the site's GFS station winds (8 runs) against NDBC real-time observations (buoys
 over-sea power law, x1.103; `--no-height` turns it off), paired by valid hour within 10 min, per grid and lead band on
 the station-hours both models have. `report.md` / `report.json`: speed MAE / bias / RMSE, direction MAE (>= 3 m/s),
 RRFS gust MAE / bias, and the gate per grid (>= 200 pairs and RRFS MAE <= GFS = pass; worse = the owner's call).
+`--stations` adds the site's wind stations (`tools/rrfs_verify_stations.py`; `--station-grids`, default `hi,pr`, since
+most Hawaii forecast stations are wave-only buoys): NWS API, METAR, CO-OPS and NDBC observations against RRFS's own
+cell at each station (the kept cell sources: short leads only) and GFS's 0.25-deg 10-m wind there (NOAA's S3 copy by
+byte range, bilinear; needs eccodes). Land stations are taken as measured.
 
 **Open-Meteo retry** (UI 1.31.0): the browser's Open-Meteo request for the other weather tabs is asked once more after
 2 s on a network error, a 5xx or the 20-s deadline (never on a 429, the visitor's own limit). A failure that stands

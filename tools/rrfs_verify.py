@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 
 BUCKET = "https://models.allshoresurf.com"
 NDBC = "https://www.ndbc.noaa.gov/data/realtime2"
@@ -156,8 +157,10 @@ def parse_ndbc(text):
 
 
 def is_buoy(sid):
-    """NDBC moored buoys have 5-digit numeric ids (anemometer ~4 m); C-MAN / coastal stations have letters."""
-    return len(sid) == 5 and sid.isdigit()
+    """NDBC moored buoys have 5-digit numeric ids (anemometer ~4 m); C-MAN / coastal stations have letters. A wind
+    station's id carries its network ("ndbc:51003"): only NDBC's count."""
+    net, _, bare = sid.rpartition(":")
+    return net in ("", "ndbc") and len(bare) == 5 and bare.isdigit()
 
 
 def observations(sids, cache_dir, get, pace=PACE_S, log=print):
@@ -282,17 +285,9 @@ def gate(result):
     return out
 
 
-def report_md(result, verdicts, meta):
-    lines = [f"# RRFS verification gate ({meta['built_utc']})", "",
-             f"Sources: {meta['rrfs_sources']} RRFS sources ({meta['rrfs_first']} .. {meta['rrfs_last']}), "
-             f"{meta['gfs_runs']} GFS runs; {meta['obs_stations']} NDBC stations with wind; observations "
-             f"{'scaled to 10 m for buoys (x%.3f)' % BUOY_TO_10M if meta['height'] else 'as measured'}.", "",
-             "## Gate (all leads to +84 h, matched station-hours)", "",
-             "| Grid | Verdict | Why |", "|---|---|---|"]
-    lines += [f"| {g} | {v} | {why} |" for g, (v, why) in verdicts.items()]
-    lines += ["", "## By grid and lead (speed m/s; direction deg for speeds >= 3 m/s; RRFS gust vs observed gust)", "",
-              "| Grid | Lead | Pairs | RRFS MAE | GFS MAE | RRFS bias | GFS bias | RRFS dir MAE | GFS dir MAE | RRFS gust MAE / bias |",
-              "|---|---|---|---|---|---|---|---|---|---|"]
+def table_md(result):
+    lines = ["| Grid | Lead | Pairs | RRFS MAE | GFS MAE | RRFS bias | GFS bias | RRFS dir MAE | GFS dir MAE | RRFS gust MAE / bias |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     order = [f"{lo}-{hi} h" for lo, hi in LEADS] + ["all"]
     for grid in ("hi", "pr", "conus", "ak", "all"):
         for band in order:
@@ -303,6 +298,29 @@ def report_md(result, verdicts, meta):
             gust = f"{r.get('gust_mae', '-')} / {r.get('gust_bias', '-')}"
             lines.append(f"| {grid} | {band} | {r['n']} | {r.get('mae', '-')} | {g.get('mae', '-')} | {r.get('bias', '-')} | "
                          f"{g.get('bias', '-')} | {r.get('dir_mae', '-')} | {g.get('dir_mae', '-')} | {gust} |")
+    return lines
+
+
+def verdicts_md(verdicts):
+    return ["| Grid | Verdict | Why |", "|---|---|---|"] + [f"| {g} | {v} | {why} |" for g, (v, why) in verdicts.items()]
+
+
+def report_md(result, verdicts, meta):
+    lines = [f"# RRFS verification gate ({meta['built_utc']})", "",
+             f"Sources: {meta['rrfs_sources']} RRFS sources ({meta['rrfs_first']} .. {meta['rrfs_last']}), "
+             f"{meta['gfs_runs']} GFS runs; {meta['obs_stations']} NDBC stations with wind; observations "
+             f"{'scaled to 10 m for buoys (x%.3f)' % BUOY_TO_10M if meta['height'] else 'as measured'}.", "",
+             "## Forecast stations: gate (all leads to +84 h, matched station-hours)", ""]
+    lines += verdicts_md(verdicts)
+    lines += ["", "## Forecast stations by grid and lead (speed m/s; direction deg for speeds >= 3 m/s; RRFS gust vs "
+              "observed gust)", ""]
+    lines += table_md(result)
+    st = meta.get("stations")
+    if st:
+        lines += ["", f"## Wind stations ({st['with_obs']} of {st['stations']} with observations: {st['networks']}; "
+                  f"RRFS cells of the {st['rrfs_sources']} kept cell sources, GFS 0.25-deg 10-m wind of {st['gfs_runs']} "
+                  f"runs; window {st['start']} .. {st['end']}; land stations as measured)", ""]
+        lines += verdicts_md(st["gate"]) + [""] + table_md(st["result"])
     return "\n".join(lines) + "\n"
 
 
@@ -311,6 +329,11 @@ def main(argv=None, get=http_get, now=None, log=print):
     ap.add_argument("--out", required=True, help="a directory for report.md, report.json and the NDBC cache")
     ap.add_argument("--no-height", action="store_true", help="observations as measured (no 4 m -> 10 m scaling)")
     ap.add_argument("--base", default=BUCKET)
+    ap.add_argument("--stations", action="store_true",
+                    help="also the site's wind stations: RRFS cells and GFS 10-m wind (eccodes) vs their observations")
+    ap.add_argument("--station-grids", default="hi,pr",
+                    help="with --stations: the grids whose wind stations are read (default hi,pr: the forecast "
+                         "stations already give CONUS and Alaska plenty of pairs; 'all' for every grid)")
     a = ap.parse_args(argv)
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     os.makedirs(a.out, exist_ok=True)
@@ -325,13 +348,65 @@ def main(argv=None, get=http_get, now=None, log=print):
     meta = {"built_utc": f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC", "rrfs_sources": len(cycles),
             "rrfs_first": cycles[0] if cycles else None, "rrfs_last": cycles[-1] if cycles else None,
             "gfs_runs": len({f[3] for f in gf}), "obs_stations": len(obs), "height": not a.no_height}
+    if a.stations:
+        meta["stations"] = station_gate(a, now, get, log)
     with open(os.path.join(a.out, "report.json"), "w", encoding="utf-8") as f:
-        json.dump({"meta": meta, "gate": verdicts, "result": result}, f, indent=1)
+        json.dump({"meta": meta, "gate": verdicts, "result": result}, f, indent=1, default=str)
     md = report_md(result, verdicts, meta)
     with open(os.path.join(a.out, "report.md"), "w", encoding="utf-8") as f:
         f.write(md)
     log(md)
     return 0
+
+
+def _get_json(get):
+    def f(url):
+        raw = get(url)
+        return json.loads(raw) if raw else None
+    return f
+
+
+def station_gate(a, now, get, log, stations_path=None, reader=None, fetch_mod=None, decode=None):
+    """The wind-station section: {stations, with_obs, networks, rrfs_sources, gfs_runs, start, end, result, gate}."""
+    import rrfs_grid as G
+    import rrfs_verify_stations as S
+    if reader is None:
+        import rrfs_wind
+        reader = rrfs_wind.RrfsWinds(lambda: a.base, lambda url, cap: get(url),
+                                     lambda url, s, e: _ranged(url, s, e))
+    if fetch_mod is None:
+        sys.path.insert(0, os.path.join(ROOT, "tools", "model_frames"))
+        import fetch as fetch_mod
+    sel = getattr(a, "station_grids", "hi,pr")
+    stations = S.load_stations(stations_path or os.path.join(ROOT, "wind_stations.json"), G.locate,
+                               None if sel in (None, "", "all") else set(sel.split(",")))
+    srcs = reader.sources(need_cells=True)
+    if not srcs:
+        log("no RRFS cell sources")
+        return None
+    start = min(datetime.strptime(s["cycle"], "%Y%m%d%H") for s in srcs)
+    obs = S.observations(stations, start, now, _get_json(get), lambda url: (get(url) or b"").decode("utf-8", "replace"),
+                         os.path.join(a.out, "stations"), log=log)
+    have = [s for s in stations if s[0] in obs]
+    rr = S.rrfs_at_stations(reader, have, G.locate, log=log)
+    gf = S.gfs_at_stations(have, start, now, fetch_mod, decode or S.eccodes_decode, log=log)
+    grids = {s[0]: G.locate(s[1], s[2])[0] for s in have}
+    result = compare(pair(rr, obs, not a.no_height), pair(gf, obs, not a.no_height), grids)
+    nets = {}
+    for s in have:
+        nets[s[3]] = nets.get(s[3], 0) + 1
+    return {"stations": len(stations), "with_obs": len(have), "networks": ", ".join(f"{k} {v}" for k, v in sorted(nets.items())),
+            "rrfs_sources": len(srcs), "gfs_runs": len({f[3] for f in gf}), "start": f"{start:%Y-%m-%d %H} UTC",
+            "end": f"{now:%Y-%m-%d %H:%M} UTC", "result": result, "gate": gate(result)}
+
+
+def _ranged(url, start, end):
+    req = urllib.request.Request(url, headers=dict(UA, Range=f"bytes={start}-{end}"))
+    with urllib.request.urlopen(req, timeout=60) as r:
+        body = r.read()
+        if getattr(r, "status", 206) != 206 or len(body) != end - start + 1:
+            raise IOError(f"range {start}-{end} of {url}: {getattr(r, 'status', '?')} {len(body)} B")
+        return body
 
 
 if __name__ == "__main__":

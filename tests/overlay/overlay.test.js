@@ -1594,3 +1594,123 @@ test('section 101 E2: the wave layer makes its tiles during a drag on a desktop 
     if (nav) Object.defineProperty(global, 'navigator', nav); else delete global.navigator;
   }
 });
+
+// ---- plan section 101, review fixes ----
+test('section 101 review P2-1: the page\'s move call draws nothing while a slice waits for this frame (one slice a frame during a drag); with an idle wait or nothing queued it draws the tiles in view at once', async () => {
+  let now = 0; const frames = [], idles = []; let id = 0;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); return ++id; };
+  global.cancelAnimationFrame = () => {};
+  global.requestIdleCallback = (fn) => { idles.push(fn); return ++id; };
+  global.cancelIdleCallback = () => {};
+  try {
+    const { l } = layer101(() => now);
+    const drawn = []; l._draw = function (el, c) { now += 4; drawn.push(c.x); el._ovGen = this._gen; }; l._drawMs = 4;
+    const put = (x) => { l._tiles[x + ':10:6'] = { el: { _ovGen: -1 }, coords: { x, y: 10, z: 6 } }; };
+    put(10); put(11);
+    l._queueStale(true);                                                         // a frame slice waits
+    l._drawStale(true); l._drawStale(true);
+    assert.deepEqual(drawn, [], 'the move call leaves the tiles to the queued slice');
+    frames.shift()(); await new Promise((r) => setTimeout(r, 3));
+    assert.deepEqual(drawn, [10, 11], 'which draws them');
+    put(10); l._tiles['10:10:6'].el._ovGen = -1;
+    l._drawStale(true); assert.deepEqual(drawn, [10, 11, 10], 'nothing queued: drawn in the move call');
+    l._tiles['11:10:6'].el._ovGen = -1; l._queueStale();                        // an idle wait
+    assert.equal(idles.length, 1);
+    l._drawStale(true); assert.deepEqual(drawn, [10, 11, 10, 11], 'an idle wait does not hold the move call');
+    l._cancelStale();
+  } finally { for (const k of ['requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback']) delete global[k]; }
+});
+
+test('section 101 review P2-2 / P3-2: each gesture decides: a finger, a pen or a pinch makes no tiles while it moves the map, a mouse does; the pointer is watched once per map', () => {
+  const heard = {}, opts = [];
+  const map = { getContainer: () => ({ addEventListener(ev, fn, o) { (heard[ev] = heard[ev] || []).push(fn); opts.push(o); } }) };
+  assert.equal(I.touchMoving(null), false); assert.equal(I.touchMoving(map), false, 'nothing pressed yet: as a mouse');
+  I.watchPointer(map); I.watchPointer(map);
+  assert.equal(heard.pointerdown.length, 1, 'once per map'); assert.equal(heard.touchstart.length, 1);
+  assert.ok(opts.every((o) => o && o.capture === true && o.passive === true), 'capturing, passive listeners');
+  heard.pointerdown[0]({ pointerType: 'touch' }); assert.equal(I.touchMoving(map), true);
+  heard.pointerdown[0]({ pointerType: 'mouse' }); assert.equal(I.touchMoving(map), false, 'the mouse again');
+  heard.pointerdown[0]({ pointerType: 'pen' }); assert.equal(I.touchMoving(map), true);
+  heard.pointerdown[0]({}); assert.equal(I.touchMoving(map), false, 'no pointer type: a mouse');
+  heard.touchstart[0](); assert.equal(I.touchMoving(map), true, 'touch events without pointer events');
+  heard.pointerdown[0]({ pointerType: 'mouse' }); map.touchZoom = { _zooming: true }; assert.equal(I.touchMoving(map), true, 'a pinch in progress');
+  map.touchZoom._zooming = false; assert.equal(I.touchMoving(map), false);
+  I.watchPointer({}); I.watchPointer(null);                                      // no container: nothing, no throw
+  // the layer's move handler: Leaflet's throttled update, skipped while a finger moves the map
+  const U = global.L.Util, thr = [];
+  try {
+    global.L.Util = { throttle: (fn, ms, ctx) => { thr.push([ms, ctx]); return function () { return fn.apply(ctx, arguments); }; } };
+    let ups = 0; const layer = { _map: map, options: { updateInterval: 200 }, _onMoveEnd() { ups++; } };
+    const mv = I.moveUpdater(layer);
+    assert.deepEqual(thr, [[200, layer]], 'throttled as Leaflet does, every updateInterval');
+    mv(); assert.equal(ups, 1, 'a mouse drag: tiles made');
+    heard.pointerdown[0]({ pointerType: 'touch' }); mv(); mv(); assert.equal(ups, 1, 'a finger: none until the gesture ends');
+    heard.pointerdown[0]({ pointerType: 'mouse' }); mv(); assert.equal(ups, 2);
+    delete global.L.Util; I.moveUpdater({ _map: map, options: {}, _onMoveEnd() { ups++; } })(); assert.equal(ups, 3, 'no Leaflet throttle (a stub): still gated');
+  } finally { if (U) global.L.Util = U; else delete global.L.Util; }
+});
+
+test('section 101 review P2-2: a desktop layer carries its own gated move handler and watches the pointer when added; a touch device\'s layer has neither', () => {
+  const nav = Object.getOwnPropertyDescriptor(global, 'navigator'), B = global.L.Browser, add = global.L.GridLayer.prototype.onAdd;
+  try {
+    Object.defineProperty(global, 'navigator', { value: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142', maxTouchPoints: 10 }, configurable: true, writable: true });
+    global.L.Browser = { mobile: false };
+    const d = new I.ModelGridLayer({ opacity: 1 });
+    assert.equal(d.options.updateWhenIdle, false, 'a touch laptop is a desktop to the option'); assert.equal(typeof d._onMove, 'function', 'and its move handler is the gated one');
+    let ups = 0; d._onMoveEnd = () => { ups++; }; d._map = { _ovPointer: 'touch' }; d._onMove(); assert.equal(ups, 0);
+    d._map._ovPointer = 'mouse'; d._onMove(); assert.equal(ups, 1);
+    const seen = []; let based = 0;
+    global.L.GridLayer.prototype.onAdd = function () { based++; return this; };
+    const m = { getContainer: () => ({ addEventListener(ev) { seen.push(ev); } }) };
+    d.onAdd(m); assert.deepEqual(seen.sort(), ['pointerdown', 'touchstart']); assert.equal(based, 1, 'then Leaflet\'s own onAdd');
+    global.L.Browser = { mobile: true };
+    const t = new I.ModelGridLayer({ opacity: 1 });
+    assert.equal(t.options.updateWhenIdle, true); assert.equal(Object.prototype.hasOwnProperty.call(t, '_onMove'), false, 'Leaflet binds no move handler at all');
+  } finally {
+    if (B) global.L.Browser = B; else delete global.L.Browser;
+    if (add) global.L.GridLayer.prototype.onAdd = add; else delete global.L.GridLayer.prototype.onAdd;
+    if (nav) Object.defineProperty(global, 'navigator', nav); else delete global.navigator;
+  }
+});
+
+test('section 101 review P3-1: while the map animates a zoom every new tile asks for the next frame (Leaflet makes them for the view the zoom ends on)', () => {
+  const { l, map } = layer101();
+  const asked = []; l._queueStale = function (soon) { asked.push(soon); };
+  global.document = { createElement: el101 };
+  try {
+    const mk = (c) => { const e = l.createTile(c, () => {}); clearTimeout(e._tDoneTimer); };
+    mk({ x: 6, y: 9, z: 6 }); assert.deepEqual(asked, [false], 'outside the view, no zoom: idle time');
+    map._animatingZoom = true; mk({ x: 6, y: 9, z: 6 }); mk({ x: 3, y: 4, z: 5 });
+    assert.deepEqual(asked, [false, true, true]);
+    map._animatingZoom = false; mk({ x: 6, y: 9, z: 6 }); assert.deepEqual(asked, [false, true, true, false]);
+  } finally { delete global.document; }
+});
+
+test('section 101 review P3-4: a tile taken off the map before its first draw drops its ready call and its 2-s timer (wave, satellite and radar layers)', async () => {
+  const { l } = layer101();
+  l._queueStale = function () {};
+  global.document = { createElement: el101 };
+  const proto = [I.ModelGridLayer, I.SatLayer, I.RadarLayer], had = proto.map((P) => P.prototype.on);
+  try {
+    let ready = 0; const el = l.createTile({ x: 10, y: 10, z: 6 }, () => { ready++; });
+    assert.equal(typeof el._tDone, 'function'); assert.ok(el._tDoneTimer);
+    I.tileGone(el);
+    assert.equal(el._tDone, null); assert.equal(el._tDoneTimer, null);
+    l._draw(el, { x: 10, y: 10, z: 6 });                                         // even a late draw reports nothing
+    await new Promise((r) => setTimeout(r, 5)); assert.equal(ready, 0);
+    I.tileGone(el); I.tileGone(null); I.tileGone({});                            // nothing to drop: no throw
+    // each layer listens for Leaflet's tileunload
+    for (const P of proto) {
+      const on = []; P.prototype.on = function (ev, fn) { on.push([ev, fn]); return this; };
+      const layer = P === I.ModelGridLayer ? new P({ opacity: 1 }) : new P();
+      assert.equal(on.filter((x) => x[0] === 'tileunload').length, 1);
+      const e2 = { _tDone() {}, _tDoneTimer: setTimeout(() => {}, 10) };
+      on.find((x) => x[0] === 'tileunload')[1]({ tile: e2 }); assert.equal(e2._tDone, null); assert.equal(e2._tDoneTimer, null);
+      on.find((x) => x[0] === 'tileunload')[1](undefined);
+      if (layer._cancelStale) layer._cancelStale();
+    }
+  } finally {
+    proto.forEach((P, i) => { if (had[i]) P.prototype.on = had[i]; else delete P.prototype.on; });
+    delete global.document;
+  }
+});

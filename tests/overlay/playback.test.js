@@ -106,8 +106,8 @@ function world(opts) {
         w.pendingCoast.push(() => res(w.coastAnswer(url)));
         if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
       });
-      const rr = /\/rrfs\/v1\/frames\/(\d{10})\/([a-z]+)\//.exec(url);                // an RRFS region frame: its region's grid size
-      if (rr) { const g = RRFS_GRIDS[rr[2]]; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: g.cols, h: g.rows, tag: 40 + Number(rr[1].slice(-2)), url }) }); }
+      const rr = /\/rrfs\/v1\/frames\/(\d{10})\/([a-z]+)\/(wind|wdir)\//.exec(url);    // an RRFS region frame: its region's grid size (wdir: half)
+      if (rr) { const g = rr[3] === 'wdir' ? RRFS_HALF[rr[2]] : RRFS_GRIDS[rr[2]]; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: g.cols, h: g.rows, tag: 40 + Number(rr[1].slice(-2)), url }) }); }
       const run = /\/v1\/(\d{10})\//.exec(url)[1], half = url.indexOf('/half/') >= 0, lake = url.indexOf('/glwu/v1/') >= 0;
       return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: lake ? LAKE_GRID.cols : half ? 720 : 1440, h: lake ? LAKE_GRID.rows : half ? 361 : 721, tag: Number(run.slice(-2)), url }) });
     },
@@ -200,6 +200,7 @@ const A = manifest('2026092212', '2026-09-22T12:00:00Z', 12), B = manifest('2026
 // RRFS (plan section 99 D2): the real dry-run manifest's regions, re-timed onto run A's day; frames hourly from +1 h.
 const RRFS_FIX = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'rrfs_frames', 'manifest.json'), 'utf8'));
 const RRFS_GRIDS = Object.fromEntries(Object.entries(RRFS_FIX.regions).map(([k, v]) => [k, v.grid]));
+const RRFS_HALF = Object.fromEntries(Object.entries(RRFS_FIX.regions).map(([k, v]) => [k, v.grid_half]));
 function rrfsManifest(run, runUtc, signature) {
   const m = JSON.parse(JSON.stringify(RRFS_FIX)), t0 = Date.parse(runUtc);
   m.run = run; m.run_utc = runUtc; m.signature = signature || 'a1b2c3d4e5f60718';
@@ -3943,5 +3944,93 @@ test('section 99 D2: a withdrawn RRFS pointer (complete false) fails the load cl
   o.setModel('rrfs'); await settle(); await settle();
   assert.equal(o.model, 'rrfs'); assert.equal(o.manifest, null); assert.equal(o.last.state, 'error');
   assert.deepEqual(o._modelChoices(), THREE);
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+
+test('section 99 D2 G67 P1-1: the region set is never stale - Off, pan, On; a pan while the first RRFS frame loads', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  assert.deepEqual(o.layer._regions.map((p) => p.name), ['hi']);
+  o.unmount(); await settle();
+  w.view = { lat: 61.2, lng: -150 };                                     // Anchorage, while Off (no moveend heard)
+  o.mount('wind'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.deepEqual(o.layer._regions.map((p) => p.name), ['ak'], 'the set follows the view at the next mount');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+  const w2 = world();
+  w2.view = { lat: 21.4, lng: -157.9 };
+  w2.pointer = ptr(A); w2.manifests[A.run] = A; w2.manifests['rrfs/' + R.run] = R; w2.pointers = { rrfs: rptr(R) };
+  const o2 = w2.create({ models: THREE });
+  o2.mount('wind'); await settle(); await w2.release(1);
+  o2.setModel('rrfs'); await settle();                                   // the Hawaii frame asked, not landed yet
+  assert.equal(o2.frameIndex, null);
+  w2.view = { lat: 61.2, lng: -150 }; o2._syncRegions(); await settle();  // the pan (or the IP fly-to) meanwhile
+  await releaseRrfs(w2);
+  assert.deepEqual(o2.layer._regions.map((p) => p.name), ['ak'], 'the map shows the regions on screen');
+  o2.pause(); clearInterval(o2.runTimer); o2.unmount();
+});
+
+test('section 99 D2 G67 P2-2/P2-3: a region failing for now is drawn blank, NOT cached, and asked again after its cooldown; a mixed all-fail is not for good', async () => {
+  const w = world();
+  w.view = { lat: 18.4, lng: -66.1 };                                    // San Juan at zoom 6: Puerto Rico + CONUS
+  const o = await onRrfs(w);
+  const k = (i) => String(R.frames[i].step).padStart(3, '0'), far = o.frameIndex + 30;
+  const conus = `https://x/rrfs/v1/frames/${R.run}/conus/wind/f${k(far)}.png`;
+  w.failNext[conus] = 'network';
+  o.seek(far); await settle(); await releaseRrfs(w);
+  assert.equal(o.frameIndex, far); assert.deepEqual(o.layer._regions.map((p) => p.name), ['pr']);
+  const held = o.cache.get(o._key(far));
+  assert.ok(held && held.retryAt > Date.now() && held.retryAt < Date.now() + 2 * w.I.STALL_MS + 120000, 'kept with a retry time (no re-request storm)');
+  const mark = Object.keys(o.unavailable).find((x) => x.startsWith('region:') && x.includes('/conus/wind/f' + k(far)));
+  assert.ok(mark && typeof o.unavailable[mark] === 'number', 'the region frame cools down');
+  const n = w.fetches.filter((u) => u === conus).length;
+  o.seek(far - 1); await settle(); await releaseRrfs(w); o.seek(far); await settle(); await releaseRrfs(w);
+  assert.equal(w.fetches.filter((u) => u === conus).length, n, 'not asked again during its cooldown');
+  o.unavailable[mark] = Date.now() - 1; held.retryAt = Date.now() - 1;   // the cooldown ends
+  o.seek(far - 1); await settle(); await releaseRrfs(w); o.seek(far); await settle(); await releaseRrfs(w);
+  assert.equal(w.fetches.filter((u) => u === conus).length, n + 1, 'asked again once');
+  assert.deepEqual(o.layer._regions.map((p) => p.name), ['pr', 'conus']); assert.equal(o.cache.get(o._key(far)).retryAt, 0);
+  const far2 = far + 10;
+  w.failNext[`https://x/rrfs/v1/frames/${R.run}/pr/wind/f${k(far2)}.png`] = 404;
+  w.failNext[`https://x/rrfs/v1/frames/${R.run}/conus/wind/f${k(far2)}.png`] = 'network';
+  o.seek(far2); await settle(); await releaseRrfs(w);
+  const u = o.unavailable[o._key(far2)];
+  assert.ok(typeof u === 'number', 'a 404 and a network failure together: unavailable for now, not for good (' + u + ')');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+test('section 99 D2 G67 M7/M9: a re-read pointer with the same run and a new signature is adopted; a manifest whose signature is not the pointer\u2019s is refused', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  const R2 = rrfsManifest(R.run, R.run_utc, 'ffffffffffff0002');
+  w.manifests['rrfs/' + R.run] = R2; w.pointers.rrfs = rptr(R2);
+  o.unmount(); o.pointerAt = 0;                                          // Off, then On after the 30-min re-read
+  o.mount('wind'); await settle(); await releaseRrfs(w);
+  assert.equal(o.manifest.signature, R2.signature, 'the same run string, the new manifest');
+  o.pause(); clearInterval(o.runTimer); o.unmount();
+  const w2 = world();
+  w2.view = { lat: 21.4, lng: -157.9 };
+  w2.pointer = ptr(A); w2.manifests[A.run] = A; w2.manifests['rrfs/' + R.run] = R; w2.pointers = { rrfs: Object.assign(rptr(R), { signature: '0000000000000bad' }) };
+  const o2 = w2.create({ models: THREE });
+  o2.mount('wind'); await settle(); await w2.release(1);
+  o2.setModel('rrfs'); await settle(); await settle();
+  assert.equal(o2.manifest, null); assert.equal(o2.last.state, 'error');
+  o2.pause(); clearInterval(o2.runTimer); o2.unmount();
+});
+
+test('section 99 D2 G67 P3-6: the readout says "outside RRFS" where no region has DATA, even inside a region\u2019s box', async () => {
+  const w = world();
+  w.view = { lat: 21.4, lng: -157.9 };
+  const o = await onRrfs(w);
+  const ak = o.manifest.regionList.find((r) => r.name === 'ak');
+  let spot = null;
+  for (let lat = 41; lat < 75 && !spot; lat += 0.5) for (let lon = -205; lon < -95 && !spot; lon += 0.5) {
+    if (w.I.inRegionBox(ak.grid, lat, lon) && !o.manifest.regionList.some((r) => w.I.coverHas(r.cover, lat, lon))) spot = [lat, lon];
+  }
+  assert.ok(spot, 'a point inside Alaska\u2019s box without data');
+  assert.equal(o._regionWord(spot[0], spot[1]), 'outside RRFS');
+  assert.equal(o._regionWord(61.2, -150), null, 'Anchorage: Alaska has data (not drawn here): no word');
   o.pause(); clearInterval(o.runTimer); o.unmount();
 });

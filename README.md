@@ -1811,7 +1811,17 @@ one gone stale), so a failed manifest write is repaired by the next tick and a s
 a live source. Prune keeps the frames of every source either main pointer keeps and every source either overlay pointer
 names, the frames.json of every kept source, and the manifests the two overlay pointers name. A region with a frame over
 2 MB (the browser's cap) is dropped from its source and the workflow fails (the owner hears of it). Writes: 680 PNGs a
-run, 144 a cycle (~170k a month). Review: `docs/reviews/rrfs-frames-G67a-adversarial.md`.
+run, 144 a cycle (~170k a month). Review: `docs/reviews/rrfs-frames-G67a-adversarial.md`. The direction (`wdir`) is
+published at half resolution (every second node of the region grid, `grid_half` in the manifest; the speed keeps the
+full grid): the browser decodes a quarter of the pixels for the particles (section 99 D2 perf gate).
+
+**RRFS in the overlay (section 99 D2, asset 2.28.0).** With `rrfs` in `MODEL_OVERLAY_MODELS` (e.g.
+`gfswave,ecmwf,rrfs`), the model dropdown offers "RRFS (NOAA, 3 km)" under Wind speed only (a wave layer switches to the
+first model offering it, the time kept). RRFS is shown alone: blank outside its four regions, the readout "outside
+RRFS" where no region has data. Each step is a bundle of the region frames whose data (the manifest's `cover`) lies
+within a tenth of a screen of the view; a pan re-checks; a failed region draws blank and is asked again after its
+cooldown. Caches and adoption go by the manifest's `signature` (its `run` repeats). Particles from each region's speed
+and half-resolution direction, born in the regions' data cells. Review: `docs/reviews/rrfs-overlay-G67-adversarial.md`.
 
 ### RRFS wind in the forecast tables (plan section 99, the site)
 

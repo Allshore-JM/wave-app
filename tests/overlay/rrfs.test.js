@@ -33,7 +33,8 @@ const MAN = () => JSON.parse(fs.readFileSync(path.join(FIX, 'manifest.json'), 'u
 const SAMP = JSON.parse(fs.readFileSync(path.join(FIX, 'hi_f012_samples.json'), 'utf8'));
 const HI = SAMP.grid;
 const HIQ = { q: new Uint8Array(fs.readFileSync(path.join(FIX, 'hi_wind_f012.bin'))), cols: HI.cols, rows: HI.rows };
-const HID = { q: new Uint8Array(fs.readFileSync(path.join(FIX, 'hi_wdir_f012.bin'))), cols: HI.cols, rows: HI.rows };
+const HIH = { cols: Math.ceil(HI.cols / 2), rows: Math.ceil(HI.rows / 2), lat0: HI.lat0, lon0: HI.lon0, dlat: 2 * HI.dlat, dlon: 2 * HI.dlon, registration: 'center', lon_periodic: false };
+const HID = { q: new Uint8Array(fs.readFileSync(path.join(FIX, 'hi_wdir_f012.bin'))), cols: HIH.cols, rows: HIH.rows };   // the direction: every second node
 const PREFIX = 'rrfs/v1/frames';
 const TILE = 256;
 
@@ -163,17 +164,20 @@ function viewAt(lat, lng, z, w, h) {
   return { z, w: w || 1920, h: h || 1080, ox: p[0] * sc - (w || 1920) / 2, oy: p[1] * sc - (h || 1080) / 2, zt: Math.round(z) };
 }
 
-test('the regions near a view (their DATA within half a screen, not their boxes): Oahu, the West Coast, Alaska, the open Atlantic', () => {
+test('the regions near a view (their DATA within a tenth of a screen, not their boxes): Oahu, the West Coast, Alaska, the open Atlantic', () => {
   const list = I.validateRegionalManifest(MAN(), PREFIX).regionList;
+  assert.equal(I.REGION_NEAR_SCREENS, 0.1);
   assert.deepEqual(I.regionsNear(list, viewAt(21.4, -157.9, 9)), ['hi']);
   assert.deepEqual(I.regionsNear(list, viewAt(21.4, -157.9, 9, 375, 812)), ['hi'], 'a phone');
   assert.deepEqual(I.regionsNear(list, viewAt(37.5, -122.5, 9)), ['conus'], 'San Francisco');
-  // a 1080p view at zoom 7 over California reaches 47 N with its half-screen margin: Alaska's own data off Oregon /
-  // Washington (west of CONUS's edge) is near; its box alone (40.5 N, the whole coast) would also pull in a view at 41 N
-  assert.deepEqual(I.regionsNear(list, viewAt(37.5, -122.5, 7)), ['conus', 'ak']);
-  assert.deepEqual(I.regionsNear(list, viewAt(34.0, -118.5, 8)), ['conus'], 'Los Angeles: inside Alaska\u2019s box, not near its data');
+  // a 1080p California view at zoom 7: Alaska's own data off Oregon (west of CONUS's edge) is more than a tenth of a
+  // screen away (at half a screen both were decoded: +73 MB heap peaks at shark); Seattle has both on screen
+  assert.deepEqual(I.regionsNear(list, viewAt(37.5, -122.5, 7)), ['conus']);
+  assert.deepEqual(I.regionsNear(list, viewAt(47.6, -122.3, 7)), ['conus', 'ak'], 'Seattle');
+  assert.deepEqual(I.regionsNear(list, viewAt(61.0, -150.0, 6)), ['ak'], 'Alaska at zoom 6');
   const ak = list.find((r) => r.name === 'ak');
-  assert.ok(I.lakeNearView(viewAt(41.5, -122.4, 8), ak.grid, 0.5), 'the box test alone would fetch Alaska there');
+  assert.ok(I.lakeNearView(viewAt(41.5, -122.4, 8), ak.grid, 0.1), 'Redding, CA is inside Alaska\u2019s box ...');
+  assert.deepEqual(I.regionsNear(list, viewAt(41.5, -122.4, 8)), ['conus'], '... but not near its data (the cover mask)');
   assert.deepEqual(I.regionsNear(list, viewAt(61.2, -150, 8)), ['ak'], 'Anchorage');
   assert.deepEqual(I.regionsNear(list, viewAt(52, 179.5, 7)), ['ak'], 'the Aleutians at the date line');
   assert.deepEqual(I.regionsNear(list, viewAt(18.4, -66.1, 9)), ['pr'], 'San Juan');
@@ -198,7 +202,9 @@ test('the coverage mask decodes the job\u2019s hex (north-west first, 4 cells a 
 test('the particles: vectors only inside the regions, from the region’s own speed and direction; born inside the boxes', () => {
   const m = I.validateRegionalManifest(MAN(), PREFIX), fd = m.fields.wind;
   const v = viewAt(20.5, -157.5, 6, 1200, 800);
-  const vf = I.regionFlowField(v, 8, [{ lf: HIQ, ld: HID, grid: HI, lo: fd.lo, hi: fd.hi }], 'wind', null);
+  assert.equal(HID.q.length, HIH.cols * HIH.rows);
+  assert.ok(I.halfOf(HI, I.validateRegionalManifest(MAN(), PREFIX).regionList[0].gridHalf));
+  const vf = I.regionFlowField(v, 8, [{ lf: HIQ, lg: HI, ld: HID, dg: HIH, lo: fd.lo, hi: fd.hi }], 'wind', null);
   const n = 256 * Math.pow(2, v.z);
   let inside = 0, moving = 0;
   for (let j = 0; j < vf.rows; j++) for (let i = 0; i < vf.cols; i++) {
@@ -229,7 +235,7 @@ test('the animator rebuilds a regional step from the bundle pair (no global fram
   const bundle = { regional: true, parts: [{ name: 'hi', grid: HI, frame: HIQ }], cols: 0, rows: 0, q: new Uint8Array(0) };
   layer.setFrame(bundle, undefined, 'wind', fd, null, m.frames[12], null);
   const fa = Object.create(I.FlowAnimator.prototype);
-  Object.assign(fa, { canvas: {}, ctx: null, layer, field: 'wind', dir: { regional: true, parts: [{ name: 'hi', grid: HI, frame: HID }] }, v: null, particles: null, suspended: 0 });
+  Object.assign(fa, { canvas: {}, ctx: null, layer, field: 'wind', dir: { regional: true, parts: [{ name: 'hi', grid: HIH, frame: HID }] }, v: null, particles: null, suspended: 0 });
   fa.view = () => v; fa._place = () => {}; fa._clear = () => {}; fa._start = () => { fa.started = true; }; fa.stop = () => {};
   fa._rebuild();
   assert.equal(fa.mode, 'particles'); assert.ok(fa.started); assert.ok(fa.vf && fa.vf.u.some((x) => x !== 0));
@@ -239,7 +245,7 @@ test('the animator rebuilds a regional step from the bundle pair (no global fram
     const p = fa.particles[k * 4], q = fa.particles[k * 4 + 1];
     assert.ok(p >= x0 && p <= x1 && q >= y0 && q <= y1, 'born inside the Hawaii box');
   }
-  fa.dir = { regional: true, parts: [{ name: 'pr', grid: HI, frame: HID }] };   // a direction of another region: no pair, no vectors
+  fa.dir = { regional: true, parts: [{ name: 'pr', grid: HIH, frame: HID }] };  // a direction of another region: no pair, no vectors
   fa._rebuild();
   assert.ok(!fa.vf.u.some((x) => x !== 0));
 });
@@ -267,4 +273,57 @@ test('the tile sampler equals regionsCode at EVERY pixel (real Hawaii frame; Ala
     }
     assert.ok(nz > 0, JSON.stringify(coords) + ' has data');
   }
+});
+
+
+// ------------------------------------------------------------------------------------------------- G67 fixes, pinned
+
+test('the direction is the half grid (every second node from the first); a manifest without it, or with another, is refused', () => {
+  const m = MAN();
+  assert.equal(m.regions.hi.fields.wdir.resolutions[0], 'half');
+  for (const bad of [(r) => { delete r.grid_half; }, (r) => { r.grid_half.cols += 1; }, (r) => { r.grid_half.dlat = r.grid.dlat; }, (r) => { r.grid_half.lon0 += 0.01; },
+    (r) => { r.fields.wdir.resolutions = ['full']; }]) {
+    const mm = MAN(); bad(mm.regions.conus);
+    assert.throws(() => I.validateRegionalManifest(mm, PREFIX), /manifest incomplete/);
+  }
+});
+
+function uniform(lat0, rows, cols, d, code) {                   // a region grid of 1-deg cells, every node `code`
+  const g = { cols, rows, lat0, lon0: -170, dlat: -d, dlon: d, registration: 'center', lon_periodic: false };
+  const h = { cols: Math.ceil(cols / 2), rows: Math.ceil(rows / 2), lat0, lon0: -170, dlat: -2 * d, dlon: 2 * d, registration: 'center', lon_periodic: false };
+  return { g, h, f: { q: new Uint8Array(cols * rows).fill(code), cols, rows } };
+}
+
+test('the particles: speed x the Mercator stretch (G67 M22) and the FIRST region with data wins (M23)', () => {
+  const fd = { lo: 0, hi: 61.7, legend: [0, 30.9] };
+  const A = uniform(70, 71, 41, 1, 100);                         // 70 N .. 0, 170 W .. 130 W, speed code 100
+  const dirE = { q: new Uint8Array(A.h.cols * A.h.rows).fill(1 + Math.round(270 * 254 / 360) % 254), cols: A.h.cols, rows: A.h.rows };   // from the west
+  const dirN = { q: new Uint8Array(A.h.cols * A.h.rows).fill(1), cols: A.h.cols, rows: A.h.rows };                                         // from the north
+  const view = { z: 2, w: 1024, h: 1024, ox: 0, oy: 0 };                // the whole zoom-2 world
+  const sc = 4, p0 = I.worldXY(-150, 60), p1 = I.worldXY(-150, 1);
+  const vf = I.regionFlowField(view, 4, [{ lf: A.f, lg: A.g, ld: dirE, dg: A.h, lo: fd.lo, hi: fd.hi }], 'wind', null);
+  const at = (p) => { const i = Math.round(p[0] * sc / 4), j = Math.round(p[1] * sc / 4); return [vf.u[j * vf.cols + i], vf.v[j * vf.cols + i]]; };
+  const a = at(p0), b = at(p1);
+  assert.ok(a[0] > 0 && Math.abs(a[1]) < 0.02 * a[0] && b[0] > 0, 'a westerly blows east (code 192 = 270.7 deg)');
+  const lat60 = I.latOfWorldY(Math.round(p0[1] * sc / 4) * 4, 256 * sc), lat1 = I.latOfWorldY(Math.round(p1[1] * sc / 4) * 4, 256 * sc);
+  const k = (lat) => Math.min(3, 1 / Math.cos(lat * Math.PI / 180));
+  assert.ok(Math.abs(a[0] / b[0] - k(lat60) / k(lat1)) < 0.02, 'the Mercator stretch: ' + (a[0] / b[0]) + ' vs ' + k(lat60) / k(lat1));
+  const vf2 = I.regionFlowField(view, 4, [{ lf: A.f, lg: A.g, ld: dirN, dg: A.h, lo: fd.lo, hi: fd.hi }, { lf: A.f, lg: A.g, ld: dirE, dg: A.h, lo: fd.lo, hi: fd.hi }], 'wind', null);
+  const j0 = Math.round(p0[1] * sc / 4), i0 = Math.round(p0[0] * sc / 4);
+  assert.ok(vf2.v[j0 * vf2.cols + i0] > 0 && Math.abs(vf2.u[j0 * vf2.cols + i0]) < 1e-6, 'the first region (a northerly: south, screen down) wins');
+});
+
+test('coverNear sees the southernmost cell row (G67 M26), coverHas reads one cell, coverRects find the date line on either world copy (M6)', () => {
+  const cv = { res: 1, lat0: 50, lon0: 170, rows: 10, cols: 30, bits: new Uint8Array(300) };
+  for (let c = 5; c < 20; c++) cv.bits[9 * 30 + c] = 1;           // only the southern row: 40-41 N, 175 E .. 170 W
+  const v = viewAt(40.5, 180, 8, 400, 120);
+  assert.equal(I.coverNear(cv, v, 0), true, 'the south row is near');
+  assert.equal(I.coverHas(cv, 40.5, -178), true); assert.equal(I.coverHas(cv, 40.5, 182), true); assert.equal(I.coverHas(cv, 41.5, -178), false);
+  assert.equal(I.coverHas(cv, 40.5, 172), false, 'a cell without data');
+  const r1 = I.coverRects(v, cv, 4000), sc = Math.pow(2, 8), n = 256 * sc;
+  const v2 = Object.assign({}, v, { ox: v.ox + n });               // the same place on the next world copy
+  const r2 = I.coverRects(v2, cv, 4000);
+  assert.ok(r1.length > 0 && r1.length === r2.length, 'both copies: ' + r1.length + ' / ' + r2.length);
+  for (const [x0, y0, x1, y1] of r1) assert.ok(x0 >= 0 && y0 >= 0 && x1 <= v.w && y1 <= v.h && x1 > x0 && y1 > y0);
+  assert.equal(I.coverRects(viewAt(35, -150, 1, 1920, 1080), { res: 1, lat0: 80, lon0: -180, rows: 160, cols: 360, bits: new Uint8Array(57600).fill(1) }, 4000), null, 'past the cap: null (the boxes then)');
 });

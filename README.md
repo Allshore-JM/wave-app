@@ -1794,6 +1794,23 @@ next tick retries), 1 a failure (`failed/<CYCLE>.json`, retried after 30 min, at
 new source for 6 h). Manual: `python tools/model_frames/rrfs.py --dry-run --cycle 2026111713 --grids hi --out DIR`.
 Fixtures: `tests/capture_rrfs_fixtures.py`; the decode tests need eccodes (skipped in the tests CI, run locally).
 
+**The overlay frames (plan section 99 D1).** The same build writes the Wind-speed overlay's frames for RRFS as its own
+model (never drawn over GFS / ECMWF), under `rrfs/v1/frames/` with their own pointer:
+
+| Object | Contents |
+|---|---|
+| `frames/<CYCLE>/<region>/{wind,wdir}/f<step>.png` | per region (`hi`, `pr` 0.025 deg; `conus` 0.05 deg; `ak` 0.07 deg across the date line, `REGIONS` in rrfs.py; each <= 2^20 nodes) the speed (the GFS frames' `wind` encoding and range, so the legend and colours match) and the direction FROM (circular), 8-bit grey, 0 = missing. Each node is the nearest RRFS cell of the source's cell series (the tables' numbers), drawn only where `rrfs_grid.locate` picks that grid (CONUS before Alaska off Washington). |
+| `frames/<CYCLE>/frames.json` | the source's frame set: template, regions and grids, PNG sizes |
+| `frames/<NEWEST>/manifest-<stamp>.json` | schema `rrfs-frames-v1`: each valid hour from the newest source covering it (the newest hourly cycle's +1..+18 h, then the newest run to +84 h; sources past 8 h (cycle) / 18 h (run) after their cycle time are not used), an explicit key per region and field |
+| `frames/latest.json` | the overlay's pointer (`run`, `manifest`, `complete`, `encoding`, `frames`, `sources`, `signature`), written last |
+
+The main pointer's sources carry a `frames` block (template, regions) for the newest 2 runs and 3 cycles. Every tick
+rewrites the manifest only when its frames change (a new source, or one gone stale), so a failed manifest write is
+repaired by the next tick. Prune keeps the frames of every source either main pointer keeps and every source either
+overlay pointer names, and the manifests the two overlay pointers name. A frame over 2 MB (the browser's cap) publishes
+the source without frames and fails the workflow (the owner hears of it). Writes: 680 PNGs a run, 144 a cycle
+(~170k a month).
+
 ### RRFS wind in the forecast tables (plan section 99, the site)
 
 With `RRFS_WIND=1` (unset = every table byte for byte as before) the station and forecast-point tables inside RRFS's

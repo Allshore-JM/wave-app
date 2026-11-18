@@ -17,7 +17,21 @@ Published under rrfs/v1/ (everything immutable but the pointer, written last):
   <CYCLE>/<grid>.json     {"format": "rrfs-cells-v1", "grid", "cycle", "kind", "steps", "nx", "ny", "record_bytes",
                           "fields", "sha256", ...}
   latest.json             {"format": "rrfs-pointer-v1", "published_utc", "sources": [newest first: {"cycle", "kind",
-                          "steps", "stations", "cells": {grid: json key} or null}]}
+                          "steps", "stations", "cells": {grid: json key} or null, "frames": {"doc", "template",
+                          "regions": {region: [fields]}} or null}]}
+
+The Wind-speed overlay's frames (plan section 99 D; RRFS is its OWN model in the overlay's dropdown, never drawn over
+GFS / ECMWF), under rrfs/v1/frames/ with their own pointer:
+
+  frames/<CYCLE>/<region>/<field>/f<step:03d>.png   one region (hi, pr, conus, ak) on its own lat/lon grid (REGIONS),
+                          8-bit grey in the GFS frames' encoding (encode.ENCODING): wind = speed over encode.FIELDS["wind"]
+                          lo / hi (the legend and colours match GFS), wdir = direction FROM (circular); each node the
+                          nearest RRFS cell of the source's cell series (the tables' numbers); a node another grid serves
+                          first (rrfs_grid.ORDER) or outside the grid is missing (0)
+  frames/<CYCLE>/frames.json         the source's frame set: template, regions, sizes
+  frames/<NEWEST>/manifest-<stamp>.json   schema "rrfs-frames-v1": every valid hour from the newest source that covers
+                          it (the tables' newest-cycle rule), an explicit key per region and field
+  frames/latest.json      {"run", "manifest", "complete", "encoding", "published_utc", "frames", "sources"}, written last
 
 Exit codes (the frames jobs' contract): 0 published or nothing new; 3 nothing complete yet / not served / budget (the
 next tick retries); 1 a failure (failed/<CYCLE>.json, retried after FAILED_RETRY_AFTER_S, at most FAILED_MAX_ATTEMPTS)
@@ -48,6 +62,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
+import encode as E  # noqa: E402
 import publish as P  # noqa: E402
 import rrfs_grid as G  # noqa: E402
 
@@ -89,6 +104,35 @@ FIELDS = {"spd": "0.01 m/s", "dir": "0.1 deg FROM, true north", "gust": "0.01 m/
           "apcp": "0.01 mm in the hour ending at the step", "cloud": "% (255 = none: hourly cycles have no cloud)",
           "type": "0 none (< 0.1 mm), 1 rain, 2 snow, 3 mix, 4 ice, 5 thunder; 255 = unknown"}
 TYPE_NONE, TYPE_RAIN, TYPE_SNOW, TYPE_MIX, TYPE_ICE, TYPE_THUNDER = 0, 1, 2, 3, 4, 5
+
+# ---- the overlay frames (plan section 99 D0)
+FRAMES_PREFIX = f"{PREFIX}/frames"
+FRAMES_SCHEMA = "rrfs-frames-v1"
+# One lat/lon grid per region, as the browser's lake grids (section 50): centre-registered, row 0 NORTH (dlat < 0),
+# not periodic, lon0 in [-180, 180) with the east edge allowed past 180 (Alaska crosses the date line). Each box holds
+# every interior node of its RRFS grid with a node to spare on every side (tests/model_frames/test_rrfs_frames.py) and
+# at most 2^20 nodes (the browser's MAX_LAKE_NODES). Hawaii / Puerto Rico 0.025 deg (2.8 km, the native 2.5 km);
+# CONUS 0.05 and Alaska 0.07 deg (the node cap; plan section 99 D0, measured in the D1 dry run).
+REGIONS = {
+    "hi": {"lat0": 23.1, "lon0": -161.55, "dlat": -0.025, "dlon": 0.025, "rows": 203, "cols": 309},
+    "pr": {"lat0": 22.025, "lon0": -75.525, "dlat": -0.025, "dlon": 0.025, "rows": 283, "cols": 522},
+    "conus": {"lat0": 52.65, "lon0": -134.15, "dlat": -0.05, "dlon": 0.05, "rows": 632, "cols": 1466},
+    "ak": {"lat0": 75.46, "lon0": 150.15, "dlat": -0.07, "dlon": 0.07, "rows": 501, "cols": 1661},
+}
+MAX_REGION_NODES = 1 << 20
+FRAME_FIELDS = ("wind", "wdir")                  # a later RRFS layer (e.g. precipitation) is a new name here + frames
+FRAME_DEFS = {n: dict(E.FIELDS[n], resolutions=("full",)) for n in FRAME_FIELDS}
+FRAME_MAX_BYTES = 2 * 1024 * 1024                # the browser decodes nothing bigger (overlay.js MAX_FRAME_BYTES)
+FRAME_WORKERS = 4                                # PNG encoders beside the decoding (Pillow / zlib release the GIL)
+UPLOAD_WORKERS = 8
+KEEP_FRAMES = {"run": 2, "cycle": 3}             # the manifest's newest-source rule needs no more (the cells' keep)
+FRAMES_STALE_H = {"cycle": 8, "run": 18}         # the site's cut-off (rrfs_wind.STALE_H): never an old source's hours
+FRAMES_MODEL = {
+    "name": "NOAA RRFS (Rapid Refresh Forecast System)", "short": "RRFS",
+    "grid": "Hawaii / Puerto Rico 2.5 km, CONUS 3 km, Alaska 3 km; the nearest RRFS cell on each region's lat/lon grid",
+    "attribution": "Wind: NOAA RRFS (10-m wind), via NOAA's AWS Open Data; rendered by Allshore Surf. Not an official NWS "
+                   "product.",
+}
 
 
 class NotReady(Exception):
@@ -443,6 +487,95 @@ def step_record(f, grid, lon, prev_total=None):
     return rec, total
 
 
+# ------------------------------------------------------------------------------------------------- the overlay frames
+
+def region_grid(region):
+    """The region's grid as the browser reads it (a manifest's `regions[name].grid`)."""
+    r = REGIONS[region]
+    return {"cols": r["cols"], "rows": r["rows"], "lat0": r["lat0"], "lon0": r["lon0"], "dlat": r["dlat"],
+            "dlon": r["dlon"], "registration": "center", "lon_periodic": False}
+
+
+def _interior(grid, lat, lon):
+    """(served, flat) of rrfs_grid.cell() for arrays: served = the nearest node is an interior node of `grid`; flat =
+    its index j * Nx + i (0 where not served)."""
+    g = G.GRIDS[grid]
+    fi, fj = G.forward(grid, lat, lon)
+    ok = np.isfinite(fi) & np.isfinite(fj)
+    i = np.rint(np.where(ok, fi, -1.0))
+    j = np.rint(np.where(ok, fj, -1.0))
+    served = ok & (i > 0) & (i < g["Nx"] - 1) & (j > 0) & (j < g["Ny"] - 1)
+    flat = np.where(served, j * g["Nx"] + i, 0).astype(np.int64)
+    return served, flat
+
+
+_REGION_INDEX = {}
+
+
+def region_index(region):
+    """(flat, mask) of a region's frame grid (rows, cols): flat = the nearest native cell of its own RRFS grid, mask =
+    the node is drawn from it. A node is drawn only where rrfs_grid.locate() would pick this grid, so the overlay shows
+    the cell the tables read (CONUS before Alaska where they overlap, plan section 99 D0) and the browser never meets
+    two regions with data at one point. Built once per process."""
+    if region not in _REGION_INDEX:
+        r = REGIONS[region]
+        lat = r["lat0"] + r["dlat"] * np.arange(r["rows"])
+        lon = r["lon0"] + r["dlon"] * np.arange(r["cols"])
+        la, lo = np.meshgrid(lat, lon, indexing="ij")
+        served, flat = _interior(region, la, lo)
+        for earlier in G.ORDER[:G.ORDER.index(region)]:
+            served &= ~_interior(earlier, la, lo)[0]
+        _REGION_INDEX[region] = (np.where(served, flat, 0), served)
+    return _REGION_INDEX[region]
+
+
+def region_values(region, rec):
+    """{field: float grid (rows, cols), NaN = missing} of one step's cell records `rec` (CELL_DTYPE, the region's own
+    grid). The frames are made from the cells' scaled numbers, so the overlay and the tables can never disagree by
+    more than the PNG's code step (0.24 m/s, 1.4 deg)."""
+    flat, mask = region_index(region)
+    spd = rec["spd"][flat]
+    drn = rec["dir"][flat]
+    ok = mask & (spd != MISSING)
+    wind = np.where(ok, spd / 100.0, np.nan)
+    wdir = np.where(ok & (drn != MISSING), drn / 10.0, np.nan)           # a calm has no direction
+    return {"wind": wind, "wdir": wdir}
+
+
+def encode_region_frame(values, field):
+    """PNG bytes of one region frame (encode.ENCODING)."""
+    q = E.quantize_circular(values) if FRAME_DEFS[field].get("circular") else \
+        E.quantize(values, FRAME_DEFS[field]["lo"], FRAME_DEFS[field]["hi"])
+    return E.to_png(q)
+
+
+def frame_key(cycle, region, field, step):
+    return f"{FRAMES_PREFIX}/{cycle}/{region}/{field}/f{step:03d}.png"
+
+
+def frame_template(cycle):
+    return f"{FRAMES_PREFIX}/{cycle}/{{region}}/{{field}}/f{{step:03d}}.png"
+
+
+def frameset_key(cycle):
+    return f"{FRAMES_PREFIX}/{cycle}/frames.json"
+
+
+def _write_frames(region, rec, step, out_dir):
+    """Encode one step's frames of a region into out_dir/<region>/<field>/f<step>.png: {field: (path, bytes)}."""
+    vals = region_values(region, rec)
+    out = {}
+    for field in FRAME_FIELDS:
+        png = encode_region_frame(vals[field], field)
+        d = os.path.join(out_dir, region, field)
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, f"f{step:03d}.png")
+        with open(path, "wb") as fh:
+            fh.write(png)
+        out[field] = (path, len(png))
+    return out
+
+
 # ------------------------------------------------------------------------------------------------------------- build
 
 def fetch_step(cycle_dt, grid, step, get=http_get, size_of=None):
@@ -462,9 +595,11 @@ def fetch_step(cycle_dt, grid, step, get=http_get, size_of=None):
     return out
 
 
-def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print, workers=WORKERS):
+def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print, workers=WORKERS, frames=None):
     """Fetch and decode every step of one grid; write the cell-major series to work/<grid>.bin. Returns (path,
-    {sid: [steps x (spd, dir, gust)]}) for the stations on this grid.
+    {sid: [steps x (spd, dir, gust)]}) for the stations on this grid. With a dict `frames`, the grid's region frames
+    of every step are written under work/frames/ too (encoded beside the decoding) and frames[step] = {field: (path,
+    bytes)}.
 
     The series is built in RAM (CONUS run 2.3 GB; one grid at a time on a 16 GB runner) and written once: a file-backed
     map would dirty every page of the file at every step (14 B at a 1,190-B stride), G66a P1-2. Fetches run ahead of
@@ -483,7 +618,15 @@ def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print
         return fetch_step(cycle_dt, grid, step, get)
 
     lon, total, waits = None, None, 0.0
-    with ThreadPoolExecutor(max_workers=workers) as ex:
+    fdir = os.path.join(work, "frames")
+    encs = deque()
+
+    def drain(limit):
+        while len(encs) > limit:
+            s, f = encs.popleft()
+            frames[s] = f.result()
+
+    with ThreadPoolExecutor(max_workers=workers) as ex, ThreadPoolExecutor(max_workers=FRAME_WORKERS) as enc:
         ahead = deque()
         pending = iter(steps)
 
@@ -509,9 +652,16 @@ def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print
                 fields = {name: decode(b, grid, (name, cycle_dt, step)) for name, b in m.items()}
                 rec, total = step_record(fields, grid, lon, total)
                 arr[:, k] = rec
+                if frames is not None and grid in REGIONS:
+                    encs.append((step, enc.submit(_write_frames, grid, rec, step, fdir)))
+                    drain(2 * FRAME_WORKERS)             # at most a few steps' records held for the encoders
+            if frames is not None:
+                drain(0)
         finally:
             for _, fut in ahead:
                 fut.cancel()
+            for _, f in encs:
+                f.cancel()
     with open(path, "wb") as fh:
         arr.tofile(fh)
     st = {sid: np.array(arr[j * nx + i][["spd", "dir", "gust"]]) for sid, (j, i) in stations.items()}
@@ -557,8 +707,10 @@ def build(cycle_dt, work, stations_coords, deadline, get=http_get, log=print, gr
     where = station_cells(stations_coords)
     files, docs = {}, {}
     st_all = {}
+    frames = {}                                       # region -> step -> field -> (path, bytes)
     for grid in grids:
-        path, st = build_grid(cycle_dt, grid, where[grid], work, deadline, get, log)
+        frames[grid] = {}
+        path, st = build_grid(cycle_dt, grid, where[grid], work, deadline, get, log, frames=frames[grid])
         files[cells_key(cyc, grid)] = path
         docs[cells_index_key(cyc, grid)] = {
             "format": "rrfs-cells-v1", "grid": grid, "cycle": cyc, "kind": kind_of(cycle_dt), "steps": steps,
@@ -586,7 +738,42 @@ def build(cycle_dt, work, stations_coords, deadline, get=http_get, log=print, gr
         "count": len(index), "record_bytes": 6 * len(steps), "missing": MISSING,
         "units": {"speed": "0.01 m/s", "direction": "0.1 deg, FROM, true north", "gust": "0.01 m/s"},
         "sha256": hashlib.sha256(bytes(body)).hexdigest(), "built_utc": _now()}
+    files_f, docs[frameset_key(cyc)] = frameset(cycle_dt, frames, log)
+    files.update(files_f)
     return files, docs
+
+
+def frameset(cycle_dt, frames, log=print):
+    """({frame key: path}, the frames.json doc) of one source's region frames. A frame over FRAME_MAX_BYTES (the
+    browser would refuse it) drops the source's frames: the doc then says why and names no frames (the tables'
+    products still publish; build_one fails the workflow so the owner hears of it)."""
+    cyc = cycle_name(cycle_dt)
+    steps = steps_of(cycle_dt)
+    files, sizes, big = {}, {}, []
+    for region, by_step in frames.items():
+        if region not in REGIONS:
+            continue
+        if sorted(by_step) != list(steps):
+            raise RuntimeError(f"{cyc} {region}: frames of steps {sorted(by_step)[:3]}..., not the source's {len(steps)}")
+        for field in FRAME_FIELDS:
+            n = [by_step[s][field][1] for s in steps]
+            sizes.setdefault(region, {})[field] = {"max": max(n), "total": sum(n)}
+            for s in steps:
+                path, b = by_step[s][field]
+                if b > FRAME_MAX_BYTES:
+                    big.append(f"{region}/{field}/f{s:03d} {b} B")
+                files[frame_key(cyc, region, field, s)] = path
+    doc = {"format": "rrfs-frameset-v1", "cycle": cyc, "kind": kind_of(cycle_dt), "steps": steps,
+           "template": frame_template(cyc), "regions": {r: list(FRAME_FIELDS) for r in sizes},
+           "grids": {r: region_grid(r) for r in sizes}, "bytes": sizes, "encoding": E.ENCODING, "built_utc": _now()}
+    if big:
+        doc = dict(doc, regions={}, dropped=f"{len(big)} frames over {FRAME_MAX_BYTES} B: {', '.join(big[:5])}")
+        log(f"{cyc}: frames DROPPED: {doc['dropped']}")
+        return {}, doc
+    total = sum(v["total"] for f in sizes.values() for v in f.values())
+    log(f"{cyc}: {len(files)} frames, {total} B; largest " +
+        ", ".join(f"{r}/{f} {v['max']}" for r, fs in sizes.items() for f, v in fs.items()))
+    return files, doc
 
 
 def _sha256(path):
@@ -622,16 +809,39 @@ def cache_of(key):
     return P.IMMUTABLE if key.endswith("/stations.bin") else CELLS_CACHE
 
 
+def put_frames(store, items, workers=UPLOAD_WORKERS):
+    """Small immutable PNGs, several at a time (a run has 680)."""
+    def one(kv):
+        with open(kv[1], "rb") as f:
+            store.put(kv[0], f.read(), "image/png", P.IMMUTABLE)
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for _ in ex.map(one, sorted(items)):
+            pass
+
+
+def frames_entry(docs, cyc):
+    """The pointer's `frames` block of a source: what the manifest needs, or None (no frames, or dropped)."""
+    doc = docs.get(frameset_key(cyc))
+    if not doc or not doc.get("regions"):
+        return None
+    return {"doc": frameset_key(cyc), "template": doc["template"], "regions": doc["regions"]}
+
+
 def publish(store, cycle_dt, files, docs, latest):
-    """The data objects, then the documents, then the pointer (last). Returns the new pointer."""
+    """The data objects, then the documents, then the pointer (last). Returns the new pointer. The overlay's manifest
+    and its own pointer follow (sync_frames)."""
+    frame_files = {k: p for k, p in files.items() if k.startswith(FRAMES_PREFIX + "/")}
     for key, path in files.items():
-        put_file(store, key, path, cache_of(key))
+        if key not in frame_files:
+            put_file(store, key, path, cache_of(key))
+    put_frames(store, frame_files.items())
     for key, doc in docs.items():
         store.put(key, json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
     cyc = cycle_name(cycle_dt)
     entry = {"cycle": cyc, "kind": kind_of(cycle_dt), "steps": steps_of(cycle_dt),
              "stations": stations_index_key(cyc),
-             "cells": {g: cells_index_key(cyc, g) for g in G.ORDER if cells_index_key(cyc, g) in docs} or None}
+             "cells": {g: cells_index_key(cyc, g) for g in G.ORDER if cells_index_key(cyc, g) in docs} or None,
+             "frames": frames_entry(docs, cyc)}
     sources = [s for s in (latest.get("sources") or []) if s.get("cycle") != cyc] + [entry]
     sources = keep_sources(sources)
     pointer = {"format": "rrfs-pointer-v1", "published_utc": _now(), "newest": newest(sources), "sources": sources}
@@ -655,8 +865,116 @@ def keep_sources(sources):
         s = dict(s)
         if seen[k] > KEEP_CELLS[k]:
             s["cells"] = None
+        if seen[k] > KEEP_FRAMES[k]:
+            s["frames"] = None
         out.append(s)
     return out
+
+
+# ------------------------------------------------------------------------------------- the overlay manifest + pointer
+
+def _cdt(cycle):
+    return datetime.strptime(cycle, "%Y%m%d%H").replace(tzinfo=timezone.utc)
+
+
+def _iso(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def frames_manifest(pointer, now):
+    """The merged overlay manifest of the pointer's sources with frames (schema rrfs-frames-v1), or None when none is
+    usable. Per valid hour the NEWEST source that covers it (the tables' rule, plan section 99 "How the update cycles
+    are used"): the newest hourly cycle's +1..+18 h, then the newest run to +84 h. Hours before the newest source's
+    first hour are left out (the slider starts there), and a source older than FRAMES_STALE_H past its cycle time is
+    not used (a stalled job must not show day-old RRFS). `published_utc` is left for the caller."""
+    srcs = [s for s in pointer.get("sources") or [] if s.get("frames")
+            and (now - _cdt(s["cycle"])).total_seconds() <= FRAMES_STALE_H[s["kind"]] * 3600]
+    srcs.sort(key=lambda s: s["cycle"], reverse=True)
+    if not srcs:
+        return None
+    top = srcs[0]
+    run_dt = _cdt(top["cycle"])
+    start = run_dt + timedelta(hours=top["steps"][0])
+    hours = {}
+    for s in srcs:
+        c = _cdt(s["cycle"])
+        for step in s["steps"]:
+            v = c + timedelta(hours=step)
+            if v >= start and v not in hours:
+                hours[v] = (s, step)
+    regions = {}
+    for s in srcs:
+        for r, fields in s["frames"]["regions"].items():
+            regions.setdefault(r, set()).update(fields)
+    frames = []
+    for v in sorted(hours):
+        s, step = hours[v]
+        t = s["frames"]["template"]
+        frames.append({"valid_utc": _iso(v), "step": int((v - run_dt).total_seconds() // 3600), "src": s["cycle"],
+                       "src_step": step,
+                       "files": {r: {f: t.format(region=r, field=f, step=step) for f in fs}
+                                 for r, fs in sorted(s["frames"]["regions"].items())}})
+    return {
+        "schema": FRAMES_SCHEMA, "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC, "complete": True,
+        "run": top["cycle"], "run_utc": _iso(run_dt), "model": FRAMES_MODEL,
+        "regions": {r: {"grid": region_grid(r), "fields": {f: FRAME_DEFS[f] for f in sorted(fs)}}
+                    for r, fs in sorted(regions.items()) if r in REGIONS},
+        "sources": [{"cycle": s["cycle"], "kind": s["kind"]} for s in srcs if any(h[0] is s for h in hours.values())],
+        "frames": frames,
+    }
+
+
+def _signature(manifest):
+    """What makes two manifests the same: the frame keys and their valid times (not the publish time)."""
+    if not manifest:
+        return None
+    return hashlib.sha256(json.dumps([[f["valid_utc"], f["files"]] for f in manifest["frames"]],
+                                     sort_keys=True).encode()).hexdigest()[:16]
+
+
+def sync_frames(store, pointer, now, log=print):
+    """Write a new overlay manifest + pointer when the pointer's sources call for a different one (a new source, or a
+    source gone stale). Idempotent: every tick calls it, so a failed write is repaired by the next tick. Returns (the
+    frames pointer now live, the one it replaced) - the same object twice when nothing changed."""
+    prev = store.get_json(P.latest_key(FRAMES_PREFIX))
+    m = frames_manifest(pointer, now)
+    sig = _signature(m)
+    if m is None or (prev and prev.get("signature") == sig):
+        return prev, prev
+    m = dict(m, published_utc=_iso(now), signature=sig)
+    body = json.dumps(m, separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
+    mkey = P.manifest_key(m["run"], m["published_utc"], prefix=FRAMES_PREFIX)
+    store.put(mkey, body, "application/json", P.IMMUTABLE)
+    new = {"run": m["run"], "manifest": mkey, "complete": True, "encoding": m["encoding"],
+           "published_utc": m["published_utc"], "frames": len(m["frames"]), "signature": sig,
+           "sources": [s["cycle"] for s in m["sources"]]}
+    store.put(P.latest_key(FRAMES_PREFIX), json.dumps(new, separators=(",", ":"), sort_keys=True).encode(),
+              "application/json", P.POINTER)
+    log(f"overlay manifest {mkey}: {len(m['frames'])} hours from {', '.join(new['sources'])}")
+    return new, prev
+
+
+def prune_frames(store, pointer, previous, fptr, fprev):
+    """Delete frame objects under frames/<10 digits>/ that no kept source of the new or the replaced pointer has, and
+    manifests neither frames pointer names. A cycle newer than the pointer's newest is left alone (a build writing)."""
+    keep_cycles = {s["cycle"] for p in (pointer, previous or {}) for s in p.get("sources") or [] if s.get("frames")}
+    for p in (fptr, fprev):                           # what a live manifest names, even a source the keep rule let go
+        keep_cycles.update((p or {}).get("sources") or [])
+    named = {p["manifest"] for p in (fptr, fprev) if p and p.get("manifest")}
+    top = pointer.get("newest") or ""
+    dead = []
+    for k in store.list_keys(FRAMES_PREFIX + "/"):
+        name, _, rest = k[len(FRAMES_PREFIX) + 1:].partition("/")
+        if not (name.isdigit() and len(name) == 10 and rest) or name > top:
+            continue
+        if rest.startswith("manifest-") or rest.startswith("partial-"):
+            if k not in named:
+                dead.append(k)
+        elif name not in keep_cycles:
+            dead.append(k)
+    if dead:
+        store.delete_keys(dead, "old RRFS frames")
+    return dead
 
 
 def prune(store, pointer, previous=None):
@@ -772,7 +1090,7 @@ def todo(latest, now, head=head_ok):
     return out
 
 
-def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords=None, grids=G.ORDER):
+def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords=None, grids=G.ORDER, now=None):
     """Build + publish one source. Returns (exit code, latest)."""
     cyc = cycle_name(cycle_dt)
     if live and _skip_failed(store, cyc):
@@ -792,13 +1110,25 @@ def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords
                 for key, doc in docs.items():
                     with open(os.path.join(work, key.rsplit("/", 1)[-1]), "w", encoding="utf-8") as f:
                         json.dump(doc, f)
+                fe = frames_entry(docs, cyc)
+                if fe:                                # the overlay manifest this source alone would give
+                    m = frames_manifest({"sources": [{"cycle": cyc, "kind": kind_of(cycle_dt),
+                                                      "steps": steps_of(cycle_dt), "frames": fe}]}, cycle_dt)
+                    with open(os.path.join(work, "frames", "manifest.json"), "w", encoding="utf-8") as f:
+                        json.dump(dict(m, published_utc=_now()), f)
                 log(f"dry run: files kept in {work}")
                 work = None
             return 0, latest
         previous = latest
         latest = publish(store, cycle_dt, files, docs, latest)
+        fptr, fprev = sync_frames(store, latest, now or datetime.now(timezone.utc), log)
         deleted = P.safe_prune(lambda: prune(store, latest, previous), store.bucket, _summary)
-        log(f"published {cyc}; pruned {len(deleted or [])} objects")
+        fdel = P.safe_prune(lambda: prune_frames(store, latest, previous, fptr, fprev), store.bucket, _summary)
+        log(f"published {cyc}; pruned {len(deleted or [])} objects and {len(fdel or [])} frames")
+        dropped = docs.get(frameset_key(cyc), {}).get("dropped")
+        if dropped:
+            _summary(f"WARNING: RRFS {cyc} published WITHOUT overlay frames: {dropped}")
+            return 1, latest
         return 0, latest
     except (NotReady, BudgetExceeded) as exc:
         log(f"{cyc}: {exc.__class__.__name__}: {exc}; the next tick tries again")
@@ -820,6 +1150,20 @@ def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _sync_quietly(store, latest, now, log=print):
+    """sync_frames on a tick that built nothing (a source gone stale leaves the manifest; a failed manifest write is
+    repaired). None when fine; 3 when storage is busy; 1 on another failure."""
+    try:
+        sync_frames(store, latest, now, log)
+        return None
+    except Exception as exc:                         # noqa: BLE001
+        log(f"overlay manifest: {exc.__class__.__name__}: {exc}")
+        if P.is_storage_busy(exc):
+            return 3
+        _summary(f"FAILED: RRFS overlay manifest: {exc.__class__.__name__}")
+        return 1
 
 
 def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=print):
@@ -864,7 +1208,9 @@ def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=
     clock = now or datetime.now(timezone.utc)
     if not plan:
         log("nothing new")
-        return (_stale(store, latest, "no newer RRFS source", clock) or 0) if live else 0
+        if not live:
+            return 0
+        return _sync_quietly(store, latest, clock, log) or _stale(store, latest, "no newer RRFS source", clock) or 0
     codes = []
     for c in plan:
         left = BUILD_BUDGET_S - (time.monotonic() - t0)
@@ -872,7 +1218,7 @@ def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=
             log(f"{cycle_name(c)}: {left:.0f} s of the budget left after the hourly cycle; the run waits for the next "
                 f"tick (G66a P2-1)")
             continue
-        code, latest = build_one(c, store, latest, live, a.out, t0, get, log, coords, grids)
+        code, latest = build_one(c, store, latest, live, a.out, t0, get, log, coords, grids, now)
         codes.append(code)
     rc = 1 if 1 in codes else 3 if 3 in codes else 0
     if live and rc != 1:

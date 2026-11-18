@@ -1,6 +1,8 @@
 # Publishes NOAA RRFS (plan section 99) to R2 under rrfs/v1/: per hourly cycle (f001-f018) and per 84-h run (00/06/12/18Z,
 # f000-f084) a station-winds table and one cell-major series file per fine grid (Hawaii, Puerto Rico, CONUS, Alaska) for
-# the forecast tables, forecast points and the land-weather RRFS tab. Byte ranges of NOAA's AWS copy (noaa-rrfs-ops-pds);
+# the forecast tables, forecast points and the land-weather RRFS tab, plus the Wind-speed overlay's regional frames
+# (rrfs/v1/frames/: speed + direction PNGs per region and step, a merged manifest, its own pointer; section 99 D).
+# Byte ranges of NOAA's AWS copy (noaa-rrfs-ops-pds);
 # eccodes 2.48 decodes the four grids. Each tick builds at most the newest complete hourly cycle and the newest complete
 # run; between them the job short-circuits after a few HEAD requests. The trigger Worker dispatches it every 10 minutes.
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.

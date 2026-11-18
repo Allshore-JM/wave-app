@@ -1091,7 +1091,7 @@ test('section 95 (G62 finding 7): the lake redraws mark the right tiles; a mask 
 test('section 95: the satellite and radar layers use the same sliced drawer and createTile', () => {
   assert.equal(I.SatLayer.prototype._drawStale, I.ModelGridLayer.prototype._drawStale);
   assert.equal(I.RadarLayer.prototype._drawStale, I.ModelGridLayer.prototype._drawStale);
-  assert.equal(I.RadarLayer.prototype.createTile, I.ModelGridLayer.prototype.createTile);
+  assert.equal(I.RadarLayer.prototype.createTile.name, 'slicedCreateTile');   // the wave layer wraps it (section 100 D2)
   assert.equal(I.SatLayer.prototype._queueStale, I.ModelGridLayer.prototype._queueStale);
 });
 
@@ -1398,4 +1398,43 @@ test('section 43: MODEL_DEFS (prefixes, cycles, stale lines, the 29-character cr
   assert.equal(I.runTimes(m, now, false, I.CYCLE_MS).next, Date.parse('2026-10-15T13:40:00Z'));
   assert.equal(I.runTimes(m, now, false, I.MODEL_DEFS.ecmwf.cycleMs).next, Date.parse('2026-10-15T19:40:00Z'), 'ECMWF: 12 h');
   assert.equal(I.runTimes(m, Date.parse('2026-10-15T19:41:00Z'), false, I.MODEL_DEFS.ecmwf.cycleMs).status, 'shortly');
+});
+
+test('section 100 D2: the wave layer tells its animator once the NEW tiles in view are drawn (their land masks exist only then), even with buffer tiles still behind; other layers never set the flag', () => {
+  let now = 0;
+  const grabEl = () => { const el = { width: 0, height: 0, getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} }) }; return el; };
+  const box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 11 } };     // tiles 10 and 11 of row 10 in view
+  const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; l._clock = () => now;
+  l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, I.buildRamp(I.RAMPS.hs), { step: 0, valid_utc: '2026-09-22T12:00:00Z' });
+  let calls = 0; l.onRedraw = () => calls++;
+  const queued = []; l._queueStale = function () { queued.push(1); };
+  global.document = { createElement: grabEl };
+  try {
+    const els = [];
+    for (let x = 6; x <= 13; x++) { const el = l.createTile({ x, y: 10, z: 6 }, () => {}); els.push(el); clearTimeout(el._tDoneTimer); l._tiles[x + ':10:6'] = { el, coords: { x, y: 10, z: 6 } }; }
+    assert.equal(l._newTileNotify, true, 'a queued new tile asks for the notice'); assert.ok(queued.length > 0);
+    l._draw = function (el) { now += 5; el._ovGen = this._gen; };
+    l._drawMs = 5;
+    l._drawStale(false);                                                        // 12 ms: the two tiles in view, then the slice ends
+    assert.equal(calls, 1, 'told once the tiles in view are drawn, the buffer still behind');
+    for (let i = 0; i < 5; i++) l._drawStale(false);
+    assert.equal(calls, 1, 'the buffer tiles do not tell it again');
+    l._drawStale(true); assert.equal(calls, 1);
+    // a page move (inView) that finishes the tiles in view also tells it
+    const el = l.createTile({ x: 10, y: 10, z: 6 }, () => {}); clearTimeout(el._tDoneTimer); l._tiles['10:10:6'] = { el, coords: { x: 10, y: 10, z: 6 } };
+    l._drawStale(true); assert.equal(calls, 2);
+    // the coast notice and the new-tile notice in one pass: one call
+    const e2 = l.createTile({ x: 11, y: 10, z: 6 }, () => {}); clearTimeout(e2._tDoneTimer); l._tiles['11:10:6'] = { el: e2, coords: { x: 11, y: 10, z: 6 } };
+    l._staleNotify = true; for (const k in l._tiles) l._tiles[k].el._ovGen = -1;
+    l._draw = function (el) { el._ovGen = this._gen; };                       // all drawn in one slice
+    l._drawStale(false);
+    assert.equal(calls, 3, 'one call for both notices in one pass');
+    assert.equal(l._newTileNotify, false); assert.equal(l._staleNotify, false);
+    // the same shared drawer for the satellite and radar layers: their new tiles never set it
+    const o = Object.assign(Object.create(I.ModelGridLayer.prototype), { _frame: l._frame, _staleOk: () => true, _queueStale() {} });
+    const t1 = I.RadarLayer.prototype.createTile.call(o, { x: 1, y: 1, z: 6 }, () => {}); clearTimeout(t1._tDoneTimer);
+    const t2 = I.SatLayer.prototype.createTile.call(o, { x: 2, y: 1, z: 6 }, () => {}); clearTimeout(t2._tDoneTimer);
+    assert.equal(o._newTileNotify, undefined);
+  } finally { delete global.document; }
 });

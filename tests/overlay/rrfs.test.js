@@ -245,9 +245,11 @@ test('the animator rebuilds a regional step from the bundle pair (no global fram
     const p = fa.particles[k * 4], q = fa.particles[k * 4 + 1];
     assert.ok(p >= x0 && p <= x1 && q >= y0 && q <= y1, 'born inside the Hawaii box');
   }
+  for (let k = 0; k < fa.count; k++) assert.equal(fa.particles[k * 4 + 2] >= 0, fa._flowing(fa.particles[k * 4], fa.particles[k * 4 + 1]), 'section 100: live only where the region flows, else dormant');
   fa.dir = { regional: true, parts: [{ name: 'pr', grid: HIH, frame: HID }] };  // a direction of another region: no pair, no vectors
   fa._rebuild();
   assert.ok(!fa.vf.u.some((x) => x !== 0));
+  for (let k = 0; k < 50; k++) { fa._respawn(k * 4, v); assert.ok(fa.particles[k * 4 + 2] < 0, 'section 100: born in a box without vectors: dormant'); }
 });
 
 test('the tile sampler equals regionsCode at EVERY pixel (real Hawaii frame; Alaska across the date line; two regions overlapping)', () => {

@@ -199,10 +199,11 @@ def test_an_oversize_frame_drops_the_sources_frames(tmp_path):
 
 # --------------------------------------------------------------------------------------------- the merged manifest
 
-def _src(cycle, kind, frames=True):
+def _src(cycle, kind, frames=True, grids=None):
     steps = list(range(0, 85)) if kind == "run" else list(range(1, 19))
     fr = {"doc": J.frameset_key(cycle), "template": J.frame_template(cycle),
-          "regions": {r: ["wind", "wdir"] for r in J.REGIONS}} if frames else None
+          "regions": {r: ["wind", "wdir"] for r in J.REGIONS},
+          "grids": grids or {r: J.region_grid(r) for r in J.REGIONS}, "ranges": J.frame_ranges()} if frames else None
     return {"cycle": cycle, "kind": kind, "steps": steps, "frames": fr}
 
 
@@ -363,8 +364,12 @@ def test_dropped_frames_publish_the_tables_and_fail_loud(monkeypatch):
         return files, docs
 
     monkeypatch.setattr(J, "build", big)
+    monkeypatch.setattr(J, "_stale", lambda *a, **k: None)          # the exit 1 must come from the drop (G67a P3-9a)
+    summary = []
+    monkeypatch.setattr(J, "_summary", summary.append)
     assert J.main(["--cycle", "2026111713"], head=lambda u: True, store=st, now=T.NOW, coords=T.COORDS,
                   log=lambda s: None) == 1
+    assert any(x.startswith("WARNING: RRFS 2026111713 published without some overlay frames") for x in summary)
     ptr = T._ptr(st)
     assert ptr["sources"][0]["cycle"] == "2026111713" and ptr["sources"][0]["frames"] is None
     assert ptr["sources"][0]["cells"]                               # the tables' products are live
@@ -384,6 +389,166 @@ def test_prune_after_publish_keeps_the_live_manifests_frames(monkeypatch):
         for fs in fr["files"].values():
             for k in fs.values():
                 assert k in st.client.objects
-    assert not any(k.startswith("rrfs/v1/frames/2026111707/") for k in st.client.objects)
+    assert not any(k.startswith("rrfs/v1/frames/2026111707/") and k.endswith(".png") for k in st.client.objects)
+    assert "rrfs/v1/frames/2026111707/frames.json" in st.client.objects     # a kept source's record stays (G67a P3-6)
     manifests = [k for k in st.client.objects if "/manifest-" in k]
     assert len(manifests) <= 2
+
+
+# --------------------------------------------------------------------------------------------- G67a fixes, pinned
+
+def test_signature_is_the_manifests_identity_when_the_run_repeats():
+    """G67a P1-1: a run published after a newer hourly cycle keeps `run` (the cycle) but changes hours +19..+84; the
+    signature (the browser's adoption key) changes, the publish time does not count."""
+    a = J.frames_manifest({"sources": [_src("2026111713", "cycle"), _src("2026111706", "run")]}, NOW)
+    b = J.frames_manifest({"sources": [_src("2026111713", "cycle"), _src("2026111712", "run"), _src("2026111706", "run")]}, NOW)
+    assert a["run"] == b["run"] == "2026111713"
+    assert J._signature(a) != J._signature(b)
+    assert J._signature(a) == J._signature(dict(a, published_utc="x"))
+    st = T.store()
+    p1, _ = J.sync_frames(st, {"sources": [_src("2026111713", "cycle"), _src("2026111706", "run")]}, NOW, log=lambda s: None)
+    p2, _ = J.sync_frames(st, {"sources": [_src("2026111713", "cycle"), _src("2026111712", "run")]}, NOW + timedelta(minutes=1),
+                          log=lambda s: None)
+    assert p1["run"] == p2["run"] and p1["signature"] != p2["signature"] and p1["manifest"] != p2["manifest"]
+    assert st.get_json(p2["manifest"])["signature"] == p2["signature"]
+
+
+def test_a_source_drawn_on_another_grid_is_never_paired_with_todays():
+    """G67a P1-2: after a grid change, an older source's frames (drawn on the old grid) are left out; so is a source
+    whose frames have other ranges; a region dropped from REGIONS is never named."""
+    old = {r: dict(J.region_grid(r)) for r in J.REGIONS}
+    old["conus"]["cols"] = 1000
+    m = J.frames_manifest({"sources": [_src("2026111713", "cycle"), _src("2026111712", "run", grids=old)]}, NOW)
+    assert {f["src"] for f in m["frames"] if "conus" in f["files"]} == {"2026111713"}
+    late = [f for f in m["frames"] if f["src"] == "2026111712"]
+    assert late and all("conus" not in f["files"] and "hi" in f["files"] for f in late)
+    r = _src("2026111712", "run")
+    r["frames"]["ranges"] = {"wind": [0, 50], "wdir": [0, 360]}
+    assert J.frames_manifest({"sources": [r]}, NOW) is None
+    r = _src("2026111712", "run")
+    r["frames"]["regions"]["gone"] = ["wind", "wdir"]
+    r["frames"]["grids"]["gone"] = J.region_grid("hi")
+    m = J.frames_manifest({"sources": [r]}, NOW)
+    assert "gone" not in m["regions"] and all("gone" not in f["files"] for f in m["frames"])
+    assert set(m["regions"]) == set(J.REGIONS)
+
+
+def test_every_source_stale_withdraws_the_pointer_once():
+    """G67a P2-3: no usable source: the overlay pointer says complete false (no manifest), written once."""
+    st = T.store()
+    ptr = {"sources": [_src("2026111712", "run")]}
+    p1, _ = J.sync_frames(st, ptr, NOW, log=lambda s: None)
+    assert p1["complete"] is True
+    later = datetime(2026, 11, 18, 7, tzinfo=timezone.utc)                     # the run 19 h old
+    p2, prev = J.sync_frames(st, ptr, later, log=lambda s: None)
+    assert prev == p1 and p2["complete"] is False and "manifest" not in p2 and p2["sources"] == []
+    n = len(st.client.log)
+    p3, _ = J.sync_frames(st, ptr, later, log=lambda s: None)
+    assert p3 == p2 and len(st.client.log) == n
+    dead = J.prune_frames(st, {"newest": "2026111712", "sources": []}, None, p2, None)
+    assert p1["manifest"] in dead                                              # the withdrawn manifest goes
+
+
+def test_a_corrupt_overlay_pointer_is_rewritten():
+    st = T.store()
+    st.put("rrfs/v1/frames/latest.json", b"{not json", "application/json", P.POINTER)
+    p, prev = J.sync_frames(st, {"sources": [_src("2026111712", "run")]}, NOW, log=lambda s: None)
+    assert prev is None and p["complete"] is True and st.get_json("rrfs/v1/frames/latest.json") == p
+
+
+def test_the_stale_limits_are_inclusive():
+    """G67a P3-9c: a cycle exactly 8 h and a run exactly 18 h after their cycle time are still used; a second more is not."""
+    for kind, cyc, h in (("cycle", "2026111713", 8), ("run", "2026111712", 18)):
+        t = J._cdt(cyc) + timedelta(hours=h)
+        assert J.frames_manifest({"sources": [_src(cyc, kind)]}, t) is not None
+        assert J.frames_manifest({"sources": [_src(cyc, kind)]}, t + timedelta(seconds=1)) is None
+
+
+def test_a_failing_tick_still_syncs_the_overlay(monkeypatch):
+    """G67a P2-4: a tick whose build fails (exit 1) still withdraws / rewrites the overlay pointer; a sync failure after
+    a publish is never a failure record of the live source (P2-5)."""
+    st = T.store()
+    _ptrs = [_src("2026111712", "run")]
+    st.put("rrfs/v1/latest.json", json.dumps({"newest": "2026111712", "sources": [dict(s, stations="x") for s in _ptrs]}).encode(),
+           "application/json", P.POINTER)
+
+    def broken(*a, **k):
+        raise ValueError("a bad record")
+
+    monkeypatch.setattr(J, "build", broken)
+    monkeypatch.setattr(J, "_summary", lambda line: None)
+    assert J.main(["--cycle", "2026111713"], head=lambda u: True, store=st, now=NOW, coords=T.COORDS, log=lambda s: None) == 1
+    assert st.get_json("rrfs/v1/frames/latest.json")["sources"] == ["2026111712"]
+
+    st2 = T.store()
+    monkeypatch.setattr(J, "build", _fake_build_frames)
+
+    def boom(*a, **k):
+        raise RuntimeError("R2 read timed out")
+
+    monkeypatch.setattr(J, "sync_frames", boom)
+    assert J.main(["--cycle", "2026111713"], head=lambda u: True, store=st2, now=T.NOW, coords=T.COORDS, log=lambda s: None) == 1
+    assert not any(k.startswith("rrfs/v1/failed/") for k in st2.client.objects), "no failure record of a live source"
+    assert T._ptr(st2)["sources"][0]["cycle"] == "2026111713"
+
+
+def test_each_steps_frame_is_its_own_step(tmp_path, monkeypatch):
+    """G67a P3-9b: u = step m/s at step s: frame f<s> decodes to s m/s (the encoder never writes a neighbour's records)."""
+    monkeypatch.setattr(J, "CYCLE_STEPS", list(range(1, 21)))
+    g = J.G.GRIDS["hi"]
+    shape = (g["Ny"], g["Nx"])
+    monkeypatch.setattr(J, "grid_lonlat", lambda msg, grid: (np.zeros(shape), np.zeros(shape)))
+    monkeypatch.setattr(J, "fetch_step", lambda c, grid, step, get=None: {n: (n, step) for n, _ in J.wanted(c, step)})
+    monkeypatch.setattr(J, "decode", lambda tok, grid, expect=None: np.full(shape, float(tok[1]) if tok[0] == "u" else 0.0))
+    frames = {}
+    J.build_grid(T.CYC, "hi", {}, str(tmp_path), 1e18, log=lambda s: None, workers=2, frames=frames)
+    mask = J.region_index("hi")[1]
+    lo, hi = E.FIELDS["wind"]["lo"], E.FIELDS["wind"]["hi"]
+    for s in range(1, 21):
+        q = _png(open(frames[s]["wind"][0], "rb").read())
+        v = E.dequantize(q[mask][:1], lo, hi)[0]
+        assert abs(v - s) <= E.quantum(lo, hi) / 2 + 1e-9, (s, v)
+
+
+def test_one_oversize_region_drops_that_region_only(tmp_path):
+    p = tmp_path / "f.png"
+    p.write_bytes(b"x")
+    frames = {"hi": {6: {"wind": (str(p), J.FRAME_MAX_BYTES + 1), "wdir": (str(p), 10)}},
+              "pr": {6: {"wind": (str(p), 10), "wdir": (str(p), 10)}}}
+    files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
+    assert doc["regions"] == {"pr": ["wind", "wdir"]} and "hi" in doc["dropped"]
+    assert set(files) == {J.frame_key("2026111712", "pr", f, 6) for f in ("wind", "wdir")}
+    assert doc["grids"] == {"pr": J.region_grid("pr")} and doc["ranges"] == J.frame_ranges()
+
+
+@pytest.mark.parametrize("region", list(J.REGIONS))
+def test_cover_holds_every_drawn_node_and_nothing_else(region):
+    """The coverage mask (the browser fetches a region only near its data): every drawn node's 1-deg cell is set, and
+    every set cell has a drawn node."""
+    c = J.region_cover(region)
+    bits = bin(int(c["hex"], 16))[2:].zfill(len(c["hex"]) * 4)[:c["rows"] * c["cols"]]
+    cells = np.array([b == "1" for b in bits]).reshape(c["rows"], c["cols"])
+    g = J.region_grid(region)
+    mask = J.region_index(region)[1]
+    lat = g["lat0"] + g["dlat"] * np.arange(g["rows"])
+    lon = g["lon0"] + g["dlon"] * np.arange(g["cols"])
+    jj, ii = np.nonzero(mask)
+    ri = np.minimum(((c["lat0"] - lat[jj]) // c["res"]).astype(int), c["rows"] - 1)
+    ci = np.minimum(((lon[ii] - c["lon0"]) // c["res"]).astype(int), c["cols"] - 1)
+    want = np.zeros_like(cells)
+    want[ri, ci] = True
+    assert (want == cells).all()
+    if region == "ak":                                                       # off California: Alaska has no data
+        r, k = int((c["lat0"] - 41.0) // 1), int((235.5 - c["lon0"]) // 1)       # 124.5 W in the 0-360 frame
+        assert not cells[r, k]
+
+
+def test_regions_come_from_every_source_used_and_files_change_the_signature():
+    top = _src("2026111713", "cycle")
+    top["frames"]["regions"] = {"hi": ["wind", "wdir"]}                       # the newest source has Hawaii only
+    m = J.frames_manifest({"sources": [top, _src("2026111712", "run")]}, NOW)
+    assert set(m["regions"]) == set(J.REGIONS)                               # the run's later hours name all four
+    assert set(m["frames"][0]["files"]) == {"hi"} and set(m["frames"][-1]["files"]) == set(J.REGIONS)
+    m2 = json.loads(json.dumps(m))
+    m2["frames"][5]["files"]["hi"]["wind"] = "rrfs/v1/frames/2026111799/hi/wind/f001.png"
+    assert J._signature(m2) != J._signature(m)

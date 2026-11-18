@@ -1800,16 +1800,18 @@ model (never drawn over GFS / ECMWF), under `rrfs/v1/frames/` with their own poi
 | Object | Contents |
 |---|---|
 | `frames/<CYCLE>/<region>/{wind,wdir}/f<step>.png` | per region (`hi`, `pr` 0.025 deg; `conus` 0.05 deg; `ak` 0.07 deg across the date line, `REGIONS` in rrfs.py; each <= 2^20 nodes) the speed (the GFS frames' `wind` encoding and range, so the legend and colours match) and the direction FROM (circular), 8-bit grey, 0 = missing. Each node is the nearest RRFS cell of the source's cell series (the tables' numbers), drawn only where `rrfs_grid.locate` picks that grid (CONUS before Alaska off Washington). |
-| `frames/<CYCLE>/frames.json` | the source's frame set: template, regions and grids, PNG sizes |
-| `frames/<NEWEST>/manifest-<stamp>.json` | schema `rrfs-frames-v1`: each valid hour from the newest source covering it (the newest hourly cycle's +1..+18 h, then the newest run to +84 h; sources past 8 h (cycle) / 18 h (run) after their cycle time are not used), an explicit key per region and field |
-| `frames/latest.json` | the overlay's pointer (`run`, `manifest`, `complete`, `encoding`, `frames`, `sources`, `signature`), written last |
+| `frames/<CYCLE>/frames.json` | the source's frame set: template, regions with the grid each was drawn on, the fields' ranges, PNG sizes, and why a region was dropped |
+| `frames/<NEWEST>/manifest-<stamp>.json` | schema `rrfs-frames-v1`: each valid hour from the newest source covering it (the newest hourly cycle's +1..+18 h, then the newest run to +84 h; sources past 8 h (cycle) / 18 h (run) after their cycle time are not used; a source's region only when drawn on today's grid and ranges), an explicit key per region and field; per region its grid, fields and `cover` (1-degree cells holding data, hex: the browser fetches a region only near its data); `signature` = the manifest's identity |
+| `frames/latest.json` | the overlay's pointer (`run`, `manifest`, `complete`, `encoding`, `frames`, `sources`, `signature`), written last; `complete: false` and no manifest when no source is usable (a stalled job never shows old RRFS) |
 
-The main pointer's sources carry a `frames` block (template, regions) for the newest 2 runs and 3 cycles. Every tick
-rewrites the manifest only when its frames change (a new source, or one gone stale), so a failed manifest write is
-repaired by the next tick. Prune keeps the frames of every source either main pointer keeps and every source either
-overlay pointer names, and the manifests the two overlay pointers name. A frame over 2 MB (the browser's cap) publishes
-the source without frames and fails the workflow (the owner hears of it). Writes: 680 PNGs a run, 144 a cycle
-(~170k a month).
+The main pointer's sources carry a `frames` block (template, regions, grids, ranges) for the newest 2 runs and 3
+cycles. `run` (the newest source's cycle) repeats and can go back, so the browser adopts a manifest by its `signature`
+(G67a P1-1). Every live tick, whatever it built, rewrites the manifest only when its signature changes (a new source, or
+one gone stale), so a failed manifest write is repaired by the next tick and a sync error is never a failure record of
+a live source. Prune keeps the frames of every source either main pointer keeps and every source either overlay pointer
+names, the frames.json of every kept source, and the manifests the two overlay pointers name. A region with a frame over
+2 MB (the browser's cap) is dropped from its source and the workflow fails (the owner hears of it). Writes: 680 PNGs a
+run, 144 a cycle (~170k a month). Review: `docs/reviews/rrfs-frames-G67a-adversarial.md`.
 
 ### RRFS wind in the forecast tables (plan section 99, the site)
 

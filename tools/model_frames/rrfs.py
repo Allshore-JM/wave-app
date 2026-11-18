@@ -44,6 +44,7 @@ or a stale alarm.
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import struct
@@ -529,6 +530,36 @@ def region_index(region):
     return _REGION_INDEX[region]
 
 
+COVER_RES = 1.0                                  # deg: the coverage mask's cell (the browser fetches a region only near its data)
+_COVER = {}
+
+
+def region_cover(region):
+    """The region's coverage mask (cached): 1-deg cells holding at least one drawn node, so the browser fetches a region
+    only when the view is near its data, not merely its lat/lon box (Alaska's box reaches 40.5 N across the whole West
+    Coast). {"res", "lat0" (north edge), "lon0" (west edge, the region's longitude frame), "rows", "cols", "hex": the
+    bits row-major from the north-west, 4 cells per hex digit, the last digit padded with 0}."""
+    if region not in _COVER:
+        r = REGIONS[region]
+        mask = region_index(region)[1]
+        lat = r["lat0"] + r["dlat"] * np.arange(r["rows"])
+        lon = r["lon0"] + r["dlon"] * np.arange(r["cols"])
+        lat_n = math.ceil(lat[0] / COVER_RES) * COVER_RES
+        lon_w = math.floor(lon[0] / COVER_RES) * COVER_RES
+        rows = int(math.floor((lat_n - lat[-1]) / COVER_RES)) + 1
+        cols = int(math.floor((lon[-1] - lon_w) / COVER_RES)) + 1
+        ri = np.minimum(((lat_n - lat) // COVER_RES).astype(int), rows - 1)
+        ci = np.minimum(((lon - lon_w) // COVER_RES).astype(int), cols - 1)
+        bits = np.zeros((rows, cols), bool)
+        jj, ii = np.nonzero(mask)
+        bits[ri[jj], ci[ii]] = True
+        flat = np.concatenate([bits.ravel(), np.zeros((-bits.size) % 4, bool)]).reshape(-1, 4)
+        digits = flat[:, 0] * 8 + flat[:, 1] * 4 + flat[:, 2] * 2 + flat[:, 3]
+        _COVER[region] = {"res": COVER_RES, "lat0": float(lat_n), "lon0": float(lon_w), "rows": rows, "cols": cols,
+                          "hex": "".join("0123456789abcdef"[d] for d in digits)}
+    return _COVER[region]
+
+
 def region_values(region, rec):
     """{field: float grid (rows, cols), NaN = missing} of one step's cell records `rec` (CELL_DTYPE, the region's own
     grid). The frames are made from the cells' scaled numbers, so the overlay and the tables can never disagree by
@@ -620,6 +651,8 @@ def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print
     lon, total, waits = None, None, 0.0
     fdir = os.path.join(work, "frames")
     encs = deque()
+    if frames is not None and grid in REGIONS:
+        region_index(grid)                           # built here once, never by the encoder threads at once (G67a P3-7)
 
     def drain(limit):
         while len(encs) > limit:
@@ -743,34 +776,47 @@ def build(cycle_dt, work, stations_coords, deadline, get=http_get, log=print, gr
     return files, docs
 
 
+def frame_ranges():
+    """{field: [lo, hi]} of the frames' encoding (a manifest only pairs sources encoded alike)."""
+    return {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"]] for f in FRAME_FIELDS}
+
+
 def frameset(cycle_dt, frames, log=print):
-    """({frame key: path}, the frames.json doc) of one source's region frames. A frame over FRAME_MAX_BYTES (the
-    browser would refuse it) drops the source's frames: the doc then says why and names no frames (the tables'
-    products still publish; build_one fails the workflow so the owner hears of it)."""
+    """({frame key: path}, the frames.json doc) of one source's region frames. A region with a frame over
+    FRAME_MAX_BYTES (the browser would refuse it) is dropped from the source (G67a P3-6: the others stay): the doc says
+    why (`dropped`) and names only the regions kept (the tables' products still publish; build_one fails the workflow
+    so the owner hears of it). The doc records each region's grid and the fields' ranges: the merged manifest pairs a
+    source's frames only with the grid they were drawn on (G67a P1-2)."""
     cyc = cycle_name(cycle_dt)
     steps = steps_of(cycle_dt)
-    files, sizes, big = {}, {}, []
+    files, sizes, big = {}, {}, {}
     for region, by_step in frames.items():
         if region not in REGIONS:
             continue
         if sorted(by_step) != list(steps):
             raise RuntimeError(f"{cyc} {region}: frames of steps {sorted(by_step)[:3]}..., not the source's {len(steps)}")
+        mine = {}
         for field in FRAME_FIELDS:
             n = [by_step[s][field][1] for s in steps]
             sizes.setdefault(region, {})[field] = {"max": max(n), "total": sum(n)}
             for s in steps:
                 path, b = by_step[s][field]
                 if b > FRAME_MAX_BYTES:
-                    big.append(f"{region}/{field}/f{s:03d} {b} B")
-                files[frame_key(cyc, region, field, s)] = path
+                    big.setdefault(region, []).append(f"{region}/{field}/f{s:03d} {b} B")
+                mine[frame_key(cyc, region, field, s)] = path
+        if region not in big:
+            files.update(mine)
+    kept = [r for r in sizes if r not in big]
     doc = {"format": "rrfs-frameset-v1", "cycle": cyc, "kind": kind_of(cycle_dt), "steps": steps,
-           "template": frame_template(cyc), "regions": {r: list(FRAME_FIELDS) for r in sizes},
-           "grids": {r: region_grid(r) for r in sizes}, "bytes": sizes, "encoding": E.ENCODING, "built_utc": _now()}
+           "template": frame_template(cyc), "regions": {r: list(FRAME_FIELDS) for r in kept},
+           "grids": {r: region_grid(r) for r in kept}, "ranges": frame_ranges(), "bytes": sizes,
+           "encoding": E.ENCODING, "built_utc": _now()}
     if big:
-        doc = dict(doc, regions={}, dropped=f"{len(big)} frames over {FRAME_MAX_BYTES} B: {', '.join(big[:5])}")
+        lines = [x for r in big for x in big[r]]
+        doc["dropped"] = (f"region(s) {', '.join(sorted(big))} dropped: {len(lines)} frames over {FRAME_MAX_BYTES} B: "
+                          f"{', '.join(lines[:5])}")
         log(f"{cyc}: frames DROPPED: {doc['dropped']}")
-        return {}, doc
-    total = sum(v["total"] for f in sizes.values() for v in f.values())
+    total = sum(v["total"] for r, f in sizes.items() if r in kept for v in f.values())
     log(f"{cyc}: {len(files)} frames, {total} B; largest " +
         ", ".join(f"{r}/{f} {v['max']}" for r, fs in sizes.items() for f, v in fs.items()))
     return files, doc
@@ -824,7 +870,8 @@ def frames_entry(docs, cyc):
     doc = docs.get(frameset_key(cyc))
     if not doc or not doc.get("regions"):
         return None
-    return {"doc": frameset_key(cyc), "template": doc["template"], "regions": doc["regions"]}
+    return {"doc": frameset_key(cyc), "template": doc["template"], "regions": doc["regions"],
+            "grids": doc.get("grids") or {}, "ranges": doc.get("ranges") or {}}
 
 
 def publish(store, cycle_dt, files, docs, latest):
@@ -881,65 +928,108 @@ def _iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _usable_regions(src):
+    """{region: [fields]} of a source's frames that match today's REGIONS grids and frame ranges (G67a P1-2: after a
+    grid change the older sources' frames were drawn on the old grid and are never paired with the new one)."""
+    fr = src.get("frames") or {}
+    if (fr.get("ranges") or {}) != frame_ranges():
+        return {}
+    grids = fr.get("grids") or {}
+    return {r: f for r, f in (fr.get("regions") or {}).items() if r in REGIONS and grids.get(r) == region_grid(r)}
+
+
 def frames_manifest(pointer, now):
     """The merged overlay manifest of the pointer's sources with frames (schema rrfs-frames-v1), or None when none is
     usable. Per valid hour the NEWEST source that covers it (the tables' rule, plan section 99 "How the update cycles
     are used"): the newest hourly cycle's +1..+18 h, then the newest run to +84 h. Hours before the newest source's
     first hour are left out (the slider starts there), and a source older than FRAMES_STALE_H past its cycle time is
-    not used (a stalled job must not show day-old RRFS). `published_utc` is left for the caller."""
-    srcs = [s for s in pointer.get("sources") or [] if s.get("frames")
-            and (now - _cdt(s["cycle"])).total_seconds() <= FRAMES_STALE_H[s["kind"]] * 3600]
-    srcs.sort(key=lambda s: s["cycle"], reverse=True)
+    not used (a stalled job must not show day-old RRFS). Only regions drawn on today's grids are named (_usable_regions),
+    and each frame names only its source's regions. `run` is the newest source's cycle: it repeats (a run lands after a
+    newer hourly cycle) and can go back (a source gone stale), so the manifest's identity is its `signature`
+    (G67a P1-1); `published_utc` and `signature` are the caller's."""
+    srcs = []
+    for s in pointer.get("sources") or []:
+        if not s.get("frames") or (now - _cdt(s["cycle"])).total_seconds() > FRAMES_STALE_H[s["kind"]] * 3600:
+            continue
+        use = _usable_regions(s)
+        if use:
+            srcs.append((s, use))
+    srcs.sort(key=lambda x: x[0]["cycle"], reverse=True)
     if not srcs:
         return None
-    top = srcs[0]
+    top = srcs[0][0]
     run_dt = _cdt(top["cycle"])
     start = run_dt + timedelta(hours=top["steps"][0])
     hours = {}
-    for s in srcs:
+    for k, (s, _use) in enumerate(srcs):
         c = _cdt(s["cycle"])
         for step in s["steps"]:
             v = c + timedelta(hours=step)
             if v >= start and v not in hours:
-                hours[v] = (s, step)
+                hours[v] = (k, step)
+    used = sorted({h[0] for h in hours.values()})
     regions = {}
-    for s in srcs:
-        for r, fields in s["frames"]["regions"].items():
+    for k in used:
+        for r, fields in srcs[k][1].items():
             regions.setdefault(r, set()).update(fields)
     frames = []
     for v in sorted(hours):
-        s, step = hours[v]
+        k, step = hours[v]
+        s, use = srcs[k]
         t = s["frames"]["template"]
         frames.append({"valid_utc": _iso(v), "step": int((v - run_dt).total_seconds() // 3600), "src": s["cycle"],
                        "src_step": step,
                        "files": {r: {f: t.format(region=r, field=f, step=step) for f in fs}
-                                 for r, fs in sorted(s["frames"]["regions"].items())}})
+                                 for r, fs in sorted(use.items())}})
     return {
         "schema": FRAMES_SCHEMA, "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC, "complete": True,
         "run": top["cycle"], "run_utc": _iso(run_dt), "model": FRAMES_MODEL,
-        "regions": {r: {"grid": region_grid(r), "fields": {f: FRAME_DEFS[f] for f in sorted(fs)}}
-                    for r, fs in sorted(regions.items()) if r in REGIONS},
-        "sources": [{"cycle": s["cycle"], "kind": s["kind"]} for s in srcs if any(h[0] is s for h in hours.values())],
+        "regions": {r: {"grid": region_grid(r), "cover": region_cover(r), "fields": {f: FRAME_DEFS[f] for f in sorted(fs)}}
+                    for r, fs in sorted(regions.items())},
+        "sources": [{"cycle": srcs[k][0]["cycle"], "kind": srcs[k][0]["kind"]} for k in used],
         "frames": frames,
     }
 
 
 def _signature(manifest):
-    """What makes two manifests the same: the frame keys and their valid times (not the publish time)."""
+    """The manifest's identity (G67a P1-1): everything that changes what the browser draws - the frame keys and valid
+    times and the regions' grids, coverage and field ranges - never the publish time. The browser adopts a manifest by
+    it and keys its frame caches with it."""
     if not manifest:
         return None
-    return hashlib.sha256(json.dumps([[f["valid_utc"], f["files"]] for f in manifest["frames"]],
-                                     sort_keys=True).encode()).hexdigest()[:16]
+    body = [manifest["run_utc"], manifest["regions"], [[f["valid_utc"], f["step"], f["files"]] for f in manifest["frames"]]]
+    return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _frames_pointer(store):
+    """The overlay pointer, or None when there is none or it is not readable JSON (G67a P2-5: a corrupt pointer is
+    rewritten by the next sync, never a failure forever); a storage error propagates."""
+    try:
+        doc = store.get_json(P.latest_key(FRAMES_PREFIX))
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
 
 
 def sync_frames(store, pointer, now, log=print):
     """Write a new overlay manifest + pointer when the pointer's sources call for a different one (a new source, or a
-    source gone stale). Idempotent: every tick calls it, so a failed write is repaired by the next tick. Returns (the
-    frames pointer now live, the one it replaced) - the same object twice when nothing changed."""
-    prev = store.get_json(P.latest_key(FRAMES_PREFIX))
+    source gone stale). Idempotent: every tick calls it, so a failed write is repaired by the next tick. With no usable
+    source left the pointer is WITHDRAWN (complete false, no manifest: the browser shows RRFS as unavailable, never
+    day-old frames; G67a P2-3). Returns (the frames pointer now live, the one it replaced) - the same object twice when
+    nothing changed."""
+    prev = _frames_pointer(store)
     m = frames_manifest(pointer, now)
+    if m is None:
+        if prev is None or prev.get("complete") is False:
+            return prev, prev
+        new = {"complete": False, "published_utc": _iso(now), "signature": None, "sources": [],
+               "reason": "no RRFS source within the stale limits"}
+        store.put(P.latest_key(FRAMES_PREFIX), json.dumps(new, separators=(",", ":"), sort_keys=True).encode(),
+                  "application/json", P.POINTER)
+        log("overlay pointer withdrawn: no usable RRFS source")
+        return new, prev
     sig = _signature(m)
-    if m is None or (prev and prev.get("signature") == sig):
+    if prev and prev.get("complete") is True and prev.get("signature") == sig:
         return prev, prev
     m = dict(m, published_utc=_iso(now), signature=sig)
     body = json.dumps(m, separators=(",", ":"), sort_keys=True, allow_nan=False).encode()
@@ -956,8 +1046,10 @@ def sync_frames(store, pointer, now, log=print):
 
 def prune_frames(store, pointer, previous, fptr, fprev):
     """Delete frame objects under frames/<10 digits>/ that no kept source of the new or the replaced pointer has, and
-    manifests neither frames pointer names. A cycle newer than the pointer's newest is left alone (a build writing)."""
+    manifests neither frames pointer names. A kept source's frames.json stays even without frames (it says why they
+    were dropped; G67a P3-6). A cycle newer than the pointer's newest is left alone (a build writing)."""
     keep_cycles = {s["cycle"] for p in (pointer, previous or {}) for s in p.get("sources") or [] if s.get("frames")}
+    kept = {s["cycle"] for p in (pointer, previous or {}) for s in p.get("sources") or []}
     for p in (fptr, fprev):                           # what a live manifest names, even a source the keep rule let go
         keep_cycles.update((p or {}).get("sources") or [])
     named = {p["manifest"] for p in (fptr, fprev) if p and p.get("manifest")}
@@ -969,6 +1061,9 @@ def prune_frames(store, pointer, previous, fptr, fprev):
             continue
         if rest.startswith("manifest-") or rest.startswith("partial-"):
             if k not in named:
+                dead.append(k)
+        elif rest == "frames.json":
+            if name not in kept:
                 dead.append(k)
         elif name not in keep_cycles:
             dead.append(k)
@@ -1121,15 +1216,14 @@ def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords
             return 0, latest
         previous = latest
         latest = publish(store, cycle_dt, files, docs, latest)
-        fptr, fprev = sync_frames(store, latest, now or datetime.now(timezone.utc), log)
         deleted = P.safe_prune(lambda: prune(store, latest, previous), store.bucket, _summary)
-        fdel = P.safe_prune(lambda: prune_frames(store, latest, previous, fptr, fprev), store.bucket, _summary)
-        log(f"published {cyc}; pruned {len(deleted or [])} objects and {len(fdel or [])} frames")
+        log(f"published {cyc}; pruned {len(deleted or [])} objects")
+        rc = _frames_step(store, latest, previous, now or datetime.now(timezone.utc), log) or 0
         dropped = docs.get(frameset_key(cyc), {}).get("dropped")
         if dropped:
-            _summary(f"WARNING: RRFS {cyc} published WITHOUT overlay frames: {dropped}")
+            _summary(f"WARNING: RRFS {cyc} published without some overlay frames: {dropped}")
             return 1, latest
-        return 0, latest
+        return rc, latest
     except (NotReady, BudgetExceeded) as exc:
         log(f"{cyc}: {exc.__class__.__name__}: {exc}; the next tick tries again")
         if live:
@@ -1152,18 +1246,23 @@ def build_one(cycle_dt, store, latest, live, out_dir, t0, get, log=print, coords
             shutil.rmtree(work, ignore_errors=True)
 
 
-def _sync_quietly(store, latest, now, log=print):
-    """sync_frames on a tick that built nothing (a source gone stale leaves the manifest; a failed manifest write is
-    repaired). None when fine; 3 when storage is busy; 1 on another failure."""
+def _frames_step(store, latest, previous, now, log=print):
+    """The overlay's manifest + pointer (sync_frames), then the frame prune: after each publish and at the end of EVERY
+    live tick, whatever it built (G67a P2-4: a source going stale, or a failed manifest write, is dealt with during a
+    run of failed or not-ready ticks too). Never a failure record for an already-live source (G67a P2-5): None when
+    fine; 3 when storage is busy; 1 (a summary line) on another failure."""
     try:
-        sync_frames(store, latest, now, log)
-        return None
+        fptr, fprev = sync_frames(store, latest, now, log)
     except Exception as exc:                         # noqa: BLE001
         log(f"overlay manifest: {exc.__class__.__name__}: {exc}")
         if P.is_storage_busy(exc):
             return 3
         _summary(f"FAILED: RRFS overlay manifest: {exc.__class__.__name__}")
         return 1
+    fdel = P.safe_prune(lambda: prune_frames(store, latest, previous, fptr, fprev), store.bucket, _summary)
+    if fdel:
+        log(f"pruned {len(fdel)} frame objects")
+    return None
 
 
 def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=print):
@@ -1210,8 +1309,9 @@ def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=
         log("nothing new")
         if not live:
             return 0
-        return _sync_quietly(store, latest, clock, log) or _stale(store, latest, "no newer RRFS source", clock) or 0
+        return _frames_step(store, latest, latest, clock, log) or _stale(store, latest, "no newer RRFS source", clock) or 0
     codes = []
+    start_latest = latest
     for c in plan:
         left = BUILD_BUDGET_S - (time.monotonic() - t0)
         if codes and is_run(c) and left < RUN_MIN_LEFT_S:
@@ -1220,6 +1320,8 @@ def main(argv=None, get=None, head=None, store=None, now=None, coords=None, log=
             continue
         code, latest = build_one(c, store, latest, live, a.out, t0, get, log, coords, grids, now)
         codes.append(code)
+    if live:
+        codes.append(_frames_step(store, latest, start_latest, clock, log) or 0)
     rc = 1 if 1 in codes else 3 if 3 in codes else 0
     if live and rc != 1:
         rc = _stale(store, latest, "RRFS", clock) or rc

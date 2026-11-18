@@ -2646,6 +2646,7 @@
         if (idle ? deadline.timeRemaining() < (drew ? cost : Math.min(cost, SLICE_MS))
           : drew && clock() - t0 + cost > SLICE_MS) { left = true; break; }
         var a = clock();
+        if (t.el._ovNew) { t.el._ovNew = false; if (seen) this._newTileNotify = true; }   // a new wave tile in view (plan section 100 D2)
         this._draw(t.el, t.coords); drew++;
         cost = this._drawMs = (this._drawMs || TILE_COST_MS) * 0.8 + (clock() - a) * 0.2;
       }
@@ -2653,8 +2654,8 @@
     if (!left) viewDone = true;
     if (left) this._queueStale(!idle);
     else if (!inView && this._staleNotify) { this._staleNotify = false; this._newTileNotify = false; if (this.onRedraw) this.onRedraw(); return; }
-    // new tiles in view (plan section 100 D2): their land masks exist only once drawn, so the animator's lattice, built
-    // at moveend / zoomend before them, is told once the tiles in view are all drawn (the buffer may still be behind)
+    // new tiles (plan section 100 D2): their land masks exist only once drawn, so the animator's lattice, built at moveend /
+    // zoomend before them, is told once a new tile was drawn and the tiles in view are all drawn (the buffer may be behind)
     if (viewDone && this._newTileNotify) { this._newTileNotify = false; if (this.onRedraw) this.onRedraw(); }
   }
   // Tiles to draw again (coast data landed, a mask changed): marked behind and drawn by the sliced drawer, the tiles in
@@ -3052,9 +3053,10 @@
       if (lk > a) a = lk;
       return a >= LAND_READOUT ? v : null;
     },
-    // a new tile queued for the sliced drawer has no land mask until drawn: the particles' lattice is rebuilt once the
-    // tiles in view are drawn (plan section 100 D2; the wave layer only: the other layers' onRedraw hooks do other work)
-    createTile: function (coords, done) { var el = slicedCreateTile.call(this, coords, done); if (el._tDone) this._newTileNotify = true; return el; },
+    // a new tile queued for the sliced drawer has no land mask until drawn: marked, its drawing rebuilds the particles'
+    // lattice once the tiles in view are drawn (plan section 100 D2; the clipped wave layer only: wind and the regional
+    // lattice read no masks, and the other layers' onRedraw hooks do other work)
+    createTile: function (coords, done) { var el = slicedCreateTile.call(this, coords, done); if (el._tDone && this._clip) el._ovNew = true; return el; },
     _value: function (code) { return this._lo + (code - 1) / 254 * (this._hi - this._lo); },
     // THE sampler (sampleRow): both the tile drawing and the readout go through here, and so do the
     // particle flow's node values.
@@ -5770,7 +5772,7 @@
     try { ctx = cv.getContext('2d') || null; } catch (e) { ctx = null; }
     if (!ctx && old && this.ctx) return;
     if (old) { try { old.width = 0; old.height = 0; } catch (e) { /* gone */ } if (old.remove) old.remove(); }
-    pane.appendChild(cv); this.canvas = cv; this.ctx = ctx; this.v = null;   // placed afresh by the next rebuild
+    pane.appendChild(cv); this.canvas = cv; this.ctx = ctx; if (this.v) this.vCarry = this.v; this.v = null;   // placed afresh by the next rebuild (vCarry: where the particles are, plan section 100)
   };
   // A map event (a gesture or an animation starting or ending, a view reset, a resize) restarts the stuck clock (G29
   // re-check R-4: separate gestures each spanning a 2-s check added up to "busy for 10 s").
@@ -5830,6 +5832,7 @@
     if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
     this.setLayer(null);
     this.dir = null; this.dgrid = null; this.fframe = null; this.vf = null; this.nodes = null; this.nodesFor = null; this.particles = null; this.v = null;
+    this._vfSpare = null; this._gained = null; this._wakeMask = null; this.vCarry = null;
     this._dropLake();
   };
   FlowAnimator.prototype.setField = function (field) { if (this.field !== field) { this.field = field; this.particles = null; this.clearData(); } };
@@ -5880,8 +5883,10 @@
   FlowAnimator.prototype._rebuild = function () {
     if (!this.canvas || !this.dir || !this.layer || !this.layer.hasFrame()) { this.stop(); this.vf = null; this._clear(); return; }
     var v = this.view(), prev = this.v, same = !!(prev && prev.w === v.w && prev.h === v.h && prev.ox === v.ox && prev.oy === v.oy && prev.z === v.z);
-    this.v = v; this._place(v); this.fframe = this.layer._frame;
-    if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this._clear(); return; }   // no animation at all
+    var from = prev || this.vCarry || null;                                      // the view the particles' positions are in
+    this.v = v; this.vCarry = null; this._place(v); this.fframe = this.layer._frame;
+    // no animation at all; the particles are dropped (their positions would be in this view's past)
+    if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this.particles = null; this._clear(); return; }
     this.mode = 'particles';
     var oldVf;                                                                   // the lattice before this rebuild (_carry compares)
     if (this.dir.regional) {                                                  // a regional model (plan section 99 D2)
@@ -5897,7 +5902,7 @@
       oldVf = this.vf; this.vf = regionFlowField(v, 8, regs, this.field, this._vfSpare); this._vfSpare = oldVf;
       this.spawn = rects && rects.length ? rects : regionRects(v, grids);         // born where the regions hold data (G67 P3-7)
       this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));
-      if (!this.particles) this._seed(v); else { if (this.count > this.target) this.count = this.target; this._carry(prev, v, oldVf); }
+      if (!this.particles) this._seed(v); else { if (this.count > this.target) this.count = this.target; this._carry(from, v, prev ? oldVf : null); }
       if (!same) this._clear();
       this._start();
       return;
@@ -5915,7 +5920,7 @@
     this.vf = flowField(v, cellPx >= 16 ? 8 : 4, this.nodes, this.dgrid, this.layer, !!this.layer._clip, this._vfSpare, lake);
     this._vfSpare = oldVf;
     this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));   // follows the view
-    if (!this.particles) this._seed(v); else { if (this.count > this.target) this.count = this.target; this._carry(prev, v, oldVf); }
+    if (!this.particles) this._seed(v); else { if (this.count > this.target) this.count = this.target; this._carry(from, v, prev ? oldVf : null); }
     if (!same) this._clear();                                                    // a moved view starts clean (a new step keeps the tails)
     this._start();
   };
@@ -5958,11 +5963,23 @@
   };
   // The particles across a rebuild (plan section 100): a zoom (or a fresh canvas: no previous view) scatters them afresh;
   // a pan moves every particle and its tail with the map (prev.ox - v.ox, prev.oy - v.oy: no jump at moveend), and those
-  // that left the view go dormant; then (D1b) every dormant particle tries a birth spot where the OLD lattice did not
-  // flow (the newly drawn tiles, the exposed strip), up to WAKE_TRIES draws, and lives there if the new lattice flows:
-  // the gained area is filled at once at the one density, and nothing else changes (a playback step that gains nothing
-  // wakes nothing).
-  var WAKE_TRIES = 16;
+  // that left the view go dormant; then (D1b) dormant particles wake where the OLD lattice did not flow and the
+  // new one does (the newly drawn tiles, the exposed strip): the view in WAKE_CELL_PX cells (births limited
+  // to the region boxes for a regional model), each cell dead or flowing at its centre in the old lattice (outside the old
+  // view: dead) and in the new one; a dormant particle wakes with the chance gained / dead cells, at a random spot of a
+  // random gained cell (where the new lattice flows). So the gained area is filled at once at the one density, whatever
+  // its size (review: random tries left a small pan's strip at a third of it), and a step that gains nothing wakes nothing.
+  var WAKE_CELL_PX = 8;
+  // The cells (cs px, cw x ch) any birth rectangle touches (a regional model's spawn rects).
+  function rectCellMask(rects, cs, cw, ch, out) {
+    var m = out && out.length >= cw * ch ? out : new Uint8Array(cw * ch), r, i, j;
+    m.fill(0, 0, cw * ch);
+    for (r = 0; r < rects.length; r++) {
+      var i0 = Math.max(0, Math.floor(rects[r][0] / cs)), i1 = Math.min(cw, Math.ceil(rects[r][2] / cs)), j0 = Math.max(0, Math.floor(rects[r][1] / cs)), j1 = Math.min(ch, Math.ceil(rects[r][3] / cs));
+      for (j = j0; j < j1; j++) for (i = i0; i < i1; i++) m[j * cw + i] = 1;
+    }
+    return m;
+  }
   FlowAnimator.prototype._carry = function (prev, v, oldVf) {
     var P = this.particles, n = this.count, i, k, q;
     if (!prev || prev.z !== v.z) { for (i = 0; i < PARTICLE_MAX; i++) this._scatter(i * 4, v); return; }
@@ -5976,17 +5993,32 @@
       }
     }
     if (!oldVf || !this.vf) return;
-    var S = this.spot || (this.spot = new Float64Array(2)), life = this._life();
-    for (i = 0, k = 0; i < n; i++, k += 4) {
-      if (!(P[k + 2] < 0)) continue;
-      var found = false;
-      for (q = 0; q < WAKE_TRIES && !found; q++) {
-        this._spawnPoint(v, S);
-        var ox = S[0] - dx, oy = S[1] - dy;                                     // the spot in the old view's pixels
-        found = !(ox >= 0 && oy >= 0 && ox < prev.w && oy < prev.h && flowingAt(oldVf, ox, oy));
+    var asleep = 0;
+    for (i = 0, k = 0; i < n; i++, k += 4) if (P[k + 2] < 0) asleep++;
+    if (!asleep) return;
+    var vf = this.vf, cs = Math.max(WAKE_CELL_PX, vf.s), cw = Math.ceil(v.w / cs), ch = Math.ceil(v.h / cs), cells = cw * ch, c, j;
+    var gained = this._gained && this._gained.length >= cells ? this._gained : (this._gained = new Int32Array(cells));
+    var mask = this.spawn && this.spawn.length ? (this._wakeMask = rectCellMask(this.spawn, cs, cw, ch, this._wakeMask)) : null;
+    var G = 0, dead = 0;
+    for (j = 0; j < ch; j++) {
+      var y = Math.min(v.h - 0.5, j * cs + cs / 2), oy = y - dy;
+      for (i = 0; i < cw; i++) {
+        c = j * cw + i;
+        if (mask && !mask[c]) continue;
+        var x = Math.min(v.w - 0.5, i * cs + cs / 2), ox = x - dx;             // the cell's centre in the old view's pixels
+        if (ox >= 0 && oy >= 0 && ox < prev.w && oy < prev.h && flowingAt(oldVf, ox, oy)) continue;
+        dead++;
+        if (flowingAt(vf, x, y)) gained[G++] = c;
       }
-      if (!found || !this._flowing(S[0], S[1])) continue;                       // the old lattice flowed there, or the new does not
-      P[k] = S[0]; P[k + 1] = S[1]; P[k + 2] = 0; P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
+    }
+    if (!G) return;
+    var chance = G / dead, life = this._life();
+    for (i = 0, k = 0; i < n; i++, k += 4) {
+      if (!(P[k + 2] < 0) || Math.random() >= chance) continue;
+      c = gained[(Math.random() * G) | 0];
+      var sx = Math.min(v.w - 1e-3, (c % cw) * cs + Math.random() * cs), sy = Math.min(v.h - 1e-3, ((c / cw) | 0) * cs + Math.random() * cs);
+      if (!this._flowing(sx, sy)) continue;                                     // a gained cell's edge where the flow stops
+      P[k] = sx; P[k + 1] = sy; P[k + 2] = 0; P[k + 3] = life[0] + Math.random() * (life[1] - life[0]);
       this.histN[i] = 0; this.histT[i] = 0; this.flowT[i] = 0;
     }
   };

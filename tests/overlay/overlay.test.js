@@ -1407,13 +1407,14 @@ test('section 100 D2: the wave layer tells its animator once the NEW tiles in vi
   const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
   const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; l._clock = () => now;
   l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, I.buildRamp(I.RAMPS.hs), { step: 0, valid_utc: '2026-09-22T12:00:00Z' });
+  l._clip = true;                                                              // a clipped wave field (hs) reads the tile masks
   let calls = 0; l.onRedraw = () => calls++;
   const queued = []; l._queueStale = function () { queued.push(1); };
   global.document = { createElement: grabEl };
   try {
     const els = [];
     for (let x = 6; x <= 13; x++) { const el = l.createTile({ x, y: 10, z: 6 }, () => {}); els.push(el); clearTimeout(el._tDoneTimer); l._tiles[x + ':10:6'] = { el, coords: { x, y: 10, z: 6 } }; }
-    assert.equal(l._newTileNotify, true, 'a queued new tile asks for the notice'); assert.ok(queued.length > 0);
+    assert.ok(els.every((e) => e._ovNew === true), 'a queued new tile is marked'); assert.ok(queued.length > 0); assert.ok(!l._newTileNotify);
     l._draw = function (el) { now += 5; el._ovGen = this._gen; };
     l._drawMs = 5;
     l._drawStale(false);                                                        // 12 ms: the two tiles in view, then the slice ends
@@ -1435,6 +1436,15 @@ test('section 100 D2: the wave layer tells its animator once the NEW tiles in vi
     const o = Object.assign(Object.create(I.ModelGridLayer.prototype), { _frame: l._frame, _staleOk: () => true, _queueStale() {} });
     const t1 = I.RadarLayer.prototype.createTile.call(o, { x: 1, y: 1, z: 6 }, () => {}); clearTimeout(t1._tDoneTimer);
     const t2 = I.SatLayer.prototype.createTile.call(o, { x: 2, y: 1, z: 6 }, () => {}); clearTimeout(t2._tDoneTimer);
-    assert.equal(o._newTileNotify, undefined);
+    assert.equal(t1._ovNew, undefined); assert.equal(t2._ovNew, undefined);
+    // wind (not clipped) reads no masks: no mark, no notice
+    l._clip = false; const w = l.createTile({ x: 3, y: 10, z: 6 }, () => {}); clearTimeout(w._tDoneTimer); assert.equal(w._ovNew, undefined); l._clip = true;
+    // review P3-3: a notice used up while another view's tiles are drawn leaves no marked tile behind
+    const m = l.createTile({ x: 13, y: 10, z: 6 }, () => {}); clearTimeout(m._tDoneTimer); l._tiles['13:10:6'] = { el: m, coords: { x: 13, y: 10, z: 6 } };
+    const v1 = l.createTile({ x: 10, y: 10, z: 6 }, () => {}); clearTimeout(v1._tDoneTimer); l._tiles['10:10:6'] = { el: v1, coords: { x: 10, y: 10, z: 6 } };
+    const c0 = calls; l._drawStale(true); assert.equal(calls, c0 + 1, 'the tile in view drawn: told'); assert.equal(m._ovNew, true, 'the buffer tile still marked');
+    box.min.x = 256 * 12; box.max.x = 256 * 14;                                 // the view moves over it
+    l._drawStale(true); assert.equal(calls, c0 + 2, 'drawn later: told again');
+    m._ovGen = -1; l._drawStale(true); assert.equal(calls, c0 + 2, 'redrawn (a new frame): asks no more');
   } finally { delete global.document; }
 });

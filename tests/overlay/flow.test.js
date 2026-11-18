@@ -574,8 +574,12 @@ test('section 100 D1b: a rebuild wakes dormant particles only into area the old 
   fa._rebuild();                                                                         // a playback step over the same data
   assert.equal(liveOf(fa), live0, 'nothing gained: nobody woken');
   assert.deepEqual(Array.from(fa.particles), pos0, 'and nothing moved');
+  // half the view flows now (a quarter gained of three quarters dead): a third of the dormant wake, not all of them
+  l.setFrame(frame(720, 361, (r, c) => (c < 457 ? codeOf(10, WIND) : 0)), HALF, 'wind', WIND, I.buildLut('wind', WIND.legend), { step: 1, valid_utc: '2026-09-22T13:00:00Z' });
+  fa._rebuild();
+  const f2 = flowShare(fa); assert.ok(Math.abs(liveOf(fa) / fa.count - f2) < 0.08, 'live ' + liveOf(fa) / fa.count + ' ~ the flowing share ' + f2);
   // the rest of the view starts to flow (the new tiles drawn): the dormant fill it at the one density, at once
-  l.setFrame(frame(720, 361, () => codeOf(10, WIND)), HALF, 'wind', WIND, I.buildLut('wind', WIND.legend), { step: 1, valid_utc: '2026-09-22T13:00:00Z' });
+  l.setFrame(frame(720, 361, () => codeOf(10, WIND)), HALF, 'wind', WIND, I.buildLut('wind', WIND.legend), { step: 2, valid_utc: '2026-09-22T14:00:00Z' });
   fa._rebuild();
   const n = fa.count, live = liveOf(fa);
   assert.ok(live > 0.88 * n, 'filled at once: ' + live + ' of ' + n);
@@ -598,14 +602,28 @@ test('section 100 D3: a pan moves the particles and their tails with the map (no
       if (N0[i] > 0) { const q = i * I.TRAIL_POINTS * 2; assert.equal(fa.hist[q], Math.fround(H0[q] - 100)); assert.equal(fa.hist[q + 1], Math.fround(H0[q + 1] - 60)); assert.equal(fa.histN[i], N0[i], 'the tail kept'); }
     } else {
       left++;
-      if (P[k + 2] >= 0) { woken++; assert.ok(P[k] >= 700 || P[k + 1] >= 540, 'woken in the exposed strip: ' + P[k] + ',' + P[k + 1]); assert.equal(fa.histN[i], 0); }
+      if (P[k + 2] >= 0) { woken++; assert.ok(P[k] >= 692 || P[k + 1] >= 532, 'woken in the exposed strip (to one 8-px wake cell): ' + P[k] + ',' + P[k + 1]); assert.equal(fa.histN[i], 0); }
     }
   }
   const strip = (800 * 600 - 700 * 540) / (800 * 600);
   assert.ok(kept > 0 && Math.abs(left / n - strip) < 0.05, 'the share that left is the exposed share');
   assert.ok(woken > 0.85 * left, 'most woken at once: ' + woken + ' of ' + left);
+  // a small pan (review P2): the 20-px strip gets the one density at once
+  let inStrip = 0, ox = 10100;
+  for (let r = 0; r < 20; r++) {
+    for (let t = 0; t < 5; t++) fa._renderParticles(33);
+    ox += 20; const at = ox; map.getPixelBounds = () => ({ min: { x: at, y: 9060 } }); fa._rebuild();
+    for (let i = 0; i < n; i++) if (P[i * 4 + 2] === 0 && P[i * 4] >= 780 - 8) inStrip++;
+  }
+  const want = 20 * n * 20 / 800;
+  assert.ok(inStrip > 0.75 * want && inStrip < 1.3 * want, 'twenty 20-px strips hold ' + inStrip + ' (the one density: ' + want.toFixed(0) + ')');
+  assert.ok(liveOf(fa) > 0.97 * n, 'still all live over a full field');
+  // a fresh canvas (a WebKit zoom or a watchdog heal) at the same zoom keeps the particles where they are (review P3-4)
+  const keep = Array.from(P.slice(0, 40)); fa._newCanvas({ appendChild() {} }); assert.equal(fa.v, null); fa._rebuild();
+  for (let i = 0; i < 10; i++) if (keep[i * 4 + 2] >= 0) { assert.equal(P[i * 4], keep[i * 4]); assert.equal(P[i * 4 + 1], keep[i * 4 + 1]); }
   // a zoom: positions do not map; every particle scattered afresh, no tails
   for (let t = 0; t < 20; t++) fa._renderParticles(33);
+  const before2 = Array.from(P); for (let i = 0; i < before.length; i++) before[i] = before2[i];
   map.getZoom = () => 6.5; fa._rebuild();                                         // the same pixel origin: a shift would be 0
   assert.equal(fa.histN.slice(0, n).every((m) => m === 0), true, 'no tail survives a zoom');
   assert.ok(fa.v.z === 6.5);
@@ -621,4 +639,8 @@ test('section 100 D2: a redraw of the layer while the map moves does not rebuild
   fa.resume(true); assert.equal(rebuilds, 1);
   l.onRedraw(); assert.equal(rebuilds, 2);
   const d = fa.debugState(); assert.equal(d.live, liveOf(fa)); assert.ok(d.live < d.count);
+  const rm = global.matchMedia; global.matchMedia = () => ({ matches: true });
+  try { fa._rebuild(); assert.equal(fa.particles, null, 'reduced motion: the particles are dropped'); } finally { if (rm) global.matchMedia = rm; else delete global.matchMedia; }
+  fa._rebuild(); assert.ok(fa.particles && liveOf(fa) > 0, 'reseeded when motion is back');
+  fa.detach(); assert.equal(fa._vfSpare, null); assert.equal(fa._gained, null);
 });

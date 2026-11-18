@@ -5868,15 +5868,16 @@
     if (reducedMotion()) { this.mode = null; this.stop(); this.vf = null; this._clear(); return; }   // no animation at all
     this.mode = 'particles';
     if (this.dir.regional) {                                                     // a regional model (plan section 99 D2)
-      var regs = [], parts = this.layer._regions || [], dparts = this.dir.parts, grids = [], fine = Infinity, rects = [];
+      var regs = [], parts = this.layer._regions || [], dparts = this.dir.parts, grids = [], rects = [];
       for (var ri = 0; ri < parts.length; ri++) for (var di = 0; di < dparts.length; di++) {
         if (dparts[di].name !== parts[ri].name) continue;
         regs.push({ lf: parts[ri].frame, lg: parts[ri].grid, ld: dparts[di].frame, dg: dparts[di].grid, lo: this.layer._lo, hi: this.layer._hi });
-        grids.push(parts[ri].grid); fine = Math.min(fine, dparts[di].grid.dlon);
+        grids.push(parts[ri].grid);
         if (rects) { var cr = parts[ri].cover ? coverRects(v, parts[ri].cover, 4000) : null; if (cr) rects = rects.concat(cr); else rects = null; }
       }
-      var rcell = isFinite(fine) ? TILE * Math.pow(2, v.z) * fine / 360 : 0;
-      this.vf = regionFlowField(v, rcell >= 16 ? 8 : 4, regs, this.field, this.vf);
+      // an 8-px lattice always: the vectors only steer the particles, and a 4-px one cost ~10 % of a 1080p shark playback
+      // (rebuilt every step; plan section 99 D2 test-site perf)
+      this.vf = regionFlowField(v, 8, regs, this.field, this.vf);
       this.spawn = rects && rects.length ? rects : regionRects(v, grids);         // born where the regions hold data (G67 P3-7)
       this.target = Math.max(PARTICLE_MIN, Math.min(PARTICLE_MAX, Math.round(v.w * v.h / PARTICLE_PX2)));
       if (!this.particles) this._seed(v); else if (this.count > this.target) this.count = this.target;

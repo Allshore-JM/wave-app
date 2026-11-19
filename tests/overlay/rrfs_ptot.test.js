@@ -100,8 +100,9 @@ test('the totals’ colours: the dry tint, the scale by log position, alpha soli
   const l25 = Math.ceil(253 * Math.log(2.5) / Math.log(1e4));
   assert.equal(lut[Math.round((2 + l25) * 2) * 4 + 3], 255);
   assert.equal(I.ptotReadout(1, 'US'), 'no precipitation'); assert.equal(I.ptotReadout(0, 'US'), null);
-  assert.equal(I.ptotReadout(2 + 253, 'Metric'), '1000 mm total');
-  assert.equal(I.ptotReadout(2 + 253, 'US'), '39.4 in total');
+  assert.equal(I.ptotReadout(2 + 253, 'Metric'), '≥ 982 mm total', 'the top level: every sum from its lower edge up');
+  assert.equal(I.ptotReadout(2 + 253, 'US'), '≥ 38.7 in total');
+  assert.equal(I.ptotReadout(2 + 252, 'Metric'), Math.round(I.ptotMm(252)) + ' mm total');
 });
 
 test('the start hour: the first frame whose hour ends after now (the hour in progress counts whole)', () => {
@@ -124,19 +125,21 @@ function world(nFrames, opts) {
     const pr = {};
     if (!(opts.noA && opts.noA(k))) pr.a = `rrfs/v1/frames/C/a/precip/f${k}.png`;
     pr.b = `rrfs/v1/frames/C/b/precip/f${k}.png`;
-    frames.push({ step: k + 1, valid_utc: `2026-11-19T${String(k).padStart(2, '0')}:00:00Z`, files: { a: {}, b: {} }, precip: pr });
+    frames.push({ step: k + 1, valid_utc: new Date(Date.UTC(2026, 10, 19, k)).toISOString().replace('.000Z', 'Z'), files: { a: {}, b: {} }, precip: pr });
   }
   const m = { signature: opts.sig || '0123456789abcdef', frames, regionList: [{ name: 'a', grid: G1 }, { name: 'b', grid: G2 }] };
   const downloads = [];
   const rmap = new Map();
   const ov = {
     model: 'rrfs', root: 'https://x', progress: [],
-    rcache: { get: (k) => rmap.get(k) || null, set: (k, v) => { rmap.set(k, v); } },
+    rcache: { get: (k) => (opts.noCache ? null : rmap.get(k) || null), set: (k, v) => { rmap.set(k, v); } },
     _totalProgress() { if (this.totals && this.totals.progress) this.progress.push(this.totals.progress.done + '/' + this.totals.progress.total); },
     _download(url, g, ctrl) {
       downloads.push(url);
       const mm = /\/(a|b)\/precip\/f(\d+)\.png$/.exec(url), arr = q[mm[1]][+mm[2]];
       if (opts.fail && opts.fail(url)) return Promise.reject(new Error('frame stalled'));
+      if (opts.gone && opts.gone(url)) return Promise.reject(new Error('frame 404'));
+      if (opts.delay) return new Promise((res) => setTimeout(res, opts.delay(url))).then(() => (ctrl.signal.aborted ? Promise.reject(Object.assign(new Error('aborted'), { name: 'AbortError' })) : { q: arr, cols: g.cols, rows: g.rows }));
       return new Promise((res, rej) => { if (ctrl.signal.aborted) rej(Object.assign(new Error('aborted'), { name: 'AbortError' })); else res({ q: arr, cols: g.cols, rows: g.rows }); });
     }
   };
@@ -162,7 +165,7 @@ test('the engine: forward, back, start again from k0: every bundle = codes of th
   const b26 = await w.ov.totals.at(w.m, 26, ['a', 'b'], k0, ctrl()); expectTotal(w, b26, 'a', k0, 26);
   assert.equal(w.downloads.length, 2 * 28, 'back: hours taken away (decoded already)');
   const b4 = await w.ov.totals.at(w.m, 4, ['a'], k0, ctrl()); expectTotal(w, b4, 'a', k0, 4);   // fewer frames from k0: start again
-  assert.equal(w.ov.totals.regions.a.at, 4);
+  assert.equal(w.ov.totals.used.a.at, 4);
   const again = await w.ov.totals.at(w.m, 10, ['a', 'b'], k0, ctrl());
   assert.equal(again, b10, 'a step done is kept (the ring around the slider)');
   const before = await w.ov.totals.at(w.m, 2, ['a', 'b'], k0, ctrl());
@@ -192,7 +195,7 @@ test('the engine: an abort mid-jump keeps every hour added consistent; the next 
   const real = w.ov._download.bind(w.ov);
   w.ov._download = (url, g, cc) => { if (++n === 20) c.abort(); return real(url, g, cc); };
   await assert.rejects(w.ov.totals.at(w.m, 35, ['a'], 0, c), (e) => e.name === 'AbortError');
-  const st = w.ov.totals.regions.a;
+  const st = w.ov.totals.used.a;
   assert.ok(st.at >= 3 && st.at < 35, 'some hours added: ' + st.at);
   const d = direct(w.q.a.slice(0, st.at + 1));
   for (let i = 0; i < d.sum.length; i++) assert.equal(st.sum[i], d.sum[i]);
@@ -204,7 +207,7 @@ test('the engine: an abort mid-jump keeps every hour added consistent; the next 
 test('the engine: a failed hour rejects the step and leaves the sums at the hour before it', async () => {
   const w = world(20, { fail: (u) => /\/a\/precip\/f9\.png$/.test(u) });
   await assert.rejects(w.ov.totals.at(w.m, 15, ['a'], 0, ctrl()), /stalled/);
-  const st = w.ov.totals.regions.a;
+  const st = w.ov.totals.used.a;
   assert.equal(st.at, 8, 'hours 0-8 added, in order; none after the failed hour 9');
   const d = direct(w.q.a.slice(0, 9));
   for (let i = 0; i < d.sum.length; i++) assert.equal(st.sum[i], d.sum[i]);
@@ -225,12 +228,12 @@ test('the engine: hours that arrive out of order wait their turn; the sums and `
   const w = world(30), real = w.ov._download.bind(w.ov), seen = [];
   w.ov._download = (url, g, cc) => {
     const k = +/f(\d+)\.png$/.exec(url)[1];
-    return new Promise((res) => setTimeout(res, 2 * (30 - k))).then(() => { seen.push(w.ov.totals.regions.a.at); return real(url, g, cc); });
+    return new Promise((res) => setTimeout(res, 2 * (30 - k))).then(() => { seen.push(w.ov.totals.used.a.at); return real(url, g, cc); });
   };
   const b = await w.ov.totals.at(w.m, 25, ['a', 'b'], 2, ctrl());
   expectTotal(w, b, 'a', 2, 25); expectTotal(w, b, 'b', 2, 25);
   assert.ok(seen.some((at) => at === 1), 'later hours landed while the first was still out (nothing added ahead of it)');
-  assert.equal(w.ov.totals.regions.a.at, 25); assert.equal(w.ov.totals.regions.b.at, 25);
+  assert.equal(w.ov.totals.used.a.at, 25); assert.equal(w.ov.totals.used.b.at, 25);
 });
 
 test('the total legend ticks leave room for their labels on the 345-px panel (the last, right-aligned, carries the unit)', () => {
@@ -244,4 +247,107 @@ test('the total legend ticks leave room for their labels on the 345-px panel (th
     });
     for (let k = 1; k < n; k++) assert.ok(box[k][0] - box[k - 1][1] >= 6, `${unit}: ${vals[k - 1]} / ${vals[k]} collide`);
   }
+});
+
+// ---- G69 fix round (docs/reviews/rrfs-ptot-G69-adversarial.md) ----
+const count = (w, re) => w.downloads.filter((u) => re.test(u)).length;
+
+test('G69 P2-5 (M23): the total at the start hour itself is that hour, not blank', async () => {
+  const w = world(10), b = await w.ov.totals.at(w.m, 4, ['a'], 4, ctrl());
+  assert.ok(!b.before); expectTotal(w, b, 'a', 4, 4);
+  assert.ok(b.parts[0].frame.q.some((c) => c > 1), 'wet');
+});
+
+test('G69 P2-4: a new start hour moves the window front (one hour per region), never a sum from scratch', async () => {
+  const w = world(40, { noCache: true });
+  await w.ov.totals.at(w.m, 30, ['a', 'b'], 2, ctrl());
+  assert.equal(w.downloads.length, 2 * 29);
+  const b = await w.ov.totals.at(w.m, 30, ['a', 'b'], 3, ctrl());
+  assert.equal(w.downloads.length, 2 * 29 + 2, 'hour 2 taken away, once per region');
+  expectTotal(w, b, 'a', 3, 30); expectTotal(w, b, 'b', 3, 30);
+  assert.equal(w.ov.totals.used.a.from, 3); assert.equal(w.ov.totals.used.a.at, 30);
+});
+
+test('G69 P2-1: an early hour is summed in a second window; the run-long sum is kept', async () => {
+  const w = world(40, { noCache: true });
+  await w.ov.totals.at(w.m, 39, ['a'], 1, ctrl());
+  assert.equal(count(w, /\/a\//), 39);
+  const b1 = await w.ov.totals.at(w.m, 1, ['a'], 1, ctrl()); expectTotal(w, b1, 'a', 1, 1);
+  const b2 = await w.ov.totals.at(w.m, 2, ['a'], 1, ctrl()); expectTotal(w, b2, 'a', 1, 2);
+  const b38 = await w.ov.totals.at(w.m, 38, ['a'], 1, ctrl()); expectTotal(w, b38, 'a', 1, 38);
+  assert.equal(count(w, /\/a\//), 39 + 1 + 1 + 1, 'hour 1, hour 2, then hour 39 taken away from the long window');
+  assert.equal(w.ov.totals.regions.a.length, 2);
+  // an hour nearer the short window moves that one (8 hours), never the long one
+  const b10 = await w.ov.totals.at(w.m, 10, ['a'], 1, ctrl()); expectTotal(w, b10, 'a', 1, 10);
+  assert.ok(w.ov.totals.regions.a.some((s) => s.at === 38), 'the long window kept');
+  assert.equal(count(w, /\/a\//), 42 + 8);
+});
+
+test('G69 P2-5 (M19): a request queued under an old manifest never runs against the new one', async () => {
+  const w = world(30, { delay: () => 5 });
+  const frames2 = w.m.frames.map((f, i) => Object.assign({}, f, { precip: (w.m.frames[i + 1] || w.m.frames[i]).precip }));
+  const m2 = Object.assign({}, w.m, { signature: 'fedcba9876543210', frames: frames2 });
+  const p1 = w.ov.totals.at(w.m, 20, ['a'], 0, ctrl());
+  const p2 = w.ov.totals.at(w.m, 25, ['a'], 0, ctrl());
+  const p3 = w.ov.totals.at(m2, 10, ['a'], 0, ctrl());
+  await p1.catch(() => {});
+  await assert.rejects(p2, (e) => e.name === 'AbortError');
+  const b3 = await p3;
+  const d = direct(w.q.a.slice(1, 12));
+  for (let i = 0; i < d.sum.length; i++) assert.equal(b3.parts[0].frame.q[i], d.bad[i] ? 0 : I.ptotCode(d.sum[i]), 'node ' + i);
+});
+
+test('G69 P2-3: a total finished after its start hour moved on is neither drawn nor stored', async () => {
+  const w = world(30, { delay: () => 3 });
+  const old = w.ov.totals.at(w.m, 20, ['a'], 2, ctrl());
+  w.ov.totals.at(w.m, 5, ['a'], 3, ctrl()).catch(() => {});   // the hour turned: k0 2 -> 3 while the first still runs
+  await assert.rejects(old, (e) => e.name === 'AbortError');
+  for (const b of w.ov.totals.made.values()) assert.equal(b.k0, 3);
+  const again = await w.ov.totals.at(w.m, 20, ['a'], 3, ctrl()); expectTotal(w, again, 'a', 3, 20);
+});
+
+test('G69 P2-5 (M4): hours out of order, then an abort: the window stays an exact prefix; the next request finishes it', async () => {
+  const c = ctrl();
+  const w = world(30, { delay: (u) => { const k = +/f(\d+)\.png$/.exec(u)[1]; if (k === 9) setTimeout(() => c.abort(), 1); return 2 * (30 - k); } });
+  await assert.rejects(w.ov.totals.at(w.m, 25, ['a'], 0, c), (e) => e.name === 'AbortError');
+  const st = w.ov.totals.used.a;
+  if (st.at < st.from) assert.ok(st.sum.every((x) => x === 0) && st.bad.every((x) => x === 0), 'nothing added yet: an empty window');
+  else { const d = direct(w.q.a.slice(st.from, st.at + 1)); for (let i = 0; i < d.sum.length; i++) assert.equal(st.sum[i], d.sum[i]); }
+  const b = await w.ov.totals.at(w.m, 25, ['a'], 0, ctrl()); expectTotal(w, b, 'a', 0, 25);
+});
+
+test('G69 P2-2: one region-hour gone for good blanks that region from that hour on; the other region is drawn; asked once', async () => {
+  const w = world(30, { gone: (u) => /\/b\/precip\/f12\.png$/.test(u) });
+  for (const idx of [12, 13, 20]) {
+    const b = await w.ov.totals.at(w.m, idx, ['a', 'b'], 0, ctrl());
+    expectTotal(w, b, 'a', 0, idx);
+    const pb = b.parts.find((p) => p.name === 'b');
+    assert.ok(pb.frame.q.every((c) => c === 0) && pb.frame.missing, 'b blank at ' + idx);
+  }
+  assert.equal(count(w, /\/b\/precip\/f12\.png$/), 1, 'the dead file asked once');
+  const b11 = await w.ov.totals.at(w.m, 11, ['a', 'b'], 0, ctrl());
+  expectTotal(w, b11, 'b', 0, 11);
+});
+
+test('G69 P3-8: a gap in the frames (not the hour after the one before) counts as a missing hour', async () => {
+  const w = world(20);
+  w.m.frames[10] = Object.assign({}, w.m.frames[10], { valid_utc: new Date(Date.UTC(2026, 10, 19, 11)).toISOString().replace('.000Z', 'Z') });
+  const b9 = await w.ov.totals.at(w.m, 9, ['a'], 0, ctrl()); assert.ok(b9.parts[0].frame.q.some((c) => c > 1));
+  const b10 = await w.ov.totals.at(w.m, 10, ['a'], 0, ctrl()); assert.ok(b10.parts[0].frame.q.every((c) => c === 0));
+});
+
+test('G69 P2-5 (M7): at most PTOT_KEEP totals kept; P3-1: a newer computation keeps its progress line', async () => {
+  const w = world(40);
+  for (let i = 5; i < 25; i++) await w.ov.totals.at(w.m, i, ['a'], 0, ctrl());
+  assert.ok(w.ov.totals.made.size <= 8, String(w.ov.totals.made.size));
+  const w2 = world(40, { delay: () => 4, noCache: true }), c1 = ctrl();
+  const p1 = w2.ov.totals.at(w2.m, 30, ['a'], 0, c1);
+  setTimeout(() => c1.abort(), 6);
+  const p2 = w2.ov.totals.at(w2.m, 35, ['a', 'b'], 1, ctrl());
+  await p1.catch(() => {});
+  let sawMine = false;
+  for (let i = 0; i < 40 && !sawMine; i++) { await new Promise((r) => setTimeout(r, 3)); if (w2.ov.totals.progress && w2.ov.totals.progress.total > 30) sawMine = true; }
+  assert.ok(sawMine, 'the second computation shows its progress after the first one ends');
+  await p2;
+  assert.equal(w2.ov.totals.progress, null);
 });

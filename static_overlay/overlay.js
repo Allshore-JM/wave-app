@@ -392,58 +392,85 @@
     var mm = ptotOf(v);
     if (mm === null) return null;
     if (!mm) return 'no precipitation';
-    return precipAmountText(mm, unit, '') + ' total';
+    // the top level holds every sum from its lower edge (half a level down, ~982 mm) up: said as that edge (G69 P3-4)
+    var top = v - 2 >= PTOT_LEVELS - 1 - 1e-9;
+    return (top ? '≥ ' : '') + precipAmountText(top ? ptotMm(PTOT_LEVELS - 1.5) : mm, unit, '') + ' total';
   }
   // The first frame whose hour is still running or to come (its valid time, the hour's end, is after now): the totals
   // start there (the hour now in progress counts whole). frames.length when every frame is past.
   function precipK0(m, now) { for (var i = 0; i < m.frames.length; i++) if (Date.parse(m.frames[i].valid_utc) > now) return i; return m.frames.length; }
-  var PTOT_CONC = 8, PTOT_KEEP = 8;                           // hourly frames downloading at once (HTTP/2: one connection); totals kept (the ring around the slider)
-  // The running sums of one manifest and start (sig, k0): per region {grid, sum, bad, at: the last frame summed}. at(idx)
-  // moves a region's sums to idx an hour at a time (forward: add; back: take away; or start again from k0 when that is
-  // fewer frames), with PTOT_CONC downloads in flight across the regions; an abort keeps every hour already added.
-  // One computation at a time (the sums are shared); each result is a regional bundle of code frames, kept by step.
-  function PrecipTotals(ov) { this.ov = ov; this.reset(null, -1); }
-  PrecipTotals.prototype.reset = function (sig, k0) { this.sig = sig; this.k0 = k0; this.regions = {}; this.made = new Map(); this.queue = Promise.resolve(); this.progress = null; };
+  var PTOT_CONC = 8, PTOT_KEEP = 8, PTOT_STATES = 2;          // hourly frames downloading at once (HTTP/2: one connection); totals kept; running sums per region
+  // The running sums of one manifest (sig). Per region up to PTOT_STATES windows {grid, sum, bad, from, at}: the sum of
+  // the hours from..at (empty when at < from). at(m, idx, names, k0) answers the total of k0..idx by moving the window
+  // that costs the fewest hourly frames: its front to k0 (take away the hours now over, or add) and its back to idx (add
+  // forward, take away back), or by starting again from k0 in the window with the lower end (the far one is kept: a
+  // look at an early hour never throws away the sum to the end of the run; G69 P2-1, P2-4). A new start hour moves the
+  // fronts, one hour each, instead of summing again (G69 P2-4). PTOT_CONC downloads in flight across the regions; each
+  // window's hours are applied strictly in order, so from..at is always exact and an abort or a failure keeps every hour
+  // applied. One computation at a time (the sums are shared); each result is a regional bundle of code frames, kept by
+  // step for its own (sig, k0) only (G69 P2-3).
+  function PrecipTotals(ov) { this.ov = ov; this.queue = Promise.resolve(); this.progress = null; this.reset(null, -1); }
+  PrecipTotals.prototype.reset = function (sig, k0) { this.sig = sig; this.k0 = k0; this.regions = {}; this.used = {}; this.made = new Map(); };
   PrecipTotals.prototype.at = function (m, idx, names, k0, ctrl) {
-    if (m.signature !== this.sig || k0 !== this.k0) this.reset(m.signature, k0);
-    var self = this, key = idx + '|' + names.join(','), hit = this.made.get(key);
-    if (hit) return Promise.resolve(hit);
+    if (m.signature !== this.sig) this.reset(m.signature, k0);
+    else if (k0 !== this.k0) { this.k0 = k0; this.made = new Map(); }   // the windows stay: their fronts move with k0
+    var self = this, sig = m.signature, key = idx + '|' + names.join(','), hit = this.made.get(key);
+    if (hit && hit.k0 === k0 && hit.sig === sig) return Promise.resolve(hit);
     var run = this.queue.then(function () {
-      if (self.sig !== m.signature || self.k0 !== k0) throw abortError();   // reset meanwhile
-      return self._compute(m, idx, names, ctrl);
+      if (ctrl.signal.aborted || self.sig !== sig || self.k0 !== k0) throw abortError();   // aborted or reset meanwhile: nothing touched
+      return self._compute(m, idx, names, k0, ctrl);
     });
     this.queue = run.catch(function () {});
     return run;
   };
-  PrecipTotals.prototype._compute = function (m, idx, names, ctrl) {
-    var self = this, k0 = this.k0, key = idx + '|' + names.join(',');
-    if (idx < k0) return Promise.resolve(this._keep(key, { regional: true, total: true, before: true, k0: k0, parts: [], names: names, failed: 0, nofield: 0, retryAt: 0, cols: 0, rows: 0, q: EMPTY_Q }));
-    var parts = [], todo = 0, done = 0, plans = [];
+  // The cheapest way to the window k0..idx for one region: [state, restart?, cost].
+  PrecipTotals.prototype._pick = function (states, k0, idx) {
+    var best = null, cost = idx - k0 + 1, restart = true;
+    for (var i = 0; i < states.length; i++) {
+      var s = states[i];
+      if (s.at < s.from || s.at < k0 - 1 || s.from > idx + 1) continue;   // empty, or no overlap with the target: no use
+      var c = Math.abs(s.from - k0) + Math.abs(idx - s.at);
+      if (c < cost) { best = s; cost = c; restart = false; }
+    }
+    return [best, restart, cost];
+  };
+  PrecipTotals.prototype._compute = function (m, idx, names, k0, ctrl) {
+    var self = this, sig = m.signature, key = idx + '|' + names.join(',');
+    function bundle(b) { b.regional = true; b.total = true; b.k0 = k0; b.sig = sig; b.names = names; b.failed = 0; b.nofield = 0; b.retryAt = 0; b.cols = 0; b.rows = 0; b.q = EMPTY_Q; return b; }
+    if (idx < k0) return Promise.resolve(this._keep(key, bundle({ before: true, parts: [] })));
+    var todo = 0, done = 0, plans = [];
     names.forEach(function (name) {
       var g = null;
       for (var i = 0; i < m.regionList.length; i++) if (m.regionList[i].name === name) g = m.regionList[i].grid;
       if (!g) return;
-      var st = self.regions[name];
-      if (!st) st = self.regions[name] = { grid: g, sum: new Int32Array(g.cols * g.rows), bad: new Uint16Array(g.cols * g.rows), at: k0 - 1 };
-      var steps = [], sign = 1, k;
-      if (idx >= st.at) { if (idx - st.at > idx - k0 + 1) { st.sum.fill(0); st.bad.fill(0); st.at = k0 - 1; } for (k = st.at + 1; k <= idx; k++) steps.push(k); }
-      else if (st.at - idx <= idx - k0 + 1) { sign = -1; for (k = st.at; k > idx; k--) steps.push(k); }
-      else { st.sum.fill(0); st.bad.fill(0); st.at = k0 - 1; for (k = k0; k <= idx; k++) steps.push(k); }
-      todo += steps.length;
-      plans.push({ name: name, st: st, steps: steps, sign: sign });
+      var states = self.regions[name] || (self.regions[name] = []), pick = self._pick(states, k0, idx), st = pick[0], k, ops = [];
+      if (pick[1]) {                                         // start again: a new window, or the one with the lower end
+        if (states.length < PTOT_STATES) states.push(st = { grid: g, sum: new Int32Array(g.cols * g.rows), bad: new Uint16Array(g.cols * g.rows), from: k0, at: k0 - 1 });
+        else { st = states[0].at <= states[1].at ? states[0] : states[1]; st.sum.fill(0); st.bad.fill(0); st.from = k0; st.at = k0 - 1; }
+      }
+      for (k = st.from; k < k0; k++) ops.push([k, -1, 'from']);                // the hours now over (a new start hour)
+      for (k = st.from - 1; k >= k0; k--) ops.push([k, 1, 'from']);           // (the clock set back: hours added at the front)
+      for (k = st.at + 1; k <= idx; k++) ops.push([k, 1, 'at']);
+      for (k = st.at; k > idx; k--) ops.push([k, -1, 'at']);
+      self.used[name] = st;
+      todo += ops.length;
+      plans.push({ name: name, st: st, ops: ops });
     });
-    this.progress = todo > PTOT_CONC ? { done: 0, total: todo } : null;
+    var tok = {};
+    this.progress = todo > PTOT_CONC ? { done: 0, total: todo, tok: tok } : null;
     this.ov._totalProgress();
-    // PTOT_CONC downloads in flight across every region; each region's hours are added strictly in order (a prefix), so
-    // its `at` is always exact and a failure or an abort keeps every hour added before it. A result that arrives ahead of
-    // its turn waits (at most PTOT_CONC of them); one left over after a failure is dropped (its frame stays in rcache).
+    function mineProgress() { return self.progress && self.progress.tok === tok; }
+    // PTOT_CONC downloads in flight across every region; each window's hours are applied strictly in order (a prefix), so
+    // from..at is always exact and a failure or an abort keeps every hour applied before it. A result that arrives ahead
+    // of its turn waits (at most PTOT_CONC of them); one left over after a failure is dropped (its frame stays in rcache).
     var tasks = [], ti = 0, failed = null;
-    plans.forEach(function (pl) { pl.got = {}; pl.next = 0; pl.steps.forEach(function (k, s) { tasks.push({ pl: pl, s: s, k: k }); }); });
+    plans.forEach(function (pl) { pl.got = {}; pl.next = 0; pl.ops.forEach(function (op, s) { tasks.push({ pl: pl, s: s, k: op[0] }); }); });
     function drain(pl) {
-      while (pl.next < pl.steps.length && Object.prototype.hasOwnProperty.call(pl.got, pl.next)) {
-        var k = pl.steps[pl.next];
-        sumApply(pl.st.sum, pl.st.bad, pl.got[pl.next], pl.sign); delete pl.got[pl.next];
-        pl.st.at = pl.sign > 0 ? k : k - 1; pl.next++; done++;
+      while (pl.next < pl.ops.length && Object.prototype.hasOwnProperty.call(pl.got, pl.next)) {
+        var op = pl.ops[pl.next];
+        sumApply(pl.st.sum, pl.st.bad, pl.got[pl.next], op[1]); delete pl.got[pl.next];
+        if (op[2] === 'from') pl.st.from = op[1] < 0 ? op[0] + 1 : op[0]; else pl.st.at = op[1] > 0 ? op[0] : op[0] - 1;
+        pl.next++; done++;
       }
     }
     function worker() {
@@ -454,7 +481,7 @@
         if (failed) return;
         if (ctrl.signal.aborted) { failed = abortError(); return; }
         t.pl.got[t.s] = q; drain(t.pl);
-        if (self.progress) { self.progress.done = done; self.ov._totalProgress(); }
+        if (mineProgress()) { self.progress.done = done; self.ov._totalProgress(); }
         return worker();
       }, function (err) { if (!failed) failed = err; });
     }
@@ -463,27 +490,43 @@
     // every worker settles before the result (or the error) is handed on: none still adds once the next computation runs
     var chain = Promise.all(workers).then(function () { if (failed) throw failed; if (ctrl.signal.aborted) throw abortError(); });
     return chain.then(function () {
-      self.progress = null; self.ov._totalProgress();
+      if (mineProgress()) { self.progress = null; self.ov._totalProgress(); }
+      if (self.sig !== sig || self.k0 !== k0) throw abortError();             // a start hour or manifest moved on meanwhile: never kept or drawn
+      var parts = [];
       plans.forEach(function (pl) {
-        var g = pl.st.grid, q = sumCodes(pl.st.sum, pl.st.bad, new Uint8Array(g.cols * g.rows));
-        parts.push({ name: pl.name, grid: g, frame: { q: q, cols: g.cols, rows: g.rows } });
+        var g = pl.st.grid, q = sumCodes(pl.st.sum, pl.st.bad, new Uint8Array(g.cols * g.rows)), missing = 0;
+        for (var j = 0; j < q.length; j++) if (!q[j]) { missing = 1; break; }
+        parts.push({ name: pl.name, grid: g, frame: { q: q, cols: g.cols, rows: g.rows, missing: missing } });
       });
-      return self._keep(key, { regional: true, total: true, k0: k0, parts: parts, names: names, failed: 0, nofield: 0, retryAt: 0, cols: 0, rows: 0, q: EMPTY_Q });
-    }, function (err) { self.progress = null; self.ov._totalProgress(); throw err; });
+      return self._keep(key, bundle({ parts: parts }));
+    }, function (err) { if (mineProgress()) { self.progress = null; self.ov._totalProgress(); } throw err; });
   };
   PrecipTotals.prototype._keep = function (key, b) {
+    if (b.sig !== this.sig || b.k0 !== this.k0) return b;   // (never stored for another start hour or manifest)
     this.made.set(key, b);
     while (this.made.size > PTOT_KEEP) this.made.delete(this.made.keys().next().value);
     return b;
   };
   // One hour's codes of a region: the decoded frame (the scheduler's rcache by file key, else a download, kept there), or
-  // null when the step has no precipitation frame for the region.
+  // null (every node missing: that region's total is blank from that hour on) when the step has no precipitation frame
+  // for the region, is not the hour after the one before it (a gap in the frames; G69 P3-8), or failed for good (a 404,
+  // a decode: marked, never asked again; G69 P2-2). A transient failure rejects the computation, which a later step retries.
   PrecipTotals.prototype._hour = function (m, k, name, g, ctrl) {
-    var ov = this.ov, fkey = regionFrameKey(m.frames[k], name, 'precip');
+    var ov = this.ov, fr = m.frames[k], fkey = regionFrameKey(fr, name, 'precip'), un = ov.unavailable || (ov.unavailable = {});
     if (!fkey) return Promise.resolve(null);
-    var rk = ov.model + '/' + fkey, got = ov.rcache.get(rk);
+    if (k > 0 && Date.parse(fr.valid_utc) - Date.parse(m.frames[k - 1].valid_utc) !== 3.6e6) return Promise.resolve(null);
+    var rk = ov.model + '/' + fkey, got = ov.rcache.get(rk), mark = un['region:' + rk];
     if (got) return Promise.resolve(got.q);
-    return ov._download(ov.root + '/' + fkey, g, ctrl, m, function (f) { validateRegionGrid(g, f); }).then(function (f) { ov.rcache.set(rk, f); return f.q; });
+    if (mark === true) return Promise.resolve(null);
+    if (typeof mark === 'number' && mark > Date.now()) return Promise.reject(new Error('frame stalled'));
+    return ov._download(ov.root + '/' + fkey, g, ctrl, m, function (f) { validateRegionGrid(g, f); }).then(function (f) {
+      ov.rcache.set(rk, f); delete un['region:' + rk]; return f.q;
+    }, function (err) {
+      if (ctrl.signal.aborted || (err && err.name === 'AbortError')) throw err;
+      if (failureKind(err) === 'permanent') { un['region:' + rk] = true; return null; }
+      un['region:' + rk] = Date.now() + RETRY_AFTER_MS;
+      throw err;
+    });
   };
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
   // Japan's files hold JMA's eight rain-rate classes as the dBZ codes of the same rain (tools/model_frames/jma.py; a Python test compares
@@ -7613,6 +7656,7 @@
       var pane = this.map.createPane('modelPane'); pane.style.zIndex = 250; pane.style.pointerEvents = 'none';
     }
     this.field = fieldName;
+    if (fieldName !== 'ptot') this.totals = null;            // the running sums go with the field (G69 P3-7)
     this.abortAll();
     this.abort = new AbortController();
     var sig = this.abort.signal;
@@ -7653,6 +7697,7 @@
       var rIdx = prevValid === null && st ? restoreIndex(m, st, Date.now()) : null;
       idx = prevValid === null ? (carry ? nearestIndex(m, carry.t) : rIdx !== null ? rIdx : pickFrame(m)) : m.run === prevRun ? Math.min(keep, self.n - 1) : nearestIndex(m, prevValid);
       resume = carry ? carry.playing : rIdx !== null && st.playing === true;
+      if (fieldName === 'ptot') idx = Math.max(idx, Math.min(precipK0(m, Date.now()), self.n - 1));   // a total opens on a summed hour, never an empty map (G69 P3-6)
       self.res = m.regional || !wantHalf(self.map.getZoom(), self._dims().w, fieldName) ? 'full' : 'half';   // a regional model: its one grid per region
       if (!waitCoast) return [m, undefined];
       // the first frame downloads beside the coastline; the first draw waits for the coastline at most COAST_FIRST_MS
@@ -7671,8 +7716,11 @@
       if (!self.lineTimer) self.lineTimer = setInterval(function () {
         if (self.ui && self.ui.runText) self._refreshRunLine();
         // a total whose start hour has passed is summed again from the new one (plan section 102 B1)
-        if (self.field === 'ptot' && self.mode === 'model' && self.manifest && self.totals && self.frameIndex !== null && self.totals.k0 !== precipK0(self.manifest, Date.now()) && !self.playing) {
-          self._goto(self.frameIndex).then(function () { self.render(self.last); }, function () {});
+        // (by the drawn total's own start, so a failed re-sum is tried again next minute; not in a hidden tab: G69 P3-3, P2-4)
+        var drawnT = self.layer && self.layer._frame && self.layer._frame.total ? self.layer._frame : null;
+        if (self.field === 'ptot' && self.mode === 'model' && self.manifest && drawnT && self.frameIndex !== null && !self.playing && !(typeof document !== 'undefined' && document.hidden)) {
+          if (drawnT.k0 !== precipK0(self.manifest, Date.now())) self._goto(self.frameIndex).then(function () { self.render(self.last); }, function () {});
+          else if (self._legendK0 != null && self._legendK0 !== drawnT.k0) { self._legendK0 = drawnT.k0; self.render(self.last); }   // the legend's start follows the drawn total (G69 P3-2)
         }
       }, 60000);
       return self._goto(idx, sig).catch(function (err) {
@@ -8712,7 +8760,8 @@
       });
     });
     if (total && !this.totals) this.totals = new PrecipTotals(this);
-    var p = (total ? this.totals.at(m, idx, names, precipK0(m, Date.now()), ctrl) : Promise.all(jobs).then(function (got) {
+    var k0m = total ? /\/k(\d+)$/.exec(key) : null;         // the start hour of the key itself (never read from the clock twice; G69 P2-3)
+    var p = (total ? this.totals.at(m, idx, names, k0m ? +k0m[1] : precipK0(m, Date.now()), ctrl) : Promise.all(jobs).then(function (got) {
       var parts = [], fails = [], wanted = 0, transient = null, retryAt = Infinity;
       for (var i = 0; i < got.length; i++) {
         if (!got[i]) continue;
@@ -8758,6 +8807,10 @@
   Overlay.prototype._maxInflight = function () { return this._ring().inflight + (this._wantPres() ? 1 : 0) + (this._wantLake() ? 1 : 0) + (this._wantLakeDir() ? 1 : 0); };
   Overlay.prototype._plan = function (idx) {
     var r = this._ring(), plan = ringPlan(idx, this.n, this.dir, r.ahead, r.behind), want = this._wantDir(), wantP = this._wantPres(), wantL = this._wantLake(), wantLD = this._wantLakeDir(), out = [];
+    if (this.field === 'ptot' && this.manifest) {            // a total: no wrap past the last frame, nothing before the start hour (G69 P2-1)
+      var k0 = precipK0(this.manifest, Date.now()), span = Math.max(r.ahead, r.behind);
+      plan = plan.filter(function (j) { return j === idx || (j >= k0 && Math.abs(j - idx) <= span); });
+    }
     for (var i = 0; i < plan.length; i++) {
       out.push([plan[i], 'field']); if (want) out.push([plan[i], 'dir']); if (wantP) out.push([plan[i], 'pres']);
       if (wantL && this._lakeIndex(plan[i]) >= 0) { out.push([plan[i], 'lake']); if (wantLD) out.push([plan[i], 'lakedir']); }
@@ -9322,6 +9375,7 @@
     var self = this;
     this._noteSettled('off');                              // Off before a first picture: nothing to wait for any more
     this._regionNames = null; this.rcache.clear();           // a regional model's region set and decoded frames (G67 P1-1, P3-8)
+    this.totals = null;                                      // and the precipitation total's running sums (G69 P3-7)
     this._closeMenus();
     this.field = null;                                     // first: the pause below must not save the layer as still on
     this.pause();
@@ -9709,6 +9763,8 @@
       var r = m.regionList[i];
       if (r.cover ? coverHas(r.cover, lat, lng) : inRegionBox(r.grid, lat, lng)) {   // where a region has data (G67 P3-6)
         if (this.layer._frame && this.layer._frame.before) return 'the total starts at the hour now in progress';   // plan section 102 B1
+        // a blank node of a total: an hour of it has no frame here (G69 P3-5)
+        if (this.layer._frame && this.layer._frame.total && this.layer._frame.parts.some(function (p) { return p.name === r.name && p.frame.missing; })) return 'an hour of this total is missing here';
         // the region under the pointer has no precipitation frame for this step (a source built before the field; G68 M13)
         var fr = this.layer._frame, step = this.frameIndex !== null ? m.frames[this.frameIndex] : null;
         return fr && fr.nofield && step && this.field === 'precip' && !regionFrameKey(step, r.name, 'precip') ? 'no precipitation frame for this hour' : null;
@@ -10478,9 +10534,12 @@
     wrap.appendChild(mk('div', 'ov-meta', 'Total from ' + start + ' to the slider time.'));
     return wrap;
   }
-  // "the hour ending 4 PM": where the totals start (the k0 frame's hour), in the panel's zone
+  // "Thu 3 PM": where the total starts (the start of the k0 frame's hour), in the panel's zone; the drawn total's own
+  // start when one is on the map (the legend never names another hour than the picture's; G69 P3-2)
   Overlay.prototype._totalStartText = function () {
-    var m = this.manifest, k0 = m ? precipK0(m, Date.now()) : 0, fr = m && m.frames[k0];
+    var m = this.manifest, drawn = this.layer && this.layer._frame && this.layer._frame.total ? this.layer._frame : null;
+    var k0 = drawn && m && drawn.sig === m.signature ? drawn.k0 : m ? precipK0(m, Date.now()) : 0, fr = m && m.frames[k0];
+    this._legendK0 = k0;
     if (!fr) return 'now';
     var ms = Date.parse(fr.valid_utc), st = ribbonFormatter(this.opts.tz).stamp(ms - 3.6e6);
     return st.weekday + ' ' + st.clock;

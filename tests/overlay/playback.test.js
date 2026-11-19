@@ -122,7 +122,7 @@ function world(opts) {
   if (opts && opts.reduced) g.matchMedia = (q) => ({ matches: /reduced-motion/.test(q) });
   // timers never keep the test process alive (the module keeps a 30-min run-check interval while mounted)
   let st = (f, ms) => { const t = setTimeout(f, ms); if (t.unref) t.unref(); return t; }, ct = clearTimeout;
-  let si = (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); return t; }, ci = clearInterval, raf, caf;
+  let si = (f, ms) => { const t = setInterval(f, ms); if (t.unref) t.unref(); (w.intervals || (w.intervals = [])).push({ f, ms, t }); return t; }, ci = clearInterval, raf, caf;
   if (opts && opts.fakeTimers) {                 // a test that must not depend on the machine's speed (G28 K-2)
     let now = 0, seq = 0; const q = new Map();
     w.now = () => now;                             // the fake clock (a test pins Date.now to it: section 42's cadence)
@@ -4192,6 +4192,48 @@ test('section 102 B1: Precipitation total from GFS wind: RRFS, totals = the hour
     o.mount('wind'); await settle(); await w.releaseAll();
     assert.equal(o.model, 'gfswave', 'back to GFS wind');
     offPrecip(o);
+  });
+});
+
+test('section 102 B1 (G69): the hour turns under a total: start + 1 h, the legend follows; the readout in both units; a mount lands on a summed hour', async () => {
+  await onRunDay(async () => {
+    const w = world(); w.view = { lat: 21.4, lng: -157.9 };
+    const RP = withP(R, 'a1b2c3d4e5f60718');
+    w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + RP.run] = RP; w.pointers = { rrfs: rptr(RP) };
+    let unit = 'US', shift = 0;
+    const now0 = Date.now; Date.now = () => now0() + shift;
+    try {
+      const o = w.create({ models: THREE, getUnit: () => unit });
+      o.mount('ptot'); await settle(); await releaseRrfs(w); await releaseRrfs(w);
+      const I2 = w.g.AllshoreOverlay._internals, k0 = I2.precipK0(o.manifest, Date.now());
+      assert.equal(o.last.state, 'ready', o.last.message);
+      assert.ok(o.frameIndex >= k0, 'the mount lands on a summed hour (G69 P3-6): ' + o.frameIndex + ' vs ' + k0);
+      o.seek(k0 + 5); await settle(); await releaseRrfs(w); await releaseRrfs(w);
+      assert.equal(o.layer._frame.k0, k0);
+      const s0 = o._totalStartText();
+      assert.equal(o._legendK0, k0, 'the legend names the drawn total’s start');
+      const part = o.layer._frame.parts.find((p) => p.name === 'hi'), cell = part.frame.q.findIndex((c) => c > 1), code = part.frame.q[cell];
+      // the readout's words for the drawn code (the fake frames are wet at a corner node, where the pixel sampler is blank)
+      assert.ok(/^[\d.]+ in total$/.test(I2.ptotReadout(code, 'US')), I2.ptotReadout(code, 'US'));
+      assert.ok(/^[\d.]+ mm total$/.test(I2.ptotReadout(code, 'Metric')), I2.ptotReadout(code, 'Metric'));
+      assert.equal(part.frame.q[cell], I2.ptotCode(6 * I2.PRECIP_MILLI[53]));
+      // the hour turns: the lineTimer moves the start one hour; the total and its legend follow
+      shift = 3.6e6;
+      const before = w.fetches.length;
+      (w.intervals || []).filter((x) => x.ms === 60000).forEach((x) => x.f());
+      await settle(); await releaseRrfs(w); await releaseRrfs(w); await settle();
+      assert.equal(o.layer._frame.k0, k0 + 1, 'the drawn total starts an hour later');
+      assert.ok(o._key(o.frameIndex).endsWith('/k' + (k0 + 1)));
+      const s1 = o._totalStartText();
+      assert.equal(o._legendK0, k0 + 1, 'the legend too'); assert.notEqual(s1, s0);
+      const part2 = o.layer._frame.parts.find((p) => p.name === 'hi');
+      assert.equal(part2.frame.q[cell], I2.ptotCode(5 * I2.PRECIP_MILLI[53]), 'five hours now');
+      assert.ok(w.fetches.length - before <= 2, 'one hour taken away, no sum from scratch: ' + (w.fetches.length - before));
+      // a switch away drops the running sums (G69 P3-7)
+      o.mount('precip'); await settle(); await releaseRrfs(w);
+      assert.equal(o.totals, null);
+      offPrecip(o);
+    } finally { Date.now = now0; }
   });
 });
 

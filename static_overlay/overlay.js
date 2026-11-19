@@ -9889,6 +9889,7 @@
   // The forecast table's run beside the overlay's: the forecast table is always GFS-Wave (or SWAN): under another
   // model its run is named with its model.
   Overlay.prototype._runTailText = function (m) {
+    if (this.field === 'precip' || this.field === 'ptot') return '';   // the wave table's run says nothing about rain (owner, section 102)
     var pc = typeof this.opts.pageCycle === 'function' ? this.opts.pageCycle() : this.opts.pageCycle;
     return pc && pc.model === 'SWAN' ? ' — the forecast table is a PacIOOS SWAN run'
       : pc && pc.model === 'GLWU' ? ' — the forecast table is a NOAA GLWU (Great Lakes) run'

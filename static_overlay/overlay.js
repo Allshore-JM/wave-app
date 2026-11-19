@@ -397,10 +397,10 @@
   // The first frame whose hour is still running or to come (its valid time, the hour's end, is after now): the totals
   // start there (the hour now in progress counts whole). frames.length when every frame is past.
   function precipK0(m, now) { for (var i = 0; i < m.frames.length; i++) if (Date.parse(m.frames[i].valid_utc) > now) return i; return m.frames.length; }
-  var PTOT_CHUNK = 4, PTOT_KEEP = 8;                          // hourly frames fetched at once; totals kept (the ring around the slider)
+  var PTOT_CONC = 12, PTOT_KEEP = 8;                          // hourly frames downloading at once (HTTP/2: one connection); totals kept (the ring around the slider)
   // The running sums of one manifest and start (sig, k0): per region {grid, sum, bad, at: the last frame summed}. at(idx)
-  // moves a region's sums to idx a chunk at a time (forward: add; back: take away; or start again from k0 when that is
-  // fewer frames), so a long jump never holds more than PTOT_CHUNK hourly frames and an abort keeps every chunk done.
+  // moves a region's sums to idx an hour at a time (forward: add; back: take away; or start again from k0 when that is
+  // fewer frames), with PTOT_CONC downloads in flight across the regions; an abort keeps every hour already added.
   // One computation at a time (the sums are shared); each result is a regional bundle of code frames, kept by step.
   function PrecipTotals(ov) { this.ov = ov; this.reset(null, -1); }
   PrecipTotals.prototype.reset = function (sig, k0) { this.sig = sig; this.k0 = k0; this.regions = {}; this.made = new Map(); this.queue = Promise.resolve(); this.progress = null; };
@@ -432,22 +432,36 @@
       todo += steps.length;
       plans.push({ name: name, st: st, steps: steps, sign: sign });
     });
-    this.progress = todo > PTOT_CHUNK ? { done: 0, total: todo } : null;
+    this.progress = todo > PTOT_CONC ? { done: 0, total: todo } : null;
     this.ov._totalProgress();
-    var chain = Promise.resolve();
-    plans.forEach(function (pl) {
-      for (var c = 0; c < pl.steps.length; c += PTOT_CHUNK) (function (chunk) {
-        chain = chain.then(function () {
-          if (ctrl.signal.aborted) throw abortError();
-          return Promise.all(chunk.map(function (k) { return self._hour(m, k, pl.name, pl.st.grid, ctrl); })).then(function (qs) {
-            if (ctrl.signal.aborted) throw abortError();
-            for (var j = 0; j < chunk.length; j++) { sumApply(pl.st.sum, pl.st.bad, qs[j], pl.sign); pl.st.at = pl.sign > 0 ? chunk[j] : chunk[j] - 1; }
-            done += chunk.length;
-            if (self.progress) { self.progress.done = done; self.ov._totalProgress(); }
-          });
-        });
-      })(pl.steps.slice(c, c + PTOT_CHUNK));
-    });
+    // PTOT_CONC downloads in flight across every region; each region's hours are added strictly in order (a prefix), so
+    // its `at` is always exact and a failure or an abort keeps every hour added before it. A result that arrives ahead of
+    // its turn waits (at most PTOT_CONC of them); one left over after a failure is dropped (its frame stays in rcache).
+    var tasks = [], ti = 0, failed = null;
+    plans.forEach(function (pl) { pl.got = {}; pl.next = 0; pl.steps.forEach(function (k, s) { tasks.push({ pl: pl, s: s, k: k }); }); });
+    function drain(pl) {
+      while (pl.next < pl.steps.length && Object.prototype.hasOwnProperty.call(pl.got, pl.next)) {
+        var k = pl.steps[pl.next];
+        sumApply(pl.st.sum, pl.st.bad, pl.got[pl.next], pl.sign); delete pl.got[pl.next];
+        pl.st.at = pl.sign > 0 ? k : k - 1; pl.next++; done++;
+      }
+    }
+    function worker() {
+      if (failed || ti >= tasks.length) return Promise.resolve();
+      if (ctrl.signal.aborted) { failed = abortError(); return Promise.resolve(); }
+      var t = tasks[ti++];
+      return self._hour(m, t.k, t.pl.name, t.pl.st.grid, ctrl).then(function (q) {
+        if (failed) return;
+        if (ctrl.signal.aborted) { failed = abortError(); return; }
+        t.pl.got[t.s] = q; drain(t.pl);
+        if (self.progress) { self.progress.done = done; self.ov._totalProgress(); }
+        return worker();
+      }, function (err) { if (!failed) failed = err; });
+    }
+    var workers = [];
+    for (var w = 0; w < Math.min(PTOT_CONC, tasks.length); w++) workers.push(worker());
+    // every worker settles before the result (or the error) is handed on: none still adds once the next computation runs
+    var chain = Promise.all(workers).then(function () { if (failed) throw failed; if (ctrl.signal.aborted) throw abortError(); });
     return chain.then(function () {
       self.progress = null; self.ov._totalProgress();
       plans.forEach(function (pl) {
@@ -10689,7 +10703,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS, PTOT_TAB: PTOT_TAB, PRECIP_TAB: PRECIP_TAB, PRECIP_MILLI: PRECIP_MILLI, PTOT_EDGE: PTOT_EDGE, ptotMm: ptotMm, ptotCode: ptotCode, ptotOf: ptotOf, sumApply: sumApply, sumCodes: sumCodes, ptotPos: ptotPos, ptotLut: ptotLut, ptotReadout: ptotReadout, precipK0: precipK0, PrecipTotals: PrecipTotals, PTOT_CHUNK: PTOT_CHUNK, buildTotalLegend: buildTotalLegend,
+    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS, PTOT_TAB: PTOT_TAB, PRECIP_TAB: PRECIP_TAB, PRECIP_MILLI: PRECIP_MILLI, PTOT_EDGE: PTOT_EDGE, ptotMm: ptotMm, ptotCode: ptotCode, ptotOf: ptotOf, sumApply: sumApply, sumCodes: sumCodes, ptotPos: ptotPos, ptotLut: ptotLut, ptotReadout: ptotReadout, precipK0: precipK0, PrecipTotals: PrecipTotals, PTOT_CONC: PTOT_CONC, buildTotalLegend: buildTotalLegend,
       regionLon: regionLon, inRegionBox: inRegionBox,  coverNear: coverNear, REGION_NEAR_SCREENS: REGION_NEAR_SCREENS, coverHas: coverHas, coverRects: coverRects, halfOf: halfOf, regionFlowField: regionFlowField, regionRects: regionRects, regionsNear: regionsNear, regionFrameKey: regionFrameKey, modelOffers: modelOffers, REGION_ORDER: REGION_ORDER, REGIONAL_SCHEMA: REGIONAL_SCHEMA,
       coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,

@@ -1,7 +1,7 @@
 'use strict';
 // RRFS "Precipitation total" from now (plan section 102 B1) for static_overlay/overlay.js, no browser: the integer
 // running sums (exactly a direct sum, adding and taking away, a missing hour), the totals' code scale (the binary search
-// = the log formula), the engine (forward, back, a start again from k0, a new manifest or start hour, chunks and progress,
+// = the log formula), the engine (forward, back, a start again from k0, a new manifest or start hour, downloads in flight and progress,
 // an abort mid-way keeps a consistent sum), the colours and the start hour.
 //   node --test tests/overlay/rrfs_ptot.test.js
 const test = require('node:test');
@@ -167,7 +167,8 @@ test('the engine: forward, back, start again from k0: every bundle = codes of th
   assert.equal(again, b10, 'a step done is kept (the ring around the slider)');
   const before = await w.ov.totals.at(w.m, 2, ['a', 'b'], k0, ctrl());
   assert.equal(before.before, true); assert.equal(before.parts.length, 0);
-  assert.ok(w.ov.progress.includes('4/8') && w.ov.progress.includes('16/40'), 'progress in chunks of 4');
+  assert.equal(w.ov.progress.filter((p) => p.endsWith('/40')).length, 41, 'a long move: 0/40, then hour by hour');
+  assert.ok(w.ov.progress.includes('40/40') && !w.ov.progress.some((p) => p.endsWith('/8')), 'a short move (8 <= PTOT_CONC): no progress line');
 });
 
 test('the engine: a new manifest or start hour starts again; an hour without a frame for a region blanks it', async () => {
@@ -184,15 +185,15 @@ test('the engine: a new manifest or start hour starts again; an hour without a f
   assert.notEqual(s2, k6); assert.equal(w.ov.totals.sig, m2.signature); expectTotal(w, s2, 'a', 6, 11);
 });
 
-test('the engine: an abort mid-jump keeps every chunk done consistent; the next request finishes it exactly', async () => {
+test('the engine: an abort mid-jump keeps every hour added consistent; the next request finishes it exactly', async () => {
   const w = world(40);
   const c = ctrl();
   let n = 0;
   const real = w.ov._download.bind(w.ov);
-  w.ov._download = (url, g, cc) => { if (++n === 10) c.abort(); return real(url, g, cc); };
+  w.ov._download = (url, g, cc) => { if (++n === 20) c.abort(); return real(url, g, cc); };
   await assert.rejects(w.ov.totals.at(w.m, 35, ['a'], 0, c), (e) => e.name === 'AbortError');
   const st = w.ov.totals.regions.a;
-  assert.ok(st.at >= 3 && st.at < 35, 'some chunks applied: ' + st.at);
+  assert.ok(st.at >= 3 && st.at < 35, 'some hours added: ' + st.at);
   const d = direct(w.q.a.slice(0, st.at + 1));
   for (let i = 0; i < d.sum.length; i++) assert.equal(st.sum[i], d.sum[i]);
   w.ov._download = real;
@@ -200,12 +201,12 @@ test('the engine: an abort mid-jump keeps every chunk done consistent; the next 
   expectTotal(w, b, 'a', 0, 35);
 });
 
-test('the engine: a failed hour rejects the step and leaves the sums at the last good chunk', async () => {
+test('the engine: a failed hour rejects the step and leaves the sums at the hour before it', async () => {
   const w = world(20, { fail: (u) => /\/a\/precip\/f9\.png$/.test(u) });
   await assert.rejects(w.ov.totals.at(w.m, 15, ['a'], 0, ctrl()), /stalled/);
   const st = w.ov.totals.regions.a;
-  assert.equal(st.at, 7, 'chunks 0-3 and 4-7 applied');
-  const d = direct(w.q.a.slice(0, 8));
+  assert.equal(st.at, 8, 'hours 0-8 added, in order; none after the failed hour 9');
+  const d = direct(w.q.a.slice(0, 9));
   for (let i = 0; i < d.sum.length; i++) assert.equal(st.sum[i], d.sum[i]);
 });
 
@@ -218,4 +219,16 @@ test('the totals draw through the typed sampler with one type: never a blend wit
   assert.ok(Math.abs(at(0.3, 1.3) - 200) < 1e-6, 'one wet node with most of the weight: its level, not a blend with dry');
   assert.equal(at(0.9, 0.1), 1, 'dry ground');
   assert.equal(at(-1.9, 1.9), 0, 'beside the missing corner node, too little covered weight: nothing');
+});
+
+test('the engine: hours that arrive out of order wait their turn; the sums and `at` stay exact at every step', async () => {
+  const w = world(30), real = w.ov._download.bind(w.ov), seen = [];
+  w.ov._download = (url, g, cc) => {
+    const k = +/f(\d+)\.png$/.exec(url)[1];
+    return new Promise((res) => setTimeout(res, 2 * (30 - k))).then(() => { seen.push(w.ov.totals.regions.a.at); return real(url, g, cc); });
+  };
+  const b = await w.ov.totals.at(w.m, 25, ['a', 'b'], 2, ctrl());
+  expectTotal(w, b, 'a', 2, 25); expectTotal(w, b, 'b', 2, 25);
+  assert.ok(seen.some((at) => at === 1), 'later hours landed while the first was still out (nothing added ahead of it)');
+  assert.equal(w.ov.totals.regions.a.at, 25); assert.equal(w.ov.totals.regions.b.at, 25);
 });

@@ -82,7 +82,7 @@ V1_PIN_TIER1_SHA256 = "a4b97403aac09c0a4ca88f50d77d8e339eb061342204a0dd227294e71
 EXPECTED_CHANGED = ["15_-155", "15_-160", "20_-160", "20_-165", "20_-170"]
 # The exact bytes of a real build (deterministic from the pinned inputs, this code and the pinned shapely): a
 # deliberate change updates this pin. Tier 0 is v1's (V1_PIN_TIER0_SHA256).
-PIN_TIER1_SHA256 = "9a0ca75f08d7b2fb6bc4d6df0a43cb1653ddabbcb1fd4b1b5cf77cc6d21923f7"   # 2026-11-19 laptop build (normalised); coast-build dry run #4 confirms the runner
+PIN_TIER1_SHA256 = "9a0ca75f08d7b2fb6bc4d6df0a43cb1653ddabbcb1fd4b1b5cf77cc6d21923f7"   # laptop and runner agree (coast-build dry run #711, ubuntu-24.04; shapely 2.2.0)
 # Land area of EXPECTED_CHANGED in v1 (sq deg, build_coast.signed_area of the q=1e4 rings, unweighted as in
 # build_coast.check): the v2 total stays within AREA_TOL of it. Judged on the total only: per cell, Niihau (20_-165)
 # loses ~6 % and French Frigate Shoals (20_-170, GSHHG draws the reef as land) ~85 % (step-1 report).

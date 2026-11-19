@@ -76,7 +76,7 @@ function storm(lat0, lon0, rows, cols) {
   const q = new Uint8Array(rows * cols);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     const i = r * cols + c, d = Math.hypot(r - rows / 2, c - cols / 2);
-    if (r > rows - 6 && c < 6) { q[i] = 0; continue; }                         // missing corner
+    if (r >= 10 && r < 16 && c >= 40 && c < 46) { q[i] = 0; continue; }       // a hole of missing nodes inside the rain (in the tested tile)
     if (d > rows / 2.5) { q[i] = 1; continue; }                                 // dry
     const lvl = Math.max(0, Math.min(49, Math.round(49 - d * 2)));
     let t = 0;
@@ -118,7 +118,7 @@ test('the manifest: precip is optional and exact; unreadable precip keeps the wi
   const odd = [
     (d) => { d.encoding = 'rrfs-precip-v2'; }, (d) => { d.types.ice = [152, 200]; }, (d) => { d.per_type = 49; },
     (d) => { d.hi = 100; }, (d) => { d.dry = 0; }, (d) => { delete d.types.thunder; }, (d) => { d.types.hail = [252, 255]; },
-    (d) => { d.kind = 'linear'; }, (d) => { d.resolutions = ['half']; }
+    (d) => { d.kind = 'linear'; }, (d) => { d.resolutions = ['half']; }, (d) => { d.lo = 0.2; }, (d) => { d.types.rain = [2, 51, 0]; }
   ];
   for (const edit of odd) {
     const mm = withPrecip(MAN());
@@ -131,9 +131,10 @@ test('the manifest: precip is optional and exact; unreadable precip keeps the wi
   assert.ok(I.validateRegionalManifest(some, PREFIX).fields.precip);
   for (const edit of [(fr) => { fr.precip.hi = 'gfswave/0p25/v1/x.png'; }, (fr) => { fr.precip.xx = fr.precip.hi; }, (fr) => { fr.precip = ['x']; },
     (fr) => { fr.precip = null; }, (fr) => { fr.precip.hi = 'rrfs/v1/frames/../../x.png'; }]) {
-    const bad = withPrecip(MAN());
+    const bad = withPrecip(MAN());                                          // a malformed map never costs the wind (G68 P3)
     edit(bad.frames[3]);
-    assert.throws(() => I.validateRegionalManifest(bad, PREFIX), /bad frame entry/);
+    const v = I.validateRegionalManifest(bad, PREFIX);
+    assert.equal(v.precipBad, true); assert.equal(v.fields.precip, undefined); assert.ok(v.fields.wind);
   }
   for (const f of ['rain', 'precip']) {                                       // `files` stays wind + direction only (G68a P0-1)
     const unk = MAN();
@@ -219,10 +220,11 @@ test('colours: the radar’s legend through Marshall-Palmer; the dry tint; the a
     assert.ok(Math.abs(a - want) < 1 / 255 + 1e-9);
   }
   assert.ok(lut[(Math.round((2 + 49) * 2)) * 4 + 3] === 255 && lut[4 * 4 + 3] < 160, 'drizzle see-through, heavy rain solid');
-  const d = new Uint8ClampedArray(4 * 4);
-  I.composeTyped(Float64Array.from([0, 1, 2.2, 251]), lut, d);
+  const d = new Uint8ClampedArray(5 * 4);
+  I.composeTyped(Float64Array.from([0, 1, 2.2, 251, 2.3]), lut, d);
   assert.equal(d[3], 0); assert.deepEqual(Array.from(d.slice(4, 8)), I.RADAR_TINT);
   assert.deepEqual(Array.from(d.slice(8, 12)), Array.from(lut.slice(4 * 4, 4 * 4 + 4)));
+  assert.deepEqual(Array.from(d.slice(16, 20)), Array.from(lut.slice(5 * 4, 5 * 4 + 4)), 'a value * 2 ROUNDED (2.3 -> entry 5)');
   assert.equal(I.PRECIP_LOOK, 'a');
   for (const k of ['precipIce', 'precipThunder']) assert.ok(I.PRECIP_ALT[k].length >= 5 && I.RAMPS[k] !== I.PRECIP_ALT[k]);
 });
@@ -243,7 +245,24 @@ test('the layer draws a typed bundle: tiles go through the typed sampler; readou
     const drawn = out[p.py * TILE + p.px], v = l.readoutAt(lat, lon, z);
     assert.equal(v, drawn || null, `${lat},${lon}`);
   }
-  assert.equal(l.readoutAt(45, -100, z), null, 'no tile there');
+  { const lat = 40.4, lon = -122.88, p = I.pixelOf(lat, lon, z), out = new Float64Array(TILE * TILE);   // inside the hole of missing nodes
+    l.tileCodes({ z, x: p.x, y: p.y }, out); l._tiles[p.x + ':' + p.y + ':' + z] = { el: {}, coords: { z, x: p.x, y: p.y } };
+    assert.equal(out[p.py * TILE + p.px], 0); assert.equal(l.readoutAt(lat, lon, z), null, 'nothing drawn: no readout'); }
+  // a whole tile through _drawTile: the colours are composeTyped's with the precipitation LUT (G68 M23)
+  { const p = I.pixelOf(40.0, -123.8, z), img = { data: new Uint8ClampedArray(TILE * TILE * 4) }, ctx = { createImageData: () => img, putImageData() {}, clearRect() {} };
+    const el = { getContext: () => ctx }, out = new Float64Array(TILE * TILE), lut = I.precipLut();
+    l._drawTile(el, { z, x: p.x, y: p.y });
+    l.tileCodes({ z, x: p.x, y: p.y }, out);
+    let wet = 0;
+    for (let i = 0; i < TILE * TILE; i++) {
+      const e = out[i] ? Math.round(out[i] * 2) * 4 : -1;
+      if (e < 0) { assert.equal(img.data[i * 4 + 3], 0); continue; }
+      if (out[i] >= 2) wet++;
+      for (let c = 0; c < 4; c++) assert.equal(img.data[i * 4 + c], lut[e + c], 'pixel ' + i);
+    }
+    assert.ok(wet > 1000, 'a wet tile'); }
+  l._tiles = {}; l.clear(); assert.equal(l._typed, false, 'clear() drops the typed state (G68 M18)');
+  l.setFrame(bundle, undefined, 'precip', fd, I.precipLut(), m.frames[3], null); assert.equal(l._typed, true);
   l._tiles = {};
   l.setFrame({ regional: true, parts: [{ name: 'hi', grid: s.grid, frame: s.frame }], names: ['hi'], cols: 0, rows: 0, q: new Uint8Array(0) }, undefined, 'wind', m.fields.wind, I.buildLut('wind', m.fields.wind.legend), m.frames[3], null);
   assert.equal(l._typed, false, 'wind is not typed');
@@ -254,12 +273,12 @@ test('the readout’s words in both units: amounts, types, dry, the top of the s
   const v = (t, lvl) => 2 + 50 * t + lvl, lvl25 = Math.log(2.5 / 0.1) / Math.log(750) * 49;
   assert.equal(I.precipReadout(v(0, lvl25), 'Metric', 75), '2.5 mm/h rain');
   assert.equal(I.precipReadout(v(0, lvl25), 'US', 75), '0.10 in/h rain');
-  assert.equal(I.precipReadout(v(1, 0), 'US', 75), '0.00 in/h snow (water)');
+  assert.equal(I.precipReadout(v(1, 0), 'US', 75), '0.004 in/h snow (water)');
   assert.equal(I.precipReadout(v(1, 0), 'Metric', 75), '0.1 mm/h snow (water)');
   assert.equal(I.precipReadout(v(2, 30), 'Metric', 75).endsWith('rain and snow (water)'), true);
   assert.equal(I.precipReadout(v(3, 10), 'Metric', 75).endsWith('freezing rain / ice pellets'), true);
-  assert.equal(I.precipReadout(v(4, 49), 'Metric', 75), '≥ 75 mm/h rain, thunder');
-  assert.equal(I.precipReadout(v(4, 49), 'US', 75), '≥ 3.0 in/h rain, thunder');
+  assert.equal(I.precipReadout(v(4, 49), 'Metric', 75), '≥ 70 mm/h rain, thunder');   // the top level's lower edge (G68 P3)
+  assert.equal(I.precipReadout(v(4, 49), 'US', 75), '≥ 2.8 in/h rain, thunder');
   assert.equal(I.precipReadout(1, 'US', 75), 'no precipitation');
   assert.equal(I.precipReadout(0, 'US', 75), null);
   assert.equal(I.precipAmountText(12.3, 'Metric', '/h'), '12 mm/h');

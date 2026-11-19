@@ -329,18 +329,20 @@
     return d;
   }
   // The legend's ticks (hourly amounts in the site's unit) and the readout's words.
-  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 0.5, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 10, 25] };   // the last one 'N+ unit'
+  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 0.5, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 10, 25] };   // the last one carries the unit
   var PRECIP_WORDS = { rain: 'rain', snow: 'snow (water)', mix: 'rain and snow (water)', ice: 'freezing rain / ice pellets', thunder: 'rain, thunder' };
   function precipAmountText(mm, unit, per) {
     if (unit === 'Metric') return (mm < 10 ? mm.toFixed(1) : String(Math.round(mm))) + ' mm' + (per || '');
     var inch = mm / 25.4;
-    return (inch < 0.995 ? inch.toFixed(2) : inch.toFixed(1)) + ' in' + (per || '');
+    return (inch < 0.0095 ? inch.toFixed(3) : inch < 0.995 ? inch.toFixed(2) : inch.toFixed(1)) + ' in' + (per || '');   // 0.1 mm = 0.004 in (G68 P3)
   }
   function precipReadout(v, unit, hi) {
     var p = precipOf(v);
     if (!p) return null;
     if (!p.type) return 'no precipitation';
-    return (p.mm >= hi - 1e-9 ? '≥ ' : '') + precipAmountText(p.mm, unit, '/h') + ' ' + PRECIP_WORDS[p.type];
+    // the top level holds every amount from its lower edge (half a level down, ~70 mm) up: said as that edge (G68 P3)
+    var top = p.mm >= hi - 1e-9;
+    return (top ? '≥ ' : '') + precipAmountText(top ? precipMm(PRECIP_PER - 1.5) : p.mm, unit, '/h') + ' ' + PRECIP_WORDS[p.type];
   }
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
   // Japan's files hold JMA's eight rain-rate classes as the dBZ codes of the same rain (tools/model_frames/jma.py; a Python test compares
@@ -2298,9 +2300,11 @@
         if (!Object.prototype.hasOwnProperty.call(m.regions, k) || !ff || typeof ff !== 'object') throw new Error('bad frame entry ' + i);
         for (var f in ff) if ((f !== 'wind' && f !== 'wdir') || !sstKey(ff[f]) || ff[f].indexOf(prefix + '/') !== 0) throw new Error('bad frame entry ' + i);
       }
-      if (fr.precip !== undefined) {                          // the hour's precipitation frames, beside `files` (plan section 102; G68a P0-1)
-        if (!fr.precip || typeof fr.precip !== 'object' || Array.isArray(fr.precip)) throw new Error('bad frame entry ' + i);
-        for (k in fr.precip) if (!Object.prototype.hasOwnProperty.call(m.regions, k) || !sstKey(fr.precip[k]) || fr.precip[k].indexOf(prefix + '/') !== 0) throw new Error('bad frame entry ' + i);
+      // the hour's precipitation frames, beside `files` (plan section 102; G68a P0-1): a malformed map never costs the wind
+      // (the live client ignores it): the field is then not offered (G68 P3)
+      if (fr.precip !== undefined) {
+        if (!fr.precip || typeof fr.precip !== 'object' || Array.isArray(fr.precip)) precipBad = true;
+        else for (k in fr.precip) if (!Object.prototype.hasOwnProperty.call(m.regions, k) || !sstKey(fr.precip[k]) || fr.precip[k].indexOf(prefix + '/') !== 0) precipBad = true;
       }
     }
     // The precipitation field (plan section 102 A) is offered only when every region that names it says exactly this
@@ -7397,6 +7401,7 @@
   Overlay.prototype.setModel = function (key) {
     if (!hasModel(key) || this.models.indexOf(key) < 0 || key === this.model) return;
     if (this.field && this.mode !== 'obs' && !modelOffers(key, this.field)) return;   // (the dropdown never offers it: plan section 99 D2)
+    this._autoFrom = null;                                   // the viewer's own choice: no way back to a model a field switch left
     if (!this.field) { this.model = key; save({ model: key }); this._dropRun(); return; }
     if (this.mode === 'obs') {                               // (no dropdown on the observation's panel: only a call does this)
       this.model = key; save({ model: key });
@@ -7420,10 +7425,12 @@
   // A field the model in use does not offer (RRFS has no waves; plan section 99 D2): the first offered model that offers
   // it takes over through setModel's own path: the time and play state carried (this._carry), the old run dropped (an
   // RRFS cycle and a GFS run can share a run string: mount must never reuse the frame index across them).
-  Overlay.prototype._leaveModelFor = function (fieldName) {
-    var to = null;
-    for (var i = 0; i < this.models.length; i++) if (modelOffers(this.models[i], fieldName)) { to = this.models[i]; break; }
+  // back: the model a field switch left (G68 P3: GFS wind -> Precipitation -> Wind speed returns to GFS, not RRFS's wind).
+  Overlay.prototype._leaveModelFor = function (fieldName, back) {
+    var to = back || null;
+    if (!to) for (var i = 0; i < this.models.length; i++) if (modelOffers(this.models[i], fieldName)) { to = this.models[i]; break; }
     if (!to) to = DEFAULT_MODEL;
+    if (back || to === this._autoFrom) this._autoFrom = null; else if (!this._autoFrom) this._autoFrom = this.model;   // the model before the FIRST automatic switch
     var keep = this.frameIndex !== null && this.manifest ? this._anchorIndex() : null;
     var shown = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
     var t = this._switchT !== null ? this._switchT : shown;
@@ -7442,6 +7449,14 @@
     if (restore) this._pendingRestore = saved();
     if (this.mode === 'obs') this._leaveObs();
     if (!modelOffers(this.model, fieldName)) this._leaveModelFor(fieldName);
+    else if (this._autoFrom && this._autoFrom !== this.model && this.models.indexOf(this._autoFrom) >= 0 && modelOffers(this._autoFrom, fieldName)) this._leaveModelFor(fieldName, this._autoFrom);
+    // Precipitation on a regional manifest without it while a newer one is announced (G68 P2-1): the shown time is carried
+    // and the pin released, so this mount adopts the newer manifest (Retry would otherwise reload the pinned one for good).
+    if (fieldName === 'precip' && this.newerRun && this.manifest && this.manifest.regional && !this.manifest.fields.precip && this.frameIndex !== null) {
+      var shownAt = this.manifest.frames[this._anchorIndex()];
+      this._carry = { t: shownAt ? Date.parse(shownAt.valid_utc) : Date.now(), playing: !!(this.playing || this.wasPlaying), free: true };
+      this.pause(); this.frameIndex = null; this.target = null;
+    }
     // The time position survives a field change and even a run change (nearest valid time), like Update. A field switch
     // keeps the REQUESTED time (a scrub or step still loading) when there is one; Retry (the same field again) goes back
     // to the frame on the map, which is cached (G4 B1). Taken before anything aborts. Before any frame is on the map the
@@ -8897,6 +8912,7 @@
     this.render({ state: 'loading' });
     this._fetchManifest(ptr, sig).then(function (m) {
       if (sig.aborted) throw abortError();
+      if (self.field === 'precip' && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update');   // (G68 P3)
       if (!m.fields[self.field]) throw new Error('layer "' + self.field + '" is not in run ' + m.run);
       self._adopt(m, ptr); self.pointerAt = Date.now();
       self._ensureFlow();                                  // the new run may or may not carry direction data
@@ -9536,8 +9552,9 @@
     for (var i = 0; i < m.regionList.length; i++) {
       var r = m.regionList[i];
       if (r.cover ? coverHas(r.cover, lat, lng) : inRegionBox(r.grid, lat, lng)) {   // where a region has data (G67 P3-6)
-        var fr = this.layer._frame;
-        return fr && fr.nofield && fr.nofield === fr.names.length && this.field === 'precip' ? 'no precipitation frame for this hour' : null;
+        // the region under the pointer has no precipitation frame for this step (a source built before the field; G68 M13)
+        var fr = this.layer._frame, step = this.frameIndex !== null ? m.frames[this.frameIndex] : null;
+        return fr && fr.nofield && step && this.field === 'precip' && !regionFrameKey(step, r.name, 'precip') ? 'no precipitation frame for this hour' : null;
       }
     }
     return 'outside ' + this._def().short;
@@ -10270,7 +10287,7 @@
     var ticks = mk('div', 'ov-ticks');
     vals.forEach(function (v, k) {
       var last = k === vals.length - 1, pos = precipLegPos(us ? v * 25.4 : v);
-      var s = mk('span', pos < 0.03 ? 'ov-first' : last ? 'ov-last' : '', String(v) + (last ? '+ ' + (us ? 'in/h' : 'mm/h') : ''));
+      var s = mk('span', pos < 0.03 ? 'ov-first' : last ? 'ov-last' : '', String(v) + (last ? ' ' + (us ? 'in/h' : 'mm/h') : ''));
       s.style.left = (pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
     });
     leg.appendChild(ticks);

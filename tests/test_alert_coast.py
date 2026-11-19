@@ -547,3 +547,71 @@ def test_committed_file_covers_the_coastal_states(committed):
     states = {z[:2] for z in committed["zones"]}
     assert states >= {"HI", "CA", "OR", "WA", "AK", "TX", "FL", "NC", "NY", "MA", "ME", "MI", "WI", "PR", "GU", "AS"}
     assert all(z[2] == "Z" and z[3:].isdigit() and len(z) == 6 for z in committed["zones"])
+
+
+# ---------------------------------------------------------------- coast set v2 (plan section 103)
+def test_decode_cell_equals_decode_coast_on_a_v1_cell():
+    """The header-q reader gives point_forecast.decode_coast's edges exactly on a q = 1e4 cell."""
+    sys.path.insert(0, ROOT)
+    import point_forecast as PF
+    r1 = np.asarray(ISLAND, float)
+    r2 = np.asarray([(-157.3, 21.2), (-157.1, 21.2), (-157.2, 21.4)], float)
+    buf = C.encode_file([[C.quantize_ring(r1[:, 0], r1[:, 1])], [C.quantize_ring(r2[:, 0], r2[:, 1])]], 5)
+    a, b = PF.decode_coast(buf), A.decode_cell(buf)
+    assert all(np.array_equal(x, y) for x, y in zip(a, b))
+
+
+def test_decode_cell_reads_q_1e5_and_clockwise_holes():
+    shell = np.asarray([(-158.0, 21.0), (-157.0, 21.0), (-157.0, 22.0), (-158.0, 22.0)], float)
+    hole = np.asarray([(-157.6, 21.4), (-157.6, 21.6), (-157.4, 21.6), (-157.4, 21.4)], float)       # clockwise
+    q = 100000
+    rings = [C.quantize_ring(r[:, 0], r[:, 1], q) for r in (shell, hole)]
+    xi, yi, xj, yj = A.decode_cell(C.encode_file([rings], 5, q=q))
+    assert len(xi) == 8
+    assert np.allclose(np.stack([xi, yi], 1)[:4], shell) and np.allclose(np.stack([xi, yi], 1)[4:], hole)
+    assert (xj[0], yj[0]) == (xi[3], yi[3]) and (xj[4], yj[4]) == (xi[7], yi[7])     # a ring's first edge comes from its last vertex
+    land = A.raster((xi, yi, xj, yj), 20, -160, res=0.01)                      # even-odd: the hole is water
+    r, c = int((21.5 - 20) / 0.01), int((-157.5 + 160) / 0.01)
+    assert not land[r, c] and land[int((21.2 - 20) / 0.01), c]
+
+
+def test_build_reads_coast_v2_from_a_local_directory(tmp_path):
+    """--coast v2 --coast-dir: the sea coast from a local v2 build (q = 1e5), SEAWARD +1; the same island gives the
+    same zone lines as v1."""
+    cache = coast_cache(tmp_path, {"20_-160": [ISLAND]})
+    v1_zones, _ = A.build(shapefile_zip(island_zones()), cache, log=lambda *a: None)
+    v2 = tmp_path / "v2"
+    (v2 / "f").mkdir(parents=True)
+    r = np.asarray(ISLAND, float)
+    buf = C.encode_file([[C.quantize_ring(r[:, 0], r[:, 1], 100000)]], 5, q=100000)
+    (v2 / "f" / "20_-160.bin").write_bytes(buf)
+    (v2 / "index.json").write_text(json.dumps({"tier1": {"cells": {"20_-160": [len(buf), 4]}, "sha256": "v2test"}}))
+    A.LOCAL["v2"] = str(v2)
+    try:
+        zones, ids = A.build(shapefile_zip(island_zones()), cache, log=lambda *a: None, coast="v2")
+    finally:
+        A.LOCAL.pop("v2", None)
+    assert ids == {"v2": "v2test", "lakeoutlines-v1": "lakes", "lakes-v1": "great"}
+    assert set(zones) == set(v1_zones) and A.SEAWARD["v2"] == A.SEAWARD["v1"] == 1
+    for zid in zones:                     # the same lines up to the quanta's float rounding at the line ends
+        P2 = [np.array(A.decode(s)) for s in zones[zid]["lines"]]
+        P1 = [np.array(A.decode(s)) for s in v1_zones[zid]["lines"]]
+        assert len(P1) == len(P2)
+        assert abs(sum(map(A.length_km, P1)) - sum(map(A.length_km, P2))) < 0.5
+        for P in P1:
+            assert max(A.nearest_km(P2, lat, lon) for lon, lat in P) < 0.15
+    with pytest.raises(ValueError):
+        A.coast_sets("v3")
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v2.json")), reason="alert_coast_v2.json not built")
+def test_committed_v2_file_passes_its_check_and_differs_only_in_hawaii(committed):
+    """alert_coast_v2.json (served with COAST_V2=1): its own check, and every zone outside Hawaii identical to
+    alert_coast.json (only the Hawaii cells change in coast set v2)."""
+    with open(os.path.join(ROOT, "alert_coast_v2.json"), encoding="utf-8") as f:
+        v2 = json.load(f)
+    assert v2["zones_file"] == A.ZONES_FILE and v2["rules"] == A.RULES and "v2" in v2["coast"]
+    assert A.check(v2, log=lambda *a: None) == []
+    other = {z for z in set(v2["zones"]) | set(committed["zones"]) if not z.startswith("HI")}
+    assert all(v2["zones"].get(z) == committed["zones"].get(z) for z in other)
+    assert any(v2["zones"][z]["lines"] != committed["zones"][z]["lines"] for z in v2["zones"] if z.startswith("HI"))

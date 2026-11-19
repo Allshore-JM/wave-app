@@ -1194,3 +1194,26 @@ test('G34 re-check R-5 / R-44: the coastline is read with its own byte cap (not 
   assert.equal(I.CoastStore.prototype.timeoutMs, 15000);
   assert.equal(I.COAST_FIRST_MS, 15000);
 });
+
+test('coast v2 (plan section 103): a q = 1e5 cell with a clockwise hole decodes, and the hole rasterises as water', () => {
+  const D5 = (deg) => Math.round(deg * 100000);
+  const shell = [D5(-158.0), D5(21.5), D5(-157.99), D5(21.5), D5(-157.99), D5(21.51), D5(-158.0), D5(21.51)];        // CCW
+  const hole = [D5(-157.997), D5(21.503), D5(-157.997), D5(21.507), D5(-157.993), D5(21.507), D5(-157.993), D5(21.503)];   // CW
+  const buf = encodeCoast([[shell, hole]], 5);
+  new DataView(buf).setUint32(8, 100000, true);                                   // the quantum is read from the header
+  const c = I.decodeCoast(buf);
+  assert.equal(c.n, 1); assert.equal(c.ringStart[1], 2); assert.equal(c.vertStart[2], 8);
+  const w = I.worldXY(-157.997, 21.503);
+  assert.ok(Math.abs(c.xy[8] - w[0]) < 1e-5 && Math.abs(c.xy[9] - w[1]) < 1e-5);
+  const z = 15, n = Math.pow(2, z), hc = I.worldXY(-157.995, 21.505);
+  const coords = { z: z, x: Math.floor(hc[0] / 256 * n), y: Math.floor(hc[1] / 256 * n) };
+  const paths = I.landPathsForTile(coords, [c]);
+  assert.equal(paths.length, 2);
+  const m = I.rasteriseScanline(paths, 256);
+  const px = (lon, lat) => { const p = I.worldXY(lon, lat); return [Math.floor(p[0] / 256 * n * 256 - coords.x * 256), Math.floor(p[1] / 256 * n * 256 - coords.y * 256)]; };
+  const at = (lon, lat) => { const [x, y] = px(lon, lat); return (x >= 0 && x < 256 && y >= 0 && y < 256) ? m[y * 256 + x] : null; };
+  assert.equal(at(-157.995, 21.505), 0, 'the hole is water');
+  const land = at(-157.9985, 21.505);
+  assert.ok(land === null || land === 255, 'the shell around it is land');
+  assert.equal(I.rasterise(paths, 256)[px(-157.995, 21.505)[1] * 256 + px(-157.995, 21.505)[0]], 0);
+});

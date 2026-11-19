@@ -81,7 +81,7 @@ V1_PIN_TIER1_SHA256 = "a4b97403aac09c0a4ca88f50d77d8e339eb061342204a0dd227294e71
 EXPECTED_CHANGED = ["15_-155", "15_-160", "20_-160", "20_-165", "20_-170"]
 # The exact bytes of a real build (deterministic from the pinned inputs, this code and the pinned shapely): a
 # deliberate change updates this pin. Tier 0 is v1's (V1_PIN_TIER0_SHA256).
-PIN_TIER1_SHA256 = "c5e2d7595f33c716bae02f92a5a5c7275d5496c018df6d8362b8452fa2066dff"   # 2026-11-18, shapely 2.2.0
+PIN_TIER1_SHA256 = "450200b3bb61cbdd4100d46db9055852ae47c066bffd5ddcfac8cbe026a4b39d"   # 2026-11-19, shapely 2.2.0 (exact path)
 # Land area of EXPECTED_CHANGED in v1 (sq deg, build_coast.signed_area of the q=1e4 rings, unweighted as in
 # build_coast.check): the v2 total stays within AREA_TOL of it. Judged on the total only: per cell, Niihau (20_-165)
 # loses ~6 % and French Frigate Shoals (20_-170, GSHHG draws the reef as land) ~85 % (step-1 report).
@@ -482,7 +482,13 @@ def block_class(tiles, bx, by, v1_dir, v1_index, stats):
 
 
 def trace_region(tiles, v1_dir, v1_index, log=log):
-    """-> (land geometry of the region in lon/lat clipped to its box, stats)."""
+    """-> (the region's land as [(shell, [holes])] rings of lon/lat arrays (shell CCW, holes CW), stats).
+
+    Every GEOS operation runs on integer zoom-15 pixel coordinates (the union of pixel rectangles, the speck filter, the
+    simplifier, which keeps a subset of its input vertices): exact on any platform. The lon/lat conversion is then point
+    by point. (A first version clipped and unioned in lon/lat: the runner's build differed from the laptop's by a few
+    dozen vertices, so its hash could not be pinned. Land never reaches a box edge in S1: the raster already stops at the
+    box, by pixel centre.)"""
     t0 = time.time()
     reg = tiles.reg
     stats = dict(z15=0, ancestor=0, none=0, blocks=0, blocks_traced=0, gshhg_px=0)
@@ -502,16 +508,19 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
     u = shapely.union_all(polys) if polys else shapely.MultiPolygon()
     kept, stats["speck_land"], stats["speck_holes"] = drop_specks(u, SPECK_PX2)
     simp = shapely.MultiPolygon(kept).simplify(TOL_PX, preserve_topology=True) if kept else shapely.MultiPolygon()
-    ll = to_lonlat(simp)
-    ll = shapely.make_valid(ll) if not ll.is_valid else ll
-    ll = ll.intersection(sbox(*reg["box"]))
+    out = []
+    for p in polygons(simp):
+        rings = [np.asarray(p.exterior.coords, np.float64)[:-1]] + [np.asarray(r.coords, np.float64)[:-1] for r in p.interiors]
+        ll = [(px_lon(r[:, 0]), px_lat(r[:, 1])) for r in rings]
+        sh = ll[0] if BC.signed_area(*ll[0]) > 0 else (ll[0][0][::-1].copy(), ll[0][1][::-1].copy())
+        holes = [h if BC.signed_area(*h) < 0 else (h[0][::-1].copy(), h[1][::-1].copy()) for h in ll[1:]]
+        out.append((sh, holes))
     stats["anomaly_px"] = tiles.anomalies
     stats["t_total_s"] = round(time.time() - t0, 1)
-    ps = polygons(ll)
-    stats["polygons"] = len(ps)
-    stats["holes"] = sum(len(p.interiors) for p in ps)
+    stats["polygons"] = len(out)
+    stats["holes"] = sum(len(h) for _, h in out)
     log("trace %s: %s" % (tiles.name, stats))
-    return ll, stats
+    return out, stats
 
 
 # ---------------------------------------------------------------- cells
@@ -524,6 +533,47 @@ def ring_q(coords, ccw):
     if (BC.signed_area(r[0].astype(np.float64), r[1].astype(np.float64)) > 0) != ccw:
         r = (r[0][::-1].copy(), r[1][::-1].copy())
     return r
+
+
+def clip_to_cell(x, y, lo, la, deg):
+    """One ring clipped to a cell with build_coast's exact Sutherland-Hodgman (the v1 cells' own clip), or None."""
+    for axis, c, keep_le in ((0, lo, False), (0, lo + deg, True), (1, la, False), (1, la + deg, True)):
+        a = x if axis == 0 else y
+        if (a >= c).all() if not keep_le else (a <= c).all():
+            continue
+        r = BC.clip_half(x, y, axis, c, keep_le)
+        if r is None:
+            return None
+        x, y = r
+    return x, y
+
+
+def cell_pieces_exact(parts, lo, la, deg):
+    """Quantised pieces of a cell from [(shell, holes)] lon/lat rings: rings wholly inside the cell as they are, the rest
+    clipped ring by ring (a hole goes with its shell). Arithmetic only, no GEOS: the same bytes on every platform."""
+    pieces = []
+    for sh, holes in parts:
+        if sh[0].max() <= lo or sh[0].min() >= lo + deg or sh[1].max() <= la or sh[1].min() >= la + deg:
+            continue
+        c = clip_to_cell(sh[0], sh[1], lo, la, deg)
+        if c is None:
+            continue
+        shq = BC.quantize_ring(c[0], c[1], Q2)
+        if shq is None or BC.signed_area(shq[0].astype(np.float64), shq[1].astype(np.float64)) <= 0:
+            continue
+        rings = [shq]
+        for h in holes:
+            ch = clip_to_cell(h[0], h[1], lo, la, deg)
+            hq = BC.quantize_ring(ch[0], ch[1], Q2) if ch is not None else None
+            if hq is not None and BC.signed_area(hq[0].astype(np.float64), hq[1].astype(np.float64)) < 0:
+                rings.append(hq)
+        pieces.append(rings)
+    return pieces
+
+
+def sort_pieces(pieces):
+    pieces.sort(key=lambda rs: (int(rs[0][0].min()), int(rs[0][1].min()), len(rs[0][0]), int(rs[0][0][0]), int(rs[0][1][0])))
+    return pieces
 
 
 def cell_pieces(geom):
@@ -557,7 +607,7 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
                        "digest": tiles.index.get("digest"), "tiles": n, "sha256": sha}
     boxes = shapely.union_all([sbox(*r["box"]) for r in regions.values()])
     boxes_line = boxes.boundary
-    v2_all = shapely.union_all([g for g in region_geom.values() if not g.is_empty]) if region_geom else None
+    v2_parts = [pt for name in sorted(region_geom) for pt in region_geom[name]]   # the boxes touch at a corner only
     candidates = sorted({c for r in regions.values() for c in cells_overlapping(r["box"])})
     listing, digests, changed, base_changed, crossing = {}, {}, [], {}, 0
     tot_bytes = tot_verts = 0
@@ -572,13 +622,22 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
             raw, g1, rings = v1_cell_geom(v1_dir, v1, name)
             n_cross = sum(1 for r in rings if shapely.LinearRing(r).intersects(boxes_line))
             crossing += n_cross
-            v2_in = v2_all.intersection(cbox) if v2_all is not None and not v2_all.is_empty else None
-            v2_in = None if v2_in is None or not polygons(v2_in) else v2_in
-            v1_in = g1 is not None and polygons(g1.intersection(boxes))
-            if v2_in is not None or v1_in:
-                parts = [p for p in (v2_in, g1.difference(boxes) if g1 is not None else None) if p is not None]
-                geom = shapely.union_all(parts).intersection(cbox) if parts else None
-                pieces = cell_pieces(geom)
+            v2_here = cell_pieces_exact(v2_parts, lo, la, deg)
+            d1 = BC.decode_file(raw) if raw is not None else {"pieces": [], "q": BC.Q}
+            v1_hit = [bool(shapely.intersects(Polygon(np.column_stack([pc["rings"][0][0], pc["rings"][0][1]]) / d1["q"]), boxes))
+                      for pc in d1["pieces"]]
+            if v2_here or any(v1_hit):
+                if n_cross == 0:
+                    # the exact path: v2's pieces + the v1 pieces outside every box, v1's integers scaled to the new quantum
+                    k = Q2 // d1["q"]
+                    pieces = sort_pieces(v2_here + [[(ix * k, iy * k) for ix, iy in pc["rings"]]
+                                                    for pc, hit in zip(d1["pieces"], v1_hit) if not hit])
+                else:
+                    # a GSHHG ring crosses a box edge (none in S1): GSHHG outside the boxes and v2 inside joined by GEOS
+                    log("cell %s: %d v1 rings cross a box edge: joined with GEOS (not bit-exact across platforms)" % (name, n_cross))
+                    v2g = [Polygon(np.column_stack(sh), [np.column_stack(h) for h in hs]) for sh, hs in v2_parts]
+                    geom = shapely.union_all([shapely.union_all(v2g).intersection(boxes)] + ([g1.difference(boxes)] if g1 is not None else []))
+                    pieces = cell_pieces(geom.intersection(cbox))
                 changed.append(name)
                 base_changed[name] = hashlib.sha256(raw).hexdigest() if raw is not None else None
                 nh = sum(len(pc) - 1 for pc in pieces)

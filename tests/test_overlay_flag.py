@@ -546,3 +546,22 @@ def test_sst_overlay_env_and_the_page(monkeypatch):
     monkeypatch.setenv("SST_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
         assert "var SST" not in rec["body"] and "Sea surface temperature" not in rec["body"], name
+
+
+def test_coast_v2_flag_and_the_page(monkeypatch):
+    """COAST_V2 (section 103): on, the page sets window.__allshoreCoastSet = 'v2' just before the overlay block (the module
+    whitelists 'v2', anything else = v1); the page differs from the default only by that script; off, the page is the
+    default (the golden test above). The gated block itself is untouched."""
+    _on(monkeypatch)
+    monkeypatch.setattr(A, "COAST_V2", True)
+    on = G.run_scenarios(A)
+    monkeypatch.setattr(A, "COAST_V2", False)
+    off = G.run_scenarios(A)
+    tag = "<script>window.__allshoreCoastSet = 'v2';   // the overlay's coast set (COAST_V2, plan section 103)</script>"
+    for name in GOLDEN:
+        assert on[name]["body"].count(tag) == 1, name
+        assert on[name]["body"].replace(tag, "") == off[name]["body"], name
+        assert "__allshoreCoastSet" not in off[name]["body"], name
+    src = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
+    assert "(coastSet === 'v2' ? '/static/coast/v2' : '/static/coast/v1')" in src
+    assert A.ALERT_COAST_FILE == ("alert_coast_v2.json" if A.COAST_V2 else "alert_coast.json")

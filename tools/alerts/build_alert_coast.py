@@ -25,6 +25,11 @@ no outline (the server reports it). Rebuild when NWS publishes a new zone file (
 and ZONES_SHA256):
     python -I tools/alerts/build_alert_coast.py [--zones-zip z_ddmmyy.zip] [--cache DIR]
     python -I tools/alerts/build_alert_coast.py --check
+The bathymetry-shoreline coast set (plan section 103, static/coast/v2; tools/coast/build_coast_v2.py) gives
+alert_coast_v2.json, the file the site serves when COAST_V2=1 (same rules; v2's cells carry q = 1e5 and clockwise holes,
+read by decode_cell, which takes q from each file's header):
+    python -I tools/alerts/build_alert_coast.py --coast v2 [--coast-dir build/coast/v2]   (writes alert_coast_v2.json)
+    python -I tools/alerts/build_alert_coast.py --coast v2 --check
 Needs numpy and matplotlib (matplotlib.path for point-in-polygon: this tool only, not the site).
 """
 import argparse
@@ -43,6 +48,7 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, "alert_coast.json")
+OUT_V2 = os.path.join(ROOT, "alert_coast_v2.json")         # from coast set v2 (plan section 103), served when COAST_V2=1
 FORMAT = "alert-coast-v1"
 ZONES_FILE = "z_16ap26"                       # NWS public forecast zones, effective 16 April 2026
 ZONES_URL = "https://www.weather.gov/source/gis/Shapefiles/WSOM/" + ZONES_FILE + ".zip"
@@ -51,7 +57,11 @@ COAST_BASE = "https://models.allshoresurf.com/static/coast"
 # the sea coast; lakes of 100 km2 and more (the Great Lakes among them); the Great Lakes' smaller islands (lakes-v1:
 # only its rings lakeoutlines-v1 does not hold, see lake_islands)
 COAST_SETS = ("v1", "lakeoutlines-v1", "lakes-v1")
-SEAWARD = {"v1": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}    # water on the right of a ring's direction (+1) or left
+LAND_SETS = ("v1", "v2")                                    # the sea coast: GSHHG (v1) or the bathymetry shoreline (v2)
+# water on the right of a ring's direction (+1) or left; v2's land is counter-clockwise like v1's and its sea water
+# enclosed by land runs clockwise, which also has the water on its right
+SEAWARD = {"v1": 1, "v2": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
+LOCAL = {}                                                  # set name -> a local directory holding it (--coast-dir)
 UA = {"User-Agent": "allshoresurf.com coastal hazards tool (https://allshoresurf.com)"}
 # states and territories with a sea or Great Lakes coast (NWS state codes; MP Northern Marianas, AS American Samoa)
 COASTAL = frozenset("AK AL AS CA CT DC DE FL GA GU HI IL IN LA MA MD ME MI MN MP MS NC NH NJ NY OH OR PA PR RI SC TX "
@@ -243,13 +253,47 @@ def _cache_get(url, path):
     return data
 
 
+def coast_sets(coast="v1"):
+    """The sets a build reads: the sea coast `coast` (v1 or v2) and the two lake sets."""
+    if coast not in LAND_SETS:
+        raise ValueError(f"coast set {coast!r} is not one of {LAND_SETS}")
+    return (coast,) + COAST_SETS[1:]
+
+
 def coast_index(set_name, cache):
+    if set_name in LOCAL:
+        with open(os.path.join(LOCAL[set_name], "index.json"), encoding="utf-8") as f:
+            return json.load(f)
     data = _cache_get(f"{COAST_BASE}/{set_name}/index.json", os.path.join(cache, "coast_" + set_name, "index.json"))
     return json.loads(data)
 
 
 def coast_cell(set_name, cell, cache):
+    if set_name in LOCAL:
+        with open(os.path.join(LOCAL[set_name], "f", cell + ".bin"), "rb") as f:
+            return f.read()
     return _cache_get(f"{COAST_BASE}/{set_name}/f/{cell}.bin", os.path.join(cache, "coast_" + set_name, cell + ".bin"))
+
+
+def decode_cell(buf):
+    """A coast-v1-format cell of ANY quantum (q from the file's own header: v2's changed cells carry 1e5) as
+    point_forecast.decode_coast's edges: (xi, yi, xj, yj) float64 degrees, edge = previous vertex j -> vertex i of each
+    closed ring. Never point_forecast.decode_coast, which refuses q != 1e4 (the forecast points stay on v1)."""
+    import numpy as np
+    sys.path.insert(0, os.path.join(ROOT, "tools", "coast"))
+    import build_coast as BC
+    d = BC.decode_file(bytes(buf))
+    inv = 1.0 / d["q"]                                          # as the page and decode_coast: x * (1 / q)
+    xs, ys, pxs, pys = [], [], [], []
+    for pc in d["pieces"]:
+        for ix, iy in pc["rings"]:
+            xs.append(ix); ys.append(iy)
+            pxs.append(np.roll(ix, 1)); pys.append(np.roll(iy, 1))
+    if not xs:
+        z = np.zeros(0)
+        return z, z, z, z
+    return (np.concatenate(xs) * inv, np.concatenate(ys) * inv, np.concatenate(pxs) * inv,
+            np.concatenate(pys) * inv)
 
 
 def ring_starts(edges):
@@ -751,11 +795,10 @@ def coastal_pieces(rows, shapes):
     return ids, meta, pieces
 
 
-def build(zip_bytes, cache, log=print):
+def build(zip_bytes, cache, log=print, coast="v1"):
     import numpy as np
     from matplotlib.path import Path
-    sys.path.insert(0, ROOT)
-    from point_forecast import decode_coast
+    sets = coast_sets(coast)
     rows, shapes = read_shapefile(zip_bytes)
     cnt = edge_counts(shapes)
     ids, meta, pieces = coastal_pieces(rows, shapes)
@@ -773,8 +816,8 @@ def build(zip_bytes, cache, log=print):
     near = near_map(pieces, cnt)
     log(f"{len(rows)} zone rows in the file, {len(pieces)} rows / {len(ids)} zones in coastal states, "
         f"{len(near[0])} outer edges")
-    index = {s: coast_index(s, cache) for s in COAST_SETS}
-    coast_ids = {s: index[s]["tier1"].get("sha256") for s in COAST_SETS}
+    index = {s: coast_index(s, cache) for s in sets}
+    coast_ids = {s: index[s]["tier1"].get("sha256") for s in sets}
     memo = {}
 
     def edges(set_name, cell):
@@ -783,14 +826,14 @@ def build(zip_bytes, cache, log=print):
         if key not in memo:
             e = None
             if cell in index[set_name]["tier1"]["cells"]:
-                e = decode_coast(coast_cell(set_name, cell, cache))
+                e = decode_cell(coast_cell(set_name, cell, cache))
                 if set_name == "lakes-v1":
                     e = lake_islands(e, edges("lakeoutlines-v1", cell))
             memo[key] = e
         return memo[key]
 
     def load(cell):
-        land = edges("v1", cell)
+        land = edges(coast, cell)
         lakes = [e for e in (edges("lakeoutlines-v1", cell), edges("lakes-v1", cell)) if e is not None]
         lake = tuple(np.concatenate(v) for v in zip(*lakes)) if lakes else None
         px, py = [], []
@@ -811,7 +854,7 @@ def build(zip_bytes, cache, log=print):
                 cells.add(f"{min(la, 85)}_{(lo + 180) % 360 - 180}")
     lines = collections.defaultdict(list)
     points = assigned = kept = 0
-    for set_name in COAST_SETS:
+    for set_name in sets:
         for cell in sorted(cells):
             e = edges(set_name, cell)
             if e is None or not len(e[0]):
@@ -879,6 +922,9 @@ PROBES = [
     ("HIZ009", 21.4570, -157.7400, 0.5),    # Mokapu's North Beach, outside Kaneohe Bay's reef
     ("CAZ087", 33.3450, -118.3250, 0.7),    # Avalon, Catalina (the mainland lies 35 km off)
 ]
+# A probe of PROBES placed on GSHHG's shore where the bathymetry shoreline (coast set v2, plan section 103) lies farther
+# off than its limit: the v2 file is probed at the true shore instead. Molokai's north cliffs: GSHHG 0.5 km off.
+PROBES_V2 = {("HIZ037", 21.1700, -156.9000): (21.1700, -156.8942)}
 # (zone, lat, lon, km): the zone must NOT draw a line within km of this point (another zone's shore, a foreign
 # shore across water, the coast past a border: G59 F1)
 FAR_PROBES = [
@@ -955,7 +1001,10 @@ def check(doc, log=print):
             pts += len(P)
             ls.append(P)
         decoded[zid] = ls
+    v2 = "v2" in (doc.get("coast") or {})                     # built from coast set v2 (plan section 103)
     for zid, lat, lon, km in PROBES:
+        if v2:
+            lat, lon = PROBES_V2.get((zid, lat, lon), (lat, lon))
         if zid not in decoded:
             probs.append(f"probe {zid}: missing")
             continue
@@ -978,9 +1027,14 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--zones-zip", help="a local copy of the NWS zone file (else downloaded)")
     ap.add_argument("--cache", default=os.path.join(HERE, ".cache"), help="where coast cells are kept")
-    ap.add_argument("--out", default=OUT)
+    ap.add_argument("--out", default=None, help="default alert_coast.json (--coast v1) or alert_coast_v2.json (v2)")
+    ap.add_argument("--coast", default="v1", choices=LAND_SETS, help="the sea coast set: v1 (GSHHG) or v2 (section 103)")
+    ap.add_argument("--coast-dir", help="read the --coast set from this local directory (a build not yet published)")
     ap.add_argument("--check", action="store_true", help="check the written file only")
     a = ap.parse_args(argv)
+    a.out = a.out or (OUT_V2 if a.coast == "v2" else OUT)
+    if a.coast_dir:
+        LOCAL[a.coast] = a.coast_dir
     if a.check:
         with open(a.out, encoding="utf-8") as f:
             probs = check(json.load(f))
@@ -996,7 +1050,7 @@ def main(argv=None):
     if sha != ZONES_SHA256:
         print(f"PROBLEM zone file sha256 {sha} is not the pinned {ZONES_SHA256} (a new NWS file: bump the pins)")
         return 1
-    zones, coast_ids = build(data, a.cache)
+    zones, coast_ids = build(data, a.cache, coast=a.coast)
     doc = write(zones, coast_ids, sha, a.out)
     probs = check(doc)
     for p in probs:

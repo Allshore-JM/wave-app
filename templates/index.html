@@ -5016,7 +5016,7 @@
       box.addEventListener('change', function () { grid.set(box.checked); });
     })();
 
-  </script>{%- if model_overlays %}
+  </script>{%- if coast_set == 'v2' %}<script>window.__allshoreCoastSet = 'v2';   // the overlay's coast set (COAST_V2, plan section 103)</script>{% endif %}{%- if model_overlays %}
 
   <style>
     /* Optional model overlays: the selector control (the module's own CSS loads with the first selection; the same

@@ -503,7 +503,7 @@
   var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
-  var MAX_COAST_BYTES = 8 * 1024 * 1024;                  // one coast file is <= 1.4 MB; nothing bigger is decoded
+  var MAX_COAST_BYTES = 8 * 1024 * 1024;                  // one coast file is <= 1.4 MB (v1; v2's largest, 20_-160, 0.32 MB); nothing bigger is decoded
   var MAX_INDEX_BYTES = 1024 * 1024;                      // index.json is 29 KB; every 5-degree cell listed would be ~60 KB
   var MAX_CELLS_PER_TILE = 16;                            // a tile touches <= 4 cells at tier-1 zooms; more = tier 0 for that tile
   var MAX_CHUNK_BYTES = 32 * 1024 * 1024;                 // decoded tier-1 chunks kept (LRU), in vertex bytes
@@ -7160,8 +7160,11 @@
     this._due = 0;                                          // when the frame being shown was due (the drift-free cadence)
     this._painting = false; this._paintWaiting = null; this._paintRaf = null; this._paintTask = null; this._paintFallback = null;   // the paint gate
     this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
-    // opts.coast: clip wave height / peak period to the coastlines published beside the frames
-    this.coast = opts.coast ? coastStore(this.root + '/static/coast/v1') : null;
+    // opts.coast: clip wave height / peak period to the coastlines published beside the frames. The coast set 'v2' (the
+    // page's COAST_V2, plan section 103: window.__allshoreCoastSet, or opts.coastSet) has Hawaii's shore at the
+    // bathymetry's MHHW edge; anything else is v1
+    var coastSet = opts.coastSet || (typeof window !== 'undefined' && window.__allshoreCoastSet);
+    this.coast = opts.coast ? coastStore(this.root + (coastSet === 'v2' ? '/static/coast/v2' : '/static/coast/v1')) : null;
     // opts.sst: the sea surface temperature field is offered (plan section 44; the page's SST_OVERLAY setting). It is an
     // OBSERVATION: mode 'obs' while it is shown (no run, no frames, no player, no model choice), 'model' otherwise.
     this.sst = opts.sst ? sstStore(this.root) : null;

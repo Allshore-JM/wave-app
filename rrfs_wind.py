@@ -24,7 +24,7 @@ import struct
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 
 # numpy and rrfs_grid load on the first POINT read only: importing the app must not load numpy (the web process pays
@@ -61,6 +61,15 @@ LRU_INDEXES = 32
 LRU_STATIONS = 8
 LRU_CELLS = 1024
 READ_WORKERS = 5
+# A cell read (one ranged GET of a multi-GB object straight to R2) usually answers in 0.2-0.6 s, but about 1 in 25 takes
+# 1.6-14 s or hangs past 40 s, in patches that last minutes (measured 2026-11-19, 300 reads: p50 0.28 s, p99 6 s with
+# the second request below, max 6.7 s; without it 13 reads took 1.6-40 s), most often in the minutes after a publish.
+# The site's 6-s read timeout then dropped the whole source (the first Alaska tables after a new source had 17 rows
+# instead of 81). A cell read or a cells/stations index read not answered within HEDGE_AFTER_S of starting is asked
+# again (another pooled connection: app.py gives RRFS its own session); the first good answer wins (the other ends on
+# its own, within the getter's own limit). A read that FAILS before then is not asked again (a refusal, a bad range).
+HEDGE_AFTER_S = 1.5
+HEDGE_WORKERS = 24                         # both copies of every cell read run here (5 sources x a few tables at once)
 
 
 def label(cycle):
@@ -113,7 +122,10 @@ class RrfsWinds:
         self._stations = _Lru(LRU_STATIONS)        # cycle -> (doc, bytes)
         self._cells = _Lru(LRU_CELLS)              # (cycle, grid, j, i) -> structured array
         self._failed = {}                          # key -> retry-after clock
-        self.stats = {"pointer_ok": 0, "pointer_fail": 0, "reads_ok": 0, "reads_fail": 0, "last_error": None}
+        self.hedge_after = HEDGE_AFTER_S
+        self._pool = None                          # the cell reads' own pool (made on the first point read)
+        self.stats = {"pointer_ok": 0, "pointer_fail": 0, "reads_ok": 0, "reads_fail": 0, "last_error": None,
+                      "reads_hedged": 0, "hedge_won": 0}
 
     # ------------------------------------------------------------------------------------------ fetching + checks
 
@@ -126,6 +138,49 @@ class RrfsWinds:
             self._failed[key] = self._clock() + SOURCE_FAIL_TTL_S
             self.stats["reads_fail"] += 1
             self.stats["last_error"] = f"{key}: {exc.__class__.__name__}: {str(exc)[:160]}"
+
+    def _hedged(self, fn, *args):
+        """fn(*args), asked a second time when the first has not answered within hedge_after seconds OF STARTING (time
+        queued for a pool thread does not count: a second copy would only queue behind it); the first good answer wins,
+        a copy still queued then is cancelled, and it fails only when both copies fail (the last error). A read that
+        fails within hedge_after is not asked again. Worst case: both hang, hedge_after + the getter's own limit
+        (1.5 + 8 s). See HEDGE_AFTER_S."""
+        with self._lock:
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(max_workers=HEDGE_WORKERS, thread_name_prefix="rrfs-read")
+            pool = self._pool
+        began = {}
+
+        def run(tag):
+            began[tag] = time.monotonic()
+            return fn(*args)
+
+        first = pool.submit(run, "first")
+        while True:
+            t0 = began.get("first")
+            left = self.hedge_after if t0 is None else t0 + self.hedge_after - time.monotonic()
+            if left <= 0:
+                break
+            if wait([first], timeout=left).done:
+                return first.result()              # answered (or failed: raised as before, not asked again)
+        second = pool.submit(run, "second")
+        with self._lock:
+            self.stats["reads_hedged"] += 1
+        pending, err = {first, second}, None
+        try:
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for f in done:
+                    if f.exception() is None:
+                        if f is second:
+                            with self._lock:
+                                self.stats["hedge_won"] += 1
+                        return f.result()
+                    err = f.exception()
+            raise err
+        finally:
+            for f in pending:
+                f.cancel()                         # a copy still queued never runs; a running one ends by its own limit
 
     def _failing(self, key):
         with self._lock:
@@ -216,7 +271,7 @@ class RrfsWinds:
             hit = self._indexes.get(key)
         if hit is not None:
             return hit
-        doc = json.loads(self._get(self._url(key), INDEX_MAX))
+        doc = json.loads(self._hedged(self._get, self._url(key), INDEX_MAX))   # first read right after a publish too
         check(doc)
         with self._lock:
             self._indexes.put(key, doc)
@@ -301,7 +356,7 @@ class RrfsWinds:
         doc = self._index(key, check)
         rb = doc["record_bytes"]
         off = (j * g["Nx"] + i) * rb
-        body = self._range(self._url(key[:-len(".json")] + ".bin"), off, off + rb - 1)
+        body = self._hedged(self._range, self._url(key[:-len(".json")] + ".bin"), off, off + rb - 1)
         if len(body) != rb:
             raise ValueError(f"{len(body)} of {rb} bytes")
         np = _np()

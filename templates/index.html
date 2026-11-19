@@ -5043,6 +5043,7 @@
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
       var RADAR = {{ overlay_radar|tojson }};                   // "Radar" offered (RADAR_OVERLAY; plan section 85)
       var BATHY = {{ overlay_bathy|tojson }};                   // "Bathymetry" offered (BATHY_OVERLAY; plan section 93b)
+      var PRECIP = {{ overlay_rrfs_precip|tojson }} && MODELS.indexOf('rrfs') >= 0;   // "Precipitation" (RRFS_PRECIP + RRFS offered; plan section 102)
       var SAT = {{ overlay_sat|tojson }};                       // "Satellite waves" offered (ALT_OVERLAY; plan section 81)
       var SWELL = {{ overlay_swell|tojson }};                   // ... with the Sentinel-1 swell switch (SARSWELL; plan section 81)
       var GRID = {{ overlay_grid|tojson }};                     // ... with the "Gridded map" box (ALT_GRID; plan section 82)
@@ -5068,6 +5069,7 @@
           box.innerHTML = '<select id="ovField" autocomplete="off" aria-label="Map overlay">' +
             '<option value="">Off</option><option value="hs">Wave height</option>' +
             '<option value="tp">Peak period</option><option value="wind">Wind speed</option>' +
+            (PRECIP ? '<option value="precip">Precipitation</option>' : '') +
             (SST ? '<option value="sst">Sea surface temperature</option>' : '') +
             (SAT ? '<option value="sat">Satellite waves</option>' : '') +
             (RADAR ? '<option value="radar">Radar</option>' : '') +
@@ -5133,6 +5135,7 @@
       if (RADAR) FIELDS.radar = 1;                              // a saved 'radar' with the setting off starts Off (plan section 85)
       if (BATHY) FIELDS.bathy = 1;                              // likewise 'bathy' (plan section 93b)
       if (SAT) FIELDS.sat = 1;                                  // likewise 'sat' (plan section 81)
+      if (PRECIP) FIELDS.precip = 1;                            // likewise 'precip' (plan section 102)
       function stored() {
         try { var o = JSON.parse(sessionStorage.getItem(KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
       }

@@ -40,6 +40,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("RADAR_OVERLAY", raising=False)
     monkeypatch.delenv("BATHY_OVERLAY", raising=False)
+    monkeypatch.delenv("RRFS_PRECIP", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
     monkeypatch.delenv("PLACES_BASE", raising=False)
     monkeypatch.setenv("MODEL_OVERLAYS", "1")
@@ -288,6 +289,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_models|tojson }}", json.dumps(["gfswave"]))
                    .replace("{{ overlay_sst|tojson }}", json.dumps(False))
                    .replace("{{ overlay_radar|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_rrfs_precip|tojson }}", json.dumps(False))
                    .replace("{{ overlay_bathy|tojson }}", json.dumps(False))
                    .replace("{{ overlay_sat|tojson }}", json.dumps(False))
                    .replace("{{ overlay_swell|tojson }}", json.dumps(False))
@@ -387,6 +389,27 @@ def test_radar_overlay_env_and_the_page(monkeypatch):
     monkeypatch.setenv("RADAR_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
         assert "var RADAR" not in rec["body"] and 'value="radar"' not in rec["body"], name
+
+
+def test_rrfs_precip_env_and_the_page(monkeypatch):
+    """RRFS_PRECIP (section 102 A): "1" offers "Precipitation" when RRFS is an offered model (the page's PRECIP); anything else
+    does not; the flag-on page differs from the default only in that line; the flag-off page never carries it."""
+    _on(monkeypatch)
+    for env, want in (("1", True), ("0", False), ("", False), ("true", False)):
+        monkeypatch.setenv("RRFS_PRECIP", env)
+        assert A._rrfs_precip_enabled() is want, env
+    monkeypatch.setenv("RRFS_PRECIP", "1")
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("RRFS_PRECIP")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var PRECIP = true && MODELS.indexOf('rrfs') >= 0;" in on[name]["body"], name
+        assert on[name]["body"].replace("var PRECIP = true &&", "var PRECIP = false &&") == off[name]["body"], name
+        assert 'value="precip">Precipitation' in on[name]["body"] and "FIELDS.precip = 1" in on[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("RRFS_PRECIP", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var PRECIP" not in rec["body"] and 'value="precip"' not in rec["body"], name
 
 
 def test_bathy_overlay_env_and_the_page(monkeypatch):

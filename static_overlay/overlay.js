@@ -32,17 +32,18 @@
   // The ECMWF credit is the short form; the title carries the notice; the manifest's model block has the full text.
   var MODEL_DEFS = {
     // lakes: the Great Lakes wave frames (NOAA GLWU, plan section 50) are drawn under this model's wave height and period
-    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION, lakes: true },
+    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION, lakes: true, fields: ['hs', 'tp', 'wind'] },
     // the credit's "ECMWF" opens the site's notice (/notice/ecmwf: copyright, source, licence, ECMWF's disclaimer, what
     // Allshore Surf changed; owner, G30-4: a notice, linked from the credit)
-    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model',
+    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model', fields: ['hs', 'tp', 'wind'],
       attribution: 'Overlay: <a href="/notice/ecmwf" target="_blank" rel="noopener" ' +
         'title="Based on data and products of ECMWF (CC BY 4.0), modified by Allshore Surf: quantised, calm water and sea ice left empty, coast-filled and rendered. ECMWF does not endorse this product.">ECMWF</a> ' +
         '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener license">CC BY 4.0</a>' },
     // NOAA RRFS (plan section 99 D): its own Wind-speed model, regional (Hawaii, Puerto Rico, CONUS, Alaska; blank
     // elsewhere), every hourly cycle merged into one manifest by the job (the newest source per valid hour) to +84 h.
-    // fields: the only layers it offers (no waves); a wave layer switches the model to the default.
-    rrfs: { prefix: 'rrfs/v1/frames', label: 'RRFS (NOAA, 3 km)', short: 'RRFS', cycleMs: 3.6e6, staleS: 6 * 3600, table: 'model', regional: true, fields: ['wind'],
+    // fields: the only layers a model offers (RRFS: no waves; GFS / ECMWF: no precipitation, plan section 102); a layer the
+    // model lacks switches to the first offered model that has it.
+    rrfs: { prefix: 'rrfs/v1/frames', label: 'RRFS (NOAA, 3 km)', short: 'RRFS', cycleMs: 3.6e6, staleS: 6 * 3600, table: 'model', regional: true, fields: ['wind', 'precip'],
       attribution: 'Overlay: <a href="https://registry.opendata.aws/noaa-rrfs/" target="_blank" rel="noopener" title="NOAA Rapid Refresh Forecast System (RRFS) 10-m wind via NOAA Open Data on AWS, rendered by Allshore Surf; not an official NWS product">NOAA RRFS</a>' }
   };
   var DEFAULT_MODEL = 'gfswave';
@@ -79,6 +80,18 @@
   // in the bar's lower half). Snow lavender to purple, mix pink: the owner's pick of 2026-11-08 from two candidates on real frames.
   RAMPS.radarSnow = [[0, '#f1ebff'], [0.1, '#dacdff'], [0.2, '#bea8ff'], [0.3, '#9f80f2'], [0.42, '#7f57d9'], [0.55, '#5f33b3'], [1, '#2c0f63']];
   RAMPS.radarMix = [[0, '#ffe3f0'], [0.1, '#ffc6e0'], [0.2, '#ff9fca'], [0.3, '#f774b0'], [0.42, '#e04b95'], [0.55, '#b82a76'], [1, '#6b0f42']];
+  // RRFS precipitation (plan section 102 A): rain, snow and mix in the radar's colours; ice and thunder their own (the owner
+  // picks between two candidates on real frames; PRECIP_ALT holds the others). RAMPS.precip: the field's main bar (rain).
+  RAMPS.precipIce = [[0, '#fff1d6'], [0.1, '#ffdca3'], [0.2, '#ffc266'], [0.3, '#f7a531'], [0.42, '#e5841a'], [0.55, '#c2610c'], [1, '#6b3000']];
+  RAMPS.precipThunder = [[0, '#b8860b'], [0.2, '#d49b00'], [0.35, '#f0b400'], [0.5, '#ffcf1f'], [0.65, '#ffe26b'], [0.8, '#fff2b3'], [1, '#ffffff']];
+  RAMPS.precip = RAMPS.radar;
+  var PRECIP_ALT = {
+    precipIce: [[0, '#d9fbf4'], [0.1, '#b4f2e6'], [0.2, '#80e3d2'], [0.3, '#4fcfbb'], [0.42, '#26b3a0'], [0.55, '#128c7d'], [1, '#064a42']],
+    precipThunder: [[0, '#4a0d0d'], [0.2, '#6e1414'], [0.35, '#8f1d1d'], [0.5, '#b02a2a'], [0.65, '#c94545'], [0.8, '#e07070'], [1, '#f5b5b5']]
+  };
+  // ?ovprecip=b shows the other candidates (the owner's pick on the test site); 'a' is the default
+  var PRECIP_LOOK = (function () { try { var q = /[?&]ovprecip=([ab])(?:&|$)/.exec(pageQuery()); return q ? q[1] : 'a'; } catch (e) { return 'a'; } })();
+  if (PRECIP_LOOK === 'b') { RAMPS.precipIce = PRECIP_ALT.precipIce; RAMPS.precipThunder = PRECIP_ALT.precipThunder; }
   var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.57, 1];   // alpha at the 5-dBZ floor and from 25 dBZ up (the layer's own opacity on top)
   // The radar's opacity (plan section 89): one CSS opacity on the layer, set by the panel's transparency slider; kept on the device.
   var RADAR_OPACITY_KEY = 'allshore.radarOpacity.v1', RADAR_OPACITY_MIN = 20, RADAR_OPACITY_MAX = 100, RADAR_OPACITY_DEFAULT = 75;
@@ -100,7 +113,7 @@
     ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
   // Fixed opacity per field (owner, 2026-09-26: no slider): the waves over the imagery, the wind multiplied into the relief.
-  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75 };
+  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75, precip: 0.75 };   // precip: the radar's default (plan section 102)
   // Leaflet fires a tile layer's 'load' when its last tile STARTS its 200-ms fade-in (G14 P1-1: removing the old
   // basemap then showed the bare map for ~200 ms): the old one leaves this long after.
   var BASE_FADE_MS = 300;
@@ -256,6 +269,78 @@
       if (!want || !Array.isArray(got) || got.length !== 3 || got[0] !== want[0] || got[1] !== want[1] || got[2] !== want[2]) return false;
     }
     return true;
+  }
+  // ---- RRFS precipitation (plan section 102 A): the hour's amount, TYPED, in one 8-bit code (tools/model_frames/rrfs.py
+  // PRECIP_CODES): 0 missing, 1 dry (under 0.1 mm), then 50 codes per type, each a log scale from 0.1 to 75+ mm
+  // (mm = 0.1 * 750 ^ (k / 49)). A sampled pixel is 1 (dry) or 2 + 50 * type + k (k fractional: bilinear over the wet
+  // nodes, the type of the node with the most weight; never a blend of two types), as the radar's typed piece.
+  var PRECIP_CODES = { rain: [2, 51], snow: [52, 101], mix: [102, 151], ice: [152, 201], thunder: [202, 251] };
+  var PRECIP_TYPES = ['rain', 'snow', 'mix', 'ice', 'thunder'], PRECIP_PER = 50, PRECIP_LO = 0.1, PRECIP_HI = 75, PRECIP_DRY = 1;
+  var PRECIP_ENCODING = 'rrfs-precip-v1', PRECIP_MAX = 1 + PRECIP_PER * PRECIP_TYPES.length;   // 251
+  var PRECIP_K = new Float64Array(256), PRECIP_T = new Uint8Array(256);   // a wet code's level + 1 (0: not wet) and its type
+  (function () { for (var c = 2; c <= PRECIP_MAX; c++) { PRECIP_K[c] = (c - 2) % PRECIP_PER + 1; PRECIP_T[c] = Math.floor((c - 2) / PRECIP_PER); } })();
+  function precipMm(k) { return PRECIP_LO * Math.pow(PRECIP_HI / PRECIP_LO, k / (PRECIP_PER - 1)); }   // a level (fractional) -> mm
+  // A sampled value -> {mm, type} (null: nothing; type null: dry).
+  function precipOf(v) {
+    if (!(v >= 1)) return null;
+    if (v < 2) return { mm: 0, type: null };
+    var t = Math.min(PRECIP_TYPES.length - 1, Math.floor((v - 2) / PRECIP_PER));
+    return { mm: precipMm(Math.min(PRECIP_PER - 1, v - 2 - PRECIP_PER * t)), type: PRECIP_TYPES[t] };
+  }
+  // The manifest's precip field definition must say exactly what this client reads (else the field is not offered).
+  function precipDefOk(f) {
+    if (!f || typeof f !== 'object' || f.kind !== 'typed' || f.encoding !== PRECIP_ENCODING || f.lo !== PRECIP_LO || f.hi !== PRECIP_HI ||
+      f.per_type !== PRECIP_PER || f.dry !== PRECIP_DRY || !Array.isArray(f.resolutions) || f.resolutions.indexOf('full') < 0 || !f.types || typeof f.types !== 'object') return false;
+    var names = Object.keys(f.types);
+    if (names.length !== PRECIP_TYPES.length) return false;
+    for (var i = 0; i < PRECIP_TYPES.length; i++) {
+      var want = PRECIP_CODES[PRECIP_TYPES[i]], got = f.types[PRECIP_TYPES[i]];
+      if (!Array.isArray(got) || got.length !== 2 || got[0] !== want[0] || got[1] !== want[1]) return false;
+    }
+    return true;
+  }
+  // An hourly amount (mm) on the radar's dBZ legend through Marshall-Palmer (Z = 200 R^1.6): the same colour means the same
+  // rain rate as on the Radar layer (1 mm/h = 23 dBZ, 10 mm/h = 39 dBZ).
+  function precipDbz(mm) { return 10 * Math.log10(200 * Math.pow(mm, 1.6)); }
+  function precipPos(mm) { var leg = RADAR_FDEF.legend; return Math.max(0, Math.min(1, (precipDbz(mm) - leg[0]) / (leg[1] - leg[0]))); }
+  var PRECIP_RAMPS = ['radar', 'radarSnow', 'radarMix', 'precipIce', 'precipThunder'];
+  // RGBA per half code (a sampled value * 2, rounded): the dry tint at 1, each type's colours by its amount's legend position,
+  // alpha rising from 0.1 mm/h to solid as the radar's does (RADAR_ALPHA on the dBZ equivalent).
+  function precipLut() {
+    var n = PRECIP_MAX * 2 + 2, out = new Uint8ClampedArray(n * 4), rgb = [0, 0, 0];
+    out[8] = RADAR_TINT[0]; out[9] = RADAR_TINT[1]; out[10] = RADAR_TINT[2]; out[11] = RADAR_TINT[3];   // index 2 = value 1: dry
+    for (var e = 4; e < n; e++) {
+      var v = e / 2, t = Math.min(PRECIP_TYPES.length - 1, Math.floor((v - 2) / PRECIP_PER)), mm = precipMm(Math.max(0, Math.min(PRECIP_PER - 1, v - 2 - PRECIP_PER * t)));
+      var dbz = precipDbz(mm), k = e * 4;
+      rampAt(RAMPS[PRECIP_RAMPS[t]], precipPos(mm), rgb, 0);
+      out[k] = rgb[0]; out[k + 1] = rgb[1]; out[k + 2] = rgb[2];
+      out[k + 3] = 255 * Math.max(RADAR_ALPHA[0], Math.min(RADAR_ALPHA[1], RADAR_ALPHA[0] + (dbz - RADAR_FLOOR) / 20 * (RADAR_ALPHA[1] - RADAR_ALPHA[0])));
+    }
+    return out;
+  }
+  // Sampled values -> RGBA (0: transparent).
+  function composeTyped(codes, lut, d) {
+    for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
+      var c = codes[i];
+      if (!c) { d[k + 3] = 0; continue; }
+      var e = Math.round(c * 2) * 4;
+      d[k] = lut[e]; d[k + 1] = lut[e + 1]; d[k + 2] = lut[e + 2]; d[k + 3] = lut[e + 3];
+    }
+    return d;
+  }
+  // The legend's ticks (hourly amounts in the site's unit) and the readout's words.
+  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 0.5, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 10, 25] };   // the last one 'N+ unit'
+  var PRECIP_WORDS = { rain: 'rain', snow: 'snow (water)', mix: 'rain and snow (water)', ice: 'freezing rain / ice pellets', thunder: 'rain, thunder' };
+  function precipAmountText(mm, unit, per) {
+    if (unit === 'Metric') return (mm < 10 ? mm.toFixed(1) : String(Math.round(mm))) + ' mm' + (per || '');
+    var inch = mm / 25.4;
+    return (inch < 0.995 ? inch.toFixed(2) : inch.toFixed(1)) + ' in' + (per || '');
+  }
+  function precipReadout(v, unit, hi) {
+    var p = precipOf(v);
+    if (!p) return null;
+    if (!p.type) return 'no precipitation';
+    return (p.mm >= hi - 1e-9 ? '≥ ' : '') + precipAmountText(p.mm, unit, '/h') + ' ' + PRECIP_WORDS[p.type];
   }
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
   // Japan's files hold JMA's eight rain-rate classes as the dBZ codes of the same rain (tools/model_frames/jma.py; a Python test compares
@@ -2132,6 +2217,49 @@
     return out;
   }
   var REG_C0 = new Int32Array(4 * TILE), REG_C1 = new Int32Array(4 * TILE), REG_FC = new Float64Array(4 * TILE);
+  // sampleRegions for TYPED precipitation codes (plan section 102 A; the radar's typed piece, radarSample): per pixel the
+  // four nodes; over the WET ones (codes 2..PRECIP_MAX, with at least a quarter of the weight) the bilinear of their levels
+  // and the type of the node with the most weight (the first of equals): 2 + 50 * type + level. Else, with at least a
+  // quarter of the weight on covered nodes (code >= 1): 1 (dry); else nothing and the next region is asked. The tiles
+  // (0, 0, 1, TILE) and the readout (px, py, 1, 1) go through here: the readout is the drawn pixel.
+  function sampleRegionsTyped(parts, coords, ox, oy, step, n, out) {
+    var nW = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE + ox, y0 = coords.y * TILE + oy, np = parts.length, i, j, p, k = 0;
+    if (REG_C0.length < np * n) { REG_C0 = new Int32Array(np * n); REG_C1 = new Int32Array(np * n); REG_FC = new Float64Array(np * n); }
+    var C0 = REG_C0, C1 = REG_C1, FC = REG_FC, K = PRECIP_K, T = PRECIP_T, PER = PRECIP_PER;
+    for (p = 0; p < np; p++) {
+      var g0 = parts[p].grid, base0 = p * n, cl = g0.cols;
+      for (i = 0; i < n; i++) {
+        var fx0 = (regionLon(g0, lngOfWorldX(x0 + i * step + 0.5, nW)) - g0.lon0) / g0.dlon;
+        if (fx0 >= 0 && fx0 <= cl - 1) { var cc = Math.floor(fx0); C0[base0 + i] = cc; C1[base0 + i] = cc + 1 < cl ? cc + 1 : cc; FC[base0 + i] = fx0 - cc; }
+        else C0[base0 + i] = -1;
+      }
+    }
+    for (j = 0; j < n; j++, k += n) {
+      var lat = latOfWorldY(y0 + j * step + 0.5, nW);
+      out.fill(0, k, k + n);
+      for (p = 0; p < np; p++) {
+        var g = parts[p].grid, cols = g.cols, rows = g.rows, fy = (g.lat0 - lat) / -g.dlat;
+        if (!(fy >= 0 && fy <= rows - 1)) continue;
+        var q = parts[p].frame.q, r0 = Math.floor(fy), r1 = r0 + 1 < rows ? r0 + 1 : r0, fr = fy - r0, w0 = 1 - fr, b0 = r0 * cols, b1 = r1 * cols, base = p * n;
+        for (i = 0; i < n; i++) {
+          var c0 = C0[base + i];
+          if (c0 < 0 || out[k + i]) continue;
+          var c1 = C1[base + i], fc = FC[base + i];
+          var a = q[b0 + c0], b = q[b0 + c1], c = q[b1 + c0], d = q[b1 + c1];
+          if (!(a | b | c | d)) continue;
+          var wa = w0 * (1 - fc), wb = w0 * fc, wc = fr * (1 - fc), wd = fr * fc;
+          var cov = (a ? wa : 0) + (b ? wb : 0) + (c ? wc : 0) + (d ? wd : 0), w = 0, acc = 0, best = -1, bt = 0, lv;
+          if ((lv = K[a])) { w += wa; acc += wa * (lv - 1); if (wa > best) { best = wa; bt = T[a]; } }
+          if ((lv = K[b])) { w += wb; acc += wb * (lv - 1); if (wb > best) { best = wb; bt = T[b]; } }
+          if ((lv = K[c])) { w += wc; acc += wc * (lv - 1); if (wc > best) { best = wc; bt = T[c]; } }
+          if ((lv = K[d])) { w += wd; acc += wd * (lv - 1); if (wd > best) { best = wd; bt = T[d]; } }
+          if (w >= 0.25) out[k + i] = 2 + PER * bt + acc / w;
+          else if (cov >= 0.25) out[k + i] = PRECIP_DRY;
+        }
+      }
+    }
+    return out;
+  }
   // The manifest of a regional model: the regions' grids (each a valid region grid), one wind field definition shared by
   // every region (one legend and colour table; the GFS frames' range), a direction field, <= 512 frames in strictly
   // increasing step and time, each naming only known regions and fields, every key under the model's prefix. Normalised
@@ -2144,12 +2272,13 @@
       !m.regions || typeof m.regions !== 'object' || Array.isArray(m.regions) || !Array.isArray(m.frames) || !m.frames.length || m.frames.length > 512 ||
       (m.model !== undefined && (typeof m.model !== 'object' || m.model === null))) throw new Error('manifest incomplete');
     if (typeof m.signature !== 'string' || !/^[0-9a-f]{16}$/.test(m.signature)) throw new Error('manifest incomplete');   // its identity (G67a P1-1)
-    var names = Object.keys(m.regions), fields = null, list = [], i, k;
+    var names = Object.keys(m.regions), fields = null, list = [], i, k, precip = 0, precipBad = false;
     if (!names.length || names.length > MAX_REGIONS) throw new Error('manifest incomplete');
     for (i = 0; i < names.length; i++) {
       var r = m.regions[names[i]], fs = r && r.fields;
       if (!/^[a-z]{1,12}$/.test(names[i]) || !r || !validRegionGridDef(r.grid) || !fs || typeof fs !== 'object' || !lakeFieldOk(fs.wind) || !dirFieldOk(fs.wdir) ||
         fs.wdir.resolutions.indexOf('half') < 0 || !halfOf(r.grid, r.grid_half)) throw new Error('manifest incomplete');
+      if (fs.precip !== undefined) { if (precipDefOk(fs.precip)) precip++; else precipBad = true; }   // plan section 102: optional, exact
       if (!fields) fields = { wind: fs.wind, wdir: fs.wdir };
       else if (!lakeFieldMatches(fs.wind, fields.wind) || fs.wind.legend[0] !== fields.wind.legend[0] || fs.wind.legend[1] !== fields.wind.legend[1]) throw new Error('regions disagree on the wind scale');
       var cover = coverOf(r.cover);
@@ -2169,8 +2298,15 @@
         if (!Object.prototype.hasOwnProperty.call(m.regions, k) || !ff || typeof ff !== 'object') throw new Error('bad frame entry ' + i);
         for (var f in ff) if ((f !== 'wind' && f !== 'wdir') || !sstKey(ff[f]) || ff[f].indexOf(prefix + '/') !== 0) throw new Error('bad frame entry ' + i);
       }
+      if (fr.precip !== undefined) {                          // the hour's precipitation frames, beside `files` (plan section 102; G68a P0-1)
+        if (!fr.precip || typeof fr.precip !== 'object' || Array.isArray(fr.precip)) throw new Error('bad frame entry ' + i);
+        for (k in fr.precip) if (!Object.prototype.hasOwnProperty.call(m.regions, k) || !sstKey(fr.precip[k]) || fr.precip[k].indexOf(prefix + '/') !== 0) throw new Error('bad frame entry ' + i);
+      }
     }
-    m.regional = true; m.fields = fields; m.regionList = list;
+    // The precipitation field (plan section 102 A) is offered only when every region that names it says exactly this
+    // client's codes; otherwise the wind stays and Precipitation says the frames are unreadable (its keys are never read).
+    if (precip && !precipBad) fields.precip = { kind: 'typed', encoding: PRECIP_ENCODING, lo: PRECIP_LO, hi: PRECIP_HI, legend: [PRECIP_LO, PRECIP_HI], resolutions: ['full'] };
+    m.regional = true; m.fields = fields; m.regionList = list; m.precipBad = precipBad;
     return m;
   }
   // A region's coverage mask (the job's 1-degree cells holding data, hex from the north-west, 4 cells a digit) decoded:
@@ -2236,7 +2372,10 @@
                                                             // re-checks at moveend): at half a screen a 1080p California view decoded Alaska too
                                                             // (+73 MB heap peaks at shark, plan section 99 D2 perf gate)
   // The key of a region's frame of a step (null: the step has none for that region).
-  function regionFrameKey(fr, region, field) { var f = fr.files[region]; return f && typeof f[field] === 'string' ? f[field] : null; }
+  function regionFrameKey(fr, region, field) {
+    if (field === 'precip') return fr.precip && typeof fr.precip[region] === 'string' ? fr.precip[region] : null;   // plan section 102
+    var f = fr.files[region]; return f && typeof f[field] === 'string' ? f[field] : null;
+  }
   // The regions of the list whose data (their coverage mask; else their box) lies within REGION_NEAR_SCREENS of the view.
   function regionsNear(list, view) {
     var out = [];
@@ -2247,7 +2386,7 @@
     }
     return out;
   }
-  // Does a model offer this field? (RRFS: wind only; MODEL_DEFS[...].fields, absent = every field.)
+  // Does a model offer this field? (MODEL_DEFS[...].fields; RRFS wind + precipitation, GFS / ECMWF waves + wind.)
   function modelOffers(key, field) { var d = hasModel(key) ? MODEL_DEFS[key] : null; return !!d && (!d.fields || !field || d.fields.indexOf(field) >= 0); }
   // The lake run's pointer and manifest (never a frame: the scheduler decodes those like the model's). One per bucket
   // root per page; the manifest survives a field switch and Off (abortAll only stops a load in progress). A newer run is
@@ -2804,6 +2943,7 @@
       if (lake) { validateLakeGrid(lake.grid, lake.frame); if (lake.lo !== fdef.lo || lake.hi !== fdef.hi) throw new Error('lake frame is not in the field\u2019s code space'); }
       this._frame = frame; this._grid = grid; this._lut = lut; this.field = fieldName; this.fdef = fdef; this.entry = entry || null;
       this._regions = frame && frame.regional ? frame.parts : null;
+      this._typed = !!(this._regions && fdef.kind === 'typed');   // plan section 102: typed precipitation codes
       this._nearest = fdef.interpolation === 'nearest'; this._lo = fdef.lo; this._hi = fdef.hi; this._legend = fdef.legend;
       this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
       this._lakeMask = !!(this._lakeCoast && LAKE_UNDER[fieldName]);
@@ -2811,7 +2951,7 @@
       this._gen++;
       this._redraw(true);
     },
-    clear: function () { this._frame = null; this._regions = null; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._lakeMask = false; this._lake = null; this._sm = null; this.setSource(null, true); this._redraw(); },
+    clear: function () { this._frame = null; this._regions = null; this._typed = false; this.field = null; this.fdef = null; this.entry = null; this._clip = false; this._lakeMask = false; this._lake = null; this._sm = null; this.setSource(null, true); this._redraw(); },
     // The lake frame drawn under the frame on the map (plan section 50): data {frame, grid, entry, lo, hi} or null. It
     // must share the field's code space (lo / hi; the scheduler checks the manifests, this is the last line). quiet: only
     // set it, for the setFrame that follows (one redraw); else the tiles with lake water are redrawn and the particles told.
@@ -3117,6 +3257,11 @@
         this._oneOut[0] = 0;
         sampleLake(this._lake.frame, this._lake.grid, p, p.px, p.py, 1, 1, this._oneOut, lake);
         v = this._oneOut[0] ? this._value(this._oneOut[0]) : null;
+      } else if (this._typed) {                              // the drawn pixel's own typed sample (plan section 102)
+        if (!this._frame) return null;
+        this._oneOut[0] = 0;
+        sampleRegionsTyped(this._regions, p, p.px, p.py, 1, 1, this._oneOut);
+        v = this._oneOut[0] || null;
       } else {
         var ll = tilePixelLatLng(p, p.px, p.py);
         v = this.valueAt(ll.lat, ll.lng);
@@ -3139,6 +3284,9 @@
     _code: function (r, cpos) { this._one[0] = cpos; this._codeRow(r, this._one, 1, this._oneOut, 0); return this._oneOut[0]; },
     valueAt: function (lat, lon) {
       if (!this._frame) return null;
+      if (this._regions && this._typed) {                     // the pixel centre's typed sample (readoutAt's own path)
+        var tp = pixelOf(lat, lon, 20); this._oneOut[0] = 0; sampleRegionsTyped(this._regions, tp, tp.px, tp.py, 1, 1, this._oneOut); return this._oneOut[0] || null;
+      }
       if (this._regions) { var rc = regionsCode(this._regions, lat, lon); return rc ? this._value(rc) : null; }
       var g = this._grid, f = this._frame, r = (g.lat0 - lat) / -g.dlat;
       if (!(r >= 0 && r <= f.rows - 1)) return null;
@@ -3151,7 +3299,7 @@
     // lake (plan section 50): the tile's lake water coverage; the lake frame's codes replace the model's there.
     tileCodes: function (coords, out, tier, lake) {
       if (this._src) return this._src.sampleGrid(coords, 0, 0, 1, TILE, out, tier || 0);
-      if (this._regions) return sampleRegions(this._regions, coords, 0, 0, 1, TILE, out);
+      if (this._regions) return this._typed ? sampleRegionsTyped(this._regions, coords, 0, 0, 1, TILE, out) : sampleRegions(this._regions, coords, 0, 0, 1, TILE, out);
       var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
       var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, colPos = this._colPos;
       for (var px = 0; px < TILE; px++) {
@@ -3183,7 +3331,8 @@
       if (this._src) { tier = this._src.tierFor(coords); el._ovSrcTier = tier; el._ovSrcRev = this._src.rev; }
       var codes = this.tileCodes(coords, this._codes, tier, lake);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
-      composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake);
+      if (this._typed) composeTyped(codes, this._lut, img.data);
+      else composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake);
       if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier, lake);
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
         if (el._ovEdgesOf !== land) { el._ovEdges = coastEdges(land, WIND_LOOK.gain); el._ovEdgesOf = land; }
@@ -7336,6 +7485,7 @@
     var idx = null, resume = false;
     this._regionNames = null;                                // the view may have moved since the last mount (G67 P1-1)
     this._loadManifest(sig).then(function (m) {
+      if (fieldName === 'precip' && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update yet');
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
       if (sig.aborted || !self.layer) throw abortError();
       self.n = m.frames.length;
@@ -8257,6 +8407,7 @@
     return u === true || (typeof u === 'number' && u > Date.now());
   };
   Overlay.prototype._lut = function () {
+    if (this.field === 'precip') { if (this._lutFor !== 'precip|' + PRECIP_LOOK) { this._lutCache = precipLut(); this._lutFor = 'precip|' + PRECIP_LOOK; } return this._lutCache; }
     var f = this.manifest && this.manifest.fields[this.field], legend = f ? f.legend : [0, 1], key = this.field + '|' + legend.join(',');
     if (this._lutFor !== key) { this._lutCache = buildLut(this.field, legend); this._lutFor = key; }
     return this._lutCache;
@@ -8403,7 +8554,8 @@
         if (transient && failureKind(e) === 'permanent') { e = new Error('frame stalled'); }
         throw e;
       }
-      return { regional: true, parts: parts, names: names, failed: fails.length, retryAt: transient ? retryAt : 0, cols: 0, rows: 0, q: EMPTY_Q };
+      var nofield = names.filter(function (n) { return !regionFrameKey(fr, n, field); }).length;   // a source built before the field (plan section 102)
+      return { regional: true, parts: parts, names: names, failed: fails.length, nofield: nofield, retryAt: transient ? retryAt : 0, cols: 0, rows: 0, q: EMPTY_Q };
     }).then(function (frame) {
       if (mine()) delete self.inflight[key];
       if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
@@ -8535,6 +8687,7 @@
       cache: this.cache.size() + '/' + this.dcache.size() + '/' + this.pcache.size(), decoder: dec, isobars: this.iso ? (this.iso.entry ? this.iso.entry.step : '-') + ' ' + this.iso.drawn.lines + 'l/' + this.iso.drawn.labels + 'p/' + this.iso.drawn.hl + 'm ' + this.iso.lastMs + 'ms' + (this.iso.terrain ? ' terrain' : ' no-terrain') : (this.isobars ? 'none' : 'off'), hidden: typeof document !== 'undefined' ? !!document.hidden : null, dpr: typeof window !== 'undefined' ? window.devicePixelRatio : null };
     var lines = [], k;
     for (k in o) lines.push(k + ': ' + o[k]);
+    if (this.manifest && this.manifest.regional) lines.push('precip: ' + (this.manifest.fields.precip ? 'offered' : this.manifest.precipBad ? 'unreadable' : 'none') + (this.layer && this.layer._typed ? ', typed drawn' + (this.layer._frame && this.layer._frame.nofield ? ', ' + this.layer._frame.nofield + ' region(s) without the field' : '') : ''));   // plan section 102
     if (this.manifest && this.manifest.regional) lines.push('regions: ' + (this._regionNames ? this._regionNames.join(',') || 'none' : '-') + ', drawn ' + (this.layer && this.layer._regions ? this.layer._regions.map(function (p) { return p.name; }).join(',') || 'none' : '-') + ', decoded ' + this.rcache.size());
     if (this.lake) lines.push('lake: ' + this.lake.status + ' ' + (this.lake.manifest ? this.lake.manifest.run : '-') + (this.lake.next ? ' next ' + this.lake.next.m.run : '') + (this._lakeNear === false ? ' (off the view)' : '') + ', drawn ' + (this.layer && this.layer._lake ? this.layer._lake.entry.step : '-') + ', cache ' + this.lcache.size() + '/' + this.ldcache.size());
     if (this.radarPlayer) { var rs = this.radar; lines.push('radar: step ' + this.radarPlayer.idx + '/' + this.radarPlayer.frames.length + (this.radarPlayer.playing ? ' playing' : '') + ', loop ' + this.radarPlayer.loopH + ' h, ' + (rs.bytes / 1048576).toFixed(1) + ' MB, stack ' + (rs.stack.t1 ? 't1' : '-') + (rs.stack.t2 ? '+t2' : '')); }
@@ -8893,6 +9046,7 @@
   };
   Overlay.prototype._attribution = function () {
     var text = this.mode === 'obs' ? (this.field === 'radar' ? radarCredit(this._radarSources()) : this.field === 'bathy' ? bathyCredit(this._bathySources().map(bathyShort)) : OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].attribution) : this._def().attribution;
+    if (this.mode !== 'obs' && this.field === 'precip') text = text.replace('10-m wind', 'hourly precipitation');   // plan section 102
     if (this.mode !== 'obs' && this.layer && this.layer.hasLake() && this.layer._lakeMask && this._lakeOnScreen()) text += LAKE_ATTRIBUTION;   // a lake frame drawn, the lakes' coverage, and the lakes in the view (plan section 50; G33 B-5)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
@@ -9381,7 +9535,10 @@
     if (!m || !m.regional || !parts) return null;
     for (var i = 0; i < m.regionList.length; i++) {
       var r = m.regionList[i];
-      if (r.cover ? coverHas(r.cover, lat, lng) : inRegionBox(r.grid, lat, lng)) return null;   // where a region has data (G67 P3-6)
+      if (r.cover ? coverHas(r.cover, lat, lng) : inRegionBox(r.grid, lat, lng)) {   // where a region has data (G67 P3-6)
+        var fr = this.layer._frame;
+        return fr && fr.nofield && fr.nofield === fr.names.length && this.field === 'precip' ? 'no precipitation frame for this hour' : null;
+      }
     }
     return 'outside ' + this._def().short;
   };
@@ -9448,6 +9605,7 @@
         el.textContent = where; place(pt); return;
       }
       if (v === null || v === undefined) { el.hidden = true; return; }
+      if (layer.fdef.kind === 'typed') { el.textContent = precipReadout(v, self.opts.getUnit(), layer.fdef.hi) || ''; place(pt); return; }   // plan section 102
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
       if (v <= f.lo + 1e-9 && f.lo > 0) txt = '≤ ' + txt; else if (v >= f.hi - 1e-9) txt = '≥ ' + txt;   // "<=" only where values below lo exist (Tp)
@@ -10011,7 +10169,7 @@
     over.appendChild(this._buildTimeline(ui, m));
     wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
-    body.appendChild(buildLegend(field, f, unit));
+    body.appendChild(field === 'precip' ? buildPrecipLegend(unit) : buildLegend(field, f, unit));
     // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
     var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
@@ -10090,6 +10248,42 @@
     });
     leg.appendChild(ticks);
     return leg;
+  }
+  // The precipitation legend (plan section 102 A): the scale spans the hourly amounts the frames hold (0.1 to 75+ mm/h, i.e.
+  // the radar's 7-53 dBZ through Marshall-Palmer) in the radar's colours, so the ticks spread over the whole bar; a thin bar
+  // per other type on the same axis; the field's notes.
+  function precipLegPos(mm) { var d0 = precipDbz(PRECIP_LO), d1 = precipDbz(PRECIP_HI); return Math.max(0, Math.min(1, (precipDbz(mm) - d0) / (d1 - d0))); }
+  function precipBar(ramp) {
+    var cv = mk('canvas'); cv.width = 256; cv.height = 1;
+    var ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1), rgb = [0, 0, 0], d0 = precipDbz(PRECIP_LO), d1 = precipDbz(PRECIP_HI), leg = RADAR_FDEF.legend;
+    for (var i = 0; i < 256; i++) {
+      var dbz = d0 + i / 255 * (d1 - d0);
+      rampAt(RAMPS[ramp], Math.max(0, Math.min(1, (dbz - leg[0]) / (leg[1] - leg[0]))), rgb, 0);
+      im.data[i * 4] = rgb[0]; im.data[i * 4 + 1] = rgb[1]; im.data[i * 4 + 2] = rgb[2]; im.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(im, 0, 0);
+    return cv;
+  }
+  function buildPrecipLegend(unit) {
+    var us = unit !== 'Metric', vals = PRECIP_TICKS[us ? 'US' : 'Metric'], leg = mk('div', 'ov-legend');
+    leg.appendChild(precipBar('radar'));
+    var ticks = mk('div', 'ov-ticks');
+    vals.forEach(function (v, k) {
+      var last = k === vals.length - 1, pos = precipLegPos(us ? v * 25.4 : v);
+      var s = mk('span', pos < 0.03 ? 'ov-first' : last ? 'ov-last' : '', String(v) + (last ? '+ ' + (us ? 'in/h' : 'mm/h') : ''));
+      s.style.left = (pos * 100).toFixed(2) + '%'; ticks.appendChild(s);
+    });
+    leg.appendChild(ticks);
+    var wrap = mk('div', 'ov-precip-legend');
+    wrap.appendChild(leg);
+    var types = mk('div', 'ov-radar-types');
+    [['radarSnow', 'Snow (as water)'], ['radarMix', 'Rain and snow'], ['precipIce', 'Freezing rain / ice pellets'], ['precipThunder', 'Rain with thunder']].forEach(function (t) {
+      var row = mk('div', 'ov-radar-type'); row.appendChild(precipBar(t[0])); row.appendChild(mk('span', null, t[1])); types.appendChild(row);
+    });
+    wrap.appendChild(types);
+    wrap.appendChild(mk('div', 'ov-meta', 'Amount in the hour ending at the slider time; a model forecast, not radar.'));
+    wrap.appendChild(mk('div', 'ov-meta', 'Thunder only on hours from RRFS’s 84-h runs; the hourly updates (about the first 16 hours) carry no lightning.'));
+    return wrap;
   }
   // The observation's panel (plan section 44; owner, 2026-10-16: one date line in place of the run lines; no model
   // dropdown, no player, no timeline): head = the toggle and the source (folded: "SST · Thu, Oct. 15"); details = the
@@ -10302,7 +10496,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions,
+    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_ALT: PRECIP_ALT, PRECIP_LOOK: PRECIP_LOOK,
       regionLon: regionLon, inRegionBox: inRegionBox,  coverNear: coverNear, REGION_NEAR_SCREENS: REGION_NEAR_SCREENS, coverHas: coverHas, coverRects: coverRects, halfOf: halfOf, regionFlowField: regionFlowField, regionRects: regionRects, regionsNear: regionsNear, regionFrameKey: regionFrameKey, modelOffers: modelOffers, REGION_ORDER: REGION_ORDER, REGIONAL_SCHEMA: REGIONAL_SCHEMA,
       coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,

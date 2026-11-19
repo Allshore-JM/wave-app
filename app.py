@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.28.5"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.29.0"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
@@ -365,6 +365,12 @@ def _radar_overlay_enabled() -> bool:
     """RADAR_OVERLAY=1: the overlay dropdown offers "Radar" (plan section 85: NOAA MRMS and EUMETNET OPERA published by
     tools/model_frames/radar.py under radar/v1/). Off by default."""
     return os.environ.get("RADAR_OVERLAY", "0") == "1"
+
+
+def _rrfs_precip_enabled() -> bool:
+    """RRFS_PRECIP=1: the overlay dropdown offers "Precipitation" (plan section 102 A: RRFS's typed hourly precipitation
+    frames under rrfs/v1/frames/), shown only when RRFS is among MODEL_OVERLAY_MODELS. Off by default."""
+    return os.environ.get("RRFS_PRECIP", "0") == "1"
 
 
 def _bathy_overlay_enabled() -> bool:
@@ -5697,7 +5703,7 @@ def _overlay_context(selected_station, selected_tz, payload):
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
     return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
-            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_bathy": _bathy_overlay_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
+            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_bathy": _bathy_overlay_enabled(), "overlay_rrfs_precip": _rrfs_precip_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

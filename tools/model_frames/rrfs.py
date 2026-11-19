@@ -97,6 +97,13 @@ PART_BYTES = 100 * 1024 * 1024
 # straight to R2 (0.35-1.3 s measured on the 2.3 GB run files, which are too big to cache anyway).
 CELLS_CACHE = "no-store"
 UA = {"User-Agent": "allshoresurf.com RRFS job (https://allshoresurf.com)"}
+# The public host the site reads the cell files through (alt.py's FRAMES_ROOT; env RRFS_PUBLIC_ROOT for a test bucket).
+# The FIRST ranged read of a new multi-GB cell file takes 2.5-9.3 s there (later reads 0.2-0.4 s, anywhere in the file;
+# measured 2026-11-19), past the site's 5-s read timeout: the first CONUS / Alaska tables after a new source left it out
+# (17-18 rows instead of 81) until the site's 60-s source skip ended. publish() reads 14 bytes of each new cell file
+# through this host before the pointer names it (warm_cells).
+PUBLIC_ROOT = os.environ.get("RRFS_PUBLIC_ROOT", "https://models.allshoresurf.com").rstrip("/")
+WARM_WORKERS = 4
 
 CELL_DTYPE = np.dtype([("spd", "<u2"), ("dir", "<u2"), ("gust", "<u2"), ("tmp", "<u2"), ("dpt", "<u2"),
                        ("apcp", "<u2"), ("cloud", "u1"), ("type", "u1")])
@@ -888,13 +895,44 @@ def frames_entry(docs, cyc):
             "grids": doc.get("grids") or {}, "ranges": doc.get("ranges") or {}}
 
 
-def publish(store, cycle_dt, files, docs, latest):
-    """The data objects, then the documents, then the pointer (last). Returns the new pointer. The overlay's manifest
-    and its own pointer follow (sync_frames)."""
+def warm_cells(keys, get=None, log=print):
+    """One 14-byte ranged read of each cell file through the public host (PUBLIC_ROOT), several at a time: the file's
+    first read is the slow one (see PUBLIC_ROOT), so the site's first table never waits on it. Best effort: a failure
+    only logs (the site's own retry rules still hold). Returns {key: seconds or None}."""
+    get = get or http_get
+
+    def one(key):
+        t0 = time.monotonic()
+        get(f"{PUBLIC_ROOT}/{key}", (0, CELL_DTYPE.itemsize - 1), tries=2)
+        return time.monotonic() - t0
+
+    out = {}
+    if not keys:
+        return out
+    with ThreadPoolExecutor(max_workers=WARM_WORKERS) as ex:
+        futs = [(k, ex.submit(one, k)) for k in sorted(keys)]
+        for key, fut in futs:
+            try:
+                out[key] = fut.result()
+            except Exception as exc:                 # noqa: BLE001 - best effort
+                log(f"warm-up {key}: {exc.__class__.__name__}: {exc}")
+                out[key] = None
+    log("warm-up: " + ", ".join(f"{k.rsplit('/', 1)[-1]} {'failed' if v is None else f'{v:.1f} s'}" for k, v in out.items()))
+    return out
+
+
+_real_warm_cells = warm_cells                     # (tests reach the real one while the fixture stubs the name)
+
+
+def publish(store, cycle_dt, files, docs, latest, warm=None):
+    """The data objects, then the documents, then the pointer (last). Returns the new pointer. The cell files are
+    warmed (warm_cells, or `warm`) before the pointer names them. The overlay's manifest and its own pointer follow
+    (sync_frames)."""
     frame_files = {k: p for k, p in files.items() if k.startswith(FRAMES_PREFIX + "/")}
     for key, path in files.items():
         if key not in frame_files:
             put_file(store, key, path, cache_of(key))
+    (warm or warm_cells)([k for k in files if k not in frame_files and cache_of(k) == CELLS_CACHE])
     put_frames(store, frame_files.items())
     for key, doc in docs.items():
         store.put(key, json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)

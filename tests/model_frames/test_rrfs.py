@@ -102,6 +102,11 @@ def _one_step(monkeypatch):
     monkeypatch.setattr(J, "CYCLE_STEPS", [6])
     monkeypatch.setattr(J.time, "sleep", lambda s: None)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    WARMED.clear()                                                  # no network: the warm-up reads are recorded
+    monkeypatch.setattr(J, "warm_cells", lambda keys, get=None, log=None: WARMED.append(list(keys)) or {})
+
+
+WARMED = []
 
 
 def store():
@@ -589,3 +594,37 @@ def test_u16_boundaries():
     """65535 is the missing code: a value that would round to it is missing, never a real 655.35 (G66a P3)."""
     assert list(J._u16(np.array([655.34, 655.35, 700.0, -0.001, -0.01, np.nan]), 100)) == [65534, 65535, 65535, 0,
                                                                                         65535, 65535]
+
+
+# ------------------------------------------------------------------------------------------- the warm-up reads (2026-11-19)
+
+def test_warm_cells_reads_14_bytes_of_each_file_through_the_public_host():
+    import rrfs as JJ
+    real = JJ.__dict__.get("_real_warm_cells") or JJ.warm_cells
+    calls = []
+
+    def get(url, rng=None, tries=4):
+        calls.append((url, rng, tries))
+        if "ak.bin" in url:
+            raise JJ.TransportError("timed out")
+        return b"x" * 14
+
+    lines = []
+    out = real(["rrfs/v1/2026111900/conus.bin", "rrfs/v1/2026111900/ak.bin"], get=get, log=lines.append)
+    assert sorted(calls) == [(J.PUBLIC_ROOT + "/rrfs/v1/2026111900/ak.bin", (0, 13), 2),
+                             (J.PUBLIC_ROOT + "/rrfs/v1/2026111900/conus.bin", (0, 13), 2)]
+    assert out["rrfs/v1/2026111900/ak.bin"] is None and out["rrfs/v1/2026111900/conus.bin"] >= 0
+    assert any("warm-up rrfs/v1/2026111900/ak.bin: TransportError" in x for x in lines), "a failure only logs"
+    assert real([], get=get, log=lines.append) == {}
+    assert J.PUBLIC_ROOT == "https://models.allshoresurf.com"
+
+
+def test_publish_warms_the_cell_files_before_the_pointer(tmp_path, monkeypatch):
+    st = store()
+    monkeypatch.setattr(J, "build", _fake_build)
+    seen = []
+    monkeypatch.setattr(J, "warm_cells", lambda keys, get=None, log=None: seen.append((list(keys), [k for op, k in st.client.log if op == "put"])) or {})
+    assert J.main(["--cycle", "2026111713"], head=lambda u: True, store=st, now=NOW, coords=COORDS, log=lambda s: None) in (0, 1)
+    keys, puts_then = seen[0]
+    assert keys == ["rrfs/v1/2026111713/hi.bin"], "the cell files only (not stations.bin, not frames)"
+    assert "rrfs/v1/2026111713/hi.bin" in puts_then and "rrfs/v1/latest.json" not in puts_then

@@ -1813,7 +1813,9 @@ names, the frames.json of every kept source, and the manifests the two overlay p
 2 MB (the browser's cap) is dropped from its source and the workflow fails (the owner hears of it). Writes: 680 PNGs a
 run, 144 a cycle (~170k a month). Review: `docs/reviews/rrfs-frames-G67a-adversarial.md`. The direction (`wdir`) is
 published at half resolution (every second node of the region grid, `grid_half` in the manifest; the speed keeps the
-full grid): the browser decodes a quarter of the pixels for the particles (section 99 D2 perf gate).
+full grid): the browser decodes a quarter of the pixels for the particles (section 99 D2 perf gate). Before the pointer names a source, the job reads 14 bytes of each new cell file through the public host
+(`warm_cells`, `PUBLIC_ROOT`): the first read of a new multi-GB R2 object takes 2.5-9 s, past the site's 5-s read
+timeout (the first CONUS / Alaska tables after a new source were short), later reads 0.2-0.4 s anywhere in the file.
 
 **RRFS in the overlay (section 99 D2, asset 2.28.0).** With `rrfs` in `MODEL_OVERLAY_MODELS` (e.g.
 `gfswave,ecmwf,rrfs`), the model dropdown offers "RRFS (NOAA, 3 km)" under Wind speed only (a wave layer switches to the

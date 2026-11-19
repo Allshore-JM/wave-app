@@ -80,18 +80,11 @@
   // in the bar's lower half). Snow lavender to purple, mix pink: the owner's pick of 2026-11-08 from two candidates on real frames.
   RAMPS.radarSnow = [[0, '#f1ebff'], [0.1, '#dacdff'], [0.2, '#bea8ff'], [0.3, '#9f80f2'], [0.42, '#7f57d9'], [0.55, '#5f33b3'], [1, '#2c0f63']];
   RAMPS.radarMix = [[0, '#ffe3f0'], [0.1, '#ffc6e0'], [0.2, '#ff9fca'], [0.3, '#f774b0'], [0.42, '#e04b95'], [0.55, '#b82a76'], [1, '#6b0f42']];
-  // RRFS precipitation (plan section 102 A): rain, snow and mix in the radar's colours; ice and thunder their own (the owner
-  // picks between two candidates on real frames; PRECIP_ALT holds the others). RAMPS.precip: the field's main bar (rain).
-  RAMPS.precipIce = [[0, '#fff1d6'], [0.1, '#ffdca3'], [0.2, '#ffc266'], [0.3, '#f7a531'], [0.42, '#e5841a'], [0.55, '#c2610c'], [1, '#6b3000']];
-  RAMPS.precipThunder = [[0, '#b8860b'], [0.2, '#d49b00'], [0.35, '#f0b400'], [0.5, '#ffcf1f'], [0.65, '#ffe26b'], [0.8, '#fff2b3'], [1, '#ffffff']];
+  // RRFS precipitation (plan section 102 A): rain, snow and mix in the radar's colours, ice (freezing rain / ice pellets) teal
+  // (the owner's look, 2026-11-19). Thunder has no colour of its own (owner: it covered the rate, which matters more): a
+  // thunder hour is drawn as rain by its amount; the readout still says thunder. RAMPS.precip: the field's main bar (rain).
+  RAMPS.precipIce = [[0, '#d9fbf4'], [0.1, '#b4f2e6'], [0.2, '#80e3d2'], [0.3, '#4fcfbb'], [0.42, '#26b3a0'], [0.55, '#128c7d'], [1, '#064a42']];
   RAMPS.precip = RAMPS.radar;
-  var PRECIP_ALT = {
-    precipIce: [[0, '#d9fbf4'], [0.1, '#b4f2e6'], [0.2, '#80e3d2'], [0.3, '#4fcfbb'], [0.42, '#26b3a0'], [0.55, '#128c7d'], [1, '#064a42']],
-    precipThunder: [[0, '#4a0d0d'], [0.2, '#6e1414'], [0.35, '#8f1d1d'], [0.5, '#b02a2a'], [0.65, '#c94545'], [0.8, '#e07070'], [1, '#f5b5b5']]
-  };
-  // ?ovprecip=b shows the other candidates (the owner's pick on the test site); 'a' is the default
-  var PRECIP_LOOK = (function () { try { var q = /[?&]ovprecip=([ab])(?:&|$)/.exec(pageQuery()); return q ? q[1] : 'a'; } catch (e) { return 'a'; } })();
-  if (PRECIP_LOOK === 'b') { RAMPS.precipIce = PRECIP_ALT.precipIce; RAMPS.precipThunder = PRECIP_ALT.precipThunder; }
   var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.57, 1];   // alpha at the 5-dBZ floor and from 25 dBZ up (the layer's own opacity on top)
   // The radar's opacity (plan section 89): one CSS opacity on the layer, set by the panel's transparency slider; kept on the device.
   var RADAR_OPACITY_KEY = 'allshore.radarOpacity.v1', RADAR_OPACITY_MIN = 20, RADAR_OPACITY_MAX = 100, RADAR_OPACITY_DEFAULT = 75;
@@ -303,7 +296,7 @@
   // rain rate as on the Radar layer (1 mm/h = 23 dBZ, 10 mm/h = 39 dBZ).
   function precipDbz(mm) { return 10 * Math.log10(200 * Math.pow(mm, 1.6)); }
   function precipPos(mm) { var leg = RADAR_FDEF.legend; return Math.max(0, Math.min(1, (precipDbz(mm) - leg[0]) / (leg[1] - leg[0]))); }
-  var PRECIP_RAMPS = ['radar', 'radarSnow', 'radarMix', 'precipIce', 'precipThunder'];
+  var PRECIP_RAMPS = ['radar', 'radarSnow', 'radarMix', 'precipIce', 'radar'];   // thunder: as rain (owner, 2026-11-19)
   // RGBA per half code (a sampled value * 2, rounded): the dry tint at 1, each type's colours by its amount's legend position,
   // alpha rising from 0.1 mm/h to solid as the radar's does (RADAR_ALPHA on the dBZ equivalent).
   function precipLut() {
@@ -8422,7 +8415,7 @@
     return u === true || (typeof u === 'number' && u > Date.now());
   };
   Overlay.prototype._lut = function () {
-    if (this.field === 'precip') { if (this._lutFor !== 'precip|' + PRECIP_LOOK) { this._lutCache = precipLut(); this._lutFor = 'precip|' + PRECIP_LOOK; } return this._lutCache; }
+    if (this.field === 'precip') { if (this._lutFor !== 'precip') { this._lutCache = precipLut(); this._lutFor = 'precip'; } return this._lutCache; }
     var f = this.manifest && this.manifest.fields[this.field], legend = f ? f.legend : [0, 1], key = this.field + '|' + legend.join(',');
     if (this._lutFor !== key) { this._lutCache = buildLut(this.field, legend); this._lutFor = key; }
     return this._lutCache;
@@ -10294,12 +10287,11 @@
     var wrap = mk('div', 'ov-precip-legend');
     wrap.appendChild(leg);
     var types = mk('div', 'ov-radar-types');
-    [['radarSnow', 'Snow (as water)'], ['radarMix', 'Rain and snow'], ['precipIce', 'Freezing rain / ice pellets'], ['precipThunder', 'Rain with thunder']].forEach(function (t) {
+    [['radarSnow', 'Snow (as water)'], ['radarMix', 'Rain and snow'], ['precipIce', 'Freezing rain / ice pellets']].forEach(function (t) {
       var row = mk('div', 'ov-radar-type'); row.appendChild(precipBar(t[0])); row.appendChild(mk('span', null, t[1])); types.appendChild(row);
     });
     wrap.appendChild(types);
     wrap.appendChild(mk('div', 'ov-meta', 'Amount in the hour ending at the slider time; a model forecast, not radar.'));
-    wrap.appendChild(mk('div', 'ov-meta', 'Thunder only on hours from RRFS’s 84-h runs; the hourly updates (about the first 16 hours) carry no lightning.'));
     return wrap;
   }
   // The observation's panel (plan section 44; owner, 2026-10-16: one date line in place of the run lines; no model
@@ -10513,7 +10505,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_ALT: PRECIP_ALT, PRECIP_LOOK: PRECIP_LOOK,
+    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS,
       regionLon: regionLon, inRegionBox: inRegionBox,  coverNear: coverNear, REGION_NEAR_SCREENS: REGION_NEAR_SCREENS, coverHas: coverHas, coverRects: coverRects, halfOf: halfOf, regionFlowField: regionFlowField, regionRects: regionRects, regionsNear: regionsNear, regionFrameKey: regionFrameKey, modelOffers: modelOffers, REGION_ORDER: REGION_ORDER, REGIONAL_SCHEMA: REGIONAL_SCHEMA,
       coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,

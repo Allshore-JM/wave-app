@@ -66,6 +66,7 @@ def _fake_fields(monkeypatch):
 def bucket(monkeypatch, tmp_path):
     """Publishes the 12Z run (steps 0..30) and the hourly cycles 13Z and 14Z (steps 1..18) of 2026-11-17, Hawaii only."""
     _fake_fields(monkeypatch)
+    monkeypatch.setattr(J, "warm_cells", lambda keys, **kw: {})   # publish() warms through the real host: no network
     monkeypatch.setattr(J, "RUN_STEPS", list(range(0, 31)))
     store = P.Store(FakeClient(), "b")
     latest = {}
@@ -326,3 +327,161 @@ def test_held_cells_need_no_thread_pool(bucket, monkeypatch):
 
     monkeypatch.setattr(W, "ThreadPoolExecutor", boom)
     assert r.point(*HONOLULU)                                                # G66 P3-5
+
+
+# ---------------------------------------------------------------------------------- the second request (HEDGE_AFTER_S)
+
+def _ranges(script):
+    """A get_range whose n-th call (0-based) does script[n](url, a, b); calls are counted in .calls."""
+    import threading
+    lock, calls = threading.Lock(), []
+
+    def get_range(url, a, b):
+        with lock:
+            n = len(calls)
+            calls.append(n)
+        return script[min(n, len(script) - 1)](url, a, b)
+
+    get_range.calls = calls
+    return get_range
+
+
+def _hedger(get_range, after=0.3):
+    r = W.RrfsWinds(lambda: "https://m", None, get_range)
+    r.hedge_after = after
+    return r
+
+
+def test_a_slow_cell_read_is_asked_again_and_the_first_good_answer_wins():
+    import threading
+    release = threading.Event()
+
+    def stuck(url, a, b):
+        release.wait(5)
+        return b"late"
+
+    g = _ranges([stuck, lambda url, a, b: b"fast"])
+    r = _hedger(g)
+    assert r._hedged(r._range, "https://m/x.bin", 0, 3) == b"fast"
+    assert len(g.calls) == 2 and r.stats["reads_hedged"] == 1 and r.stats["hedge_won"] == 1
+    release.set()
+
+
+def test_a_quick_answer_or_a_quick_failure_is_not_asked_again():
+    g = _ranges([lambda url, a, b: b"once"])
+    r = _hedger(g, after=2)
+    assert r._hedged(r._range, "https://m/x.bin", 0, 3) == b"once" and len(g.calls) == 1
+
+    def refused(url, a, b):
+        raise IOError("HTTP 404")
+
+    g = _ranges([refused, lambda url, a, b: b"never"])
+    r = _hedger(g, after=2)
+    with pytest.raises(IOError, match="404"):
+        r._hedged(r._range, "https://m/x.bin", 0, 3)
+    assert len(g.calls) == 1 and r.stats["reads_hedged"] == 0
+
+
+def test_the_slow_first_answer_still_counts_when_the_second_fails():
+    import time
+
+    def slow_ok(url, a, b):
+        time.sleep(0.8)
+        return b"slow"
+
+    def bad(url, a, b):
+        raise IOError("reset")
+
+    g = _ranges([slow_ok, bad])
+    r = _hedger(g)
+    assert r._hedged(r._range, "https://m/x.bin", 0, 3) == b"slow"
+    assert r.stats["reads_hedged"] == 1 and r.stats["hedge_won"] == 0
+
+
+def test_both_copies_failing_raises_the_last_error():
+    import time
+
+    def slow_bad(url, a, b):
+        time.sleep(0.8)
+        raise IOError("first timed out")
+
+    def bad(url, a, b):
+        raise IOError("second reset")
+
+    r = _hedger(_ranges([slow_bad, bad]))
+    with pytest.raises(IOError, match="first timed out"):
+        r._hedged(r._range, "https://m/x.bin", 0, 3)
+
+
+def test_a_point_whose_first_reads_hang_is_whole_and_not_degraded(bucket):
+    """The 2026-11-19 case: every source's first ranged read stuck past the site's timeout -> the table lost them all.
+    Now the second request answers and nothing is left out."""
+    import threading
+    seen, lock, release = set(), threading.Lock(), threading.Event()
+
+    def get_range(url, a, b):
+        with lock:
+            first = url not in seen
+            seen.add(url)
+        if first:
+            release.wait(5)
+            raise IOError("Read timed out.")
+        return bucket[url.split("models.example/", 1)[1]][a:b + 1]
+
+    r = W.RrfsWinds(lambda: "https://models.example", lambda url, cap: bucket[url.split("models.example/", 1)[1]],
+                    get_range, wall=lambda: WALL)
+    r.hedge_after = 0.3
+    p = r.point(*HONOLULU)
+    whole = reader(bucket).point(*HONOLULU)
+    assert p == whole and not p.degraded and r.stats["reads_fail"] == 0
+    assert r.stats["hedge_won"] == r.stats["reads_hedged"] == len(seen) > 1
+    release.set()
+
+
+def test_time_queued_for_a_thread_does_not_count(monkeypatch):
+    """Every pool thread busy for longer than hedge_after: the read waits its turn without a second copy (it would only
+    queue behind it), and once running it answers at once, so it is never asked again (G67c review P2). Cancelling a
+    still-queued loser is best effort (a freed thread may take it first), so it is not pinned here."""
+    import threading
+    import time
+    monkeypatch.setattr(W, "HEDGE_WORKERS", 1)
+    gate, calls = threading.Event(), []
+
+    def get_range(url, a, b):
+        calls.append(url)
+        if url.endswith("/a.bin"):
+            gate.wait(5)
+        return b"ok"
+
+    r = W.RrfsWinds(lambda: "https://m", None, get_range)
+    r.hedge_after = 0.3
+    blocker = threading.Thread(target=lambda: r._hedged(r._range, "https://m/a.bin", 0, 1))
+    blocker.start()
+    while not calls:
+        time.sleep(0.01)
+    threading.Timer(0.9, gate.set).start()          # the only thread is busy for 0.9 s (3 x hedge_after)
+    assert r._hedged(r._range, "https://m/b.bin", 0, 1) == b"ok"
+    blocker.join(5)
+    assert calls.count("https://m/b.bin") == 1
+
+
+def test_a_slow_index_read_is_asked_again_too(bucket):
+    import threading
+    seen, lock, release = set(), threading.Lock(), threading.Event()
+
+    def get_bytes(url, cap):
+        with lock:
+            first = url.endswith("/hi.json") and url not in seen
+            seen.add(url)
+        if first:
+            release.wait(5)
+            raise IOError("Read timed out.")
+        return bucket[url.split("models.example/", 1)[1]]
+
+    r = W.RrfsWinds(lambda: "https://models.example", get_bytes,
+                    lambda url, a, b: bucket[url.split("models.example/", 1)[1]][a:b + 1], wall=lambda: WALL)
+    r.hedge_after = 0.3
+    p = r.point(*HONOLULU)
+    assert p == reader(bucket).point(*HONOLULU) and not p.degraded
+    assert r.stats["hedge_won"] == r.stats["reads_hedged"] == len([u for u in seen if u.endswith("/hi.json")]) == 3
+    release.set()

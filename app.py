@@ -929,9 +929,17 @@ POINTS = point_forecast.PointSource(_points_root, _points_fetch)
 
 # NOAA RRFS wind in the forecast tables (plan section 99): the RRFS job's objects in the same public bucket as the
 # points. RRFS_WIND=1 turns it on; unset = every table byte for byte as before. One ranged GET per point and source.
+# Its own session: a slow cell read is asked a second time (rrfs_wind.HEDGE_AFTER_S), up to rrfs_wind.HEDGE_WORKERS at
+# once, so the pool holds that many connections; a keep-alive connection the bucket dropped is asked once more (no retry
+# adapter otherwise: one attempt, as the points).
+_RRFS_HTTP = requests.Session()
+_RRFS_HTTP.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=rrfs_wind.HEDGE_WORKERS + 8))
 RRFS = rrfs_wind.RrfsWinds(
-    _points_root, lambda url, cap: _points_fetch(url, cap),
-    lambda url, a, b: _capped_get(url, b - a + 1, None, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S, byte_range=(a, b)))
+    _points_root,
+    lambda url, cap: _capped_get(url, cap, None, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S, session=_RRFS_HTTP,
+                                 retry_dropped=True),
+    lambda url, a, b: _capped_get(url, b - a + 1, None, _POINT_FETCH_TIMEOUT, _POINT_FETCH_MAX_S, session=_RRFS_HTTP,
+                                  byte_range=(a, b), retry_dropped=True))
 
 
 def _rrfs_wind_on() -> bool:

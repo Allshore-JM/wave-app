@@ -1816,6 +1816,11 @@ published at half resolution (every second node of the region grid, `grid_half` 
 full grid): the browser decodes a quarter of the pixels for the particles (section 99 D2 perf gate). Before the pointer names a source, the job reads 14 bytes of each new cell file through the public host
 (`warm_cells`, `PUBLIC_ROOT`): the first read of a new multi-GB R2 object takes 2.5-9 s, past the site's 5-s read
 timeout (the first CONUS / Alaska tables after a new source were short), later reads 0.2-0.4 s anywhere in the file.
+That alone did not cure it (2026-11-19: Alaska still 17 of 81 rows): R2 ranged reads also stall at random, about 1 in
+25 for 1.6-40 s, in patches of minutes (most often just after a publish). The site (`rrfs_wind.HEDGE_AFTER_S`) asks a
+cell or cells-index read a second time when it has not answered 1.5 s after starting and takes the first good answer
+(300 live reads: p99 6 s, max 6.7 s, inside the 8-s limit). RRFS reads use their own session (`app._RRFS_HTTP`, room
+for both copies). `/healthz` `rrfs.reads_hedged` / `rrfs.hedge_won` count them.
 
 **RRFS in the overlay (section 99 D2, asset 2.28.0).** With `rrfs` in `MODEL_OVERLAY_MODELS` (e.g.
 `gfswave,ecmwf,rrfs`), the model dropdown offers "RRFS (NOAA, 3 km)" under Wind speed only (a wave layer switches to the

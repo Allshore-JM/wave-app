@@ -372,3 +372,14 @@ def test_expected_changed_cells_lie_under_the_boxes():
 def test_check_refuses_other_kinds(tmp_path):
     json.dump({"kind": "lakes"}, open(tmp_path / "index.json", "w"))
     assert V2.check(str(tmp_path), log=lambda m: None) != []
+
+
+def test_workflow_builds_coast_v2_with_pinned_shapely():
+    """coast-build.yml set coast-v2: v1 from the pinned GSHHG, then v2 from the pinned tiles; shapely pinned in both pip
+    lines (the output hash PIN_TIER1_SHA256 depends on its version, FORMAT_KEY records major.minor)."""
+    wf = open(os.path.join(ROOT, ".github", "workflows", "coast-build.yml"), encoding="utf-8").read()
+    assert "--v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out build/coast/v2" in wf
+    assert "coast-v2) CMD=(python tools/coast/build_coast_v2.py --out build/coast/v2 --upload static/coast/v2);;" in wf
+    pips = [line for line in wf.splitlines() if "pip install" in line]
+    assert len(pips) == 2 and all("shapely==2.2.0" in p and "pillow==" in p for p in pips)
+    assert "|shapely=2.2" in V2.FORMAT_KEY or not shapely.__version__.startswith("2.2")

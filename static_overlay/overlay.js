@@ -322,7 +322,7 @@
     return d;
   }
   // The legend's ticks (hourly amounts in the site's unit) and the readout's words.
-  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 0.5, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 10, 25] };   // the last one carries the unit
+  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 25] };   // the last one carries the unit (and is right-aligned: room left for it, measured on the 345-px panel)
   var PRECIP_WORDS = { rain: 'rain', snow: 'snow (water)', mix: 'rain and snow (water)', ice: 'freezing rain / ice pellets', thunder: 'rain, thunder' };
   function precipAmountText(mm, unit, per) {
     if (unit === 'Metric') return (mm < 10 ? mm.toFixed(1) : String(Math.round(mm))) + ' mm' + (per || '');
@@ -10291,7 +10291,6 @@
       var row = mk('div', 'ov-radar-type'); row.appendChild(precipBar(t[0])); row.appendChild(mk('span', null, t[1])); types.appendChild(row);
     });
     wrap.appendChild(types);
-    wrap.appendChild(mk('div', 'ov-meta', 'Amount in the hour ending at the slider time; a model forecast, not radar.'));
     return wrap;
   }
   // The observation's panel (plan section 44; owner, 2026-10-16: one date line in place of the run lines; no model

@@ -63,6 +63,14 @@ jobs:
           /usr/bin/time -v -o time.txt python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1 | tee build.log || rc=$?
           { echo '```'; cat build.log; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+      - name: Keep the coast-v2 build (the bytes an upload publishes, for the local checks; plan section 103)
+        if: ${{ !cancelled() && github.event.inputs.set == 'coast-v2' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6.0.0
+        with:
+          name: coast-v2-build
+          path: build/coast/v2
+          retention-days: 14
+          if-no-files-found: error
       - name: Upload to R2
         if: github.event.inputs.upload == 'true'
         shell: bash

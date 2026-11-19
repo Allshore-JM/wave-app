@@ -232,3 +232,16 @@ test('the engine: hours that arrive out of order wait their turn; the sums and `
   assert.ok(seen.some((at) => at === 1), 'later hours landed while the first was still out (nothing added ahead of it)');
   assert.equal(w.ov.totals.regions.a.at, 25); assert.equal(w.ov.totals.regions.b.at, 25);
 });
+
+test('the total legend ticks leave room for their labels on the 345-px panel (the last, right-aligned, carries the unit)', () => {
+  const W = 345, CH = 6.6, T = I.PTOT_TICKS || null;
+  assert.ok(T, 'PTOT_TICKS exported');
+  for (const unit of ['US', 'Metric']) {
+    const vals = T[unit], n = vals.length;
+    const box = vals.map((v, k) => {
+      const x = W * I.ptotPos(unit === 'US' ? v * 25.4 : v), txt = String(v) + (k === n - 1 ? (unit === 'US' ? ' in' : ' mm') : ''), w = CH * txt.length;
+      return k === n - 1 ? [x - 8 - w, x - 8] : [Math.max(0, x - w / 2), x + w / 2];
+    });
+    for (let k = 1; k < n; k++) assert.ok(box[k][0] - box[k - 1][1] >= 6, `${unit}: ${vals[k - 1]} / ${vals[k]} collide`);
+  }
+});

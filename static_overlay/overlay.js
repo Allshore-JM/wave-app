@@ -327,7 +327,7 @@
     return d;
   }
   // The legend's ticks (hourly amounts in the site's unit) and the readout's words.
-  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 0.5, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 10, 25] };   // the last one carries the unit
+  var PRECIP_TICKS = { US: [0.01, 0.05, 0.1, 0.25, 1], Metric: [0.1, 0.5, 1, 2.5, 5, 25] };   // the last one carries the unit (and is right-aligned: room left for it, measured on the 345-px panel)
   var PRECIP_WORDS = { rain: 'rain', snow: 'snow (water)', mix: 'rain and snow (water)', ice: 'freezing rain / ice pellets', thunder: 'rain, thunder' };
   function precipAmountText(mm, unit, per) {
     if (unit === 'Metric') return (mm < 10 ? mm.toFixed(1) : String(Math.round(mm))) + ' mm' + (per || '');
@@ -387,7 +387,7 @@
     }
     return out;
   }
-  var PTOT_TICKS = { US: [0.01, 0.1, 0.25, 0.5, 1, 2, 4, 10], Metric: [0.25, 2.5, 6, 12, 25, 50, 100, 250] };
+  var PTOT_TICKS = { US: [0.01, 0.1, 0.25, 1, 2, 10], Metric: [0.25, 2.5, 6, 12, 25, 50, 250] };
   function ptotReadout(v, unit) {
     var mm = ptotOf(v);
     if (mm === null) return null;
@@ -10457,7 +10457,6 @@
       var row = mk('div', 'ov-radar-type'); row.appendChild(precipBar(t[0])); row.appendChild(mk('span', null, t[1])); types.appendChild(row);
     });
     wrap.appendChild(types);
-    wrap.appendChild(mk('div', 'ov-meta', 'Amount in the hour ending at the slider time; a model forecast, not radar.'));
     return wrap;
   }
   // The total's legend (plan section 102 B1): the scale over 0.1-1000 mm on its log axis in the site's unit, and its notes.
@@ -10475,7 +10474,7 @@
     leg.appendChild(ticks);
     var wrap = mk('div', 'ov-precip-legend');
     wrap.appendChild(leg);
-    wrap.appendChild(mk('div', 'ov-meta', 'Total from ' + start + ' (the hour now in progress, all of it) to the slider time, added up from RRFS\u2019s hourly amounts; snow and ice as water.'));
+    wrap.appendChild(mk('div', 'ov-meta', 'Total from ' + start + ' to the slider time.'));
     return wrap;
   }
   // "the hour ending 4 PM": where the totals start (the k0 frame's hour), in the panel's zone
@@ -10703,7 +10702,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS, PTOT_TAB: PTOT_TAB, PRECIP_TAB: PRECIP_TAB, PRECIP_MILLI: PRECIP_MILLI, PTOT_EDGE: PTOT_EDGE, ptotMm: ptotMm, ptotCode: ptotCode, ptotOf: ptotOf, sumApply: sumApply, sumCodes: sumCodes, ptotPos: ptotPos, ptotLut: ptotLut, ptotReadout: ptotReadout, precipK0: precipK0, PrecipTotals: PrecipTotals, PTOT_CONC: PTOT_CONC, buildTotalLegend: buildTotalLegend,
+    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS, PTOT_TAB: PTOT_TAB, PRECIP_TAB: PRECIP_TAB, PRECIP_MILLI: PRECIP_MILLI, PTOT_EDGE: PTOT_EDGE, ptotMm: ptotMm, ptotCode: ptotCode, ptotOf: ptotOf, sumApply: sumApply, sumCodes: sumCodes, ptotPos: ptotPos, ptotLut: ptotLut, ptotReadout: ptotReadout, precipK0: precipK0, PrecipTotals: PrecipTotals, PTOT_CONC: PTOT_CONC, PTOT_TICKS: PTOT_TICKS, buildTotalLegend: buildTotalLegend,
       regionLon: regionLon, inRegionBox: inRegionBox,  coverNear: coverNear, REGION_NEAR_SCREENS: REGION_NEAR_SCREENS, coverHas: coverHas, coverRects: coverRects, halfOf: halfOf, regionFlowField: regionFlowField, regionRects: regionRects, regionsNear: regionsNear, regionFrameKey: regionFrameKey, modelOffers: modelOffers, REGION_ORDER: REGION_ORDER, REGIONAL_SCHEMA: REGIONAL_SCHEMA,
       coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,

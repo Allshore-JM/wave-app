@@ -292,3 +292,17 @@ test('gating: Precipitation is RRFS’s alone; GFS and ECMWF keep waves and wind
   assert.equal(I.FIXED_OPACITY ? I.FIXED_OPACITY.precip : 0.75, 0.75);
   assert.ok(I.RAMPS.precip, 'the field has a ramp (mount checks RAMPS[field])');
 });
+
+test('the legend ticks leave room for their labels on the 345-px panel (the last, right-aligned, carries the unit)', () => {
+  // Measured in Chrome 2026-11-19: about 6.6 px per character at the legend's font; the last label ends 8 px left of its
+  // tick. A gap under 6 px between two labels is a collision (0.5 / "1 in/h" overlapped on the test site).
+  const W = 345, CH = 6.6;
+  for (const unit of ['US', 'Metric']) {
+    const vals = I.PRECIP_TICKS[unit], n = vals.length;
+    const box = vals.map((v, k) => {
+      const x = W * I.precipLegPos(unit === 'US' ? v * 25.4 : v), txt = String(v) + (k === n - 1 ? (unit === 'US' ? ' in/h' : ' mm/h') : ''), w = CH * txt.length;
+      return k === n - 1 ? [x - 8 - w, x - 8] : [Math.max(0, x - w / 2), x + w / 2];
+    });
+    for (let k = 1; k < n; k++) assert.ok(box[k][0] - box[k - 1][1] >= 6, `${unit}: ${vals[k - 1]} / ${vals[k]} collide`);
+  }
+});

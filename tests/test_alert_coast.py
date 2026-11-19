@@ -615,3 +615,17 @@ def test_committed_v2_file_passes_its_check_and_differs_only_in_hawaii(committed
     other = {z for z in set(v2["zones"]) | set(committed["zones"]) if not z.startswith("HI")}
     assert all(v2["zones"].get(z) == committed["zones"].get(z) for z in other)
     assert any(v2["zones"][z]["lines"] != committed["zones"][z]["lines"] for z in v2["zones"] if z.startswith("HI"))
+
+
+def test_committed_v2_file_follows_the_pinned_coast():
+    """G70 P1-1: alert_coast_v2.json is built from the v2 build that is published (build_coast_v2.PIN_TIER1_SHA256),
+    never from a superseded one. Read from the source text: this test needs no shapely."""
+    path = os.path.join(ROOT, "alert_coast_v2.json")
+    if not os.path.exists(path):
+        pytest.skip("alert_coast_v2.json not built")
+    import re
+    src = open(os.path.join(ROOT, "tools", "coast", "build_coast_v2.py"), encoding="utf-8").read()
+    pin = re.search(r'^PIN_TIER1_SHA256 = "([0-9a-f]{64})"', src, re.M)
+    assert pin, "PIN_TIER1_SHA256 is not pinned"
+    with open(path, encoding="utf-8") as f:
+        assert json.load(f)["coast"]["v2"] == pin.group(1)

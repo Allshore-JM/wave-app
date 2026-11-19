@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import os
+import ssl
 import sys
 import time
 import urllib.error
@@ -120,11 +121,18 @@ def log(msg):
 
 # ---------------------------------------------------------------- inputs
 
+def _ssl_context():
+    """certifi's list, not the system's (plan section 57: a compromised chain stayed trusted in the runner's list)."""
+    import certifi
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def _get(url, timeout=60, tries=4):
+    ctx = _ssl_context()
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as r:
                 return r.read()
         except urllib.error.HTTPError as exc:
             if exc.code in (403, 404) or i == tries - 1:

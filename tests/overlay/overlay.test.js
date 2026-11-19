@@ -1091,7 +1091,7 @@ test('section 95 (G62 finding 7): the lake redraws mark the right tiles; a mask 
 test('section 95: the satellite and radar layers use the same sliced drawer and createTile', () => {
   assert.equal(I.SatLayer.prototype._drawStale, I.ModelGridLayer.prototype._drawStale);
   assert.equal(I.RadarLayer.prototype._drawStale, I.ModelGridLayer.prototype._drawStale);
-  assert.equal(I.RadarLayer.prototype.createTile, I.ModelGridLayer.prototype.createTile);
+  assert.equal(I.RadarLayer.prototype.createTile.name, 'slicedCreateTile');   // the wave layer wraps it (section 100 D2)
   assert.equal(I.SatLayer.prototype._queueStale, I.ModelGridLayer.prototype._queueStale);
 });
 
@@ -1398,4 +1398,319 @@ test('section 43: MODEL_DEFS (prefixes, cycles, stale lines, the 29-character cr
   assert.equal(I.runTimes(m, now, false, I.CYCLE_MS).next, Date.parse('2026-10-15T13:40:00Z'));
   assert.equal(I.runTimes(m, now, false, I.MODEL_DEFS.ecmwf.cycleMs).next, Date.parse('2026-10-15T19:40:00Z'), 'ECMWF: 12 h');
   assert.equal(I.runTimes(m, Date.parse('2026-10-15T19:41:00Z'), false, I.MODEL_DEFS.ecmwf.cycleMs).status, 'shortly');
+});
+
+test('section 100 D2: the wave layer tells its animator once the NEW tiles in view are drawn (their land masks exist only then), even with buffer tiles still behind; other layers never set the flag', () => {
+  let now = 0;
+  const grabEl = () => { const el = { width: 0, height: 0, getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} }) }; return el; };
+  const box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 11 } };     // tiles 10 and 11 of row 10 in view
+  const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; l._clock = () => now;
+  l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, I.buildRamp(I.RAMPS.hs), { step: 0, valid_utc: '2026-09-22T12:00:00Z' });
+  l._clip = true;                                                              // a clipped wave field (hs) reads the tile masks
+  let calls = 0; l.onRedraw = () => calls++;
+  const queued = []; l._queueStale = function () { queued.push(1); };
+  global.document = { createElement: grabEl };
+  try {
+    const els = [];
+    for (let x = 6; x <= 13; x++) { const el = l.createTile({ x, y: 10, z: 6 }, () => {}); els.push(el); clearTimeout(el._tDoneTimer); l._tiles[x + ':10:6'] = { el, coords: { x, y: 10, z: 6 } }; }
+    assert.ok(els.every((e) => e._ovNew === true), 'a queued new tile is marked'); assert.ok(queued.length > 0); assert.ok(!l._newTileNotify);
+    l._draw = function (el) { now += 5; el._ovGen = this._gen; };
+    l._drawMs = 5;
+    l._drawStale(false);                                                        // 12 ms: the two tiles in view, then the slice ends
+    assert.equal(calls, 1, 'told once the tiles in view are drawn, the buffer still behind');
+    for (let i = 0; i < 5; i++) l._drawStale(false);
+    assert.equal(calls, 1, 'the buffer tiles do not tell it again');
+    l._drawStale(true); assert.equal(calls, 1);
+    // a page move (inView) that finishes the tiles in view also tells it
+    const el = l.createTile({ x: 10, y: 10, z: 6 }, () => {}); clearTimeout(el._tDoneTimer); l._tiles['10:10:6'] = { el, coords: { x: 10, y: 10, z: 6 } };
+    l._drawStale(true); assert.equal(calls, 2);
+    // the coast notice and the new-tile notice in one pass: one call
+    const e2 = l.createTile({ x: 11, y: 10, z: 6 }, () => {}); clearTimeout(e2._tDoneTimer); l._tiles['11:10:6'] = { el: e2, coords: { x: 11, y: 10, z: 6 } };
+    l._staleNotify = true; for (const k in l._tiles) l._tiles[k].el._ovGen = -1;
+    l._draw = function (el) { el._ovGen = this._gen; };                       // all drawn in one slice
+    l._drawStale(false);
+    assert.equal(calls, 3, 'one call for both notices in one pass');
+    assert.equal(l._newTileNotify, false); assert.equal(l._staleNotify, false);
+    // the same shared drawer for the satellite and radar layers: their new tiles never set it
+    const o = Object.assign(Object.create(I.ModelGridLayer.prototype), { _frame: l._frame, _staleOk: () => true, _queueStale() {} });
+    const t1 = I.RadarLayer.prototype.createTile.call(o, { x: 1, y: 1, z: 6 }, () => {}); clearTimeout(t1._tDoneTimer);
+    const t2 = I.SatLayer.prototype.createTile.call(o, { x: 2, y: 1, z: 6 }, () => {}); clearTimeout(t2._tDoneTimer);
+    assert.equal(t1._ovNew, undefined); assert.equal(t2._ovNew, undefined);
+    // wind (not clipped) reads no masks: no mark, no notice
+    l._clip = false; const w = l.createTile({ x: 3, y: 10, z: 6 }, () => {}); clearTimeout(w._tDoneTimer); assert.equal(w._ovNew, undefined); l._clip = true;
+    // review P3-3: a notice used up while another view's tiles are drawn leaves no marked tile behind
+    const m = l.createTile({ x: 13, y: 10, z: 6 }, () => {}); clearTimeout(m._tDoneTimer); l._tiles['13:10:6'] = { el: m, coords: { x: 13, y: 10, z: 6 } };
+    const v1 = l.createTile({ x: 10, y: 10, z: 6 }, () => {}); clearTimeout(v1._tDoneTimer); l._tiles['10:10:6'] = { el: v1, coords: { x: 10, y: 10, z: 6 } };
+    const c0 = calls; l._drawStale(true); assert.equal(calls, c0 + 1, 'the tile in view drawn: told'); assert.equal(m._ovNew, true, 'the buffer tile still marked');
+    box.min.x = 256 * 12; box.max.x = 256 * 14;                                 // the view moves over it
+    l._drawStale(true); assert.equal(calls, c0 + 2, 'drawn later: told again');
+    m._ovGen = -1; l._drawStale(true); assert.equal(calls, c0 + 2, 'redrawn (a new frame): asks no more');
+  } finally { delete global.document; }
+});
+
+// ---- plan section 101: the tiles in view are drawn on the next frames, not in idle time ----
+function layer101(now) {
+  const box = { min: { x: 256 * 10, y: 256 * 10 }, max: { x: 256 * 12, y: 256 * 11 } };     // tiles 10 and 11 of row 10 in view
+  const map = { getZoom: () => 6, getZoomScale: (a, b) => Math.pow(2, a - b), getPixelBounds: () => box };
+  const l = new I.ModelGridLayer({ opacity: 1 }); l._map = map; l._tileZoom = 6; if (now) l._clock = now;
+  l.setFrame(frame(1440, 721, PATTERN), GRID, 'hs', HS, I.buildRamp(I.RAMPS.hs), { step: 0, valid_utc: '2026-09-22T12:00:00Z' });
+  return { l, box, map };
+}
+const el101 = () => ({ width: 0, height: 0, getContext: () => ({ clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData() {} }) });
+
+test('section 101 E1: tileSeen: a tile Leaflet creates (WRAPPED x) is in the view on any world copy; another row or zoom is not; no map: everything', () => {
+  const r = { z: 6, x0: 10, x1: 11, y0: 10, y1: 10 };
+  assert.equal(I.tileSeen({ x: 10, y: 10, z: 6 }, r), true); assert.equal(I.tileSeen({ x: 11, y: 10, z: 6 }, r), true);
+  assert.equal(I.tileSeen({ x: 9, y: 10, z: 6 }, r), false); assert.equal(I.tileSeen({ x: 12, y: 10, z: 6 }, r), false);
+  assert.equal(I.tileSeen({ x: 10, y: 9, z: 6 }, r), false); assert.equal(I.tileSeen({ x: 10, y: 11, z: 6 }, r), false);
+  assert.equal(I.tileSeen({ x: 10, y: 10, z: 5 }, r), false);
+  // the view one world east and one world west of the tile's own numbers (64 columns at zoom 6), and across the seam
+  assert.equal(I.tileSeen({ x: 10, y: 10, z: 6 }, { z: 6, x0: 74, x1: 75, y0: 10, y1: 10 }), true);
+  assert.equal(I.tileSeen({ x: 11, y: 10, z: 6 }, { z: 6, x0: -54, x1: -53, y0: 10, y1: 10 }), true);
+  assert.equal(I.tileSeen({ x: 12, y: 10, z: 6 }, { z: 6, x0: 74, x1: 75, y0: 10, y1: 10 }), false);
+  assert.equal(I.tileSeen({ x: 63, y: 10, z: 6 }, { z: 6, x0: -1, x1: 1, y0: 10, y1: 10 }), true);
+  assert.equal(I.tileSeen({ x: 1, y: 10, z: 6 }, { z: 6, x0: -1, x1: 1, y0: 10, y1: 10 }), true);
+  assert.equal(I.tileSeen({ x: 2, y: 10, z: 6 }, { z: 6, x0: -1, x1: 1, y0: 10, y1: 10 }), false);
+  assert.equal(I.tileSeen({ x: 3, y: 3, z: 3 }, null), true);
+});
+
+test('section 101 E1: a new tile in the view asks for the next frame, a new tile outside it for idle time (wave, satellite and radar layers alike)', () => {
+  const { l, box } = layer101();
+  const asked = []; l._queueStale = function (soon) { asked.push(soon); };
+  global.document = { createElement: el101 };
+  try {
+    const mk = (L2, c) => { const e = L2.prototype.createTile.call(l, c, () => {}); clearTimeout(e._tDoneTimer); return e; };
+    mk(I.ModelGridLayer, { x: 10, y: 10, z: 6 }); mk(I.ModelGridLayer, { x: 11, y: 10, z: 6 });
+    assert.deepEqual(asked, [true, true], 'in view: soon');
+    asked.length = 0; mk(I.ModelGridLayer, { x: 6, y: 10, z: 6 }); mk(I.ModelGridLayer, { x: 10, y: 12, z: 6 });
+    assert.deepEqual(asked, [false, false], 'outside the view: idle time');
+    asked.length = 0; mk(I.RadarLayer, { x: 10, y: 10, z: 6 }); mk(I.SatLayer, { x: 11, y: 10, z: 6 }); mk(I.RadarLayer, { x: 3, y: 10, z: 6 });
+    assert.deepEqual(asked, [true, true, false], 'the shared createTile');
+    box.min.x += 256 * 64; box.max.x += 256 * 64;                              // the view on the next world copy: Leaflet still hands x = 10
+    asked.length = 0; mk(I.ModelGridLayer, { x: 10, y: 10, z: 6 });
+    assert.deepEqual(asked, [true]);
+    l._map = null; asked.length = 0; mk(I.ModelGridLayer, { x: 40, y: 40, z: 6 });
+    assert.deepEqual(asked, [true], 'no map to ask: as in view');
+  } finally { delete global.document; }
+});
+
+test('section 101 E1: a slice asked for the next frame replaces one waiting for idle time; never the other way round; one queued slice at a time', () => {
+  const frames = [], idles = [], cancelled = []; let id = 0;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); return ++id; };
+  global.cancelAnimationFrame = () => {};
+  global.requestIdleCallback = (fn, o) => { idles.push([fn, o]); return ++id; };
+  global.cancelIdleCallback = (i) => { cancelled.push(i); };
+  try {
+    const l = new I.ModelGridLayer({ opacity: 1 }); l._drawStale = function () {};
+    l._queueStale();
+    assert.equal(idles.length, 1); assert.equal(idles[0][1].timeout, I.STALE_MAX_MS); assert.equal(frames.length, 0);
+    const idleId = l._staleQ.idle;
+    l._queueStale(); assert.equal(idles.length, 1, 'idle on idle: nothing new');
+    l._queueStale(true);
+    assert.deepEqual(cancelled, [idleId], 'the idle wait is cancelled'); assert.equal(frames.length, 1, 'and the next frame asked for');
+    assert.equal(l._staleQ.idle, undefined);
+    l._queueStale(); assert.equal(idles.length, 1, 'an idle request never replaces a frame request');
+    l._queueStale(true); assert.equal(frames.length, 1, 'one queued slice at a time');
+    l._cancelStale();
+  } finally { delete global.requestAnimationFrame; delete global.cancelAnimationFrame; delete global.requestIdleCallback; delete global.cancelIdleCallback; }
+});
+
+test('section 101 E1: an idle slice that leaves tiles IN VIEW comes back on the next frame; one that leaves only buffer tiles stays in idle time', () => {
+  let now = 0;
+  const { l } = layer101(() => now);
+  const asked = []; l._queueStale = function (soon) { asked.push(soon); };
+  l._draw = function (el) { now += 5; el._ovGen = this._gen; }; l._drawMs = 5;
+  const put = (x) => { l._tiles[x + ':10:6'] = { el: { _ovGen: -1 }, coords: { x, y: 10, z: 6 } }; };
+  const idle = (ms) => { const t0 = now; return { didTimeout: false, timeRemaining: () => ms - (now - t0) }; };
+  put(10); put(11); put(6); put(7);
+  l._drawStale(false, idle(6));                                                  // room for one tile: one in view drawn, one left
+  assert.equal(l._tiles['10:10:6'].el._ovGen, l._gen); assert.equal(l._tiles['11:10:6'].el._ovGen, -1);
+  assert.deepEqual(asked, [true], 'a tile in view waits: the next frame');
+  asked.length = 0; l._drawStale(false, idle(11));                               // the view tile and one buffer tile; one buffer tile left
+  assert.equal(l._tiles['11:10:6'].el._ovGen, l._gen);
+  assert.deepEqual(asked, [false], 'only buffer tiles wait: idle time');
+  asked.length = 0; l._drawStale(false, idle(50)); assert.deepEqual(asked, [], 'all drawn: nothing queued');
+  // a frame-paced slice (no deadline) that leaves anything comes back on the next frame, as before
+  put(10); put(11); put(12); put(13); l._tiles['12:10:6'].coords.x = 6; l._tiles['13:10:6'].coords.x = 7;
+  for (const k of ['10:10:6', '11:10:6', '12:10:6', '13:10:6']) l._tiles[k].el._ovGen = -1;
+  asked.length = 0; l._drawStale(false);
+  assert.deepEqual(asked, [true]);
+  l._cancelStale();
+});
+
+test('section 101 E1: a panned view (20 new tiles, 4 ms each) is drawn over successive frames with NO idle time, every slice 12 ms at most, the view before the buffer', async () => {
+  let now = 0; const frames = [], idles = []; let id = 0;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); return ++id; };
+  global.cancelAnimationFrame = () => {};
+  global.requestIdleCallback = (fn) => { idles.push(fn); return ++id; };       // idle time never comes (the page is busy)
+  global.cancelIdleCallback = () => {};
+  global.document = { createElement: el101 };
+  try {
+    const { l, box } = layer101(() => now);
+    box.min.x = 256 * 10; box.max.x = 256 * 15; box.min.y = 256 * 10; box.max.y = 256 * 14;      // 5 x 4 tiles in view
+    const order = [], slices = [];
+    l._draw = function (el, c) { now += 4; order.push(c.x + ':' + c.y); el._ovGen = this._gen; }; l._drawMs = 4;
+    const ds = l._drawStale; l._drawStale = function () { const a = now; const r = ds.apply(this, arguments); slices.push(now - a); return r; };
+    const add = (x, y) => { const el = l.createTile({ x, y, z: 6 }, () => {}); clearTimeout(el._tDoneTimer); l._tiles[x + ':' + y + ':6'] = { el, coords: { x, y, z: 6 } }; };
+    add(8, 10); add(9, 12);                                                      // two tiles outside the view first: idle time asked
+    assert.equal(idles.length, 1); assert.equal(frames.length, 0);
+    for (let y = 10; y < 14; y++) for (let x = 10; x < 15; x++) add(x, y);
+    assert.equal(frames.length, 1, 'the first tile in view moved the wait to the next frame'); assert.equal(order.length, 0, 'nothing drawn inside createTile');
+    let n = 0;
+    while (order.length < 22 && n++ < 40) { const f = frames.shift(); assert.ok(f, 'a frame is asked for while tiles wait'); f(); await new Promise((r) => setTimeout(r, 2)); }
+    assert.equal(order.length, 22, 'every tile drawn');
+    assert.ok(slices.length >= 7 && slices.length <= 9, '3 tiles a slice: ' + slices.length + ' slices');
+    assert.ok(slices.every((s) => s <= I.SLICE_MS), 'no slice over 12 ms: ' + slices.join(','));
+    const buf = order.findIndex((k) => k === '8:10' || k === '9:12');
+    assert.ok(buf >= 20, 'the 20 tiles in view before any buffer tile');
+    assert.equal(idles.length, 1, 'no further idle request was needed'); assert.equal(frames.length, 0, 'and nothing is left queued');
+    l._cancelStale();
+  } finally { for (const k of ['requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback', 'document']) delete global[k]; }
+});
+
+test('section 101 E2: the wave layer makes its tiles during a drag on a desktop (Leaflet\'s default), at the end of the gesture on touch devices; the satellite and radar layers as before', () => {
+  const nav = Object.getOwnPropertyDescriptor(global, 'navigator'), setNav = (v) => Object.defineProperty(global, 'navigator', { value: v, configurable: true, writable: true });
+  const B = global.L.Browser, mm = global.matchMedia;
+  try {
+    delete global.L.Browser; assert.equal(I.tilesWhenIdle(), true, 'Leaflet says nothing: at the end');
+    setNav({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142', maxTouchPoints: 0 });
+    global.L.Browser = { mobile: false }; assert.equal(I.tilesWhenIdle(), false, 'a desktop: during the drag');
+    assert.equal(new I.ModelGridLayer({ opacity: 1 }).options.updateWhenIdle, false);
+    assert.equal(new I.ModelGridLayer({ opacity: 1 }).options.updateWhenZooming, false, 'never during a zoom');
+    global.L.Browser = { mobile: true }; assert.equal(I.tilesWhenIdle(), true, 'a phone');
+    assert.equal(new I.ModelGridLayer({ opacity: 1 }).options.updateWhenIdle, true);
+    global.L.Browser = { mobile: false };
+    setNav({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15', maxTouchPoints: 5 });
+    assert.equal(I.tilesWhenIdle(), true, 'an iPad asking for desktop pages');
+    setNav({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15', maxTouchPoints: 0 });
+    assert.equal(I.tilesWhenIdle(), false, 'a Mac');
+    global.matchMedia = (q) => ({ matches: q === '(pointer: coarse)' }); assert.equal(I.tilesWhenIdle(), true, 'a coarse first pointer (a touch laptop in tablet mode)');
+    global.matchMedia = () => ({ matches: false }); assert.equal(I.tilesWhenIdle(), false);
+    global.matchMedia = () => { throw new Error('no'); }; assert.equal(I.tilesWhenIdle(), true, 'a failing probe: the careful answer');
+  } finally {
+    if (B) global.L.Browser = B; else delete global.L.Browser;
+    if (mm) global.matchMedia = mm; else delete global.matchMedia;
+    if (nav) Object.defineProperty(global, 'navigator', nav); else delete global.navigator;
+  }
+});
+
+// ---- plan section 101, review fixes ----
+test('section 101 review P2-1: the page\'s move call draws nothing while a slice waits for this frame (one slice a frame during a drag); with an idle wait or nothing queued it draws the tiles in view at once', async () => {
+  let now = 0; const frames = [], idles = []; let id = 0;
+  global.requestAnimationFrame = (fn) => { frames.push(fn); return ++id; };
+  global.cancelAnimationFrame = () => {};
+  global.requestIdleCallback = (fn) => { idles.push(fn); return ++id; };
+  global.cancelIdleCallback = () => {};
+  try {
+    const { l } = layer101(() => now);
+    const drawn = []; l._draw = function (el, c) { now += 4; drawn.push(c.x); el._ovGen = this._gen; }; l._drawMs = 4;
+    const put = (x) => { l._tiles[x + ':10:6'] = { el: { _ovGen: -1 }, coords: { x, y: 10, z: 6 } }; };
+    put(10); put(11);
+    l._queueStale(true);                                                         // a frame slice waits
+    l._drawStale(true); l._drawStale(true);
+    assert.deepEqual(drawn, [], 'the move call leaves the tiles to the queued slice');
+    frames.shift()(); await new Promise((r) => setTimeout(r, 3));
+    assert.deepEqual(drawn, [10, 11], 'which draws them');
+    put(10); l._tiles['10:10:6'].el._ovGen = -1;
+    l._drawStale(true); assert.deepEqual(drawn, [10, 11, 10], 'nothing queued: drawn in the move call');
+    l._tiles['11:10:6'].el._ovGen = -1; l._queueStale();                        // an idle wait
+    assert.equal(idles.length, 1);
+    l._drawStale(true); assert.deepEqual(drawn, [10, 11, 10, 11], 'an idle wait does not hold the move call');
+    l._cancelStale();
+  } finally { for (const k of ['requestAnimationFrame', 'cancelAnimationFrame', 'requestIdleCallback', 'cancelIdleCallback']) delete global[k]; }
+});
+
+test('section 101 review P2-2 / P3-2: each gesture decides: a finger, a pen or a pinch makes no tiles while it moves the map, a mouse does; the pointer is watched once per map', () => {
+  const heard = {}, opts = [];
+  const map = { getContainer: () => ({ addEventListener(ev, fn, o) { (heard[ev] = heard[ev] || []).push(fn); opts.push(o); } }) };
+  assert.equal(I.touchMoving(null), false); assert.equal(I.touchMoving(map), false, 'nothing pressed yet: as a mouse');
+  I.watchPointer(map); I.watchPointer(map);
+  assert.equal(heard.pointerdown.length, 1, 'once per map'); assert.equal(heard.touchstart.length, 1);
+  assert.ok(opts.every((o) => o && o.capture === true && o.passive === true), 'capturing, passive listeners');
+  heard.pointerdown[0]({ pointerType: 'touch' }); assert.equal(I.touchMoving(map), true);
+  heard.pointerdown[0]({ pointerType: 'mouse' }); assert.equal(I.touchMoving(map), false, 'the mouse again');
+  heard.pointerdown[0]({ pointerType: 'pen' }); assert.equal(I.touchMoving(map), true);
+  heard.pointerdown[0]({}); assert.equal(I.touchMoving(map), false, 'no pointer type: a mouse');
+  heard.touchstart[0](); assert.equal(I.touchMoving(map), true, 'touch events without pointer events');
+  heard.pointerdown[0]({ pointerType: 'mouse' }); map.touchZoom = { _zooming: true }; assert.equal(I.touchMoving(map), true, 'a pinch in progress');
+  map.touchZoom._zooming = false; assert.equal(I.touchMoving(map), false);
+  I.watchPointer({}); I.watchPointer(null);                                      // no container: nothing, no throw
+  // the layer's move handler: Leaflet's throttled update, skipped while a finger moves the map
+  const U = global.L.Util, thr = [];
+  try {
+    global.L.Util = { throttle: (fn, ms, ctx) => { thr.push([ms, ctx]); return function () { return fn.apply(ctx, arguments); }; } };
+    let ups = 0; const layer = { _map: map, options: { updateInterval: 200 }, _onMoveEnd() { ups++; } };
+    const mv = I.moveUpdater(layer);
+    assert.deepEqual(thr, [[200, layer]], 'throttled as Leaflet does, every updateInterval');
+    mv(); assert.equal(ups, 1, 'a mouse drag: tiles made');
+    heard.pointerdown[0]({ pointerType: 'touch' }); mv(); mv(); assert.equal(ups, 1, 'a finger: none until the gesture ends');
+    heard.pointerdown[0]({ pointerType: 'mouse' }); mv(); assert.equal(ups, 2);
+    delete global.L.Util; I.moveUpdater({ _map: map, options: {}, _onMoveEnd() { ups++; } })(); assert.equal(ups, 3, 'no Leaflet throttle (a stub): still gated');
+  } finally { if (U) global.L.Util = U; else delete global.L.Util; }
+});
+
+test('section 101 review P2-2: a desktop layer carries its own gated move handler and watches the pointer when added; a touch device\'s layer has neither', () => {
+  const nav = Object.getOwnPropertyDescriptor(global, 'navigator'), B = global.L.Browser, add = global.L.GridLayer.prototype.onAdd;
+  try {
+    Object.defineProperty(global, 'navigator', { value: { userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142', maxTouchPoints: 10 }, configurable: true, writable: true });
+    global.L.Browser = { mobile: false };
+    const d = new I.ModelGridLayer({ opacity: 1 });
+    assert.equal(d.options.updateWhenIdle, false, 'a touch laptop is a desktop to the option'); assert.equal(typeof d._onMove, 'function', 'and its move handler is the gated one');
+    let ups = 0; d._onMoveEnd = () => { ups++; }; d._map = { _ovPointer: 'touch' }; d._onMove(); assert.equal(ups, 0);
+    d._map._ovPointer = 'mouse'; d._onMove(); assert.equal(ups, 1);
+    const seen = []; let based = 0;
+    global.L.GridLayer.prototype.onAdd = function () { based++; return this; };
+    const m = { getContainer: () => ({ addEventListener(ev) { seen.push(ev); } }) };
+    d.onAdd(m); assert.deepEqual(seen.sort(), ['pointerdown', 'touchstart']); assert.equal(based, 1, 'then Leaflet\'s own onAdd');
+    global.L.Browser = { mobile: true };
+    const t = new I.ModelGridLayer({ opacity: 1 });
+    assert.equal(t.options.updateWhenIdle, true); assert.equal(Object.prototype.hasOwnProperty.call(t, '_onMove'), false, 'Leaflet binds no move handler at all');
+  } finally {
+    if (B) global.L.Browser = B; else delete global.L.Browser;
+    if (add) global.L.GridLayer.prototype.onAdd = add; else delete global.L.GridLayer.prototype.onAdd;
+    if (nav) Object.defineProperty(global, 'navigator', nav); else delete global.navigator;
+  }
+});
+
+test('section 101 review P3-1: while the map animates a zoom every new tile asks for the next frame (Leaflet makes them for the view the zoom ends on)', () => {
+  const { l, map } = layer101();
+  const asked = []; l._queueStale = function (soon) { asked.push(soon); };
+  global.document = { createElement: el101 };
+  try {
+    const mk = (c) => { const e = l.createTile(c, () => {}); clearTimeout(e._tDoneTimer); };
+    mk({ x: 6, y: 9, z: 6 }); assert.deepEqual(asked, [false], 'outside the view, no zoom: idle time');
+    map._animatingZoom = true; mk({ x: 6, y: 9, z: 6 }); mk({ x: 3, y: 4, z: 5 });
+    assert.deepEqual(asked, [false, true, true]);
+    map._animatingZoom = false; mk({ x: 6, y: 9, z: 6 }); assert.deepEqual(asked, [false, true, true, false]);
+  } finally { delete global.document; }
+});
+
+test('section 101 review P3-4: a tile taken off the map before its first draw drops its ready call and its 2-s timer (wave, satellite and radar layers)', async () => {
+  const { l } = layer101();
+  l._queueStale = function () {};
+  global.document = { createElement: el101 };
+  const proto = [I.ModelGridLayer, I.SatLayer, I.RadarLayer], had = proto.map((P) => P.prototype.on);
+  try {
+    let ready = 0; const el = l.createTile({ x: 10, y: 10, z: 6 }, () => { ready++; });
+    assert.equal(typeof el._tDone, 'function'); assert.ok(el._tDoneTimer);
+    I.tileGone(el);
+    assert.equal(el._tDone, null); assert.equal(el._tDoneTimer, null);
+    l._draw(el, { x: 10, y: 10, z: 6 });                                         // even a late draw reports nothing
+    await new Promise((r) => setTimeout(r, 5)); assert.equal(ready, 0);
+    I.tileGone(el); I.tileGone(null); I.tileGone({});                            // nothing to drop: no throw
+    // each layer listens for Leaflet's tileunload
+    for (const P of proto) {
+      const on = []; P.prototype.on = function (ev, fn) { on.push([ev, fn]); return this; };
+      const layer = P === I.ModelGridLayer ? new P({ opacity: 1 }) : new P();
+      assert.equal(on.filter((x) => x[0] === 'tileunload').length, 1);
+      const e2 = { _tDone() {}, _tDoneTimer: setTimeout(() => {}, 10) };
+      on.find((x) => x[0] === 'tileunload')[1]({ tile: e2 }); assert.equal(e2._tDone, null); assert.equal(e2._tDoneTimer, null);
+      on.find((x) => x[0] === 'tileunload')[1](undefined);
+      if (layer._cancelStale) layer._cancelStale();
+    }
+  } finally {
+    proto.forEach((P, i) => { if (had[i]) P.prototype.on = had[i]; else delete P.prototype.on; });
+    delete global.document;
+  }
 });

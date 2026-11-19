@@ -306,3 +306,11 @@ test('the legend ticks leave room for their labels on the 345-px panel (the last
     for (let k = 1; k < n; k++) assert.ok(box[k][0] - box[k - 1][1] >= 6, `${unit}: ${vals[k - 1]} / ${vals[k]} collide`);
   }
 });
+
+test('the run line names no forecast-table run under Precipitation (owner); Wind speed keeps it', () => {
+  const tail = I.Overlay.prototype._runTailText;
+  const me = (field) => ({ field, opts: { pageCycle: { run: '2026111912' } }, _def: () => ({ table: 'model' }) });
+  assert.equal(tail.call(me('precip'), { run: '2026111916' }), '');
+  assert.equal(tail.call(me('ptot'), { run: '2026111916' }), '');
+  assert.equal(tail.call(me('wind'), { run: '2026111916' }), ' — the forecast table is on GFS-Wave run 2026111912');
+});

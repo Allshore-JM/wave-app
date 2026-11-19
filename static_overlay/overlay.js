@@ -397,7 +397,7 @@
   // The first frame whose hour is still running or to come (its valid time, the hour's end, is after now): the totals
   // start there (the hour now in progress counts whole). frames.length when every frame is past.
   function precipK0(m, now) { for (var i = 0; i < m.frames.length; i++) if (Date.parse(m.frames[i].valid_utc) > now) return i; return m.frames.length; }
-  var PTOT_CONC = 12, PTOT_KEEP = 8;                          // hourly frames downloading at once (HTTP/2: one connection); totals kept (the ring around the slider)
+  var PTOT_CONC = 8, PTOT_KEEP = 8;                           // hourly frames downloading at once (HTTP/2: one connection); totals kept (the ring around the slider)
   // The running sums of one manifest and start (sig, k0): per region {grid, sum, bad, at: the last frame summed}. at(idx)
   // moves a region's sums to idx an hour at a time (forward: add; back: take away; or start again from k0 when that is
   // fewer frames), with PTOT_CONC downloads in flight across the regions; an abort keeps every hour already added.

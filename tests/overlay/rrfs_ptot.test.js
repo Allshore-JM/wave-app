@@ -168,7 +168,7 @@ test('the engine: forward, back, start again from k0: every bundle = codes of th
   const before = await w.ov.totals.at(w.m, 2, ['a', 'b'], k0, ctrl());
   assert.equal(before.before, true); assert.equal(before.parts.length, 0);
   assert.equal(w.ov.progress.filter((p) => p.endsWith('/40')).length, 41, 'a long move: 0/40, then hour by hour');
-  assert.ok(w.ov.progress.includes('40/40') && !w.ov.progress.some((p) => p.endsWith('/8')), 'a short move (8 <= PTOT_CONC): no progress line');
+  assert.ok(w.ov.progress.includes('40/40') && !w.ov.progress.some((p) => p.endsWith('/8')), 'a short move (8, not over PTOT_CONC): no progress line');
 });
 
 test('the engine: a new manifest or start hour starts again; an hour without a frame for a region blanks it', async () => {

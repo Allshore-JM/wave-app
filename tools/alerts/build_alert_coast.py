@@ -280,7 +280,9 @@ def decode_cell(buf):
     point_forecast.decode_coast's edges: (xi, yi, xj, yj) float64 degrees, edge = previous vertex j -> vertex i of each
     closed ring. Never point_forecast.decode_coast, which refuses q != 1e4 (the forecast points stay on v1)."""
     import numpy as np
-    sys.path.insert(0, os.path.join(ROOT, "tools", "coast"))
+    coast_dir = os.path.join(ROOT, "tools", "coast")
+    if coast_dir not in sys.path:                    # once (G70 P3-5)
+        sys.path.insert(0, coast_dir)
     import build_coast as BC
     d = BC.decode_file(bytes(buf))
     inv = 1.0 / d["q"]                                          # as the page and decode_coast: x * (1 / q)

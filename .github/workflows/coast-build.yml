@@ -64,7 +64,7 @@ jobs:
           { echo '```'; cat build.log; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: Keep the coast-v2 build (the bytes an upload publishes, for the local checks; plan section 103)
-        if: ${{ !cancelled() && github.event.inputs.set == 'coast-v2' }}
+        if: ${{ success() && github.event.inputs.set == 'coast-v2' }}   # only a build that passed --check (G70 P3-2)
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6.0.0
         with:
           name: coast-v2-build

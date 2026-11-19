@@ -7,6 +7,27 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+// The particles are scattered and respawned with Math.random, so four assertions below failed about one run in 86
+// (coast-build client-tests #714 / #719, 2026-11-19): 'moved up the screen', 'moved east', 'respawned instead of moving
+// onto the wall' and 'the share that left'.  Those four now hold for any seed (see each), and each test runs on a seeded
+// PRNG (mulberry32), reseeded before every test so a test sees the same numbers alone (--test-name-pattern) or in the
+// file; the real Math.random is restored after the file.  The production code is untouched.  FLOW_TEST_SEED=<n> runs the
+// file on another seed (to check that an assertion holds for most seeds, not only for this one).
+const realRandom = Math.random;
+const SEED = Number(process.env.FLOW_TEST_SEED || 20261119) >>> 0;
+function seedRandom(seed) {
+  let a = seed >>> 0;
+  Math.random = function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+test.beforeEach(() => seedRandom(SEED));
+test.after(() => { Math.random = realRandom; });
+
 function load() {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
   global.L = {
@@ -141,6 +162,16 @@ function animator(field, l, dframe, dgrid, zoom, size) {
   return { fa, ctx, canvas, events, map };
 }
 const strokes = (ctx) => ctx.ops.filter((o) => o === 'stroke').length;
+// A live particle the next frames can neither carry out of the view nor age out (its index * 4): particle 0 itself was
+// sometimes born within a pixel of the edge it moves to (or at the end of its life) and respawned, failing 'it moved'.
+const steady = (fa, margin) => {
+  const P = fa.particles;
+  for (let i = 0; i < fa.count; i++) {
+    const k = i * 4;
+    if (P[k + 2] >= 0 && P[k + 3] - P[k + 2] > 500 && P[k] > margin && P[k] < fa.v.w - margin && P[k + 1] > margin && P[k + 1] < fa.v.h - margin) return k;
+  }
+  return -1;
+};
 
 test('swell particles on wave height: seeded from the container size, four strokes a frame (head and tail, halo + core) over a cleared canvas, moving along the swell, longer-lived than wind', () => {
   const hs = frame(1440, 721, () => codeOf(3, HS)), pdir = frame(720, 361, () => code(180));   // from the south: up the screen
@@ -149,11 +180,12 @@ test('swell particles on wave height: seeded from the container size, four strok
   assert.equal(fa.mode, 'particles'); assert.ok(fa.vf && fa.nodes); assert.equal(fa.count, Math.round(800 * 600 / 900));
   assert.equal(canvas.width, 800); assert.equal(canvas.height, 600, 'the container size, not Leaflet stale getSize'); assert.equal(canvas.style.transform, 'translate3d(-3px,7px,0)');
   assert.equal(fa.scheduled, 1, 'one animation frame scheduled after the rebuild');
-  const y0 = fa.particles[1], x0 = fa.particles[0];
+  const s = steady(fa, 50); assert.ok(s >= 0);
+  const y0 = fa.particles[s + 1], x0 = fa.particles[s];
   fa.pending(100); fa.pending(150);
   assert.equal(strokes(ctx), 8, 'head + tail, halo + core, two frames'); assert.equal(ctx.ops.filter((o) => o === 'fillRect').length, 0, 'no compositing fade');
   assert.equal(ctx.ops.filter((o) => o === 'clearRect').length, 3, 'the canvas is cleared every frame (and once at the rebuild)');
-  assert.ok(fa.particles[1] < y0 && Math.abs(fa.particles[0] - x0) < 0.2, 'a particle moved up the screen (from the south)');
+  assert.ok(fa.particles[s + 1] < y0 && Math.abs(fa.particles[s] - x0) < 0.2, 'a particle moved up the screen (from the south)');
   assert.ok(fa.particles[3] >= I.PARTICLE_LIFE_MS.hs[0] && fa.particles[3] <= I.PARTICLE_LIFE_MS.hs[1], 'swell life 2-4.5 s');
   fa.stop(); assert.equal(fa.pending, null); assert.equal(fa.active, false);
   const flat = layer(frame(1440, 721, () => codeOf(0.05, HS)), GRID, 'hs', HS); flat._tileZoom = 6;
@@ -167,8 +199,9 @@ test('wind particles: adapt their count to the frame budget, keep the trails acr
   const l = layer(wind, HALF, 'wind', WIND); l._tileZoom = 6;
   const { fa, ctx, map } = animator('wind', l, wdir, HALF);
   assert.equal(fa.mode, 'particles'); assert.ok(fa.vf.s === 8 && fa.vf.cols === 101, 'a 22-px cell at zoom 6: an 8-px lattice');
-  const x0 = fa.particles[0];
-  fa.pending(100); fa.pending(150); assert.ok(fa.particles[0] > x0, 'moved east');
+  const s = steady(fa, 50); assert.ok(s >= 0);
+  const x0 = fa.particles[s];
+  fa.pending(100); fa.pending(150); assert.ok(fa.particles[s] > x0, 'moved east');
   fa.ema = 20; fa.adaptAt = 0; fa._adapt(20, 5000); assert.ok(fa.count < Math.round(800 * 600 / 900), 'over budget: fewer particles');
   fa.ema = 0.5; fa.adaptAt = 0; fa._adapt(0.5, 9000); assert.ok(fa.count > I.PARTICLE_MIN, 'room: back up');
   const clears = ctx.ops.filter((o) => o === 'clearRect').length, nodes0 = fa.nodes;
@@ -234,8 +267,11 @@ test('G11 P2-1 / P2-2: tails come from a per-particle history (cleared on respaw
   const before = fa.histN[0]; fa._respawn(0, fa.v); assert.equal(fa.histN[0], 0, 'a respawn clears the history'); assert.ok(before > 0);
   // a wall of no-flow cells east of x = 400: a particle at x = 396 (its right nodes without flow) respawns at once
   const vf = fa.vf; for (let j = 0; j < vf.rows; j++) for (let i = 0; i < vf.cols; i++) { const wall = i * vf.s >= 400; vf.u[j * vf.cols + i] = wall ? 0 : 30; vf.v[j * vf.cols + i] = 0; }
-  P[0] = 396; P[1] = 300; P[2] = 0; const gone = () => !(Math.abs(P[0] - 396) < 8 && Math.abs(P[1] - 300) < 8);
-  assert.equal(fa._flowing(396, 300), false); fa._renderParticles(16); assert.ok(gone(), 'respawned instead of moving onto the wall');
+  // a respawn starts a new life (age 0, or a negative dormant wait) somewhere else; a step would have aged it to 16 ms.
+  // (A spot test 'more than 8 px away' failed when the random new spot fell within 8 px, e.g. dormant at 399.8, 292.7.)
+  P[0] = 396; P[1] = 300; P[2] = 0;
+  assert.equal(fa._flowing(396, 300), false); fa._renderParticles(16);
+  assert.ok(P[2] <= 0 && !(P[0] === 396 && P[1] === 300), 'respawned instead of moving onto the wall: ' + P[0] + ',' + P[1] + ' age ' + P[2]);
   P[0] = 380; P[1] = 300; P[2] = 0; assert.equal(fa._flowing(380, 300), true); fa._renderParticles(16); assert.ok(Math.abs(P[0] - 380.5) < 0.2, 'a particle with flow on all four nodes moves');
 });
 
@@ -606,7 +642,9 @@ test('section 100 D3: a pan moves the particles and their tails with the map (no
     }
   }
   const strip = (800 * 600 - 700 * 540) / (800 * 600);
-  assert.ok(kept > 0 && Math.abs(left / n - strip) < 0.05, 'the share that left is the exposed share');
+  // left / n is a binomial share (n = 533 particles, p = 0.2125): sigma ~ 0.018, so 0.05 (2.8 sigma) failed ~1 run in 120;
+  // 0.075 is 4.2 sigma and still fails if none or all of the particles move out.
+  assert.ok(kept > 0 && Math.abs(left / n - strip) < 0.075, 'the share that left is the exposed share: ' + (left / n).toFixed(3) + ' ~ ' + strip.toFixed(3));
   assert.ok(woken > 0.85 * left, 'most woken at once: ' + woken + ' of ' + left);
   // a small pan (review P2): the 20-px strip gets the one density at once
   let inStrip = 0, ox = 10100;

@@ -25,7 +25,8 @@ GFS / ECMWF), under rrfs/v1/frames/ with their own pointer:
 
   frames/<CYCLE>/<region>/<field>/f<step:03d>.png   one region (hi, pr, conus, ak) on its own lat/lon grid (REGIONS),
                           8-bit grey in the GFS frames' encoding (encode.ENCODING): wind = speed over encode.FIELDS["wind"]
-                          lo / hi (the legend and colours match GFS), wdir = direction FROM (circular); each node the
+                          lo / hi (the legend and colours match GFS), wdir = direction FROM (circular), precip = the
+                          hour's precipitation as TYPED codes (PRECIP_CODES, plan section 102; none at a run's f000); each node the
                           nearest RRFS cell of the source's cell series (the tables' numbers); a node another grid serves
                           first (rrfs_grid.ORDER) or outside the grid is missing (0)
   frames/<CYCLE>/frames.json         the source's frame set: template, regions, sizes
@@ -128,12 +129,26 @@ REGIONS = {
     "ak": {"lat0": 75.46, "lon0": 150.15, "dlat": -0.07, "dlon": 0.07, "rows": 501, "cols": 1661},
 }
 MAX_REGION_NODES = 1 << 20
-FRAME_FIELDS = ("wind", "wdir")                  # a later RRFS layer (e.g. precipitation) is a new name here + frames
+BASE_FIELDS = ("wind", "wdir")                   # every source's frames have these: a source is used only when both match
+FRAME_FIELDS = BASE_FIELDS + ("precip",)          # precip (plan section 102 A): an optional extra, per field
 # The direction at HALF resolution (every second node of the region grid, as the GFS frames' wdir): the particles need no
 # finer, and the browser decodes a quarter of the pixels (plan section 99 D2 perf gate: the full-resolution direction
 # frames were half the heap churn at shark speed). The speed (the colours) keeps the region's full grid.
-FRAME_RES = {"wind": "full", "wdir": "half"}
-FRAME_DEFS = {n: dict(E.FIELDS[n], resolutions=(FRAME_RES[n],)) for n in FRAME_FIELDS}
+FRAME_RES = {"wind": "full", "wdir": "half", "precip": "full"}
+# The hour's precipitation, TYPED (plan section 102 A; the radar overlay's idea): one 8-bit code holds the type and the
+# amount. 0 = missing / not this region's data, 1 = dry (under 0.1 mm in the hour), then 50 codes per type, each a log
+# scale from 0.1 to 75+ mm (v(k) = 0.1 * 750 ** (k / 49): 14.5 % steps, a value within +-7 % of the hour's amount);
+# 252-255 are never written. The type is the cell's (precip_type: thunder > ice > mix > snow > rain); thunder comes
+# from lightning, which only the 84-h runs have. The browser checks this table exactly (overlay.js PRECIP_CODES).
+PRECIP_LO, PRECIP_HI, PRECIP_PER = 0.1, 75.0, 50
+PRECIP_DRY = 1
+PRECIP_TYPES = ("rain", "snow", "mix", "ice", "thunder")          # in TYPE_RAIN..TYPE_THUNDER order
+PRECIP_CODES = {name: [2 + PRECIP_PER * t, 1 + PRECIP_PER * (t + 1)] for t, name in enumerate(PRECIP_TYPES)}
+PRECIP_DEF = {"kind": "typed", "encoding": "rrfs-precip-v1", "unit": "mm", "lo": PRECIP_LO, "hi": PRECIP_HI,
+              "per_type": PRECIP_PER, "dry": PRECIP_DRY, "types": PRECIP_CODES,
+              "period": "the hour ending at the frame's time"}
+FRAME_DEFS = {n: dict(E.FIELDS[n], resolutions=(FRAME_RES[n],)) for n in BASE_FIELDS}
+FRAME_DEFS["precip"] = dict(PRECIP_DEF, resolutions=(FRAME_RES["precip"],))
 FRAME_MAX_BYTES = 2 * 1024 * 1024                # the browser decodes nothing bigger (overlay.js MAX_FRAME_BYTES)
 FRAME_WORKERS = 4                                # PNG encoders beside the decoding (Pillow / zlib release the GIL)
 UPLOAD_WORKERS = 8
@@ -142,8 +157,8 @@ FRAMES_STALE_H = {"cycle": 8, "run": 18}         # the site's cut-off (rrfs_wind
 FRAMES_MODEL = {
     "name": "NOAA RRFS (Rapid Refresh Forecast System)", "short": "RRFS",
     "grid": "Hawaii / Puerto Rico 2.5 km, CONUS 3 km, Alaska 3 km; the nearest RRFS cell on each region's lat/lon grid",
-    "attribution": "Wind: NOAA RRFS (10-m wind), via NOAA's AWS Open Data; rendered by Allshore Surf. Not an official NWS "
-                   "product.",
+    "attribution": "NOAA RRFS (10-m wind, hourly precipitation), via NOAA's AWS Open Data; rendered by Allshore Surf. Not "
+                   "an official NWS product.",
 }
 
 
@@ -588,11 +603,44 @@ def region_values(region, rec):
     ok = mask & (spd != MISSING)
     wind = np.where(ok, spd / 100.0, np.nan)
     wdir = np.where(ok & (drn != MISSING), drn / 10.0, np.nan)           # a calm has no direction
-    return {"wind": wind, "wdir": wdir}
+    return {"wind": wind, "wdir": wdir, "precip": precip_codes(rec["apcp"][flat], rec["type"][flat], mask)}
+
+
+def precip_level(mm):
+    """The within-type level 0..PRECIP_PER-1 of amounts in mm (>= PRECIP_LO; larger ones take the top level)."""
+    v = np.maximum(np.asarray(mm, dtype=float), PRECIP_LO)
+    k = np.round((PRECIP_PER - 1) * np.log(v / PRECIP_LO) / math.log(PRECIP_HI / PRECIP_LO))
+    return np.clip(k, 0, PRECIP_PER - 1).astype(np.int64)
+
+
+def precip_value(code):
+    """The amount (mm) a wet code stands for; 0.0 for dry, NaN for missing / never-written codes."""
+    c = int(code)
+    if c == PRECIP_DRY:
+        return 0.0
+    if not 2 <= c <= 1 + PRECIP_PER * len(PRECIP_TYPES):
+        return float("nan")
+    return PRECIP_LO * (PRECIP_HI / PRECIP_LO) ** (((c - 2) % PRECIP_PER) / (PRECIP_PER - 1))
+
+
+def precip_codes(apcp, typ, mask):
+    """uint8 codes (PRECIP_CODES) of cell records' amounts (0.01 mm, MISSING) and types (TYPE_*, MISSING8); 0 where
+    `mask` is False or the amount or the type is unknown. Dry = the cell's type says none (under 0.1 mm)."""
+    apcp = np.asarray(apcp)
+    typ = np.asarray(typ)
+    out = np.zeros(apcp.shape, dtype=np.uint8)
+    known = mask & (typ != MISSING8) & (apcp != MISSING)
+    out[known & (typ == TYPE_NONE)] = PRECIP_DRY
+    wet = known & (typ >= TYPE_RAIN) & (typ <= TYPE_THUNDER)
+    t = typ[wet].astype(np.int64) - TYPE_RAIN
+    out[wet] = (2 + PRECIP_PER * t + precip_level(apcp[wet] / 100.0)).astype(np.uint8)
+    return out
 
 
 def encode_region_frame(values, field):
     """PNG bytes of one region frame (encode.ENCODING); a half-resolution field takes every second node (region_grid_half)."""
+    if field == "precip":                         # already codes (precip_codes)
+        return E.to_png(np.ascontiguousarray(values, dtype=np.uint8))
     if FRAME_RES[field] == "half":
         values = np.ascontiguousarray(np.asarray(values)[::2, ::2])
     q = E.quantize_circular(values) if FRAME_DEFS[field].get("circular") else \
@@ -612,11 +660,18 @@ def frameset_key(cycle):
     return f"{FRAMES_PREFIX}/{cycle}/frames.json"
 
 
-def _write_frames(region, rec, step, out_dir):
+def has_frame(kind, field, step):
+    """Does a source of this kind publish this field at this step? A run's f000 has no hour behind it: no precip."""
+    return not (field == "precip" and kind == "run" and step == 0)
+
+
+def _write_frames(region, rec, step, out_dir, kind="cycle"):
     """Encode one step's frames of a region into out_dir/<region>/<field>/f<step>.png: {field: (path, bytes)}."""
     vals = region_values(region, rec)
     out = {}
     for field in FRAME_FIELDS:
+        if not has_frame(kind, field, step):
+            continue
         png = encode_region_frame(vals[field], field)
         d = os.path.join(out_dir, region, field)
         os.makedirs(d, exist_ok=True)
@@ -706,7 +761,7 @@ def build_grid(cycle_dt, grid, stations, work, deadline, get=http_get, log=print
                 rec, total = step_record(fields, grid, lon, total)
                 arr[:, k] = rec
                 if frames is not None and grid in REGIONS:
-                    encs.append((step, enc.submit(_write_frames, grid, rec, step, fdir)))
+                    encs.append((step, enc.submit(_write_frames, grid, rec, step, fdir, kind_of(cycle_dt))))
                     drain(2 * FRAME_WORKERS)             # at most a few steps' records held for the encoders
             if frames is not None:
                 drain(0)
@@ -797,9 +852,12 @@ def build(cycle_dt, work, stations_coords, deadline, get=http_get, log=print, gr
 
 
 def frame_ranges():
-    """{field: [lo, hi, resolution]} of the frames' encoding (a manifest only pairs sources encoded alike: the first
-    sources were published with a full-resolution direction and are never paired with today's)."""
-    return {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"], FRAME_RES[f]] for f in FRAME_FIELDS}
+    """{field: [lo, hi, resolution(, encoding)]} of the frames' encoding (a manifest only pairs sources encoded alike:
+    the first sources were published with a full-resolution direction and are never paired with today's; precip's typed
+    codes carry their encoding's name)."""
+    out = {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"], FRAME_RES[f]] for f in BASE_FIELDS}
+    out["precip"] = [PRECIP_LO, PRECIP_HI, FRAME_RES["precip"], PRECIP_DEF["encoding"]]
+    return out
 
 
 def frameset(cycle_dt, frames, log=print):
@@ -818,9 +876,10 @@ def frameset(cycle_dt, frames, log=print):
             raise RuntimeError(f"{cyc} {region}: frames of steps {sorted(by_step)[:3]}..., not the source's {len(steps)}")
         mine = {}
         for field in FRAME_FIELDS:
-            n = [by_step[s][field][1] for s in steps]
+            fsteps = [s for s in steps if has_frame(kind_of(cycle_dt), field, s)]
+            n = [by_step[s][field][1] for s in fsteps]
             sizes.setdefault(region, {})[field] = {"max": max(n), "total": sum(n)}
-            for s in steps:
+            for s in fsteps:
                 path, b = by_step[s][field]
                 if b > FRAME_MAX_BYTES:
                     big.setdefault(region, []).append(f"{region}/{field}/f{s:03d} {b} B")
@@ -982,12 +1041,20 @@ def _iso(dt):
 
 def _usable_regions(src):
     """{region: [fields]} of a source's frames that match today's REGIONS grids and frame ranges (G67a P1-2: after a
-    grid change the older sources' frames were drawn on the old grid and are never paired with the new one)."""
+    grid change the older sources' frames were drawn on the old grid and are never paired with the new one). The wind
+    and its direction (BASE_FIELDS) must both match or the source is not used; an extra field (precip, plan section
+    102) is kept only where its own range matches, so the sources built before it keep their wind."""
     fr = src.get("frames") or {}
-    if (fr.get("ranges") or {}) != frame_ranges():
+    have, want = fr.get("ranges") or {}, frame_ranges()
+    if any(have.get(f) != want[f] for f in BASE_FIELDS):
         return {}
     grids = fr.get("grids") or {}
-    return {r: f for r, f in (fr.get("regions") or {}).items() if r in REGIONS and grids.get(r) == region_grid(r)}
+    out = {}
+    for r, fields in (fr.get("regions") or {}).items():
+        if r not in REGIONS or grids.get(r) != region_grid(r) or not all(f in fields for f in BASE_FIELDS):
+            continue
+        out[r] = [f for f in FRAME_FIELDS if f in fields and have.get(f) == want[f]]
+    return out
 
 
 def frames_manifest(pointer, now):
@@ -1031,7 +1098,8 @@ def frames_manifest(pointer, now):
         t = s["frames"]["template"]
         frames.append({"valid_utc": _iso(v), "step": int((v - run_dt).total_seconds() // 3600), "src": s["cycle"],
                        "src_step": step,
-                       "files": {r: {f: t.format(region=r, field=f, step=step) for f in fs}
+                       "files": {r: {f: t.format(region=r, field=f, step=step) for f in fs
+                                     if has_frame(s["kind"], f, step)}
                                  for r, fs in sorted(use.items())}})
     return {
         "schema": FRAMES_SCHEMA, "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC, "complete": True,

@@ -146,8 +146,9 @@ def test_hawaii_run_frames_equal_an_independent_eccodes_read(tmp_path):
     files, docs = T._build(T.RUN, tmp_path)
     cyc = "2026111712"
     fs = docs[J.frameset_key(cyc)]
-    assert fs["regions"] == {"hi": ["wind", "wdir"]} and fs["template"] == J.frame_template(cyc) and "dropped" not in fs
+    assert fs["regions"] == {"hi": ["wind", "wdir", "precip"]} and fs["template"] == J.frame_template(cyc) and "dropped" not in fs
     g = J.region_grid("hi")
+    _check_precip_against_eccodes(_png(open(files[J.frame_key(cyc, "hi", "precip", 6)], "rb").read()), g)
     q = _png(open(files[J.frame_key(cyc, "hi", "wind", 6)], "rb").read())
     qd = _png(open(files[J.frame_key(cyc, "hi", "wdir", 6)], "rb").read())
     gh = J.region_grid_half("hi")
@@ -193,13 +194,16 @@ def test_build_grid_writes_every_steps_frames(tmp_path, monkeypatch):
 def test_an_oversize_frame_drops_the_sources_frames(tmp_path):
     p = tmp_path / "f.png"
     p.write_bytes(b"x")
-    frames = {"hi": {6: {"wind": (str(p), J.FRAME_MAX_BYTES + 1), "wdir": (str(p), 10)}}}
+    frames = {"hi": {6: {"wind": (str(p), J.FRAME_MAX_BYTES + 1), "wdir": (str(p), 10), "precip": (str(p), 10)}}}
     files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
     assert files == {} and doc["regions"] == {} and "over" in doc["dropped"]
     assert J.frames_entry({J.frameset_key("2026111712"): doc}, "2026111712") is None
     frames["hi"][6]["wind"] = (str(p), 100)
     files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
-    assert set(files) == {J.frame_key("2026111712", "hi", f, 6) for f in ("wind", "wdir")}
+    assert set(files) == {J.frame_key("2026111712", "hi", f, 6) for f in ("wind", "wdir", "precip")}
+    frames["hi"][6]["precip"] = (str(p), J.FRAME_MAX_BYTES + 1)            # an oversize precip frame drops it too
+    files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
+    assert files == {} and "hi/precip/f006" in doc["dropped"]
 
 
 # --------------------------------------------------------------------------------------------- the merged manifest
@@ -333,7 +337,7 @@ def test_main_publishes_frames_then_the_pointers(monkeypatch):
     assert J.main([], head=T.BOTH, store=st, now=T.NOW, coords=T.COORDS, log=lambda s: None) == 0
     puts = [k for op, k in st.client.log if op == "put"]
     ptr = T._ptr(st)
-    assert all(s["frames"]["regions"] == {"hi": ["wind", "wdir"]} for s in ptr["sources"])
+    assert all(s["frames"]["regions"] == {"hi": ["wind", "wdir", "precip"]} for s in ptr["sources"])
     fkey = "rrfs/v1/frames/2026111713/hi/wind/f006.png"
     assert st.client.objects[fkey]["ct"] == "image/png" and st.client.objects[fkey]["cc"] == P.IMMUTABLE
     first_ptr = puts.index("rrfs/v1/latest.json")
@@ -518,11 +522,11 @@ def test_each_steps_frame_is_its_own_step(tmp_path, monkeypatch):
 def test_one_oversize_region_drops_that_region_only(tmp_path):
     p = tmp_path / "f.png"
     p.write_bytes(b"x")
-    frames = {"hi": {6: {"wind": (str(p), J.FRAME_MAX_BYTES + 1), "wdir": (str(p), 10)}},
-              "pr": {6: {"wind": (str(p), 10), "wdir": (str(p), 10)}}}
+    frames = {"hi": {6: {"wind": (str(p), J.FRAME_MAX_BYTES + 1), "wdir": (str(p), 10), "precip": (str(p), 10)}},
+              "pr": {6: {"wind": (str(p), 10), "wdir": (str(p), 10), "precip": (str(p), 10)}}}
     files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
-    assert doc["regions"] == {"pr": ["wind", "wdir"]} and "hi" in doc["dropped"]
-    assert set(files) == {J.frame_key("2026111712", "pr", f, 6) for f in ("wind", "wdir")}
+    assert doc["regions"] == {"pr": ["wind", "wdir", "precip"]} and "hi" in doc["dropped"]
+    assert set(files) == {J.frame_key("2026111712", "pr", f, 6) for f in ("wind", "wdir", "precip")}
     assert doc["grids"] == {"pr": J.region_grid("pr")} and doc["ranges"] == J.frame_ranges()
 
 
@@ -569,3 +573,153 @@ def test_sources_with_the_first_full_resolution_direction_are_never_paired():
     assert {f["src"] for f in m["frames"]} == {"2026111800"}
     assert J.frame_ranges()["wdir"][2] == "half" and m["regions"]["conus"]["fields"]["wdir"]["resolutions"] == ("half",)
     assert m["regions"]["ak"]["grid_half"] == J.region_grid_half("ak")
+
+
+# ------------------------------------------------------------------------------------- precipitation (plan section 102 A)
+
+def _check_precip_against_eccodes(q, g, n=600):
+    """The precip frame at random nodes vs an independent eccodes read of the step's APCP, the type flags and lightning:
+    the type range and the level of the amount (from the cells' 0.01-mm rounding of the amount)."""
+    AP, CR, SN, FR, IP, LT = (T.ecc("hi_f006", v) for v in ("APCP", "CRAIN", "CSNOW", "CFRZR", "CICEP", "LTNG"))
+    rng = np.random.default_rng(11)
+    wet = checked = 0
+    while checked < n:
+        r, c = int(rng.integers(0, g["rows"])), int(rng.integers(0, g["cols"]))
+        hit = J.G.locate(g["lat0"] + r * g["dlat"], g["lon0"] + c * g["dlon"])
+        checked += 1
+        if hit is None:
+            assert q[r, c] == 0
+            continue
+        _, j, i = hit
+        a = AP[j, i]
+        if a < 0.1:
+            assert q[r, c] == J.PRECIP_DRY
+            continue
+        if LT[j, i] > 0:
+            t = "thunder"
+        elif FR[j, i] >= 0.5 or IP[j, i] >= 0.5:
+            t = "ice"
+        elif CR[j, i] >= 0.5 and SN[j, i] >= 0.5:
+            t = "mix"
+        elif SN[j, i] >= 0.5:
+            t = "snow"
+        else:
+            t = "rain"
+        c0, c1 = J.PRECIP_CODES[t]
+        assert c0 <= q[r, c] <= c1, (t, q[r, c])
+        assert int(q[r, c]) - c0 == int(J.precip_level(round(a * 100) / 100.0))
+        wet += 1
+    return wet
+
+
+def test_precip_code_table_round_trips():
+    assert J.PRECIP_CODES == {"rain": [2, 51], "snow": [52, 101], "mix": [102, 151], "ice": [152, 201],
+                              "thunder": [202, 251]}
+    assert J.precip_value(0) != J.precip_value(0) and J.precip_value(252) != J.precip_value(252)   # NaN: never written
+    assert J.precip_value(J.PRECIP_DRY) == 0.0
+    for name, (c0, c1) in J.PRECIP_CODES.items():
+        assert c1 - c0 + 1 == J.PRECIP_PER
+        assert J.precip_value(c0) == pytest.approx(0.1) and J.precip_value(c1) == pytest.approx(75.0)
+        for code in range(c0, c1 + 1):
+            assert c0 + int(J.precip_level(J.precip_value(code))) == code          # code -> value -> code
+    ratio = J.precip_value(3) / J.precip_value(2)
+    assert ratio == pytest.approx(750 ** (1 / 49)) and 1.14 < ratio < 1.15         # 14.5 % steps
+    v = np.exp(np.linspace(np.log(0.1), np.log(75), 5000))                         # any amount: within half a step
+    back = np.array([J.precip_value(2 + k) for k in J.precip_level(v)])
+    assert np.max(np.abs(np.log(back / v))) <= math.log(ratio) / 2 + 1e-12
+    assert int(J.precip_level(0.1)) == 0 and int(J.precip_level(500.0)) == 49 and int(J.precip_level(0.04)) == 0
+
+
+def test_precip_codes_from_cell_records():
+    apcp = np.array([0, 5, 10, 10, 10, 10, 10, 7500, 60000, J.MISSING, 10, 10], dtype="<u2")
+    typ = np.array([J.TYPE_NONE, J.TYPE_NONE, J.TYPE_RAIN, J.TYPE_SNOW, J.TYPE_MIX, J.TYPE_ICE, J.TYPE_THUNDER,
+                    J.TYPE_RAIN, J.TYPE_SNOW, J.TYPE_RAIN, J.MISSING8, J.TYPE_RAIN], dtype="u1")
+    mask = np.ones(12, bool)
+    mask[11] = False
+    q = J.precip_codes(apcp, typ, mask)
+    assert q.dtype == np.uint8
+    assert list(q) == [1, 1, 2, 52, 102, 152, 202, 51, 101, 0, 0, 0]
+
+
+def test_region_values_carry_the_precip_codes():
+    flat, mask = J.region_index("hi")
+    n = J.G.GRIDS["hi"]["Nx"] * J.G.GRIDS["hi"]["Ny"]
+    rec = np.zeros(n, dtype=J.CELL_DTYPE)
+    rec["spd"] = 100
+    rec["apcp"] = 250                                                       # 2.5 mm
+    rec["type"] = J.TYPE_SNOW
+    k = flat[mask][0]
+    rec["type"][k] = J.TYPE_NONE
+    v = J.region_values("hi", rec)["precip"]
+    assert v.dtype == np.uint8 and (v[~mask] == 0).all()
+    want = 52 + int(J.precip_level(2.5))
+    assert (v[mask & (flat != k)] == want).all() and (v[mask & (flat == k)] == J.PRECIP_DRY).all()
+    q = _png(J.encode_region_frame(v, "precip"))
+    assert q.shape == v.shape and (q == v).all()                            # full resolution, the codes as they are
+
+
+def test_a_runs_f000_has_no_precip_frame(tmp_path, monkeypatch):
+    monkeypatch.setattr(J, "RUN_STEPS", [0, 1, 2])
+    T._fake_fields(monkeypatch)
+    frames = {}
+    J.build_grid(T.RUN, "hi", {}, str(tmp_path), 1e18, log=lambda s: None, workers=2, frames=frames)
+    assert set(frames[0]) == {"wind", "wdir"} and set(frames[1]) == {"wind", "wdir", "precip"}
+    mask = J.region_index("hi")[1]
+    q1 = _png(open(frames[1]["precip"][0], "rb").read())                    # hour 1 of the run: 0.1 mm of rain
+    q2 = _png(open(frames[2]["precip"][0], "rb").read())                    # 0.2 mm
+    assert (q1[mask] == 2).all() and (q1[~mask] == 0).all()
+    assert (q2[mask] == 2 + int(J.precip_level(0.2))).all()
+    files, doc = J.frameset(T.RUN, {"hi": frames}, log=lambda s: None)
+    cyc = "2026111712"
+    assert J.frame_key(cyc, "hi", "precip", 0) not in files and J.frame_key(cyc, "hi", "wind", 0) in files
+    assert J.frame_key(cyc, "hi", "precip", 1) in files and doc["regions"] == {"hi": ["wind", "wdir", "precip"]}
+    assert doc["ranges"]["precip"] == [0.1, 75.0, "full", "rrfs-precip-v1"]
+
+
+def test_cycle_precip_frames_are_each_hours_amount(tmp_path, monkeypatch):
+    """The hourly cycle's amount is the difference of its totals (s mm at step s): frame f<s> holds the level of s mm."""
+    monkeypatch.setattr(J, "CYCLE_STEPS", list(range(1, 7)))
+    T._fake_fields(monkeypatch)
+    frames = {}
+    J.build_grid(T.CYC, "hi", {}, str(tmp_path), 1e18, log=lambda s: None, workers=2, frames=frames)
+    mask = J.region_index("hi")[1]
+    for s in range(1, 7):
+        q = _png(open(frames[s]["precip"][0], "rb").read())
+        assert (q[mask] == 2 + int(J.precip_level(float(s)))).all(), s
+
+
+def test_manifest_names_precip_and_skips_a_runs_f000():
+    run = _src("2026111712", "run")
+    run["frames"]["regions"] = {r: ["wind", "wdir", "precip"] for r in J.REGIONS}
+    m = J.frames_manifest({"sources": [run]}, NOW)
+    assert m["frames"][0]["step"] == 0 and m["frames"][0]["files"]["hi"] == {
+        "wind": "rrfs/v1/frames/2026111712/hi/wind/f000.png", "wdir": "rrfs/v1/frames/2026111712/hi/wdir/f000.png"}
+    assert m["frames"][1]["files"]["hi"]["precip"] == "rrfs/v1/frames/2026111712/hi/precip/f001.png"
+    d = m["regions"]["conus"]["fields"]["precip"]
+    assert d["kind"] == "typed" and d["encoding"] == "rrfs-precip-v1" and d["types"] == J.PRECIP_CODES
+    assert d["dry"] == 1 and d["lo"] == 0.1 and d["hi"] == 75.0 and d["per_type"] == 50 and d["resolutions"] == ("full",)
+    json.dumps(m, allow_nan=False)
+
+
+def test_sources_built_before_precip_keep_their_wind():
+    """Plan section 102 A1: a source published before the precip field (its ranges and regions lack it) stays in the
+    manifest for wind + direction; its hours simply name no precip frame. A precip of another encoding is left out."""
+    new = _src("2026111713", "cycle")
+    new["frames"]["regions"] = {r: ["wind", "wdir", "precip"] for r in J.REGIONS}
+    old = _src("2026111712", "run")
+    old["frames"]["ranges"] = {f: v for f, v in J.frame_ranges().items() if f != "precip"}
+    m = J.frames_manifest({"sources": [new, old]}, NOW)
+    assert {f["src"] for f in m["frames"]} == {"2026111713", "2026111712"} and len(m["frames"]) == 83
+    assert all("precip" in f["files"]["hi"] for f in m["frames"] if f["src"] == "2026111713")
+    assert all(set(f["files"]["hi"]) == {"wind", "wdir"} for f in m["frames"] if f["src"] == "2026111712")
+    assert "precip" in m["regions"]["hi"]["fields"]
+    odd = _src("2026111712", "run")
+    odd["frames"]["regions"] = {r: ["wind", "wdir", "precip"] for r in J.REGIONS}
+    odd["frames"]["ranges"] = dict(J.frame_ranges(), precip=[0.1, 75.0, "full", "rrfs-precip-v0"])
+    m = J.frames_manifest({"sources": [odd]}, NOW)
+    assert all("precip" not in f["files"]["hi"] for f in m["frames"]) and "precip" not in m["regions"]["hi"]["fields"]
+    only_old = J.frames_manifest({"sources": [old]}, NOW)                  # no source with precip: no precip field at all
+    assert "precip" not in only_old["regions"]["hi"]["fields"]
+    lost = _src("2026111712", "run")
+    lost["frames"]["regions"] = {"hi": ["wind", "precip"]}                  # a region without its direction: never used
+    assert J.frames_manifest({"sources": [lost]}, NOW) is None

@@ -106,7 +106,7 @@ function world(opts) {
         w.pendingCoast.push(() => res(w.coastAnswer(url)));
         if (o && o.signal) o.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })));
       });
-      const rr = /\/rrfs\/v1\/frames\/(\d{10})\/([a-z]+)\/(wind|wdir)\//.exec(url);    // an RRFS region frame: its region's grid size (wdir: half)
+      const rr = /\/rrfs\/v1\/frames\/(\d{10})\/([a-z]+)\/(wind|wdir|precip)\//.exec(url);    // an RRFS region frame: its region's grid size (wdir: half)
       if (rr) { const g = rr[3] === 'wdir' ? RRFS_HALF[rr[2]] : RRFS_GRIDS[rr[2]]; return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: g.cols, h: g.rows, tag: 40 + Number(rr[1].slice(-2)), url }) }); }
       const run = /\/v1\/(\d{10})\//.exec(url)[1], half = url.indexOf('/half/') >= 0, lake = url.indexOf('/glwu/v1/') >= 0;
       return Promise.resolve({ ok: true, status: 200, headers: { get: () => null }, blob: () => Promise.resolve({ w: lake ? LAKE_GRID.cols : half ? 720 : 1440, h: lake ? LAKE_GRID.rows : half ? 361 : 721, tag: Number(run.slice(-2)), url }) });
@@ -4033,4 +4033,130 @@ test('section 99 D2 G67 P3-6: the readout says "outside RRFS" where no region ha
   assert.equal(o._regionWord(spot[0], spot[1]), 'outside RRFS');
   assert.equal(o._regionWord(61.2, -150), null, 'Anchorage: Alaska has data (not drawn here): no word');
   o.pause(); clearInterval(o.runTimer); o.unmount();
+});
+
+// ---- RRFS Precipitation through the controller (plan section 102 A; review G68: mount / switch / gating / Retry / Update) ----
+const PDEF = () => ({ kind: 'typed', encoding: 'rrfs-precip-v1', unit: 'mm', lo: 0.1, hi: 75, per_type: 50, dry: 1,
+  types: { rain: [2, 51], snow: [52, 101], mix: [102, 151], ice: [152, 201], thunder: [202, 251] }, resolutions: ['full'] });
+// R with the precip field in every region and a per-frame precip map (skip(i): a frame of a source built before the field)
+function withP(m, sig, skip) {
+  m = JSON.parse(JSON.stringify(m)); m.signature = sig;
+  for (const r of Object.keys(m.regions)) m.regions[r].fields.precip = PDEF();
+  m.frames.forEach((fr, i) => { if (skip && skip(i)) return; fr.precip = {}; for (const r of Object.keys(fr.files)) fr.precip[r] = fr.files[r].wind.replace('/wind/', '/precip/'); });
+  return m;
+}
+const offPrecip = (o) => { o.pause(); clearInterval(o.runTimer); clearInterval(o.lineTimer); o.unmount(); };
+
+test('section 102: Precipitation picked on GFS wind switches to RRFS and draws typed precip bundles; wind and precip never share a bundle', async () => {
+  const w = world(); w.view = { lat: 21.4, lng: -157.9 };
+  const RP = withP(R, 'a1b2c3d4e5f60718');
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + RP.run] = RP; w.pointers = { rrfs: rptr(RP) };
+  const o = w.create({ models: THREE });
+  o.mount('wind'); await settle(); await w.release(1);
+  o.seek(10); await settle(); await w.releaseAll();
+  o.mount('precip'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.equal(o.field, 'precip'); assert.equal(o.layer.field, 'precip'); assert.equal(o.layer._typed, true);
+  assert.equal(o.layer._frame.parts.length, 1); assert.ok(o._key(o.frameIndex).includes('/precip/'));
+  assert.ok(w.fetches.some((u) => u.includes('/rrfs/v1/frames/') && u.includes('/hi/precip/')));
+  assert.equal(o.flow, null, 'no particles'); assert.equal(o.iso, null, 'no isobars');
+  const lut = o._lut();
+  assert.equal(lut.length, (251 * 2 + 2) * 4, 'the precipitation LUT (G68 M20)'); assert.equal(o.layer._lut, lut);
+  assert.deepEqual(Array.from(lut.slice(8, 12)), Array.from(w.g.AllshoreOverlay._internals.RADAR_TINT));
+  assert.ok(/hourly precipitation/.test(o._attribution()) && !/10-m wind/.test(o._attribution()), 'the credit says precipitation (G68 M16)');
+  const pf = o.layer._frame;
+  o.mount('wind'); await settle(); await w.releaseAll();
+  assert.equal(o.model, 'gfswave', 'back to the model the switch left (G68 P3)');
+  assert.equal(o.layer.field, 'wind'); assert.equal(o.layer._typed, false); assert.notEqual(o.layer._frame, pf);
+  o.mount('precip'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.equal(o.layer._typed, true);
+  o.seek(o.frameIndex + 3); o.mount('wind'); o.mount('precip'); o.mount('wind'); await settle(); await w.releaseAll(); await releaseRrfs(w);
+  assert.equal(o.field, 'wind'); assert.equal(o.layer.field, 'wind'); assert.equal(o.layer._typed, false);
+  offPrecip(o);
+});
+
+test('section 102: RRFS wind chosen by the viewer stays RRFS after Precipitation; Wave height goes to GFS', async () => {
+  const w = world(); w.view = { lat: 21.4, lng: -157.9 };
+  const RP = withP(R, 'a1b2c3d4e5f60718');
+  w.pointers = { rrfs: rptr(RP) };
+  const o = await onRrfs(w);
+  w.manifests['rrfs/' + RP.run] = RP;
+  o._dropRun(); o.mount('wind'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs');
+  o.mount('precip'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.equal(o.layer._typed, true);
+  o.mount('wind'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs', 'the viewer’s own RRFS is kept');
+  o.mount('hs'); await settle(); await w.releaseAll();
+  assert.equal(o.model, 'gfswave'); assert.equal(o.layer.field, 'hs'); assert.equal(o.layer._typed, false);
+  offPrecip(o);
+});
+
+test('section 102: a step whose source predates the field draws blank and the readout says so', async () => {
+  const w = world(); w.view = { lat: 21.4, lng: -157.9 };
+  const RP = withP(R, 'a1b2c3d4e5f60718', (i) => i < 40);
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + RP.run] = RP; w.pointers = { rrfs: rptr(RP) };
+  const o = w.create({ models: THREE });
+  o.mount('precip'); await settle(); await releaseRrfs(w); o.seek(10); await settle(); await releaseRrfs(w);
+  assert.equal(o.frameIndex, 10); assert.equal(o.last.state, 'ready');
+  assert.equal(o.layer._frame.parts.length, 0); assert.equal(o.layer._frame.nofield, o.layer._frame.names.length);
+  assert.equal(o._regionWord(21.3, -157.85), 'no precipitation frame for this hour');
+  o.seek(45); await settle(); await releaseRrfs(w);
+  assert.equal(o.layer._frame.nofield, 0); assert.equal(o._regionWord(21.3, -157.85), null);
+  // a step where only Hawaii lacks its key: the word under Hawaii, none elsewhere (G68 M13)
+  const fr = o.manifest.frames[50]; delete fr.precip.hi;   // (beyond the prefetch ring of step 45)
+  o.seek(50); await settle(); await releaseRrfs(w);
+  assert.equal(o.frameIndex, 50); assert.ok(o.layer._frame.nofield >= 1);
+  assert.equal(o._regionWord(21.3, -157.85), 'no precipitation frame for this hour');
+  assert.equal(o._regionWord(18.2, -66.5), null, 'Puerto Rico has its frame');
+  offPrecip(o);
+});
+
+test('section 102 (G68 P2-1): Precipitation on a manifest without it, a newer one announced: the newer one is adopted', async () => {
+  const w = world(); w.view = { lat: 21.4, lng: -157.9 };
+  const R2 = withP(rrfsManifest('2026092214', '2026-09-22T14:00:00Z', 'ffffeeeeddddcccc'), 'ffffeeeeddddcccc');
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + R.run] = R; w.manifests['rrfs/' + R2.run] = R2; w.pointers = { rrfs: rptr(R) };
+  const o = w.create({ models: THREE });
+  o.mount('wind'); await settle(); await w.release(1); await w.releaseAll();
+  o.setModel('rrfs'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.ok(o.frameIndex !== null); assert.equal(o.manifest.signature, R.signature);
+  const shown = Date.parse(o.manifest.frames[o.frameIndex].valid_utc);
+  w.pointers.rrfs = rptr(R2); o._checkRun(); await settle();
+  assert.ok(o.newerRun, 'announced');
+  o.mount('precip'); await settle(); await releaseRrfs(w);
+  assert.equal(o.last.state, 'ready'); assert.equal(o.manifest.signature, R2.signature); assert.equal(o.layer._typed, true);
+  assert.equal(Date.parse(o.manifest.frames[o.frameIndex].valid_utc), shown, 'the time is carried');
+  offPrecip(o);
+});
+
+test('section 102: an unreadable precip table says so at the mount and at an Update; the wind still works', async () => {
+  const w = world(); w.view = { lat: 21.4, lng: -157.9 };
+  const RB = withP(R, 'a1b2c3d4e5f60718'); RB.regions.ak.fields.precip.hi = 100;
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + RB.run] = RB; w.pointers = { rrfs: rptr(RB) };
+  const o = w.create({ models: THREE });
+  o.mount('precip'); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.equal(o.last.state, 'error'); assert.equal(o.last.message, 'precipitation frames unreadable');
+  o.mount('wind'); await settle(); await releaseRrfs(w); await w.releaseAll(); await releaseRrfs(w);
+  assert.equal(o.last.state, 'ready', o.last.message); assert.equal(o.layer.field, 'wind');
+  offPrecip(o);
+  const w2 = world(); w2.view = { lat: 21.4, lng: -157.9 };
+  const RP = withP(R, 'a1b2c3d4e5f60718');
+  const R3 = withP(rrfsManifest('2026092214', '2026-09-22T14:00:00Z', 'ffffeeeeddddcccc'), 'ffffeeeeddddcccc'); R3.regions.hi.fields.precip.dry = 0;
+  w2.pointer = ptr(A); w2.manifests[A.run] = A; w2.manifests['rrfs/' + RP.run] = RP; w2.manifests['rrfs/' + R3.run] = R3; w2.pointers = { rrfs: rptr(RP) };
+  const o2 = w2.create({ models: THREE });
+  o2.mount('precip'); await settle(); await releaseRrfs(w2);
+  assert.equal(o2.last.state, 'ready');
+  w2.pointers.rrfs = rptr(R3); o2._checkRun(); await settle();
+  o2.update(); await settle(); await releaseRrfs(w2);
+  assert.equal(o2.last.state, 'error'); assert.equal(o2.last.message, 'precipitation frames unreadable');
+  offPrecip(o2);
+});
+
+test('section 102: a saved Precipitation tab restores on RRFS', async () => {
+  const w = world({ storage: memStore({ model: 'rrfs', field: 'precip' }) }); w.view = { lat: 21.4, lng: -157.9 };
+  const RP = withP(R, 'a1b2c3d4e5f60718');
+  w.pointer = ptr(A); w.manifests[A.run] = A; w.manifests['rrfs/' + RP.run] = RP; w.pointers = { rrfs: rptr(RP) };
+  const o = w.create({ models: THREE });
+  o.mount('precip', true); await settle(); await releaseRrfs(w);
+  assert.equal(o.model, 'rrfs'); assert.equal(o.last.state, 'ready'); assert.equal(o.layer._typed, true);
+  offPrecip(o);
 });

@@ -130,7 +130,8 @@ REGIONS = {
 }
 MAX_REGION_NODES = 1 << 20
 BASE_FIELDS = ("wind", "wdir")                   # every source's frames have these: a source is used only when both match
-FRAME_FIELDS = BASE_FIELDS + ("precip",)          # precip (plan section 102 A): an optional extra, per field
+FRAME_FIELDS = BASE_FIELDS + ("precip",)          # precip (plan section 102 A): an optional extra, published BESIDE the
+                                                  # wind (its own block; G68a P0-1: the live browser refuses unknown keys)
 # The direction at HALF resolution (every second node of the region grid, as the GFS frames' wdir): the particles need no
 # finer, and the browser decodes a quarter of the pixels (plan section 99 D2 perf gate: the full-resolution direction
 # frames were half the heap churn at shark speed). The speed (the colours) keeps the region's full grid.
@@ -149,6 +150,7 @@ PRECIP_DEF = {"kind": "typed", "encoding": "rrfs-precip-v1", "unit": "mm", "lo":
               "period": "the hour ending at the frame's time"}
 FRAME_DEFS = {n: dict(E.FIELDS[n], resolutions=(FRAME_RES[n],)) for n in BASE_FIELDS}
 FRAME_DEFS["precip"] = dict(PRECIP_DEF, resolutions=(FRAME_RES["precip"],))
+PRECIP_RANGE = [PRECIP_LO, PRECIP_HI, FRAME_RES["precip"], PRECIP_DEF["encoding"]]   # a source's precip is used only when equal
 FRAME_MAX_BYTES = 2 * 1024 * 1024                # the browser decodes nothing bigger (overlay.js MAX_FRAME_BYTES)
 FRAME_WORKERS = 4                                # PNG encoders beside the decoding (Pillow / zlib release the GIL)
 UPLOAD_WORKERS = 8
@@ -607,8 +609,9 @@ def region_values(region, rec):
 
 
 def precip_level(mm):
-    """The within-type level 0..PRECIP_PER-1 of amounts in mm (>= PRECIP_LO; larger ones take the top level)."""
-    v = np.maximum(np.asarray(mm, dtype=float), PRECIP_LO)
+    """The within-type level 0..PRECIP_PER-1 of amounts in mm (>= PRECIP_LO; larger ones take the top level; NaN the
+    lowest: precip_codes never passes one, G68a P3-2)."""
+    v = np.maximum(np.nan_to_num(np.asarray(mm, dtype=float), nan=PRECIP_LO), PRECIP_LO)
     k = np.round((PRECIP_PER - 1) * np.log(v / PRECIP_LO) / math.log(PRECIP_HI / PRECIP_LO))
     return np.clip(k, 0, PRECIP_PER - 1).astype(np.int64)
 
@@ -665,7 +668,7 @@ def has_frame(kind, field, step):
     return not (field == "precip" and kind == "run" and step == 0)
 
 
-def _write_frames(region, rec, step, out_dir, kind="cycle"):
+def _write_frames(region, rec, step, out_dir, kind):
     """Encode one step's frames of a region into out_dir/<region>/<field>/f<step>.png: {field: (path, bytes)}."""
     vals = region_values(region, rec)
     out = {}
@@ -852,12 +855,11 @@ def build(cycle_dt, work, stations_coords, deadline, get=http_get, log=print, gr
 
 
 def frame_ranges():
-    """{field: [lo, hi, resolution(, encoding)]} of the frames' encoding (a manifest only pairs sources encoded alike:
-    the first sources were published with a full-resolution direction and are never paired with today's; precip's typed
-    codes carry their encoding's name)."""
-    out = {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"], FRAME_RES[f]] for f in BASE_FIELDS}
-    out["precip"] = [PRECIP_LO, PRECIP_HI, FRAME_RES["precip"], PRECIP_DEF["encoding"]]
-    return out
+    """{field: [lo, hi, resolution]} of the wind frames' encoding (a manifest only pairs sources encoded alike: the first
+    sources were published with a full-resolution direction and are never paired with today's). The wind fields only:
+    precip has its own block and range (PRECIP_RANGE), so this stays what the job before section 102 wrote and a rolled-
+    back job still uses the newer sources (G68a P2-1)."""
+    return {f: [FRAME_DEFS[f]["lo"], FRAME_DEFS[f]["hi"], FRAME_RES[f]] for f in BASE_FIELDS}
 
 
 def frameset(cycle_dt, frames, log=print):
@@ -865,36 +867,56 @@ def frameset(cycle_dt, frames, log=print):
     FRAME_MAX_BYTES (the browser would refuse it) is dropped from the source (G67a P3-6: the others stay): the doc says
     why (`dropped`) and names only the regions kept (the tables' products still publish; build_one fails the workflow
     so the owner hears of it). The doc records each region's grid and the fields' ranges: the merged manifest pairs a
-    source's frames only with the grid they were drawn on (G67a P1-2)."""
+    source's frames only with the grid they were drawn on (G67a P1-2).
+
+    The wind fields are `regions` / `ranges` exactly as before section 102; the precipitation (plan section 102 A) is
+    its own block `precip` {"regions": [...], "range": PRECIP_RANGE}, so a job or a browser that predates it never sees
+    it (G68a P0-1, P2-1). An oversize precip frame drops that region's precip only (G68a P3-3); `dropped` says so."""
     cyc = cycle_name(cycle_dt)
     steps = steps_of(cycle_dt)
-    files, sizes, big = {}, {}, {}
+    kind = kind_of(cycle_dt)
+    files, sizes, big, pbig, pfiles = {}, {}, {}, {}, {}
     for region, by_step in frames.items():
         if region not in REGIONS:
             continue
         if sorted(by_step) != list(steps):
             raise RuntimeError(f"{cyc} {region}: frames of steps {sorted(by_step)[:3]}..., not the source's {len(steps)}")
-        mine = {}
+        mine, pmine = {}, {}
         for field in FRAME_FIELDS:
-            fsteps = [s for s in steps if has_frame(kind_of(cycle_dt), field, s)]
+            fsteps = [s for s in steps if has_frame(kind, field, s)]
+            if field not in BASE_FIELDS and not all(field in by_step[s] for s in fsteps):
+                continue                                         # (a build without the extra field)
             n = [by_step[s][field][1] for s in fsteps]
             sizes.setdefault(region, {})[field] = {"max": max(n), "total": sum(n)}
             for s in fsteps:
                 path, b = by_step[s][field]
                 if b > FRAME_MAX_BYTES:
-                    big.setdefault(region, []).append(f"{region}/{field}/f{s:03d} {b} B")
-                mine[frame_key(cyc, region, field, s)] = path
+                    (big if field in BASE_FIELDS else pbig).setdefault(region, []).append(f"{region}/{field}/f{s:03d} {b} B")
+                (mine if field in BASE_FIELDS else pmine)[frame_key(cyc, region, field, s)] = path
         if region not in big:
             files.update(mine)
+            if pmine and region not in pbig:
+                pfiles[region] = pmine
     kept = [r for r in sizes if r not in big]
-    doc = {"format": "rrfs-frameset-v1", "cycle": cyc, "kind": kind_of(cycle_dt), "steps": steps,
-           "template": frame_template(cyc), "regions": {r: list(FRAME_FIELDS) for r in kept},
+    for r in pfiles:
+        files.update(pfiles[r])
+    doc = {"format": "rrfs-frameset-v1", "cycle": cyc, "kind": kind, "steps": steps,
+           "template": frame_template(cyc), "regions": {r: list(BASE_FIELDS) for r in kept},
            "grids": {r: region_grid(r) for r in kept}, "ranges": frame_ranges(), "bytes": sizes,
            "encoding": E.ENCODING, "built_utc": _now()}
+    if pfiles:
+        doc["precip"] = {"regions": sorted(pfiles), "range": PRECIP_RANGE}
+    drop = []
     if big:
         lines = [x for r in big for x in big[r]]
-        doc["dropped"] = (f"region(s) {', '.join(sorted(big))} dropped: {len(lines)} frames over {FRAME_MAX_BYTES} B: "
-                          f"{', '.join(lines[:5])}")
+        drop.append(f"region(s) {', '.join(sorted(big))} dropped: {len(lines)} frames over {FRAME_MAX_BYTES} B: "
+                    f"{', '.join(lines[:5])}")
+    if pbig:
+        lines = [x for r in pbig for x in pbig[r]]
+        drop.append(f"precip of {', '.join(sorted(pbig))} dropped: {len(lines)} frames over {FRAME_MAX_BYTES} B: "
+                    f"{', '.join(lines[:5])}")
+    if drop:
+        doc["dropped"] = "; ".join(drop)
         log(f"{cyc}: frames DROPPED: {doc['dropped']}")
     total = sum(v["total"] for r, f in sizes.items() if r in kept for v in f.values())
     log(f"{cyc}: {len(files)} frames, {total} B; largest " +
@@ -950,8 +972,11 @@ def frames_entry(docs, cyc):
     doc = docs.get(frameset_key(cyc))
     if not doc or not doc.get("regions"):
         return None
-    return {"doc": frameset_key(cyc), "template": doc["template"], "regions": doc["regions"],
-            "grids": doc.get("grids") or {}, "ranges": doc.get("ranges") or {}}
+    out = {"doc": frameset_key(cyc), "template": doc["template"], "regions": doc["regions"],
+           "grids": doc.get("grids") or {}, "ranges": doc.get("ranges") or {}}
+    if doc.get("precip"):
+        out["precip"] = doc["precip"]                    # plan section 102 (a job that predates it ignores the block)
+    return out
 
 
 def warm_cells(keys, get=None, log=print):
@@ -1041,20 +1066,22 @@ def _iso(dt):
 
 def _usable_regions(src):
     """{region: [fields]} of a source's frames that match today's REGIONS grids and frame ranges (G67a P1-2: after a
-    grid change the older sources' frames were drawn on the old grid and are never paired with the new one). The wind
-    and its direction (BASE_FIELDS) must both match or the source is not used; an extra field (precip, plan section
-    102) is kept only where its own range matches, so the sources built before it keep their wind."""
+    grid change the older sources' frames were drawn on the old grid and are never paired with the new one)."""
     fr = src.get("frames") or {}
-    have, want = fr.get("ranges") or {}, frame_ranges()
-    if any(have.get(f) != want[f] for f in BASE_FIELDS):
+    if (fr.get("ranges") or {}) != frame_ranges():
         return {}
     grids = fr.get("grids") or {}
-    out = {}
-    for r, fields in (fr.get("regions") or {}).items():
-        if r not in REGIONS or grids.get(r) != region_grid(r) or not all(f in fields for f in BASE_FIELDS):
-            continue
-        out[r] = [f for f in FRAME_FIELDS if f in fields and have.get(f) == want[f]]
-    return out
+    return {r: f for r, f in (fr.get("regions") or {}).items() if r in REGIONS and grids.get(r) == region_grid(r)}
+
+
+def _usable_precip(src, use):
+    """The regions of a source whose precipitation frames the manifest may name (plan section 102): the source's precip
+    block says today's encoding (PRECIP_RANGE) and the region's wind frames are usable (`use`, _usable_regions). Sources
+    built before section 102 have no block: their hours name no precip."""
+    p = (src.get("frames") or {}).get("precip") or {}
+    if p.get("range") != PRECIP_RANGE:
+        return []
+    return sorted(r for r in (p.get("regions") or []) if r in use)
 
 
 def frames_manifest(pointer, now):
@@ -1072,7 +1099,7 @@ def frames_manifest(pointer, now):
             continue
         use = _usable_regions(s)
         if use:
-            srcs.append((s, use))
+            srcs.append((s, use, _usable_precip(s, use)))
     srcs.sort(key=lambda x: x[0]["cycle"], reverse=True)
     if not srcs:
         return None
@@ -1080,7 +1107,7 @@ def frames_manifest(pointer, now):
     run_dt = _cdt(top["cycle"])
     start = run_dt + timedelta(hours=top["steps"][0])
     hours = {}
-    for k, (s, _use) in enumerate(srcs):
+    for k, (s, _use, _pre) in enumerate(srcs):
         c = _cdt(s["cycle"])
         for step in s["steps"]:
             v = c + timedelta(hours=step)
@@ -1091,16 +1118,22 @@ def frames_manifest(pointer, now):
     for k in used:
         for r, fields in srcs[k][1].items():
             regions.setdefault(r, set()).update(fields)
+        for r in srcs[k][2]:
+            regions[r].add("precip")
     frames = []
     for v in sorted(hours):
         k, step = hours[v]
-        s, use = srcs[k]
+        s, use, pre = srcs[k]
         t = s["frames"]["template"]
-        frames.append({"valid_utc": _iso(v), "step": int((v - run_dt).total_seconds() // 3600), "src": s["cycle"],
-                       "src_step": step,
-                       "files": {r: {f: t.format(region=r, field=f, step=step) for f in fs
-                                     if has_frame(s["kind"], f, step)}
-                                 for r, fs in sorted(use.items())}})
+        fr = {"valid_utc": _iso(v), "step": int((v - run_dt).total_seconds() // 3600), "src": s["cycle"],
+              "src_step": step,
+              "files": {r: {f: t.format(region=r, field=f, step=step) for f in fs} for r, fs in sorted(use.items())}}
+        # the hour's precipitation frames BESIDE `files` (plan section 102; G68a P0-1: a browser that predates the field
+        # refuses unknown keys in `files` but ignores this one); a run's f000 has none
+        pk = {r: t.format(region=r, field="precip", step=step) for r in pre if has_frame(s["kind"], "precip", step)}
+        if pk:
+            fr["precip"] = pk
+        frames.append(fr)
     return {
         "schema": FRAMES_SCHEMA, "encoding": E.ENCODING, "encoding_spec": E.ENCODING_SPEC, "complete": True,
         "run": top["cycle"], "run_utc": _iso(run_dt), "model": FRAMES_MODEL,
@@ -1118,7 +1151,8 @@ def _signature(manifest):
     it and keys its frame caches with it."""
     if not manifest:
         return None
-    body = [manifest["run_utc"], manifest["regions"], [[f["valid_utc"], f["step"], f["files"]] for f in manifest["frames"]]]
+    body = [manifest["run_utc"], manifest["regions"],
+            [[f["valid_utc"], f["step"], f["files"]] + ([f["precip"]] if f.get("precip") else []) for f in manifest["frames"]]]
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]
 
 

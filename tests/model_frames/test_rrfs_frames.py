@@ -146,9 +146,10 @@ def test_hawaii_run_frames_equal_an_independent_eccodes_read(tmp_path):
     files, docs = T._build(T.RUN, tmp_path)
     cyc = "2026111712"
     fs = docs[J.frameset_key(cyc)]
-    assert fs["regions"] == {"hi": ["wind", "wdir", "precip"]} and fs["template"] == J.frame_template(cyc) and "dropped" not in fs
+    assert fs["regions"] == {"hi": ["wind", "wdir"]} and fs["template"] == J.frame_template(cyc) and "dropped" not in fs
+    assert fs["precip"] == {"regions": ["hi"], "range": [0.1, 75.0, "full", "rrfs-precip-v1"]} and fs["ranges"] == J.frame_ranges()
     g = J.region_grid("hi")
-    _check_precip_against_eccodes(_png(open(files[J.frame_key(cyc, "hi", "precip", 6)], "rb").read()), g)
+    assert _check_precip_against_eccodes(_png(open(files[J.frame_key(cyc, "hi", "precip", 6)], "rb").read()), g) > 0   # G68a P2-2
     q = _png(open(files[J.frame_key(cyc, "hi", "wind", 6)], "rb").read())
     qd = _png(open(files[J.frame_key(cyc, "hi", "wdir", 6)], "rb").read())
     gh = J.region_grid_half("hi")
@@ -201,18 +202,21 @@ def test_an_oversize_frame_drops_the_sources_frames(tmp_path):
     frames["hi"][6]["wind"] = (str(p), 100)
     files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
     assert set(files) == {J.frame_key("2026111712", "hi", f, 6) for f in ("wind", "wdir", "precip")}
-    frames["hi"][6]["precip"] = (str(p), J.FRAME_MAX_BYTES + 1)            # an oversize precip frame drops it too
+    frames["hi"][6]["precip"] = (str(p), J.FRAME_MAX_BYTES + 1)            # an oversize precip frame drops the precip only (G68a P3-3)
     files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
-    assert files == {} and "hi/precip/f006" in doc["dropped"]
+    assert set(files) == {J.frame_key("2026111712", "hi", f, 6) for f in ("wind", "wdir")}
+    assert doc["regions"] == {"hi": ["wind", "wdir"]} and "precip" not in doc and "precip of hi dropped" in doc["dropped"]
 
 
 # --------------------------------------------------------------------------------------------- the merged manifest
 
-def _src(cycle, kind, frames=True, grids=None):
+def _src(cycle, kind, frames=True, grids=None, precip=False):
     steps = list(range(0, 85)) if kind == "run" else list(range(1, 19))
     fr = {"doc": J.frameset_key(cycle), "template": J.frame_template(cycle),
           "regions": {r: ["wind", "wdir"] for r in J.REGIONS},
-          "grids": grids or {r: J.region_grid(r) for r in J.REGIONS}, "ranges": J.frame_ranges()} if frames else None
+          "grids": grids or {r: dict(J.region_grid(r)) for r in J.REGIONS}, "ranges": J.frame_ranges()} if frames else None
+    if fr and precip:
+        fr["precip"] = {"regions": sorted(J.REGIONS), "range": list(J.PRECIP_RANGE)}
     return {"cycle": cycle, "kind": kind, "steps": steps, "frames": fr}
 
 
@@ -337,7 +341,8 @@ def test_main_publishes_frames_then_the_pointers(monkeypatch):
     assert J.main([], head=T.BOTH, store=st, now=T.NOW, coords=T.COORDS, log=lambda s: None) == 0
     puts = [k for op, k in st.client.log if op == "put"]
     ptr = T._ptr(st)
-    assert all(s["frames"]["regions"] == {"hi": ["wind", "wdir", "precip"]} for s in ptr["sources"])
+    assert all(s["frames"]["regions"] == {"hi": ["wind", "wdir"]} for s in ptr["sources"])
+    assert all(s["frames"]["precip"]["regions"] == ["hi"] for s in ptr["sources"])
     fkey = "rrfs/v1/frames/2026111713/hi/wind/f006.png"
     assert st.client.objects[fkey]["ct"] == "image/png" and st.client.objects[fkey]["cc"] == P.IMMUTABLE
     first_ptr = puts.index("rrfs/v1/latest.json")
@@ -525,7 +530,7 @@ def test_one_oversize_region_drops_that_region_only(tmp_path):
     frames = {"hi": {6: {"wind": (str(p), J.FRAME_MAX_BYTES + 1), "wdir": (str(p), 10), "precip": (str(p), 10)}},
               "pr": {6: {"wind": (str(p), 10), "wdir": (str(p), 10), "precip": (str(p), 10)}}}
     files, doc = J.frameset(T.RUN, frames, log=lambda s: None)
-    assert doc["regions"] == {"pr": ["wind", "wdir", "precip"]} and "hi" in doc["dropped"]
+    assert doc["regions"] == {"pr": ["wind", "wdir"]} and "hi" in doc["dropped"] and doc["precip"]["regions"] == ["pr"]
     assert set(files) == {J.frame_key("2026111712", "pr", f, 6) for f in ("wind", "wdir", "precip")}
     assert doc["grids"] == {"pr": J.region_grid("pr")} and doc["ranges"] == J.frame_ranges()
 
@@ -612,6 +617,12 @@ def _check_precip_against_eccodes(q, g, n=600):
     return wet
 
 
+def test_precip_levels_pinned_by_number():
+    """G68a P2-2: a few levels by number (not through precip_level itself): 0.1 -> 0, 1 -> 17, 10 -> 34, 75 -> 49."""
+    assert [int(J.precip_level(v)) for v in (0.1, 0.5, 1.0, 2.5, 10.0, 25.0, 75.0, 1000.0)] == [0, 12, 17, 24, 34, 41, 49, 49]
+    assert int(J.precip_level(float("nan"))) == 0                                      # G68a P3-2
+
+
 def test_precip_code_table_round_trips():
     assert J.PRECIP_CODES == {"rain": [2, 51], "snow": [52, 101], "mix": [102, 151], "ice": [152, 201],
                               "thunder": [202, 251]}
@@ -631,14 +642,14 @@ def test_precip_code_table_round_trips():
 
 
 def test_precip_codes_from_cell_records():
-    apcp = np.array([0, 5, 10, 10, 10, 10, 10, 7500, 60000, J.MISSING, 10, 10], dtype="<u2")
+    apcp = np.array([0, 5, 10, 10, 10, 10, 10, 7500, 60000, J.MISSING, 10, 10, J.MISSING], dtype="<u2")
     typ = np.array([J.TYPE_NONE, J.TYPE_NONE, J.TYPE_RAIN, J.TYPE_SNOW, J.TYPE_MIX, J.TYPE_ICE, J.TYPE_THUNDER,
-                    J.TYPE_RAIN, J.TYPE_SNOW, J.TYPE_RAIN, J.MISSING8, J.TYPE_RAIN], dtype="u1")
-    mask = np.ones(12, bool)
+                    J.TYPE_RAIN, J.TYPE_SNOW, J.TYPE_RAIN, J.MISSING8, J.TYPE_RAIN, J.TYPE_NONE], dtype="u1")
+    mask = np.ones(13, bool)
     mask[11] = False
     q = J.precip_codes(apcp, typ, mask)
     assert q.dtype == np.uint8
-    assert list(q) == [1, 1, 2, 52, 102, 152, 202, 51, 101, 0, 0, 0]
+    assert list(q) == [1, 1, 2, 52, 102, 152, 202, 51, 101, 0, 0, 0, 0]   # last: "none" with an unknown amount = missing (G68a P3-1)
 
 
 def test_region_values_carry_the_precip_codes():
@@ -672,8 +683,8 @@ def test_a_runs_f000_has_no_precip_frame(tmp_path, monkeypatch):
     files, doc = J.frameset(T.RUN, {"hi": frames}, log=lambda s: None)
     cyc = "2026111712"
     assert J.frame_key(cyc, "hi", "precip", 0) not in files and J.frame_key(cyc, "hi", "wind", 0) in files
-    assert J.frame_key(cyc, "hi", "precip", 1) in files and doc["regions"] == {"hi": ["wind", "wdir", "precip"]}
-    assert doc["ranges"]["precip"] == [0.1, 75.0, "full", "rrfs-precip-v1"]
+    assert J.frame_key(cyc, "hi", "precip", 1) in files and doc["regions"] == {"hi": ["wind", "wdir"]}
+    assert doc["precip"] == {"regions": ["hi"], "range": [0.1, 75.0, "full", "rrfs-precip-v1"]}
 
 
 def test_cycle_precip_frames_are_each_hours_amount(tmp_path, monkeypatch):
@@ -689,12 +700,13 @@ def test_cycle_precip_frames_are_each_hours_amount(tmp_path, monkeypatch):
 
 
 def test_manifest_names_precip_and_skips_a_runs_f000():
-    run = _src("2026111712", "run")
-    run["frames"]["regions"] = {r: ["wind", "wdir", "precip"] for r in J.REGIONS}
+    run = _src("2026111712", "run", precip=True)
     m = J.frames_manifest({"sources": [run]}, NOW)
     assert m["frames"][0]["step"] == 0 and m["frames"][0]["files"]["hi"] == {
         "wind": "rrfs/v1/frames/2026111712/hi/wind/f000.png", "wdir": "rrfs/v1/frames/2026111712/hi/wdir/f000.png"}
-    assert m["frames"][1]["files"]["hi"]["precip"] == "rrfs/v1/frames/2026111712/hi/precip/f001.png"
+    assert "precip" not in m["frames"][0]                                    # a run's f000: no hour behind it
+    assert m["frames"][1]["precip"]["hi"] == "rrfs/v1/frames/2026111712/hi/precip/f001.png"
+    assert all(set(fs) == {"wind", "wdir"} for f in m["frames"] for fs in f["files"].values())   # G68a P0-1: `files` never changes
     d = m["regions"]["conus"]["fields"]["precip"]
     assert d["kind"] == "typed" and d["encoding"] == "rrfs-precip-v1" and d["types"] == J.PRECIP_CODES
     assert d["dry"] == 1 and d["lo"] == 0.1 and d["hi"] == 75.0 and d["per_type"] == 50 and d["resolutions"] == ("full",)
@@ -702,24 +714,41 @@ def test_manifest_names_precip_and_skips_a_runs_f000():
 
 
 def test_sources_built_before_precip_keep_their_wind():
-    """Plan section 102 A1: a source published before the precip field (its ranges and regions lack it) stays in the
-    manifest for wind + direction; its hours simply name no precip frame. A precip of another encoding is left out."""
-    new = _src("2026111713", "cycle")
-    new["frames"]["regions"] = {r: ["wind", "wdir", "precip"] for r in J.REGIONS}
+    """Plan section 102 A1: a source published before the precip field (no precip block) stays in the manifest for wind
+    + direction; its hours name no precip. A precip of another encoding, or of a region whose wind is unusable, is left
+    out; precip of a region never names it in `files`."""
+    new = _src("2026111713", "cycle", precip=True)
     old = _src("2026111712", "run")
-    old["frames"]["ranges"] = {f: v for f, v in J.frame_ranges().items() if f != "precip"}
     m = J.frames_manifest({"sources": [new, old]}, NOW)
     assert {f["src"] for f in m["frames"]} == {"2026111713", "2026111712"} and len(m["frames"]) == 83
-    assert all("precip" in f["files"]["hi"] for f in m["frames"] if f["src"] == "2026111713")
-    assert all(set(f["files"]["hi"]) == {"wind", "wdir"} for f in m["frames"] if f["src"] == "2026111712")
+    assert all(set(f["precip"]) == set(J.REGIONS) for f in m["frames"] if f["src"] == "2026111713")
+    assert all("precip" not in f for f in m["frames"] if f["src"] == "2026111712")
     assert "precip" in m["regions"]["hi"]["fields"]
-    odd = _src("2026111712", "run")
-    odd["frames"]["regions"] = {r: ["wind", "wdir", "precip"] for r in J.REGIONS}
-    odd["frames"]["ranges"] = dict(J.frame_ranges(), precip=[0.1, 75.0, "full", "rrfs-precip-v0"])
+    odd = _src("2026111712", "run", precip=True)
+    odd["frames"]["precip"]["range"] = [0.1, 75.0, "full", "rrfs-precip-v0"]
     m = J.frames_manifest({"sources": [odd]}, NOW)
-    assert all("precip" not in f["files"]["hi"] for f in m["frames"]) and "precip" not in m["regions"]["hi"]["fields"]
+    assert all("precip" not in f for f in m["frames"]) and "precip" not in m["regions"]["hi"]["fields"]
     only_old = J.frames_manifest({"sources": [old]}, NOW)                  # no source with precip: no precip field at all
     assert "precip" not in only_old["regions"]["hi"]["fields"]
-    lost = _src("2026111712", "run")
-    lost["frames"]["regions"] = {"hi": ["wind", "precip"]}                  # a region without its direction: never used
-    assert J.frames_manifest({"sources": [lost]}, NOW) is None
+    grid = _src("2026111712", "run", precip=True)
+    grid["frames"]["grids"]["conus"] = dict(J.region_grid("conus"), cols=1000)   # conus wind unusable: no conus precip either
+    m = J.frames_manifest({"sources": [grid]}, NOW)
+    assert all("conus" not in f.get("precip", {}) for f in m["frames"]) and "conus" not in m["regions"]
+
+
+def test_old_browsers_and_an_old_job_never_see_the_precip():
+    """G68a P0-1 / P2-1: the frame set's `regions` and `ranges` and every manifest frame's `files` are exactly what the
+    job wrote before section 102 (the live browser refuses unknown keys in `files`; a rolled-back job compares the whole
+    ranges), so shipping the job first, keeping old tabs, or rolling the job back changes nothing for the wind."""
+    assert J.frame_ranges() == {"wind": [J.FRAME_DEFS["wind"]["lo"], J.FRAME_DEFS["wind"]["hi"], "full"],
+                                "wdir": [0.0, 360.0, "half"]}
+    m = J.frames_manifest({"sources": [_src("2026111713", "cycle", precip=True), _src("2026111712", "run", precip=True)]}, NOW)
+    for f in m["frames"]:
+        assert set(f) <= {"valid_utc", "step", "src", "src_step", "files", "precip"}
+        assert all(set(v) == {"wind", "wdir"} for v in f["files"].values())
+    plain = J.frames_manifest({"sources": [_src("2026111713", "cycle"), _src("2026111712", "run")]}, NOW)
+    sig_plain = J._signature(plain)
+    body = [plain["run_utc"], plain["regions"], [[f["valid_utc"], f["step"], f["files"]] for f in plain["frames"]]]
+    import hashlib
+    assert sig_plain == hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()[:16]   # unchanged without precip
+    assert J._signature(m) != J._signature(dict(m, frames=[dict(f, precip={}) for f in m["frames"]]))

@@ -13,7 +13,8 @@ Rule 1, the pixel class at zoom 15, per pixel inside each region box (the 256 x 
 Rule 2, the trace: exact pixel-edge polygons of the land class per block (a zoom-12 tile = 8 x 8 zoom-15 tiles; runs of
 land pixels merged into rectangles and unioned with shapely), all blocks unioned in global zoom-15 Web-Mercator pixel
 space (integer grid lines join exactly), land rings and holes under SPECK_PX2 dropped (counted), then Douglas-Peucker
-at TOL_PX with preserve_topology (holes stay inside their shells), then lon/lat, clipped to the region box.
+at TOL_PX with preserve_topology (holes stay inside their shells), then lon/lat. The raster itself stops at the region
+box (by pixel centre), so v2 land reaches at most half a pixel past it; --check counts v2 vertices near a box line.
 Rule 3, the seam: each tier-1 cell that a region box overlaps AND whose content changes = union(GSHHG v1 outside the
 boxes, v2 inside the boxes), split on the cell's own 5-degree lines, quantised at Q2 = 1e5 (land counter-clockwise, sea
 water enclosed by land clockwise: the client's one nonzero fill and build_coast.point_in_pieces both read that right).
@@ -81,7 +82,7 @@ V1_PIN_TIER1_SHA256 = "a4b97403aac09c0a4ca88f50d77d8e339eb061342204a0dd227294e71
 EXPECTED_CHANGED = ["15_-155", "15_-160", "20_-160", "20_-165", "20_-170"]
 # The exact bytes of a real build (deterministic from the pinned inputs, this code and the pinned shapely): a
 # deliberate change updates this pin. Tier 0 is v1's (V1_PIN_TIER0_SHA256).
-PIN_TIER1_SHA256 = None   # set from the runner's build (its artifact's index.json): the laptop (Windows) differs by a few dozen vertices
+PIN_TIER1_SHA256 = "9a0ca75f08d7b2fb6bc4d6df0a43cb1653ddabbcb1fd4b1b5cf77cc6d21923f7"   # 2026-11-19 laptop build (normalised); coast-build dry run #4 confirms the runner
 # Land area of EXPECTED_CHANGED in v1 (sq deg, build_coast.signed_area of the q=1e4 rings, unweighted as in
 # build_coast.check): the v2 total stays within AREA_TOL of it. Judged on the total only: per cell, Niihau (20_-165)
 # loses ~6 % and French Frigate Shoals (20_-170, GSHHG draws the reef as land) ~85 % (step-1 report).
@@ -485,8 +486,9 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
     """-> (the region's land as [(shell, [holes])] rings of lon/lat arrays (shell CCW, holes CW), stats).
 
     Every GEOS operation runs on integer zoom-15 pixel coordinates (the union of pixel rectangles, the speck filter, the
-    simplifier, which keeps a subset of its input vertices): exact on any platform. The lon/lat conversion is then point
-    by point. (A first version clipped and unioned in lon/lat: the runner's build differed from the laptop's by a few
+    simplifier, which keeps a subset of its input vertices), the union's result normalised before the simplifier. The
+    lon/lat conversion is then point by point. The output is pinned from the runner's build (PIN_TIER1_SHA256): a
+    build on another platform may differ, and only the runner's bytes are uploaded. (A first version clipped and unioned in lon/lat: the runner's build differed from the laptop's by a few
     dozen vertices, so its hash could not be pinned. Land never reaches a box edge in S1: the raster already stops at the
     box, by pixel centre.)"""
     t0 = time.time()
@@ -507,7 +509,9 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
     stats["t_blocks_s"] = round(time.time() - t0, 1)
     u = shapely.union_all(polys) if polys else shapely.MultiPolygon()
     kept, stats["speck_land"], stats["speck_holes"] = drop_specks(u, SPECK_PX2)
-    simp = shapely.MultiPolygon(kept).simplify(TOL_PX, preserve_topology=True) if kept else shapely.MultiPolygon()
+    # normalised first (G70 P2-1): the polygons, their rings and each ring's start vertex in a canonical order, so the
+    # simplifier (anchored at the ring start) sees the same input whatever order GEOS's union produced on this platform
+    simp = shapely.normalize(shapely.MultiPolygon(kept)).simplify(TOL_PX, preserve_topology=True) if kept else shapely.MultiPolygon()
     out = []
     for p in polygons(simp):
         rings = [np.asarray(p.exterior.coords, np.float64)[:-1]] + [np.asarray(r.coords, np.float64)[:-1] for r in p.interiors]
@@ -663,7 +667,9 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
     open(os.path.join(out_dir, t0f), "wb").write(tier0)
     index = {k: v for k, v in v1.items() if k not in ("tier1",)}
     index.update({
-        "kind": KIND, "format": "coast-v1", "format_key": FORMAT_KEY, "q": Q2, "source": SOURCE, "license": LICENSE,
+        "kind": KIND, "format": "coast-v1", "format_key": FORMAT_KEY, "q": Q2,
+        "q_note": "q of the changed cells; tier 0 and every other cell keep v1's 10000: each file carries its own q",
+        "source": SOURCE, "license": LICENSE,
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "base_v1": {"tier0_sha": v1["tier0"]["sha256"], "tier1_sha": v1["tier1"]["sha256"], "changed_sha": base_changed},
         "bathy": bathy, "changed": changed, "v1_rings_crossing_box": crossing,
@@ -790,6 +796,19 @@ def check(out_dir, log=log, regions=None):
         for name, reg in regions.items():
             if not _pinned(reg["tiles_sha256"]):
                 log("  note: %s tiles_sha256 not pinned yet (%s)" % (name, index["bathy"][name]["sha256"]))
+        near = 0                                          # v2 vertices within ~1 zoom-15 px (5e-5 deg) of a box line (G70 P3-4)
+        for name in changed:
+            d = BC.decode_file(open(os.path.join(out_dir, t1["dir"], name + ".bin"), "rb").read())
+            for pc in d["pieces"]:
+                for ix, iy in pc["rings"]:
+                    x, y = ix / d["q"], iy / d["q"]
+                    for r in regions.values():
+                        b0, b1, b2, b3 = r["box"]
+                        inside = (x >= b0 - 5e-5) & (x <= b2 + 5e-5) & (y >= b1 - 5e-5) & (y <= b3 + 5e-5)
+                        edge = (np.abs(x - b0) < 5e-5) | (np.abs(x - b2) < 5e-5) | (np.abs(y - b1) < 5e-5) | (np.abs(y - b3) < 5e-5)
+                        near += int((inside & edge).sum())
+        if near:
+            problems.append("%d v2 vertices lie within 5e-5 deg of a region box line (none expected in S1)" % near)
         if index.get("v1_rings_crossing_box") != 0:
             problems.append("%s v1 rings cross a box edge (expected 0 for S1)" % index.get("v1_rings_crossing_box"))
         if _pinned(V1_CHANGED_SQDEG):
@@ -848,8 +867,12 @@ def main(argv=None):
         if not os.path.exists(os.path.join(a.v1, "index.json")):
             fetch_v1(a.v1)
         fetch_tiles(a.tiles)
-    build(a.v1, a.tiles, a.out)
-    return 1 if check(a.out) else 0
+    index = build(a.v1, a.tiles, a.out)
+    probs = check(a.out)
+    if not is_real(index):                            # G70 P3-1: a default build must be from the pinned inputs
+        print("the build is not from the pinned v1 / bathymetry inputs: the real-build gates were off")
+        return 1
+    return 1 if probs else 0
 
 
 if __name__ == "__main__":

@@ -383,3 +383,46 @@ def test_workflow_builds_coast_v2_with_pinned_shapely():
     pips = [line for line in wf.splitlines() if "pip install" in line]
     assert len(pips) == 2 and all("shapely==2.2.0" in p and "pillow==" in p for p in pips)
     assert "|shapely=2.2" in V2.FORMAT_KEY or not shapely.__version__.startswith("2.2")
+
+
+# ---------------------------------------------------------------- the upload gates (G70 P2-2)
+def test_upload_refuses_every_unproven_build(world, tmp_path, monkeypatch):
+    """--upload calls build_coast.upload only for a build that passes --check, comes from the pinned inputs (v1, the
+    bathymetry digests and tile hashes) and matches PIN_TIER1_SHA256; every other case returns 1 without uploading."""
+    tdir, v1, reg = world({(15, X0, Y0): island_with_lagoon(), (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    sha = json.load(open(os.path.join(out, "index.json")))["tier1"]["sha256"]
+    calls = []
+    monkeypatch.setattr(V2.BC, "upload", lambda *a, **k: calls.append(a) or True)
+    args = ["--out", out, "--upload", "static/coast/v2"]
+    # 1. not from the pinned inputs (a synthetic build): refused
+    assert V2.main(args) == 1 and calls == []
+    # 2. "real", but a region's tile hash unpinned: refused
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    monkeypatch.setattr(V2, "check", lambda *a, **k: [])
+    monkeypatch.setattr(V2, "REGIONS", {n: dict(r, tiles_sha256=None) for n, r in V2.REGIONS.items()})
+    assert V2.main(args) == 1 and calls == []
+    # 3. tiles pinned, but no tier-1 pin / a different one: refused
+    monkeypatch.setattr(V2, "REGIONS", {n: dict(r, tiles_sha256="x" * 64) for n, r in V2.REGIONS.items()})
+    monkeypatch.setattr(V2, "PIN_TIER1_SHA256", None)
+    assert V2.main(args) == 1 and calls == []
+    monkeypatch.setattr(V2, "PIN_TIER1_SHA256", "0" * 64)
+    assert V2.main(args) == 1 and calls == []
+    # 4. a failing --check: refused, whatever the pins say
+    monkeypatch.setattr(V2, "PIN_TIER1_SHA256", sha)
+    monkeypatch.setattr(V2, "check", lambda *a, **k: ["a problem"])
+    assert V2.main(args) == 1 and calls == []
+    # 5. everything proven: one upload, of this directory, with its own LICENSE.txt
+    monkeypatch.setattr(V2, "check", lambda *a, **k: [])
+    assert V2.main(args) == 0 and len(calls) == 1 and calls[0][0] == out and calls[0][1] == "static/coast/v2"
+
+
+def test_check_counts_v2_vertices_on_a_box_line(world, tmp_path, monkeypatch):
+    """G70 P3-4: a real build with v2 land on a region box line is a problem (S1 has none)."""
+    t = full(WATER)
+    t[100:160, :] = LAND                       # runs to the box's east edge
+    tdir, v1, reg = world({(15, X0 + 1, Y0): t, (14, (X0 + 1) >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    probs = V2.check(out, log=lambda m: None, regions=reg)
+    assert any("box line" in p for p in probs)

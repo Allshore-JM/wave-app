@@ -1245,3 +1245,15 @@ test('77d review P3-4: refreshRunTail follows the forecast table\'s run in place
   const e = world(); e.ov.ui = {}; e.ov.refreshRunTail();                       // no run line (loading, error, sea temperature): nothing to do
   const n = world(); n.ov.render({ state: 'ready' }); n.ov.manifest = null; n.ov.refreshRunTail();
 }));
+
+test('section 102 B1 (G69 M21): the total legend places each tick at its own amount, US ticks in inches (x 25.4 mm)', () => withClock(() => {
+  const w = obsWorld(), I = w.I;
+  for (const unit of ['US', 'Metric']) {
+    const leg = I.buildTotalLegend(unit, 'Thu 3 PM'), spans = leg.querySelector('.ov-ticks').children, vals = I.PTOT_TICKS[unit];
+    assert.equal(spans.length, vals.length);
+    vals.forEach((v, k) => {
+      const want = (I.ptotPos(unit === 'US' ? v * 25.4 : v) * 100).toFixed(2) + '%';
+      assert.equal(spans[k].style.left, want, unit + ' ' + v);
+    });
+  }
+}));

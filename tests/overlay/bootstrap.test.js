@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_rrfs_precip: false, overlay_rrfs_precip_total: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -39,7 +39,7 @@ function page(opt) {
     for (;;) { timers.sort((x, y) => x.at - y.at); const t = timers[0]; if (!t || t.at > end) break; timers.shift(); now = t.at; t.fn(); }
     now = end;
   }
-  const OPTS = opt.radar ? ['', 'hs', 'tp', 'wind', 'radar'] : opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : opt.sat ? ['', 'hs', 'tp', 'wind', 'sat'] : ['', 'hs', 'tp', 'wind'];
+  const OPTS = opt.opts ? opt.opts : opt.radar ? ['', 'hs', 'tp', 'wind', 'radar'] : opt.sst ? ['', 'hs', 'tp', 'wind', 'sst'] : opt.sat ? ['', 'hs', 'tp', 'wind', 'sat'] : ['', 'hs', 'tp', 'wind'];
   const sel = { _v: '', _ls: [], get value() { return this._v; }, set value(v) { v = String(v); this._v = OPTS.includes(v) ? v : ''; },
     addEventListener(ev, fn) { this._ls.push(fn); }, userPick(v) { this.value = v; this._ls.forEach((f) => f({})); } };
   const panel = { textContent: '' }, unit = { _ls: [], addEventListener(ev, fn) { this._ls.push(fn); } };
@@ -84,7 +84,7 @@ function page(opt) {
   const map = { addControl: (c) => c.onAdd() };
   if (opt.layers) map.eachLayer = (fn) => opt.layers.forEach(fn);
   if (opt.zoom) { map.zoomControl = { tag: 'zoom' }; map.removed = []; map.removeControl = (c) => map.removed.push(c); }
-  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.radar ? SRC_RADAR : opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : opt.sat ? SRC_SAT : SRC)(
+  new Function('window', 'document', 'sessionStorage', 'L', 'map', 'getSelectedUnit', 'fmtTimeInTz', 'tzAbbr', 'setTimeout', opt.src ? opt.src : opt.radar ? SRC_RADAR : opt.sst ? SRC_SST : opt.glwu ? SRC_GLWU : opt.sat ? SRC_SAT : SRC)(
     window, document, sessionStorage, L, map, () => 'US', () => '', () => '', setTimeout);
   return {
     log, store, sel, panel, overlays, listeners, map, boxes, gear, local, byId, win: window,
@@ -293,6 +293,40 @@ test('section 85: "Radar" is offered only with RADAR_OVERLAY (RADAR); a saved ra
   assert.equal(p2.sel.value, '');
   await loadedAndIdle(p2);
   assert.equal(p2.overlays.length, 0);
+});
+
+test('section 102: "Precipitation" is offered only with RRFS_PRECIP AND RRFS among the models; a saved precip without them starts Off', async () => {
+  const both = gatedScript({ overlay_rrfs_precip: true, overlay_models: ['gfswave', 'ecmwf', 'rrfs'] });
+  const noRrfs = gatedScript({ overlay_rrfs_precip: true, overlay_models: ['gfswave', 'ecmwf'] });
+  const noFlag = gatedScript({ overlay_models: ['gfswave', 'ecmwf', 'rrfs'] });
+  assert.ok(both.indexOf("var PRECIP = true && MODELS.indexOf('rrfs') >= 0;") >= 0);
+  const on = page({ complete: true, src: both });
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="wind">Wind speed</option><option value="precip">Precipitation</option>') >= 0);
+  for (const src of [noRrfs, noFlag]) {
+    const off = page({ complete: true, src });
+    assert.ok(off.boxes[0].innerHTML.indexOf('value="precip"') < 0);
+    const p2 = page({ init: { field: 'precip' }, src, opts: ['', 'hs', 'tp', 'wind', 'precip'] });   // (the select would take it: the page's FIELDS refuses it)
+    assert.equal(p2.sel.value, '');
+  }
+  const p1 = page({ init: { field: 'precip' }, src: both, opts: ['', 'hs', 'tp', 'wind', 'precip'] });
+  assert.equal(p1.sel.value, 'precip');
+  await loadedAndIdle(p1);
+  assert.deepEqual(p1.overlays[0].mounts, [['precip', true]]);
+});
+
+test('section 102 B1: "Precipitation total" only beside Precipitation, with RRFS_PRECIP_TOTAL; a saved ptot restores', async () => {
+  const all = gatedScript({ overlay_rrfs_precip: true, overlay_rrfs_precip_total: true, overlay_models: ['gfswave', 'ecmwf', 'rrfs'] });
+  const noPrecip = gatedScript({ overlay_rrfs_precip_total: true, overlay_models: ['gfswave', 'ecmwf', 'rrfs'] });
+  const on = page({ complete: true, src: all });
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="precip">Precipitation</option><option value="ptot">Precipitation total</option>') >= 0);
+  const off = page({ complete: true, src: noPrecip });
+  assert.ok(off.boxes[0].innerHTML.indexOf('value="ptot"') < 0);
+  const p1 = page({ init: { field: 'ptot' }, src: all, opts: ['', 'hs', 'tp', 'wind', 'precip', 'ptot'] });
+  assert.equal(p1.sel.value, 'ptot');
+  await loadedAndIdle(p1);
+  assert.deepEqual(p1.overlays[0].mounts, [['ptot', true]]);
+  const p2 = page({ init: { field: 'ptot' }, src: noPrecip, opts: ['', 'hs', 'tp', 'wind', 'precip', 'ptot'] });
+  assert.equal(p2.sel.value, '');
 });
 
 test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SST); a saved sst without it starts Off; the module is told', async () => {

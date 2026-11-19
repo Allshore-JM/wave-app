@@ -210,7 +210,7 @@ test('colours: the radar’s legend through Marshall-Palmer; the dry tint; the a
   const lut = I.precipLut(), rgb = [0, 0, 0];
   assert.deepEqual(Array.from(lut.slice(8, 12)), I.RADAR_TINT, 'value 1 (dry) = the radar’s coverage tint');
   assert.equal(lut[3], 0); assert.equal(lut[7], 0);
-  const ramps = ['radar', 'radarSnow', 'radarMix', 'precipIce', 'precipThunder'];
+  const ramps = ['radar', 'radarSnow', 'radarMix', 'precipIce', 'radar'];   // thunder drawn as rain (owner, 2026-11-19)
   for (let t = 0; t < 5; t++) for (const lvl of [0, 7, 24, 49]) {
     const v = 2 + 50 * t + lvl, e = Math.round(v * 2) * 4, mm = I.precipMm(lvl);
     I.rampAt(I.RAMPS[ramps[t]], I.precipPos(mm), rgb, 0);
@@ -225,8 +225,9 @@ test('colours: the radar’s legend through Marshall-Palmer; the dry tint; the a
   assert.equal(d[3], 0); assert.deepEqual(Array.from(d.slice(4, 8)), I.RADAR_TINT);
   assert.deepEqual(Array.from(d.slice(8, 12)), Array.from(lut.slice(4 * 4, 4 * 4 + 4)));
   assert.deepEqual(Array.from(d.slice(16, 20)), Array.from(lut.slice(5 * 4, 5 * 4 + 4)), 'a value * 2 ROUNDED (2.3 -> entry 5)');
-  assert.equal(I.PRECIP_LOOK, 'a');
-  for (const k of ['precipIce', 'precipThunder']) assert.ok(I.PRECIP_ALT[k].length >= 5 && I.RAMPS[k] !== I.PRECIP_ALT[k]);
+  // thunder has no colour of its own: a thunder level is exactly the rain level's colour (owner: the rate matters more)
+  for (const lvl of [0, 13, 30, 49]) { const a = Math.round((2 + lvl) * 2) * 4, b = Math.round((202 + lvl) * 2) * 4; assert.deepEqual(Array.from(lut.slice(b, b + 4)), Array.from(lut.slice(a, a + 4))); }
+  assert.equal(I.RAMPS.precipThunder, undefined); assert.equal(I.RAMPS.precipIce[0][1], '#d9fbf4', 'ice teal');
 });
 
 // --------------------------------------------------------------------------------------------- the layer, readout

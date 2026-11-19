@@ -1370,7 +1370,7 @@ test('section 43: MODEL_DEFS (prefixes, cycles, stale lines, the 29-character cr
   const D = I.MODEL_DEFS;
   assert.deepEqual(Object.keys(D), ['gfswave', 'ecmwf', 'rrfs']); assert.equal(I.DEFAULT_MODEL, 'gfswave');
   // RRFS (plan section 99 D2): regional, Wind speed and (section 102) Precipitation only, hourly cycles, 6-h stale line, the GFS-Wave table note
-  assert.equal(D.rrfs.prefix, 'rrfs/v1/frames'); assert.equal(D.rrfs.regional, true); assert.deepEqual(D.rrfs.fields, ['wind', 'precip']);
+  assert.equal(D.rrfs.prefix, 'rrfs/v1/frames'); assert.equal(D.rrfs.regional, true); assert.deepEqual(D.rrfs.fields, ['wind', 'precip', 'ptot']);
   assert.equal(D.rrfs.cycleMs, 3.6e6); assert.equal(D.rrfs.staleS, 6 * 3600); assert.equal(D.rrfs.table, 'model'); assert.equal(D.rrfs.short, 'RRFS');
   assert.equal(D.rrfs.attribution.replace(/<[^>]+>/g, ''), 'Overlay: NOAA RRFS');
   assert.equal(I.modelOffers('rrfs', 'wind'), true); assert.equal(I.modelOffers('rrfs', 'precip'), true); assert.equal(I.modelOffers('gfswave', 'precip'), false); assert.equal(I.modelOffers('ecmwf', 'precip'), false); assert.equal(I.modelOffers('gfswave', 'hs'), true); assert.equal(I.modelOffers('ecmwf', 'wind'), true); assert.equal(I.modelOffers('rrfs', 'hs'), false); assert.equal(I.modelOffers('rrfs', 'tp'), false);

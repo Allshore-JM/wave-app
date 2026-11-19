@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_rrfs_precip: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_rrfs_precip: false, overlay_rrfs_precip_total: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -312,6 +312,21 @@ test('section 102: "Precipitation" is offered only with RRFS_PRECIP AND RRFS amo
   assert.equal(p1.sel.value, 'precip');
   await loadedAndIdle(p1);
   assert.deepEqual(p1.overlays[0].mounts, [['precip', true]]);
+});
+
+test('section 102 B1: "Precipitation total" only beside Precipitation, with RRFS_PRECIP_TOTAL; a saved ptot restores', async () => {
+  const all = gatedScript({ overlay_rrfs_precip: true, overlay_rrfs_precip_total: true, overlay_models: ['gfswave', 'ecmwf', 'rrfs'] });
+  const noPrecip = gatedScript({ overlay_rrfs_precip_total: true, overlay_models: ['gfswave', 'ecmwf', 'rrfs'] });
+  const on = page({ complete: true, src: all });
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="precip">Precipitation</option><option value="ptot">Precipitation total</option>') >= 0);
+  const off = page({ complete: true, src: noPrecip });
+  assert.ok(off.boxes[0].innerHTML.indexOf('value="ptot"') < 0);
+  const p1 = page({ init: { field: 'ptot' }, src: all, opts: ['', 'hs', 'tp', 'wind', 'precip', 'ptot'] });
+  assert.equal(p1.sel.value, 'ptot');
+  await loadedAndIdle(p1);
+  assert.deepEqual(p1.overlays[0].mounts, [['ptot', true]]);
+  const p2 = page({ init: { field: 'ptot' }, src: noPrecip, opts: ['', 'hs', 'tp', 'wind', 'precip', 'ptot'] });
+  assert.equal(p2.sel.value, '');
 });
 
 test('section 44: "Sea surface temperature" is offered only with SST_OVERLAY (SST); a saved sst without it starts Off; the module is told', async () => {

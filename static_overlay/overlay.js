@@ -43,7 +43,7 @@
     // elsewhere), every hourly cycle merged into one manifest by the job (the newest source per valid hour) to +84 h.
     // fields: the only layers a model offers (RRFS: no waves; GFS / ECMWF: no precipitation, plan section 102); a layer the
     // model lacks switches to the first offered model that has it.
-    rrfs: { prefix: 'rrfs/v1/frames', label: 'RRFS (NOAA, 3 km)', short: 'RRFS', cycleMs: 3.6e6, staleS: 6 * 3600, table: 'model', regional: true, fields: ['wind', 'precip'],
+    rrfs: { prefix: 'rrfs/v1/frames', label: 'RRFS (NOAA, 3 km)', short: 'RRFS', cycleMs: 3.6e6, staleS: 6 * 3600, table: 'model', regional: true, fields: ['wind', 'precip', 'ptot'],
       attribution: 'Overlay: <a href="https://registry.opendata.aws/noaa-rrfs/" target="_blank" rel="noopener" title="NOAA Rapid Refresh Forecast System (RRFS) 10-m wind via NOAA Open Data on AWS, rendered by Allshore Surf; not an official NWS product">NOAA RRFS</a>' }
   };
   var DEFAULT_MODEL = 'gfswave';
@@ -85,6 +85,10 @@
   // thunder hour is drawn as rain by its amount; the readout still says thunder. RAMPS.precip: the field's main bar (rain).
   RAMPS.precipIce = [[0, '#d9fbf4'], [0.1, '#b4f2e6'], [0.2, '#80e3d2'], [0.3, '#4fcfbb'], [0.42, '#26b3a0'], [0.55, '#128c7d'], [1, '#064a42']];
   RAMPS.precip = RAMPS.radar;
+  // the total from now (plan section 102 B1): an NWS-QPF-like scale over 0.1-1000 mm on a log axis (greens, blues, purples,
+  // reds, oranges, pale yellow)
+  RAMPS.ptot = [[0, '#c9f2c5'], [0.15, '#7fd47a'], [0.25, '#2e9f3a'], [0.35, '#1f6fd1'], [0.45, '#3a3ac7'], [0.55, '#8a3ac9'], [0.65, '#c23ab0'],
+                [0.75, '#d9302a'], [0.85, '#f08a24'], [0.93, '#f7d046'], [1, '#fff6c8']];
   var RADAR_TINT = [255, 255, 255, 41], RADAR_ALPHA = [0.57, 1];   // alpha at the 5-dBZ floor and from 25 dBZ up (the layer's own opacity on top)
   // The radar's opacity (plan section 89): one CSS opacity on the layer, set by the panel's transparency slider; kept on the device.
   var RADAR_OPACITY_KEY = 'allshore.radarOpacity.v1', RADAR_OPACITY_MIN = 20, RADAR_OPACITY_MAX = 100, RADAR_OPACITY_DEFAULT = 75;
@@ -106,7 +110,7 @@
     ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
   };
   // Fixed opacity per field (owner, 2026-09-26: no slider): the waves over the imagery, the wind multiplied into the relief.
-  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75, precip: 0.75 };   // precip: the radar's default (plan section 102)
+  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75, precip: 0.75, ptot: 0.75 };   // precip: the radar's default (plan section 102)
   // Leaflet fires a tile layer's 'load' when its last tile STARTS its 200-ms fade-in (G14 P1-1: removing the old
   // basemap then showed the bare map for ~200 ms): the old one leaves this long after.
   var BASE_FADE_MS = 300;
@@ -272,6 +276,7 @@
   var PRECIP_ENCODING = 'rrfs-precip-v1', PRECIP_MAX = 1 + PRECIP_PER * PRECIP_TYPES.length;   // 251
   var PRECIP_K = new Float64Array(256), PRECIP_T = new Uint8Array(256);   // a wet code's level + 1 (0: not wet) and its type
   (function () { for (var c = 2; c <= PRECIP_MAX; c++) { PRECIP_K[c] = (c - 2) % PRECIP_PER + 1; PRECIP_T[c] = Math.floor((c - 2) / PRECIP_PER); } })();
+  var PRECIP_TAB = { K: PRECIP_K, T: PRECIP_T, per: PRECIP_PER };       // the typed sampler's table for the hourly codes
   function precipMm(k) { return PRECIP_LO * Math.pow(PRECIP_HI / PRECIP_LO, k / (PRECIP_PER - 1)); }   // a level (fractional) -> mm
   // A sampled value -> {mm, type} (null: nothing; type null: dry).
   function precipOf(v) {
@@ -337,6 +342,135 @@
     var top = p.mm >= hi - 1e-9;
     return (top ? '≥ ' : '') + precipAmountText(top ? precipMm(PRECIP_PER - 1.5) : p.mm, unit, '/h') + ' ' + PRECIP_WORDS[p.type];
   }
+  // ---- RRFS precipitation total from now (plan section 102 B1) ----
+  // The browser sums the hourly frames per region node from the hour now in progress to the slider time. Each hourly code
+  // counts as its level's amount in 0.001 mm (PRECIP_MILLI, integers: adding an hour and taking it away again is exact, so
+  // a sum equals a direct sum bit for bit); a node missing in any summed hour is drawn blank (bad > 0). A total is drawn as
+  // a code on the region's grid: 1 = covered and dry, 2..255 = levels 0..253 on a log scale from 0.1 to 1000 mm (3.7 %
+  // steps), through the typed sampler with one type (PTOT_TAB), so wet totals never blend with dry ground.
+  var PTOT_LO = 0.1, PTOT_HI = 1000, PTOT_LEVELS = 254;
+  var PTOT_K = new Float64Array(256), PTOT_T = new Uint8Array(256);
+  (function () { for (var c = 2; c <= 255; c++) PTOT_K[c] = c - 1; })();
+  var PTOT_TAB = { K: PTOT_K, T: PTOT_T, per: 0 };
+  var PRECIP_MILLI = new Int32Array(256);
+  (function () { PRECIP_MILLI.fill(-1); PRECIP_MILLI[PRECIP_DRY] = 0; for (var c = 2; c <= PRECIP_MAX; c++) PRECIP_MILLI[c] = Math.round(precipMm((c - 2) % PRECIP_PER) * 1000); })();
+  // the totals' level edges in 0.001 mm: a sum's code by a binary search (no logarithm per node)
+  var PTOT_EDGE = (function () {
+    var out = new Float64Array(PTOT_LEVELS - 1);
+    for (var k = 0; k < PTOT_LEVELS - 1; k++) out[k] = 1000 * PTOT_LO * Math.pow(PTOT_HI / PTOT_LO, (k + 0.5) / (PTOT_LEVELS - 1));
+    return out;
+  })();
+  function ptotMm(level) { return PTOT_LO * Math.pow(PTOT_HI / PTOT_LO, level / (PTOT_LEVELS - 1)); }
+  function ptotCode(milli) {
+    if (milli <= 0) return PRECIP_DRY;
+    var lo = 0, hi = PTOT_EDGE.length;                       // the first edge above the sum = its level
+    while (lo < hi) { var mid = (lo + hi) >> 1; if (PTOT_EDGE[mid] <= milli) lo = mid + 1; else hi = mid; }
+    return 2 + lo;
+  }
+  function ptotOf(v) { if (!(v >= 1)) return null; return v < 2 ? 0 : ptotMm(Math.min(PTOT_LEVELS - 1, v - 2)); }
+  // one hour's codes added (sign 1) or taken away (-1); q null: the hour has no frame for the region (every node missing)
+  function sumApply(sum, bad, q, sign) {
+    var n = sum.length, M = PRECIP_MILLI, j;
+    if (!q) { for (j = 0; j < n; j++) bad[j] += sign; return; }
+    for (j = 0; j < n; j++) { var m = M[q[j]]; if (m < 0) bad[j] += sign; else if (m) sum[j] += sign * m; }
+  }
+  function sumCodes(sum, bad, out) { for (var j = 0; j < sum.length; j++) out[j] = bad[j] ? 0 : ptotCode(sum[j]); return out; }
+  function ptotPos(mm) { return Math.max(0, Math.min(1, Math.log(mm / PTOT_LO) / Math.log(PTOT_HI / PTOT_LO))); }
+  // RGBA per half code: the dry tint at 1; the scale by the total's log position; alpha rising to solid by 0.25 mm
+  function ptotLut() {
+    var n = 512, out = new Uint8ClampedArray(n * 4), rgb = [0, 0, 0], p25 = ptotPos(0.25);
+    out[8] = RADAR_TINT[0]; out[9] = RADAR_TINT[1]; out[10] = RADAR_TINT[2]; out[11] = RADAR_TINT[3];
+    for (var e = 4; e < n; e++) {
+      var p = ptotPos(ptotMm(Math.max(0, Math.min(PTOT_LEVELS - 1, e / 2 - 2)))), k = e * 4;
+      rampAt(RAMPS.ptot, p, rgb, 0);
+      out[k] = rgb[0]; out[k + 1] = rgb[1]; out[k + 2] = rgb[2]; out[k + 3] = 255 * Math.min(1, 0.6 + 0.4 * p / p25);
+    }
+    return out;
+  }
+  var PTOT_TICKS = { US: [0.01, 0.1, 0.25, 0.5, 1, 2, 4, 10], Metric: [0.25, 2.5, 6, 12, 25, 50, 100, 250] };
+  function ptotReadout(v, unit) {
+    var mm = ptotOf(v);
+    if (mm === null) return null;
+    if (!mm) return 'no precipitation';
+    return precipAmountText(mm, unit, '') + ' total';
+  }
+  // The first frame whose hour is still running or to come (its valid time, the hour's end, is after now): the totals
+  // start there (the hour now in progress counts whole). frames.length when every frame is past.
+  function precipK0(m, now) { for (var i = 0; i < m.frames.length; i++) if (Date.parse(m.frames[i].valid_utc) > now) return i; return m.frames.length; }
+  var PTOT_CHUNK = 4, PTOT_KEEP = 8;                          // hourly frames fetched at once; totals kept (the ring around the slider)
+  // The running sums of one manifest and start (sig, k0): per region {grid, sum, bad, at: the last frame summed}. at(idx)
+  // moves a region's sums to idx a chunk at a time (forward: add; back: take away; or start again from k0 when that is
+  // fewer frames), so a long jump never holds more than PTOT_CHUNK hourly frames and an abort keeps every chunk done.
+  // One computation at a time (the sums are shared); each result is a regional bundle of code frames, kept by step.
+  function PrecipTotals(ov) { this.ov = ov; this.reset(null, -1); }
+  PrecipTotals.prototype.reset = function (sig, k0) { this.sig = sig; this.k0 = k0; this.regions = {}; this.made = new Map(); this.queue = Promise.resolve(); this.progress = null; };
+  PrecipTotals.prototype.at = function (m, idx, names, k0, ctrl) {
+    if (m.signature !== this.sig || k0 !== this.k0) this.reset(m.signature, k0);
+    var self = this, key = idx + '|' + names.join(','), hit = this.made.get(key);
+    if (hit) return Promise.resolve(hit);
+    var run = this.queue.then(function () {
+      if (self.sig !== m.signature || self.k0 !== k0) throw abortError();   // reset meanwhile
+      return self._compute(m, idx, names, ctrl);
+    });
+    this.queue = run.catch(function () {});
+    return run;
+  };
+  PrecipTotals.prototype._compute = function (m, idx, names, ctrl) {
+    var self = this, k0 = this.k0, key = idx + '|' + names.join(',');
+    if (idx < k0) return Promise.resolve(this._keep(key, { regional: true, total: true, before: true, k0: k0, parts: [], names: names, failed: 0, nofield: 0, retryAt: 0, cols: 0, rows: 0, q: EMPTY_Q }));
+    var parts = [], todo = 0, done = 0, plans = [];
+    names.forEach(function (name) {
+      var g = null;
+      for (var i = 0; i < m.regionList.length; i++) if (m.regionList[i].name === name) g = m.regionList[i].grid;
+      if (!g) return;
+      var st = self.regions[name];
+      if (!st) st = self.regions[name] = { grid: g, sum: new Int32Array(g.cols * g.rows), bad: new Uint16Array(g.cols * g.rows), at: k0 - 1 };
+      var steps = [], sign = 1, k;
+      if (idx >= st.at) { if (idx - st.at > idx - k0 + 1) { st.sum.fill(0); st.bad.fill(0); st.at = k0 - 1; } for (k = st.at + 1; k <= idx; k++) steps.push(k); }
+      else if (st.at - idx <= idx - k0 + 1) { sign = -1; for (k = st.at; k > idx; k--) steps.push(k); }
+      else { st.sum.fill(0); st.bad.fill(0); st.at = k0 - 1; for (k = k0; k <= idx; k++) steps.push(k); }
+      todo += steps.length;
+      plans.push({ name: name, st: st, steps: steps, sign: sign });
+    });
+    this.progress = todo > PTOT_CHUNK ? { done: 0, total: todo } : null;
+    this.ov._totalProgress();
+    var chain = Promise.resolve();
+    plans.forEach(function (pl) {
+      for (var c = 0; c < pl.steps.length; c += PTOT_CHUNK) (function (chunk) {
+        chain = chain.then(function () {
+          if (ctrl.signal.aborted) throw abortError();
+          return Promise.all(chunk.map(function (k) { return self._hour(m, k, pl.name, pl.st.grid, ctrl); })).then(function (qs) {
+            if (ctrl.signal.aborted) throw abortError();
+            for (var j = 0; j < chunk.length; j++) { sumApply(pl.st.sum, pl.st.bad, qs[j], pl.sign); pl.st.at = pl.sign > 0 ? chunk[j] : chunk[j] - 1; }
+            done += chunk.length;
+            if (self.progress) { self.progress.done = done; self.ov._totalProgress(); }
+          });
+        });
+      })(pl.steps.slice(c, c + PTOT_CHUNK));
+    });
+    return chain.then(function () {
+      self.progress = null; self.ov._totalProgress();
+      plans.forEach(function (pl) {
+        var g = pl.st.grid, q = sumCodes(pl.st.sum, pl.st.bad, new Uint8Array(g.cols * g.rows));
+        parts.push({ name: pl.name, grid: g, frame: { q: q, cols: g.cols, rows: g.rows } });
+      });
+      return self._keep(key, { regional: true, total: true, k0: k0, parts: parts, names: names, failed: 0, nofield: 0, retryAt: 0, cols: 0, rows: 0, q: EMPTY_Q });
+    }, function (err) { self.progress = null; self.ov._totalProgress(); throw err; });
+  };
+  PrecipTotals.prototype._keep = function (key, b) {
+    this.made.set(key, b);
+    while (this.made.size > PTOT_KEEP) this.made.delete(this.made.keys().next().value);
+    return b;
+  };
+  // One hour's codes of a region: the decoded frame (the scheduler's rcache by file key, else a download, kept there), or
+  // null when the step has no precipitation frame for the region.
+  PrecipTotals.prototype._hour = function (m, k, name, g, ctrl) {
+    var ov = this.ov, fkey = regionFrameKey(m.frames[k], name, 'precip');
+    if (!fkey) return Promise.resolve(null);
+    var rk = ov.model + '/' + fkey, got = ov.rcache.get(rk);
+    if (got) return Promise.resolve(got.q);
+    return ov._download(ov.root + '/' + fkey, g, ctrl, m, function (f) { validateRegionGrid(g, f); }).then(function (f) { ov.rcache.set(rk, f); return f.q; });
+  };
   var RADAR_WORDS = [[10, 'very light'], [25, 'light'], [35, 'moderate'], [45, 'heavy'], [58, 'very heavy']];
   // Japan's files hold JMA's eight rain-rate classes as the dBZ codes of the same rain (tools/model_frames/jma.py; a Python test compares
   // the rows): [code, from mm/h, to mm/h, the word]. A pixel of such a region is one of these codes, never between two.
@@ -2217,10 +2351,11 @@
   // and the type of the node with the most weight (the first of equals): 2 + 50 * type + level. Else, with at least a
   // quarter of the weight on covered nodes (code >= 1): 1 (dry); else nothing and the next region is asked. The tiles
   // (0, 0, 1, TILE) and the readout (px, py, 1, 1) go through here: the readout is the drawn pixel.
-  function sampleRegionsTyped(parts, coords, ox, oy, step, n, out) {
+  function sampleRegionsTyped(parts, coords, ox, oy, step, n, out, tab) {
+    tab = tab || PRECIP_TAB;                                // (the totals: PTOT_TAB, one type, levels 0..253)
     var nW = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE + ox, y0 = coords.y * TILE + oy, np = parts.length, i, j, p, k = 0;
     if (REG_C0.length < np * n) { REG_C0 = new Int32Array(np * n); REG_C1 = new Int32Array(np * n); REG_FC = new Float64Array(np * n); }
-    var C0 = REG_C0, C1 = REG_C1, FC = REG_FC, K = PRECIP_K, T = PRECIP_T, PER = PRECIP_PER;
+    var C0 = REG_C0, C1 = REG_C1, FC = REG_FC, K = tab.K, T = tab.T, PER = tab.per;
     for (p = 0; p < np; p++) {
       var g0 = parts[p].grid, base0 = p * n, cl = g0.cols;
       for (i = 0; i < n; i++) {
@@ -2302,7 +2437,10 @@
     }
     // The precipitation field (plan section 102 A) is offered only when every region that names it says exactly this
     // client's codes; otherwise the wind stays and Precipitation says the frames are unreadable (its keys are never read).
-    if (precip && !precipBad) fields.precip = { kind: 'typed', encoding: PRECIP_ENCODING, lo: PRECIP_LO, hi: PRECIP_HI, legend: [PRECIP_LO, PRECIP_HI], resolutions: ['full'] };
+    if (precip && !precipBad) {
+      fields.precip = { kind: 'typed', encoding: PRECIP_ENCODING, lo: PRECIP_LO, hi: PRECIP_HI, legend: [PRECIP_LO, PRECIP_HI], resolutions: ['full'] };
+      fields.ptot = { kind: 'total', lo: PTOT_LO, hi: PTOT_HI, legend: [PTOT_LO, PTOT_HI], resolutions: ['full'] };   // summed from it (plan section 102 B1)
+    }
     m.regional = true; m.fields = fields; m.regionList = list; m.precipBad = precipBad;
     return m;
   }
@@ -2940,7 +3078,8 @@
       if (lake) { validateLakeGrid(lake.grid, lake.frame); if (lake.lo !== fdef.lo || lake.hi !== fdef.hi) throw new Error('lake frame is not in the field\u2019s code space'); }
       this._frame = frame; this._grid = grid; this._lut = lut; this.field = fieldName; this.fdef = fdef; this.entry = entry || null;
       this._regions = frame && frame.regional ? frame.parts : null;
-      this._typed = !!(this._regions && fdef.kind === 'typed');   // plan section 102: typed precipitation codes
+      this._typed = !!(this._regions && (fdef.kind === 'typed' || fdef.kind === 'total'));   // plan section 102: typed precipitation codes
+      this._tab = fdef.kind === 'total' ? PTOT_TAB : PRECIP_TAB;   // (B1: the totals' one-type table)
       this._nearest = fdef.interpolation === 'nearest'; this._lo = fdef.lo; this._hi = fdef.hi; this._legend = fdef.legend;
       this._clip = !!(this._coast && CLIP_FIELDS[fieldName]);
       this._lakeMask = !!(this._lakeCoast && LAKE_UNDER[fieldName]);
@@ -3257,7 +3396,7 @@
       } else if (this._typed) {                              // the drawn pixel's own typed sample (plan section 102)
         if (!this._frame) return null;
         this._oneOut[0] = 0;
-        sampleRegionsTyped(this._regions, p, p.px, p.py, 1, 1, this._oneOut);
+        sampleRegionsTyped(this._regions, p, p.px, p.py, 1, 1, this._oneOut, this._tab);
         v = this._oneOut[0] || null;
       } else {
         var ll = tilePixelLatLng(p, p.px, p.py);
@@ -3282,7 +3421,7 @@
     valueAt: function (lat, lon) {
       if (!this._frame) return null;
       if (this._regions && this._typed) {                     // the pixel centre's typed sample (readoutAt's own path)
-        var tp = pixelOf(lat, lon, 20); this._oneOut[0] = 0; sampleRegionsTyped(this._regions, tp, tp.px, tp.py, 1, 1, this._oneOut); return this._oneOut[0] || null;
+        var tp = pixelOf(lat, lon, 20); this._oneOut[0] = 0; sampleRegionsTyped(this._regions, tp, tp.px, tp.py, 1, 1, this._oneOut, this._tab); return this._oneOut[0] || null;
       }
       if (this._regions) { var rc = regionsCode(this._regions, lat, lon); return rc ? this._value(rc) : null; }
       var g = this._grid, f = this._frame, r = (g.lat0 - lat) / -g.dlat;
@@ -3296,7 +3435,7 @@
     // lake (plan section 50): the tile's lake water coverage; the lake frame's codes replace the model's there.
     tileCodes: function (coords, out, tier, lake) {
       if (this._src) return this._src.sampleGrid(coords, 0, 0, 1, TILE, out, tier || 0);
-      if (this._regions) return this._typed ? sampleRegionsTyped(this._regions, coords, 0, 0, 1, TILE, out) : sampleRegions(this._regions, coords, 0, 0, 1, TILE, out);
+      if (this._regions) return this._typed ? sampleRegionsTyped(this._regions, coords, 0, 0, 1, TILE, out, this._tab) : sampleRegions(this._regions, coords, 0, 0, 1, TILE, out);
       var f = this._frame, g = this._grid, cols = f.cols, rows = f.rows;
       var n = TILE * Math.pow(2, coords.z), x0 = coords.x * TILE, y0 = coords.y * TILE, colPos = this._colPos;
       for (var px = 0; px < TILE; px++) {
@@ -7445,7 +7584,7 @@
     else if (this._autoFrom && this._autoFrom !== this.model && this.models.indexOf(this._autoFrom) >= 0 && modelOffers(this._autoFrom, fieldName)) this._leaveModelFor(fieldName, this._autoFrom);
     // Precipitation on a regional manifest without it while a newer one is announced (G68 P2-1): the shown time is carried
     // and the pin released, so this mount adopts the newer manifest (Retry would otherwise reload the pinned one for good).
-    if (fieldName === 'precip' && this.newerRun && this.manifest && this.manifest.regional && !this.manifest.fields.precip && this.frameIndex !== null) {
+    if ((fieldName === 'precip' || fieldName === 'ptot') && this.newerRun && this.manifest && this.manifest.regional && !this.manifest.fields.precip && this.frameIndex !== null) {
       var shownAt = this.manifest.frames[this._anchorIndex()];
       this._carry = { t: shownAt ? Date.parse(shownAt.valid_utc) : Date.now(), playing: !!(this.playing || this.wasPlaying), free: true };
       this.pause(); this.frameIndex = null; this.target = null;
@@ -7493,7 +7632,7 @@
     var idx = null, resume = false;
     this._regionNames = null;                                // the view may have moved since the last mount (G67 P1-1)
     this._loadManifest(sig).then(function (m) {
-      if (fieldName === 'precip' && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update yet');
+      if ((fieldName === 'precip' || fieldName === 'ptot') && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update yet');
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
       if (sig.aborted || !self.layer) throw abortError();
       self.n = m.frames.length;
@@ -7515,7 +7654,13 @@
       self._loadLakes(m);
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
-      if (!self.lineTimer) self.lineTimer = setInterval(function () { if (self.ui && self.ui.runText) self._refreshRunLine(); }, 60000);
+      if (!self.lineTimer) self.lineTimer = setInterval(function () {
+        if (self.ui && self.ui.runText) self._refreshRunLine();
+        // a total whose start hour has passed is summed again from the new one (plan section 102 B1)
+        if (self.field === 'ptot' && self.mode === 'model' && self.manifest && self.totals && self.frameIndex !== null && self.totals.k0 !== precipK0(self.manifest, Date.now()) && !self.playing) {
+          self._goto(self.frameIndex).then(function () { self.render(self.last); }, function () {});
+        }
+      }, 60000);
       return self._goto(idx, sig).catch(function (err) {
         // the chosen first frame is missing: show the next one that exists rather than nothing
         if (!(err && err.unavailable) || (sig && sig.aborted)) throw err;
@@ -8207,7 +8352,8 @@
   // the lake run (never a model key; 'glwu/-' names no frame: a step without a lake frame).
   Overlay.prototype._key = function (idx, kind) {
     if (this.manifest && this.manifest.regional && kind !== 'lake' && kind !== 'lakedir' && kind !== 'pres') {   // a step's bundle of the regions near the view
-      return this.model + '/' + this.manifest.signature + '/' + (this._regionsNow().join(',') || '-') + '/' + (kind === 'dir' ? 'wdir' : this.field) + '/' + this.manifest.frames[idx].step;
+      return this.model + '/' + this.manifest.signature + '/' + (this._regionsNow().join(',') || '-') + '/' + (kind === 'dir' ? 'wdir' : this.field) + '/' + this.manifest.frames[idx].step +
+        (kind !== 'dir' && this.field === 'ptot' ? '/k' + precipK0(this.manifest, Date.now()) : '');   // a total: its start (plan section 102 B1)
     }
     if (kind === 'lake' || kind === 'lakedir') {
       var li = this._lakeIndex(idx), lm = this.lake ? this.lake.manifest : null;
@@ -8416,6 +8562,7 @@
   };
   Overlay.prototype._lut = function () {
     if (this.field === 'precip') { if (this._lutFor !== 'precip') { this._lutCache = precipLut(); this._lutFor = 'precip'; } return this._lutCache; }
+    if (this.field === 'ptot') { if (this._lutFor !== 'ptot') { this._lutCache = ptotLut(); this._lutFor = 'ptot'; } return this._lutCache; }
     var f = this.manifest && this.manifest.fields[this.field], legend = f ? f.legend : [0, 1], key = this.field + '|' + legend.join(',');
     if (this._lutFor !== key) { this._lutCache = buildLut(this.field, legend); this._lutFor = key; }
     return this._lutCache;
@@ -8529,7 +8676,8 @@
     delete this.unavailable[key];
     var m = this.manifest, fr = m.frames[idx], names = this._regionsNow().slice(), field = dir ? 'wdir' : this.field, ctrl = new AbortController(), rec;
     function mine() { return self.inflight[key] === rec; }
-    var jobs = names.map(function (name) {
+    var total = !dir && field === 'ptot';                    // the total from now: summed by the engine (plan section 102 B1)
+    var jobs = total ? [] : names.map(function (name) {
       var g = null, cover = null, fkey = regionFrameKey(fr, name, field);
       for (var i = 0; i < m.regionList.length; i++) if (m.regionList[i].name === name) { g = dir ? m.regionList[i].gridHalf : m.regionList[i].grid; cover = m.regionList[i].cover; }
       if (!g || !fkey) return Promise.resolve(null);
@@ -8549,7 +8697,8 @@
         return { failed: err, kind: kind_ };
       });
     });
-    var p = Promise.all(jobs).then(function (got) {
+    if (total && !this.totals) this.totals = new PrecipTotals(this);
+    var p = (total ? this.totals.at(m, idx, names, precipK0(m, Date.now()), ctrl) : Promise.all(jobs).then(function (got) {
       var parts = [], fails = [], wanted = 0, transient = null, retryAt = Infinity;
       for (var i = 0; i < got.length; i++) {
         if (!got[i]) continue;
@@ -8564,7 +8713,7 @@
       }
       var nofield = names.filter(function (n) { return !regionFrameKey(fr, n, field); }).length;   // a source built before the field (plan section 102)
       return { regional: true, parts: parts, names: names, failed: fails.length, nofield: nofield, retryAt: transient ? retryAt : 0, cols: 0, rows: 0, q: EMPTY_Q };
-    }).then(function (frame) {
+    })).then(function (frame) {
       if (mine()) delete self.inflight[key];
       if (ctrl.signal.aborted || self.manifest !== m) throw abortError();
       if (!dir && !frame.retryAt) self.transientFails = 0;
@@ -8905,7 +9054,7 @@
     this.render({ state: 'loading' });
     this._fetchManifest(ptr, sig).then(function (m) {
       if (sig.aborted) throw abortError();
-      if (self.field === 'precip' && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update');   // (G68 P3)
+      if ((self.field === 'precip' || self.field === 'ptot') && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update');   // (G68 P3)
       if (!m.fields[self.field]) throw new Error('layer "' + self.field + '" is not in run ' + m.run);
       self._adopt(m, ptr); self.pointerAt = Date.now();
       self._ensureFlow();                                  // the new run may or may not carry direction data
@@ -9055,7 +9204,7 @@
   };
   Overlay.prototype._attribution = function () {
     var text = this.mode === 'obs' ? (this.field === 'radar' ? radarCredit(this._radarSources()) : this.field === 'bathy' ? bathyCredit(this._bathySources().map(bathyShort)) : OBS_DEFS[hasObs(this.field) ? this.field : 'sst'].attribution) : this._def().attribution;
-    if (this.mode !== 'obs' && this.field === 'precip') text = text.replace('10-m wind', 'hourly precipitation');   // plan section 102
+    if (this.mode !== 'obs' && (this.field === 'precip' || this.field === 'ptot')) text = text.replace('10-m wind', 'hourly precipitation');   // plan section 102
     if (this.mode !== 'obs' && this.layer && this.layer.hasLake() && this.layer._lakeMask && this._lakeOnScreen()) text += LAKE_ATTRIBUTION;   // a lake frame drawn, the lakes' coverage, and the lakes in the view (plan section 50; G33 B-5)
     if (!(this.layer && this.layer._masked() && this.coast)) return text;
     var url = String(this.coast.url + '/LICENSE.txt').replace(/["<>]/g, encodeURIComponent);
@@ -9545,6 +9694,7 @@
     for (var i = 0; i < m.regionList.length; i++) {
       var r = m.regionList[i];
       if (r.cover ? coverHas(r.cover, lat, lng) : inRegionBox(r.grid, lat, lng)) {   // where a region has data (G67 P3-6)
+        if (this.layer._frame && this.layer._frame.before) return 'the total starts at the hour now in progress';   // plan section 102 B1
         // the region under the pointer has no precipitation frame for this step (a source built before the field; G68 M13)
         var fr = this.layer._frame, step = this.frameIndex !== null ? m.frames[this.frameIndex] : null;
         return fr && fr.nofield && step && this.field === 'precip' && !regionFrameKey(step, r.name, 'precip') ? 'no precipitation frame for this hour' : null;
@@ -9616,6 +9766,7 @@
       }
       if (v === null || v === undefined) { el.hidden = true; return; }
       if (layer.fdef.kind === 'typed') { el.textContent = precipReadout(v, self.opts.getUnit(), layer.fdef.hi) || ''; place(pt); return; }   // plan section 102
+      if (layer.fdef.kind === 'total') { el.textContent = ptotReadout(v, self.opts.getUnit()) || ''; place(pt); return; }   // plan section 102 B1
       var u = unitOf(layer.field, self.opts.getUnit()), f = layer.fdef;
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
       if (v <= f.lo + 1e-9 && f.lo > 0) txt = '≤ ' + txt; else if (v >= f.hi - 1e-9) txt = '≥ ' + txt;   // "<=" only where values below lo exist (Tp)
@@ -10179,7 +10330,8 @@
     over.appendChild(this._buildTimeline(ui, m));
     wrap.appendChild(over);
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
-    body.appendChild(field === 'precip' ? buildPrecipLegend(unit) : buildLegend(field, f, unit));
+    body.appendChild(field === 'precip' ? buildPrecipLegend(unit) : field === 'ptot' ? buildTotalLegend(unit, this._totalStartText()) : buildLegend(field, f, unit));
+    if (field === 'ptot') { ui.ptotNote = mk('div', 'ov-meta'); ui.ptotNote.hidden = true; body.appendChild(ui.ptotNote); this._totalProgress(); }
     // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
     var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
@@ -10294,6 +10446,38 @@
     wrap.appendChild(mk('div', 'ov-meta', 'Amount in the hour ending at the slider time; a model forecast, not radar.'));
     return wrap;
   }
+  // The total's legend (plan section 102 B1): the scale over 0.1-1000 mm on its log axis in the site's unit, and its notes.
+  function buildTotalLegend(unit, start) {
+    var us = unit !== 'Metric', vals = PTOT_TICKS[us ? 'US' : 'Metric'], leg = mk('div', 'ov-legend'), cv = mk('canvas'); cv.width = 256; cv.height = 1; leg.appendChild(cv);
+    var ctx = cv.getContext('2d'), im = ctx.createImageData(256, 1), rgb = [0, 0, 0];
+    for (var i = 0; i < 256; i++) { rampAt(RAMPS.ptot, i / 255, rgb, 0); im.data[i * 4] = rgb[0]; im.data[i * 4 + 1] = rgb[1]; im.data[i * 4 + 2] = rgb[2]; im.data[i * 4 + 3] = 255; }
+    ctx.putImageData(im, 0, 0);
+    var ticks = mk('div', 'ov-ticks');
+    vals.forEach(function (v, k) {
+      var last = k === vals.length - 1, pos = ptotPos(us ? v * 25.4 : v);
+      var sp = mk('span', pos < 0.03 ? 'ov-first' : last ? 'ov-last' : '', String(v) + (last ? ' ' + (us ? 'in' : 'mm') : ''));
+      sp.style.left = (pos * 100).toFixed(2) + '%'; ticks.appendChild(sp);
+    });
+    leg.appendChild(ticks);
+    var wrap = mk('div', 'ov-precip-legend');
+    wrap.appendChild(leg);
+    wrap.appendChild(mk('div', 'ov-meta', 'Total from ' + start + ' (the hour now in progress, all of it) to the slider time, added up from RRFS\u2019s hourly amounts; snow and ice as water.'));
+    return wrap;
+  }
+  // "the hour ending 4 PM": where the totals start (the k0 frame's hour), in the panel's zone
+  Overlay.prototype._totalStartText = function () {
+    var m = this.manifest, k0 = m ? precipK0(m, Date.now()) : 0, fr = m && m.frames[k0];
+    if (!fr) return 'now';
+    var ms = Date.parse(fr.valid_utc), st = ribbonFormatter(this.opts.tz).stamp(ms - 3.6e6);
+    return st.weekday + ' ' + st.clock;
+  };
+  // "Adding hours: 37 of 84" while a long jump is summed (the engine's progress), else hidden.
+  Overlay.prototype._totalProgress = function () {
+    var el = this.ui && this.ui.ptotNote, pr = this.totals && this.totals.progress;
+    if (!el) return;
+    el.hidden = !pr;
+    if (pr) el.textContent = 'Adding hours: ' + pr.done + ' of ' + pr.total;
+  };
   // The observation's panel (plan section 44; owner, 2026-10-16: one date line in place of the run lines; no model
   // dropdown, no player, no timeline): head = the toggle and the source (folded: "SST · Thu, Oct. 15"); details = the
   // scale in the site's unit and the analysis day, with a note when the day is old or the coastline is missing. The same
@@ -10505,7 +10689,7 @@
 
   window.AllshoreOverlay = {
     create: function (map, opts) { var o = new Overlay(map, opts); window.AllshoreOverlay._last = o; return o; },   // _last: debugging handle
-    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS,
+    _internals: { validateRegionalManifest: validateRegionalManifest, validRegionGridDef: validRegionGridDef, validateRegionGrid: validateRegionGrid, regionCode: regionCode, regionsCode: regionsCode, sampleRegions: sampleRegions, sampleRegionsTyped: sampleRegionsTyped, PRECIP_CODES: PRECIP_CODES, PRECIP_TYPES: PRECIP_TYPES, PRECIP_K: PRECIP_K, PRECIP_T: PRECIP_T, precipMm: precipMm, precipOf: precipOf, precipDefOk: precipDefOk, precipDbz: precipDbz, precipPos: precipPos, precipLut: precipLut, composeTyped: composeTyped, precipReadout: precipReadout, precipAmountText: precipAmountText, precipLegPos: precipLegPos, buildPrecipLegend: buildPrecipLegend, PRECIP_TICKS: PRECIP_TICKS, PRECIP_RAMPS: PRECIP_RAMPS, PTOT_TAB: PTOT_TAB, PRECIP_TAB: PRECIP_TAB, PRECIP_MILLI: PRECIP_MILLI, PTOT_EDGE: PTOT_EDGE, ptotMm: ptotMm, ptotCode: ptotCode, ptotOf: ptotOf, sumApply: sumApply, sumCodes: sumCodes, ptotPos: ptotPos, ptotLut: ptotLut, ptotReadout: ptotReadout, precipK0: precipK0, PrecipTotals: PrecipTotals, PTOT_CHUNK: PTOT_CHUNK, buildTotalLegend: buildTotalLegend,
       regionLon: regionLon, inRegionBox: inRegionBox,  coverNear: coverNear, REGION_NEAR_SCREENS: REGION_NEAR_SCREENS, coverHas: coverHas, coverRects: coverRects, halfOf: halfOf, regionFlowField: regionFlowField, regionRects: regionRects, regionsNear: regionsNear, regionFrameKey: regionFrameKey, modelOffers: modelOffers, REGION_ORDER: REGION_ORDER, REGIONAL_SCHEMA: REGIONAL_SCHEMA,
       coastNote: coastNote, COAST_FIRST_MS: COAST_FIRST_MS, particleOpacityOf: particleOpacityOf, contourTile: contourTile, smoothBlock: smoothBlock, jumpAt: jumpAt, CONTOURS: CONTOURS, CONTOUR_JUMP: CONTOUR_JUMP,
       CONTOUR_BLOCK: CONTOUR_BLOCK, CONTOUR_PROFILE: CONTOUR_PROFILE, contourProfile: contourProfile, saved: saved, legendBar: legendBar, buildRamp: buildRamp, buildLut: buildLut, legendPos: legendPos, legendInv: legendInv, KNOTS: KNOTS, SCALES: SCALES, scaleFor: scaleFor, TICKS: TICKS, unitOf: unitOf, ModelGridLayer: ModelGridLayer, Overlay: Overlay, RAMPS: RAMPS,

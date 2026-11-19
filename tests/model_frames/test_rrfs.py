@@ -241,7 +241,7 @@ def test_run_products_equal_an_independent_eccodes_read(tmp_path):
         assert r["cloud"] == round(TC[j, i])
         if AP[j, i] < 0.1:
             want = 0
-        elif LT[j, i] > 0:
+        elif LT[j, i] >= J.THUNDER_MIN:
             want = 5
         elif FR[j, i] >= 0.5 or IP[j, i] >= 0.5:
             want = 4
@@ -296,7 +296,8 @@ def test_f000_has_no_hour_behind_it():
 @pytest.mark.parametrize("flags, ltng, want", [
     ((1, 0, 0, 0), 0, J.TYPE_RAIN), ((0, 1, 0, 0), 0, J.TYPE_SNOW), ((1, 1, 0, 0), 0, J.TYPE_MIX),
     ((1, 1, 1, 0), 0, J.TYPE_ICE), ((0, 0, 0, 1), 0, J.TYPE_ICE), ((1, 0, 0, 0), 3.0, J.TYPE_THUNDER),
-    ((0, 0, 0, 0), 0, J.TYPE_RAIN)])
+    ((0, 0, 0, 0), 0, J.TYPE_RAIN), ((0, 1, 0, 0), 0.1, J.TYPE_THUNDER), ((1, 0, 0, 0), 0.09, J.TYPE_RAIN),
+    ((0, 1, 0, 0), 0.02, J.TYPE_SNOW)])   # thunder from THUNDER_MIN = 0.1 (owner 2026-11-19)
 def test_precip_type_order(flags, ltng, want):
     a = lambda x: np.array([float(x)])                             # noqa: E731
     assert J.precip_type(a(1.0), *(a(x) for x in flags), a(ltng))[0] == want

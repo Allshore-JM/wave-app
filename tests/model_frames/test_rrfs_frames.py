@@ -600,7 +600,7 @@ def _check_precip_against_eccodes(q, g, n=600):
         if a < 0.1:
             assert q[r, c] == J.PRECIP_DRY
             continue
-        if LT[j, i] > 0:
+        if LT[j, i] >= J.THUNDER_MIN:
             t = "thunder"
         elif FR[j, i] >= 0.5 or IP[j, i] >= 0.5:
             t = "ice"

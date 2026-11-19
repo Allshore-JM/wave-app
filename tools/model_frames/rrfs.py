@@ -113,6 +113,10 @@ FIELDS = {"spd": "0.01 m/s", "dir": "0.1 deg FROM, true north", "gust": "0.01 m/
           "apcp": "0.01 mm in the hour ending at the step", "cloud": "% (255 = none: hourly cycles have no cloud)",
           "type": "0 none (< 0.1 mm), 1 rain, 2 snow, 3 mix, 4 ice, 5 thunder; 255 = unknown"}
 TYPE_NONE, TYPE_RAIN, TYPE_SNOW, TYPE_MIX, TYPE_ICE, TYPE_THUNDER = 0, 1, 2, 3, 4, 5
+# Thunder where the hour's RRFS lightning (NCEP 0/17/192 "LTNG", dimensionless lightning threat, hourly max) is at least
+# this (owner 2026-11-19, plan section 102): above 0 was near-zero noise (0.02-0.05) on 15-27 % of the wet cells of a
+# November run (CONUS / Alaska); from 0.1 about 1-3 %.
+THUNDER_MIN = 0.1
 
 # ---- the overlay frames (plan section 99 D0)
 FRAMES_PREFIX = f"{PREFIX}/frames"
@@ -472,7 +476,7 @@ def _u16(x, scale, lo=0.0):
 
 
 def precip_type(apcp, crain, csnow, cfrzr, cicep, ltng=None):
-    """Per cell: 0 under 0.1 mm, else thunder (lightning > 0) > ice (freezing rain / ice pellets) > mix (rain and
+    """Per cell: 0 under 0.1 mm, else thunder (lightning >= THUNDER_MIN) > ice (freezing rain / ice pellets) > mix (rain and
     snow) > snow > rain (plan section 99, the section-91 order). 255 where the hour's amount is unknown."""
     apcp = np.asarray(apcp, dtype=float)
     t = np.full(apcp.shape, TYPE_RAIN, dtype="u1")
@@ -481,7 +485,7 @@ def precip_type(apcp, crain, csnow, cfrzr, cicep, ltng=None):
     t[rain & snow] = TYPE_MIX
     t[(cfrzr >= 0.5) | (cicep >= 0.5)] = TYPE_ICE
     if ltng is not None:
-        t[np.nan_to_num(ltng) > 0] = TYPE_THUNDER
+        t[np.nan_to_num(ltng) >= THUNDER_MIN] = TYPE_THUNDER
     t[apcp < 0.1] = TYPE_NONE
     t[~np.isfinite(apcp)] = MISSING8
     return t

@@ -601,7 +601,7 @@ def test_build_reads_coast_v2_from_a_local_directory(tmp_path):
         for P in P1:
             assert max(A.nearest_km(P2, lat, lon) for lon, lat in P) < 0.15
     with pytest.raises(ValueError):
-        A.coast_sets("v3")
+        A.coast_sets("v9")
 
 
 @pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v2.json")), reason="alert_coast_v2.json not built")
@@ -625,7 +625,41 @@ def test_committed_v2_file_follows_the_pinned_coast():
         pytest.skip("alert_coast_v2.json not built")
     import re
     src = open(os.path.join(ROOT, "tools", "coast", "build_coast_v2.py"), encoding="utf-8").read()
-    pin = re.search(r'^PIN_TIER1_SHA256 = "([0-9a-f]{64})"', src, re.M)
-    assert pin, "PIN_TIER1_SHA256 is not pinned"
+    pin = re.search(r'"v2": dict\((?:(?!"v\d": dict\().)*?pin="([0-9a-f]{64})"', src, re.S)
+    assert pin, "set v2's pin is not pinned"
     with open(path, encoding="utf-8") as f:
         assert json.load(f)["coast"]["v2"] == pin.group(1)
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v3.json")), reason="alert_coast_v3.json not built")
+def test_committed_v3_file_passes_its_check_and_differs_only_where_v3_does(committed):
+    """alert_coast_v3.json (served with COAST_SET=v3, plan section 104): its own check; Hawaii's zones identical to
+    alert_coast_v2.json (v3 keeps v2's Hawaii cells byte for byte); every zone outside Hawaii, Puerto Rico / USVI,
+    Guam / CNMI and American Samoa identical to alert_coast.json."""
+    with open(os.path.join(ROOT, "alert_coast_v3.json"), encoding="utf-8") as f:
+        v3 = json.load(f)
+    with open(os.path.join(ROOT, "alert_coast_v2.json"), encoding="utf-8") as f:
+        v2 = json.load(f)
+    assert v3["zones_file"] == A.ZONES_FILE and v3["rules"] == A.RULES and "v3" in v3["coast"]
+    assert A.check(v3, log=lambda *a: None) == []
+    assert all(v3["zones"][z] == v2["zones"][z] for z in v3["zones"] if z.startswith("HI"))
+    assert {z for z in v2["zones"] if z.startswith("HI")} == {z for z in v3["zones"] if z.startswith("HI")}
+    s2 = ("HI", "PR", "VI", "GU", "MP", "AS")
+    other = {z for z in set(v3["zones"]) | set(committed["zones"]) if not z.startswith(s2)}
+    assert all(v3["zones"].get(z) == committed["zones"].get(z) for z in other)
+    assert set(v3["zones"]) == set(committed["zones"])
+
+
+def test_committed_set_files_follow_the_pinned_coasts():
+    """Each alert_coast_<set>.json is built from that set's pinned build (build_coast_v2.SETS[set]["pin"]). Read from the
+    source text: this test needs no shapely."""
+    import re
+    src = open(os.path.join(ROOT, "tools", "coast", "build_coast_v2.py"), encoding="utf-8").read()
+    for cs in A.BATHY_SETS:
+        path = os.path.join(ROOT, "alert_coast_%s.json" % cs)
+        if not os.path.exists(path):
+            continue
+        pin = re.search(r'"%s": dict\((?:(?!"v\d": dict\().)*?pin="([0-9a-f]{64})"' % cs, src, re.S)
+        assert pin, "set %s is not pinned" % cs
+        with open(path, encoding="utf-8") as f:
+            assert json.load(f)["coast"][cs] == pin.group(1), cs

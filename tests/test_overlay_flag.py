@@ -24,6 +24,7 @@ import capture_index_golden as G  # noqa: E402
 
 GOLDEN = json.load(open(os.path.join(HERE, "fixtures", "index_golden.json"), encoding="utf-8"))
 STATIC = os.path.join(os.path.dirname(HERE), "static_overlay")
+ROOT_DIR = os.path.dirname(HERE)
 NODE = subprocess.run(["node", "--version"], capture_output=True).returncode == 0
 # the whole gated block: a <style> for the selector and the bootstrap <script>
 GATED = re.compile(r"  <style>\n    /\* Optional model overlays.*?</script>\n\n", re.S)
@@ -567,20 +568,36 @@ def test_sst_overlay_env_and_the_page(monkeypatch):
         assert "var SST" not in rec["body"] and "Sea surface temperature" not in rec["body"], name
 
 
-def test_coast_v2_flag_and_the_page(monkeypatch):
-    """COAST_V2 (section 103): on, the page sets window.__allshoreCoastSet = 'v2' just before the overlay block (the module
-    whitelists 'v2', anything else = v1); the page differs from the default only by that script; off, the page is the
-    default (the golden test above). The gated block itself is untouched."""
+def test_coast_set_flag_and_the_page(monkeypatch):
+    """COAST_SET (sections 103-104): v2/v3, the page sets window.__allshoreCoastSet = '<set>' just before the overlay
+    block (the module whitelists v2-v4, anything else = v1); the page differs from the default only by that script;
+    v1, the page is the default (the golden test above). The gated block itself is untouched."""
+    assert A.ALERT_COAST_FILE == ("alert_coast.json" if A.COAST_SET == "v1" else "alert_coast_%s.json" % A.COAST_SET)
     _on(monkeypatch)
-    monkeypatch.setattr(A, "COAST_V2", True)
-    on = G.run_scenarios(A)
-    monkeypatch.setattr(A, "COAST_V2", False)
+    monkeypatch.setattr(A, "COAST_SET", "v1")
     off = G.run_scenarios(A)
-    tag = "<script>window.__allshoreCoastSet = 'v2';   // the overlay's coast set (COAST_V2, plan section 103)</script>"
-    for name in GOLDEN:
-        assert on[name]["body"].count(tag) == 1, name
-        assert on[name]["body"].replace(tag, "") == off[name]["body"], name
-        assert "__allshoreCoastSet" not in off[name]["body"], name
+    for cs in ("v2", "v3"):
+        monkeypatch.setattr(A, "COAST_SET", cs)
+        on = G.run_scenarios(A)
+        tag = ("<script>window.__allshoreCoastSet = '%s';   // the overlay's coast set (COAST_SET, plan sections "
+               "103-104)</script>" % cs)
+        for name in GOLDEN:
+            assert on[name]["body"].count(tag) == 1, name
+            assert on[name]["body"].replace(tag, "") == off[name]["body"], name
+            assert "__allshoreCoastSet" not in off[name]["body"], name
     src = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
-    assert "(coastSet === 'v2' ? '/static/coast/v2' : '/static/coast/v1')" in src
-    assert A.ALERT_COAST_FILE == ("alert_coast_v2.json" if A.COAST_V2 else "alert_coast.json")
+    assert "var COAST_SETS_OK = { v2: true, v3: true, v4: true };" in src
+    assert "(COAST_SETS_OK[coastSet] === true ? '/static/coast/' + coastSet : '/static/coast/v1')" in src
+
+
+def test_coast_set_reads_the_environment():
+    """COAST_SET picks the set; COAST_V2=1 is the old name for v2; an unknown set, or one whose hazard file is not in
+    this checkout, is v1 (never a page pointing at data the release does not carry)."""
+    f = A._coast_set
+    assert f({}) == "v1" and f({"COAST_SET": "v1"}) == "v1" and f({"COAST_V2": "0"}) == "v1"
+    assert f({"COAST_V2": "1"}) == "v2" and f({"COAST_SET": "v2"}) == "v2"
+    assert f({"COAST_SET": "v3"}) == ("v3" if os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v3.json")) else "v1")
+    assert f({"COAST_SET": "v1", "COAST_V2": "1"}) == "v1"                  # COAST_SET wins
+    for bad in ("v9", "V2", "../v2", "v2 ", "v2;", "__proto__"):
+        assert f({"COAST_SET": bad}) in ("v1", "v2"), bad                  # "v2 " is stripped to v2
+    assert f({"COAST_SET": "v4"}) == ("v4" if os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v4.json")) else "v1")

@@ -6,9 +6,11 @@
 # "lakeoutlines" (every lake >= 100 km2, drawn under the wind overlay, static/coast/lakeoutlines-v1; plan section 51) or
 # "places" (Natural Earth borders and places + GeoNames towns, static/places/v2, tools/places/build_places.py; plan
 # section 51: the Natural Earth files are pinned by commit and sha256, GeoNames' cities1000.zip changes daily and its
-# sha256 and date are recorded in the index; v2 = v1 + the name pass of V7-3, v1 stays immutable) or "coast-v2" (the land
-# set with the Hawaii bathymetry shoreline, static/coast/v2, tools/coast/build_coast_v2.py; plan section 103: v1 built
-# from the pinned GSHHG, the pinned bathymetry tiles fetched, v2 built and checked; its upload refuses unpinned output).
+# sha256 and date are recorded in the index; v2 = v1 + the name pass of V7-3, v1 stays immutable) or "coast-v2" /
+# "coast-v3" (the land set with the bathymetry shoreline, static/coast/<v2|v3>, tools/coast/build_coast_v2.py --set:
+# v2 = Hawaii, plan section 103; v3 = Hawaii + Puerto Rico/USVI, Guam/CNMI and American Samoa, plan section 104; v1
+# built from the pinned GSHHG, the pinned bathymetry tiles fetched, the set built and checked; its upload refuses
+# unpinned output).
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: coast-build
 on:
@@ -18,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       set:
-        description: "coast (land, static/coast/v1), lakes (Great Lakes water, static/coast/lakes-v1), lakeoutlines (every lake, static/coast/lakeoutlines-v1), places (borders and names, static/places/v2) or coast-v2 (land with the Hawaii bathymetry shoreline, static/coast/v2)"
+        description: "coast (land, static/coast/v1), lakes (Great Lakes water, static/coast/lakes-v1), lakeoutlines (every lake, static/coast/lakeoutlines-v1), places (borders and names, static/places/v2), coast-v2 (land with the Hawaii bathymetry shoreline, static/coast/v2) or coast-v3 (+ Puerto Rico/USVI, Guam/CNMI, American Samoa, static/coast/v3)"
         default: "coast"
       upload:
         description: "publish to R2 under the set's prefix (true/false)"
@@ -56,7 +58,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60                    # coast-v3: ~33k more tiles + ~10 min trace (plan section 104)
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
@@ -95,27 +97,28 @@ jobs:
         env:
           SET: ${{ github.event.inputs.set }}
         run: |
-          case "$SET" in coast|lakes|lakeoutlines|places) ;; coast-v2) ;; *) echo "set must be coast, lakes, lakeoutlines, places or coast-v2"; exit 2;; esac
+          case "$SET" in coast|lakes|lakeoutlines|places) ;; coast-v2|coast-v3) ;; *) echo "set must be coast, lakes, lakeoutlines, places, coast-v2 or coast-v3"; exit 2;; esac
           rc=0
           if [ "$SET" = "places" ]; then
             CMD=(python tools/places/build_places.py --ne src/ne --geonames src/cities1000.zip --out build/places/v2)
           elif [ "$SET" = "coast" ]; then
             CMD=(python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1)
-          elif [ "$SET" = "coast-v2" ]; then
+          elif [ "$SET" = "coast-v2" ] || [ "$SET" = "coast-v3" ]; then
+            V="${SET#coast-}"
             python tools/coast/build_coast.py --zip gshhg-bin-2.3.7.zip --out build/coast/v1 | tail -4 | tee build-v1.log
-            CMD=(python tools/coast/build_coast_v2.py --v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out build/coast/v2)
+            CMD=(python tools/coast/build_coast_v2.py --set "$V" --v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out "build/coast/$V")
           else
             CMD=(python tools/coast/build_coast.py --set "$SET" --zip gshhg-bin-2.3.7.zip --out "build/coast/$SET-v1")
           fi
           /usr/bin/time -v -o time.txt "${CMD[@]}" | tee build.log || rc=$?
           { echo '```'; cat build.log; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
-      - name: Keep the coast-v2 build (the bytes an upload publishes, for the local checks; plan section 103)
-        if: ${{ success() && github.event.inputs.set == 'coast-v2' }}   # only a build that passed --check (G70 P3-2)
+      - name: Keep the coast-v2/v3 build (the bytes an upload publishes, for the local checks; plan sections 103-104)
+        if: ${{ success() && (github.event.inputs.set == 'coast-v2' || github.event.inputs.set == 'coast-v3') }}   # only a build that passed --check (G70 P3-2)
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6.0.0
         with:
-          name: coast-v2-build
-          path: build/coast/v2
+          name: ${{ github.event.inputs.set }}-build
+          path: build/coast/${{ github.event.inputs.set == 'coast-v3' && 'v3' || 'v2' }}
           retention-days: 14
           if-no-files-found: error
       - name: Upload to R2
@@ -133,9 +136,10 @@ jobs:
           case "$SET" in
             coast) CMD=(python tools/coast/build_coast.py --out build/coast/v1 --upload static/coast/v1);;
             coast-v2) CMD=(python tools/coast/build_coast_v2.py --out build/coast/v2 --upload static/coast/v2);;
+            coast-v3) CMD=(python tools/coast/build_coast_v2.py --set v3 --out build/coast/v3 --upload static/coast/v3);;
             lakes|lakeoutlines) CMD=(python tools/coast/build_coast.py --out "build/coast/$SET-v1" --upload "static/coast/$SET-v1");;
             places) CMD=(python tools/places/build_places.py --out build/places/v2 --upload static/places/v2);;
-            *) echo "set must be coast, lakes, lakeoutlines, places or coast-v2"; exit 2;;
+            *) echo "set must be coast, lakes, lakeoutlines, places, coast-v2 or coast-v3"; exit 2;;
           esac
           [ "$REPLACE" = "true" ] && CMD+=(--replace)
           "${CMD[@]}" | tee upload.log || rc=$?

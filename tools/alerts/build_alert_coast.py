@@ -25,11 +25,12 @@ no outline (the server reports it). Rebuild when NWS publishes a new zone file (
 and ZONES_SHA256):
     python -I tools/alerts/build_alert_coast.py [--zones-zip z_ddmmyy.zip] [--cache DIR]
     python -I tools/alerts/build_alert_coast.py --check
-The bathymetry-shoreline coast set (plan section 103, static/coast/v2; tools/coast/build_coast_v2.py) gives
-alert_coast_v2.json, the file the site serves when COAST_V2=1 (same rules; v2's cells carry q = 1e5 and clockwise holes,
-read by decode_cell, which takes q from each file's header):
-    python -I tools/alerts/build_alert_coast.py --coast v2 [--coast-dir build/coast/v2]   (writes alert_coast_v2.json)
-    python -I tools/alerts/build_alert_coast.py --coast v2 --check
+The bathymetry-shoreline coast sets (tools/coast/build_coast_v2.py: v2 = Hawaii, plan section 103; v3 = + Puerto
+Rico/USVI, Guam/CNMI and American Samoa, plan section 104) give alert_coast_<set>.json, the file the site serves with
+COAST_SET=<set> (same rules; their changed cells carry q = 1e5 and clockwise holes, read by decode_cell, which takes q
+from each file's header):
+    python -I tools/alerts/build_alert_coast.py --coast v3 [--coast-dir build/coast/v3]   (writes alert_coast_v3.json)
+    python -I tools/alerts/build_alert_coast.py --coast v3 --check
 Needs numpy and matplotlib (matplotlib.path for point-in-polygon: this tool only, not the site).
 """
 import argparse
@@ -48,7 +49,6 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, "alert_coast.json")
-OUT_V2 = os.path.join(ROOT, "alert_coast_v2.json")         # from coast set v2 (plan section 103), served when COAST_V2=1
 FORMAT = "alert-coast-v1"
 ZONES_FILE = "z_16ap26"                       # NWS public forecast zones, effective 16 April 2026
 ZONES_URL = "https://www.weather.gov/source/gis/Shapefiles/WSOM/" + ZONES_FILE + ".zip"
@@ -57,10 +57,16 @@ COAST_BASE = "https://models.allshoresurf.com/static/coast"
 # the sea coast; lakes of 100 km2 and more (the Great Lakes among them); the Great Lakes' smaller islands (lakes-v1:
 # only its rings lakeoutlines-v1 does not hold, see lake_islands)
 COAST_SETS = ("v1", "lakeoutlines-v1", "lakes-v1")
-LAND_SETS = ("v1", "v2")                                    # the sea coast: GSHHG (v1) or the bathymetry shoreline (v2)
-# water on the right of a ring's direction (+1) or left; v2's land is counter-clockwise like v1's and its sea water
-# enclosed by land runs clockwise, which also has the water on its right
-SEAWARD = {"v1": 1, "v2": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
+LAND_SETS = ("v1", "v2", "v3")                              # the sea coast: GSHHG (v1) or a bathymetry shoreline set
+BATHY_SETS = LAND_SETS[1:]                                  # the bathymetry-shoreline sets (plan sections 103-104)
+# water on the right of a ring's direction (+1) or left; the bathymetry sets' land is counter-clockwise like v1's and
+# their sea water enclosed by land runs clockwise, which also has the water on its right
+SEAWARD = {"v1": 1, "v2": 1, "v3": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
+
+
+def out_path(coast):
+    """alert_coast.json for v1, alert_coast_<set>.json for a bathymetry-shoreline set."""
+    return OUT if coast == "v1" else os.path.join(ROOT, "alert_coast_%s.json" % coast)
 LOCAL = {}                                                  # set name -> a local directory holding it (--coast-dir)
 UA = {"User-Agent": "allshoresurf.com coastal hazards tool (https://allshoresurf.com)"}
 # states and territories with a sea or Great Lakes coast (NWS state codes; MP Northern Marianas, AS American Samoa)
@@ -254,7 +260,7 @@ def _cache_get(url, path):
 
 
 def coast_sets(coast="v1"):
-    """The sets a build reads: the sea coast `coast` (v1 or v2) and the two lake sets."""
+    """The sets a build reads: the sea coast `coast` (v1 or a bathymetry set) and the two lake sets."""
     if coast not in LAND_SETS:
         raise ValueError(f"coast set {coast!r} is not one of {LAND_SETS}")
     return (coast,) + COAST_SETS[1:]
@@ -924,8 +930,9 @@ PROBES = [
     ("HIZ009", 21.4570, -157.7400, 0.5),    # Mokapu's North Beach, outside Kaneohe Bay's reef
     ("CAZ087", 33.3450, -118.3250, 0.7),    # Avalon, Catalina (the mainland lies 35 km off)
 ]
-# A probe of PROBES placed on GSHHG's shore where the bathymetry shoreline (coast set v2, plan section 103) lies farther
-# off than its limit: the v2 file is probed at the true shore instead. Molokai's north cliffs: GSHHG 0.5 km off.
+# A probe of PROBES placed on GSHHG's shore where the bathymetry shoreline (coast sets v2+, plan sections 103-104) lies
+# farther off than its limit: a bathymetry set's file is probed at the true shore instead. Molokai's north cliffs:
+# GSHHG 0.5 km off.
 PROBES_V2 = {("HIZ037", 21.1700, -156.9000): (21.1700, -156.8942)}
 # (zone, lat, lon, km): the zone must NOT draw a line within km of this point (another zone's shore, a foreign
 # shore across water, the coast past a border: G59 F1)
@@ -1003,9 +1010,9 @@ def check(doc, log=print):
             pts += len(P)
             ls.append(P)
         decoded[zid] = ls
-    v2 = "v2" in (doc.get("coast") or {})                     # built from coast set v2 (plan section 103)
+    bathy = any(k in (doc.get("coast") or {}) for k in BATHY_SETS)   # built from a bathymetry set (sections 103-104)
     for zid, lat, lon, km in PROBES:
-        if v2:
+        if bathy:
             lat, lon = PROBES_V2.get((zid, lat, lon), (lat, lon))
         if zid not in decoded:
             probs.append(f"probe {zid}: missing")
@@ -1029,12 +1036,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--zones-zip", help="a local copy of the NWS zone file (else downloaded)")
     ap.add_argument("--cache", default=os.path.join(HERE, ".cache"), help="where coast cells are kept")
-    ap.add_argument("--out", default=None, help="default alert_coast.json (--coast v1) or alert_coast_v2.json (v2)")
-    ap.add_argument("--coast", default="v1", choices=LAND_SETS, help="the sea coast set: v1 (GSHHG) or v2 (section 103)")
+    ap.add_argument("--out", default=None, help="default alert_coast.json (--coast v1) or alert_coast_<set>.json")
+    ap.add_argument("--coast", default="v1", choices=LAND_SETS,
+                    help="the sea coast set: v1 (GSHHG), v2 (section 103) or v3 (section 104)")
     ap.add_argument("--coast-dir", help="read the --coast set from this local directory (a build not yet published)")
     ap.add_argument("--check", action="store_true", help="check the written file only")
     a = ap.parse_args(argv)
-    a.out = a.out or (OUT_V2 if a.coast == "v2" else OUT)
+    a.out = a.out or out_path(a.coast)
     if a.coast_dir:
         LOCAL[a.coast] = a.coast_dir
     if a.check:

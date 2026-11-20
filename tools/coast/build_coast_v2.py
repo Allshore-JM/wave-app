@@ -1,5 +1,6 @@
-"""Coast set v2 (plan section 103, stage S1 Hawaii): the coast-v1 land set with GSHHG replaced, inside the Hawaii
-bathymetry regions, by the bathymetry's own MHHW water edge.
+"""Coast sets v2+ (plan sections 103-104): the coast-v1 land set with GSHHG replaced, inside bathymetry regions, by the
+bathymetry's own MHHW water edge. SETS: v2 = Hawaii (stage S1); v3 = v2 + Puerto Rico / USVI, Guam / CNMI and American
+Samoa (stage S2), Hawaii's cells byte-identical to v2's. --set picks one (default v2).
 
 Inputs: a coast-v1 build (static/coast/v1, from build_coast.py) and the published bathymetry tiles of the regions in
 REGIONS at zooms zmin-15 (static/bathy/<region>/v<N>/, tools/bathy). Output: a directory in the same coast-v1 format
@@ -21,25 +22,27 @@ water enclosed by land clockwise: the client's one nonzero fill and build_coast.
 Every other tier-1 cell and the tier-0 file are copied from v1 byte for byte (the index proves it: base_v1).
 
 Usage:
-  python tools/coast/build_coast_v2.py --v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out build/coast/v2
+  python tools/coast/build_coast_v2.py [--set v3] --v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out build/coast/v3
          (--fetch downloads the pinned bathymetry tiles, and the published v1 set when --v1 holds no index.json)
-  python tools/coast/build_coast_v2.py --check build/coast/v2
-  python tools/coast/build_coast_v2.py --out build/coast/v2 --upload static/coast/v2   (R2 env as build_coast.py;
-         refuses a build that fails --check, is not from the pinned inputs, or differs from PIN_TIER1_SHA256)
+  python tools/coast/build_coast_v2.py [--set v3] --check build/coast/v3
+  python tools/coast/build_coast_v2.py [--set v3] --out build/coast/v3 --upload static/coast/v3   (R2 env as
+         build_coast.py; refuses a build that fails --check, is not from the pinned inputs, or differs from the set's pin)
 
 Needs numpy, shapely and Pillow. Data: GSHHG 2.3.7 (LGPL-3.0) as in v1; NOAA NCEI CUDEM and NOAA NGS lidar (US
 government, public domain) through the bathymetry tiles. LICENSE.txt beside the data carries both.
 """
 import argparse
 import hashlib
+import http.client
 import json
 import math
 import os
 import ssl
 import sys
+import threading
 import time
 import urllib.error
-import urllib.request
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -59,6 +62,11 @@ BPX = BLOCK * T.TILE                     # 2048 px
 WPX = T.TILE * 2 ** Z                    # the world in zoom-15 px
 TOL_PX = 0.7                             # Douglas-Peucker tolerance, zoom-15 px (~3 m in Hawaii)
 SPECK_PX2 = 2.0                          # land rings and holes smaller than this (zoom-15 px^2, ~40 m^2) are dropped
+# A region may set its own "speck" and "tol" (plan section 104, owner 2026-11-19): Puerto Rico's mangrove and lagoon
+# fragments made one zoom-12 tile's land clip 16.7 ms on a desktop (102 ms at 4x CPU throttle, the gate is 8 / 25 ms);
+# speck 32 px^2 (~650 m^2 at 18 N: islets and ponds under ~25 m across) with DP 1.0 px gives 5.0 / 14.9 ms, the edge
+# still at median 0 m, p90 4.5 m. Hawaii keeps the defaults (its cells stay v2's bytes).
+S2_SPECK_PX2, S2_TOL_PX = 32.0, 1.0
 Q2 = 100000                              # the changed cells' quantum (1e-5 degree, ~1.1 m)
 OUT, LAND, WATER = 0, 1, 2
 PUBLIC = "https://models.allshoresurf.com"
@@ -66,27 +74,29 @@ UA = "allshore-coast-build/2 (+https://allshoresurf.com)"   # the edge refuses P
 
 # The bathymetry regions replacing GSHHG (tools/bathy/bathy_sources.REGIONS: the same boxes; the tests compare them),
 # pinned by the published index's digest (bathy index.json "digest") and by the sha256 of the zoom-zmin..15 tiles read
-# (tiles_digest), so a real build always reads the same bytes.
-REGIONS = {
+# (tiles_digest), so a real build always reads the same bytes. A coast set (SETS) uses some of them.
+ALL_REGIONS = {
     "hawaii": dict(v=2, box=(-160.5, 18.5, -154.5, 22.5), zmin=8,
                    digest="d5bdaf1b73a66d886654d93facc2e719067e0fd2484212ec0187cfaa9f5cadd1",
                    tiles_sha256="4d30de1c827b8afd23e386e22b31080c0f29fc119fe0221244f5f7e9a38c07e2"),
     "nwhi-lidar": dict(v=1, box=(-168.5, 22.5, -160.5, 24.5), zmin=8,
                        digest="0ae9561cfccb63f6724bd481fb65e8bf12ac5ddb3615ca72bebe9750fc32985e",
                        tiles_sha256="2c040fd2e5ca9172701ed3e578ba29c67f91aa854b43e3094d7f64d46b1e09b8"),
+    "prvi": dict(v=2, box=(-68.0, 17.25, -64.25, 19.0), zmin=8,
+                 digest="ec70e799bd9df888ff55f80900ff76091b9ea19651efc024c095c98466e90452",
+                 tiles_sha256="c733f6cedc74b6ae52cd2f0c729c8a2f3a8af31a1fb8bcea5c8cf7606d58e031", speck=S2_SPECK_PX2, tol=S2_TOL_PX),
+    "marianas": dict(v=2, box=(144.5, 13.0, 146.0, 15.5), zmin=8,
+                     digest="bc283d8a2a75c5d261e22ece3c48c1bcf7d829477adbb7e3c059d79307398d79",
+                     tiles_sha256="15f2985069d6f391c7bec467d370a14f3c8c74d00a3ec0486a335da875e5325e", speck=S2_SPECK_PX2,
+                     tol=S2_TOL_PX),
+    "samoa": dict(v=2, box=(-171.0, -14.5, -169.25, -14.0), zmin=8,
+                  digest="8815034a8a28a5f09ffe72433fdd78114fc6b2194a21cb2e90f2966009261ba1",
+                  tiles_sha256="a65ba559e75e1e92c74272f6e3b50aaf67a278b68b7edc3c1fc41da75adf2a42", speck=S2_SPECK_PX2,
+                  tol=S2_TOL_PX),
 }
 # The published v1 set this build starts from (static/coast/v1 index.json tier0.sha256 / tier1.sha256).
 V1_PIN_TIER0_SHA256 = "aabbff516107953c42915a11c70941682030ee3aecc29b0d0456d33b3ef9cebc"
 V1_PIN_TIER1_SHA256 = "a4b97403aac09c0a4ca88f50d77d8e339eb061342204a0dd227294e71cf001c6"
-# The tier-1 cells a real build changes (every other cell is v1's bytes).
-EXPECTED_CHANGED = ["15_-155", "15_-160", "20_-160", "20_-165", "20_-170"]
-# The exact bytes of a real build (deterministic from the pinned inputs, this code and the pinned shapely): a
-# deliberate change updates this pin. Tier 0 is v1's (V1_PIN_TIER0_SHA256).
-PIN_TIER1_SHA256 = "9a0ca75f08d7b2fb6bc4d6df0a43cb1653ddabbcb1fd4b1b5cf77cc6d21923f7"   # laptop and runner agree (coast-build dry run #711, ubuntu-24.04; shapely 2.2.0)
-# Land area of EXPECTED_CHANGED in v1 (sq deg, build_coast.signed_area of the q=1e4 rings, unweighted as in
-# build_coast.check): the v2 total stays within AREA_TOL of it. Judged on the total only: per cell, Niihau (20_-165)
-# loses ~6 % and French Frigate Shoals (20_-170, GSHHG draws the reef as land) ~85 % (step-1 report).
-V1_CHANGED_SQDEG = 1.456635                      # a real v2 build: 1.43924 (-1.19 %)
 AREA_TOL = 0.03
 # Hawaii probes (lon, lat, land?): rule 1 at zoom 15 with a margin; picked from the data in step 1.
 HAWAII_PROBES = [
@@ -100,20 +110,101 @@ HAWAII_PROBES = [
     (-166.20, 23.78, False),            # French Frigate Shoals lagoon (GSHHG: water too)
     (-161.922, 23.061, True),           # Nihoa (GSHHG's Nihoa is offset: water here)
 ]
-FORMAT_KEY = ("coast-v1-land2|base=coast-v1|z=%d|block=%d|tol=%g|speck=%g|q=%d|rule=tile>ancestor>gshhg|boxes=%s|"
-              "shapely=%s" % (Z, BLOCK, TOL_PX, SPECK_PX2, Q2,
-                              ";".join("%s:v%d:%s" % (n, r["v"], ",".join("%g" % v for v in r["box"]))
-                                       for n, r in sorted(REGIONS.items())),
-                              ".".join(shapely.__version__.split(".")[:2])))
-SOURCE = "GSHHG 2.3.7 + NOAA bathymetry MHHW water edge (allshoresurf bathy regions %s)" % ", ".join(sorted(REGIONS))
-LICENSE = BC.LICENSE + "; NOAA NCEI CUDEM and NOAA NGS lidar (public domain) inside the bathymetry regions"
-NOAA_CREDIT = """
+# Puerto Rico / USVI, Guam / CNMI and American Samoa probes (plan section 104 step 1: the deepest bathymetry-water
+# pixel under GSHHG land, or the most inland bathymetry-land pixel, within 3 zoom-15 tiles of each spot).
+S2_PROBES = [
+    (-66.1154, 18.45863, False),        # San Juan, Condado / bay mouth: GSHHG land, ~1 km of water
+    (-66.08279, 18.42752, True),        # San Juan inland
+    (-67.25832, 18.36493, True),        # Rincon inland
+    (-64.94004, 18.3651, False),        # St Thomas, Magens Bay (GSHHG: land)
+    (144.6788, 13.46457, False),        # Guam, Apra Harbor inner (GSHHG: land)
+    (144.82176, 13.53922, True),        # Guam inland above Tumon
+    (145.73362, 15.21001, True),        # Saipan inland
+    (-170.7167, -14.25359, False),      # Tutuila, Pago Pago Harbor (GSHHG: land)
+    (-169.45328, -14.26295, False),     # Ta'u, off the south shore (GSHHG's Ta'u is offset: land here)
+    (-169.43113, -14.22181, True),      # Ta'u inland (GSHHG: water)
+]
+NOAA_CREDIT_V2 = """
 Inside the bathymetry regions (Hawaii: 160.5-154.5 W, 18.5-22.5 N; the NW Hawaiian Islands: 168.5-160.5 W,
 22.5-24.5 N) the coastline is the mean-higher-high-water edge of the allshoresurf.com bathymetry tiles, built from
 NOAA NCEI Continuously Updated Digital Elevation Models (CUDEM, 1/9 and 1/3 arc-second, Hawaii) and the NOAA NGS 2021
 Northwestern Hawaiian Islands topobathy lidar (NOAA Digital Coast). These US government data are in the public domain.
 Not for navigation.
 """
+NOAA_CREDIT_V3 = """
+Inside the bathymetry regions (Hawaii: 160.5-154.5 W, 18.5-22.5 N; the NW Hawaiian Islands: 168.5-160.5 W,
+22.5-24.5 N; Puerto Rico and the US Virgin Islands: 68-64.25 W, 17.25-19 N; Guam and the CNMI: 144.5-146 E,
+13-15.5 N; American Samoa: 171-169.25 W, 14.5-14 S) the coastline is the mean-higher-high-water edge of the
+allshoresurf.com bathymetry tiles, built from NOAA NCEI Continuously Updated Digital Elevation Models (CUDEM, 1/9 and
+1/3 arc-second) and the NOAA NGS 2021 Northwestern Hawaiian Islands topobathy lidar (NOAA Digital Coast). These US
+government data are in the public domain. Not for navigation.
+"""
+# Hawaii's five cells as published in static/coast/v2 (sha256 of each file): every later set keeps them byte for byte.
+V2_HAWAII_CELLS = {
+    "15_-155": "e9ffdbebf924eaf651a702b685f2c59e1eaeb7df79b2e5938d9db6e7dfd9e989",
+    "15_-160": "77b11d852493e8c1c7f614a88bc6a2812e5f13466f81192ef47d278bd2354a04",
+    "20_-160": "6c2f124300ba97e65d04a7efdf2fff4c1ad54de03052d56a360253804409f00d",
+    "20_-165": "d9031b442d293362ea5a7adb5a05f781d94be30ccbb72db81807943f430d2028",
+    "20_-170": "be644a005e4dea22c575df61c4cd2883837ddbc9535f4f5bb3207b152ae96908",
+}
+# The coast sets (plan sections 103-104). Per set:
+#   regions           the bathymetry regions traced;
+#   expected_changed  the tier-1 cells a real build changes (every other cell is v1's bytes);
+#   pin               the exact tier-1 bytes of a real build (deterministic from the pinned inputs, this code and the
+#                     pinned shapely; laptop and runner must agree): a deliberate change updates it. Tier 0 is v1's;
+#   v1_sqdeg          the land area of expected_changed in v1 (sq deg, build_coast.signed_area of the q=1e4 rings,
+#                     unweighted as in build_coast.check): the new total stays within AREA_TOL of it, judged on the
+#                     total only (per cell, Niihau loses ~6 %, French Frigate Shoals ~85 %, Ta'u ~5 %: GSHHG offsets);
+#   probes            (lon, lat, land?) checked in the changed cells, beside build_coast.PROBES;
+#   same_cells        {cell: sha256} that must come out byte-identical (Hawaii stays as published in v2).
+SETS = {
+    "v2": dict(regions=["hawaii", "nwhi-lidar"],
+               expected_changed=["15_-155", "15_-160", "20_-160", "20_-165", "20_-170"],
+               pin="9a0ca75f08d7b2fb6bc4d6df0a43cb1653ddabbcb1fd4b1b5cf77cc6d21923f7",  # laptop and runner agree (coast-build dry run #711, ubuntu-24.04; shapely 2.2.0)
+               v1_sqdeg=1.456635,                                                        # a real v2 build: 1.43924 (-1.19 %)
+               probes=HAWAII_PROBES, same_cells={}, credit=NOAA_CREDIT_V2),
+    "v3": dict(regions=["hawaii", "nwhi-lidar", "prvi", "marianas", "samoa"],
+               expected_changed=["-15_-170", "-15_-175", "10_140", "10_145", "15_-155", "15_-160", "15_-65", "15_-70",
+                                 "15_145", "20_-160", "20_-165", "20_-170"],
+               pin="0881b635c8d073476aa1aee576cfb754e9a2d024329d02e09bb65f61ffe82a56",  # laptop and runner agree (coast-build dry run #731, ubuntu-24.04; shapely 2.2.0)
+               v1_sqdeg=4.074942,                                                        # a real v3 build: 4.04433 (-0.75 %)
+               probes=HAWAII_PROBES + S2_PROBES, same_cells=V2_HAWAII_CELLS, credit=NOAA_CREDIT_V3),
+}
+LICENSE = BC.LICENSE + "; NOAA NCEI CUDEM and NOAA NGS lidar (public domain) inside the bathymetry regions"
+
+
+def format_key(regions):
+    return ("coast-v1-land2|base=coast-v1|z=%d|block=%d|tol=%g|speck=%g|q=%d|rule=tile>ancestor>gshhg|boxes=%s|"
+            "shapely=%s" % (Z, BLOCK, TOL_PX, SPECK_PX2, Q2,
+                            ";".join("%s:v%d:%s%s" % (n, r["v"], ",".join("%g" % v for v in r["box"]),
+                                                      "".join(":%s=%g" % (k, r[k]) for k in ("speck", "tol") if k in r))
+                                     for n, r in sorted(regions.items())),
+                            ".".join(shapely.__version__.split(".")[:2])))
+
+
+def use_set(name):
+    """Make coast set `name` the active one: the module-level REGIONS, EXPECTED_CHANGED, PIN_TIER1_SHA256,
+    V1_CHANGED_SQDEG, SET_PROBES, SAME_CELLS, FORMAT_KEY, SOURCE and NOAA_CREDIT the build and check read."""
+    global SET, REGIONS, EXPECTED_CHANGED, PIN_TIER1_SHA256, V1_CHANGED_SQDEG, SET_PROBES, SAME_CELLS
+    global FORMAT_KEY, SOURCE, NOAA_CREDIT
+    st = SETS[name]
+    SET = name
+    REGIONS = {n: ALL_REGIONS[n] for n in st["regions"]}
+    EXPECTED_CHANGED = list(st["expected_changed"])
+    PIN_TIER1_SHA256 = st["pin"]
+    V1_CHANGED_SQDEG = st["v1_sqdeg"]
+    SET_PROBES = list(st["probes"])
+    SAME_CELLS = dict(st["same_cells"])
+    FORMAT_KEY = format_key(REGIONS)
+    SOURCE = source(REGIONS)
+    NOAA_CREDIT = st["credit"]
+
+
+def source(regions):
+    return "GSHHG 2.3.7 + NOAA bathymetry MHHW water edge (allshoresurf bathy regions %s)" % ", ".join(sorted(regions))
+
+
+use_set("v2")
 
 
 def log(msg):
@@ -128,17 +219,35 @@ def _ssl_context():
     return ssl.create_default_context(cafile=certifi.where())
 
 
+_conn = threading.local()
+
+
 def _get(url, timeout=60, tries=4):
-    ctx = _ssl_context()
+    """GET with a keep-alive HTTPS connection per thread (a new TLS connection per tile cost ~0.5 s); 403/404 raise
+    urllib.error.HTTPError at once, other failures retry on a fresh connection."""
+    parts = urllib.parse.urlsplit(url)
+    path = parts.path + ("?" + parts.query if parts.query else "")
     for i in range(tries):
+        conns = getattr(_conn, "c", None)
+        if conns is None:
+            conns = _conn.c = {}
+        c = conns.get(parts.netloc)
+        if c is None:
+            c = conns[parts.netloc] = http.client.HTTPSConnection(parts.netloc, context=_ssl_context(), timeout=timeout)
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": UA})
-            with urllib.request.urlopen(req, context=ctx, timeout=timeout) as r:
-                return r.read()
-        except urllib.error.HTTPError as exc:
-            if exc.code in (403, 404) or i == tries - 1:
-                raise
-        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            c.request("GET", path, headers={"User-Agent": UA})
+            r = c.getresponse()
+            data = r.read()
+            if r.status == 200:
+                return data
+            exc = urllib.error.HTTPError(url, r.status, r.reason, r.headers, None)
+            if r.status in (403, 404) or 300 <= r.status < 400 or i == tries - 1:   # a redirect is not followed (G71 P3-3)
+                raise exc
+        except urllib.error.HTTPError:
+            raise
+        except (http.client.HTTPException, OSError):
+            c.close()
+            conns.pop(parts.netloc, None)
             if i == tries - 1:
                 raise
         time.sleep(1 + 2 * i)
@@ -508,10 +617,11 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
                 polys.extend(mask_polygons(land, bx * BPX, by * BPX))
     stats["t_blocks_s"] = round(time.time() - t0, 1)
     u = shapely.union_all(polys) if polys else shapely.MultiPolygon()
-    kept, stats["speck_land"], stats["speck_holes"] = drop_specks(u, SPECK_PX2)
+    speck, tol = reg.get("speck", SPECK_PX2), reg.get("tol", TOL_PX)       # a region's own params (section 104)
+    kept, stats["speck_land"], stats["speck_holes"] = drop_specks(u, speck)
     # normalised first (G70 P2-1): the polygons, their rings and each ring's start vertex in a canonical order, so the
     # simplifier (anchored at the ring start) sees the same input whatever order GEOS's union produced on this platform
-    simp = shapely.normalize(shapely.MultiPolygon(kept)).simplify(TOL_PX, preserve_topology=True) if kept else shapely.MultiPolygon()
+    simp = shapely.normalize(shapely.MultiPolygon(kept)).simplify(tol, preserve_topology=True) if kept else shapely.MultiPolygon()
     out = []
     for p in polygons(simp):
         rings = [np.asarray(p.exterior.coords, np.float64)[:-1]] + [np.asarray(r.coords, np.float64)[:-1] for r in p.interiors]
@@ -667,9 +777,9 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
     open(os.path.join(out_dir, t0f), "wb").write(tier0)
     index = {k: v for k, v in v1.items() if k not in ("tier1",)}
     index.update({
-        "kind": KIND, "format": "coast-v1", "format_key": FORMAT_KEY, "q": Q2,
+        "kind": KIND, "set": SET, "format": "coast-v1", "format_key": format_key(regions), "q": Q2,
         "q_note": "q of the changed cells; tier 0 and every other cell keep v1's 10000: each file carries its own q",
-        "source": SOURCE, "license": LICENSE,
+        "source": source(regions), "license": LICENSE,
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "base_v1": {"tier0_sha": v1["tier0"]["sha256"], "tier1_sha": v1["tier1"]["sha256"], "changed_sha": base_changed},
         "bathy": bathy, "changed": changed, "v1_rings_crossing_box": crossing,
@@ -682,8 +792,8 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
         json.dump(index, fh, separators=(",", ":"), sort_keys=True)
     with open(os.path.join(out_dir, "LICENSE.txt"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(open(BC.LICENSE_FILE, encoding="utf-8").read().rstrip("\n") + "\n" + NOAA_CREDIT)
-    log("v2: %d cells changed %s, %d v1 rings cross a box edge; tier 1 %d cells, %d vertices, %d bytes, sha %s (%.0f s)"
-        % (len(changed), changed, crossing, len(listing), tot_verts, tot_bytes, index["tier1"]["sha256"][:12],
+    log("%s: %d cells changed %s, %d v1 rings cross a box edge; tier 1 %d cells, %d vertices, %d bytes, sha %s (%.0f s)"
+        % (SET, len(changed), changed, crossing, len(listing), tot_verts, tot_bytes, index["tier1"]["sha256"][:12],
            time.time() - t0))
     return index
 
@@ -718,8 +828,8 @@ def check(out_dir, log=log, regions=None):
         return ["index kind %r is not %r" % (index.get("kind"), KIND)]
     if index.get("format") != "coast-v1" or index.get("q") != Q2:
         problems.append("index format/q")
-    if index.get("format_key") != FORMAT_KEY:
-        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), FORMAT_KEY))
+    if index.get("format_key") != format_key(regions):
+        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), format_key(regions)))
     real = is_real(index, regions)
     base = index.get("base_v1") or {}
     t0 = index["tier0"]
@@ -778,11 +888,11 @@ def check(out_dir, log=log, regions=None):
                 area += sum(BC.signed_area(ix / q, iy / q) for ix, iy in rings)
                 if len(problems) > 60:
                     break
-        for lon, lat, land in (BC.PROBES + HAWAII_PROBES) if real else []:
+        for lon, lat, land in (BC.PROBES + SET_PROBES) if real else []:
             if lat0 <= lat < lat0 + t1["cell"] and lon0 <= lon < lon0 + t1["cell"] and \
                     BC.point_in_pieces(lon, lat, d["pieces"], d["q"]) != land:
                 problems.append("tier 1 %s: probe %s,%s should be %s" % (name, lon, lat, "land" if land else "water"))
-    for lon, lat, land in (BC.PROBES + HAWAII_PROBES) if real else []:
+    for lon, lat, land in (BC.PROBES + SET_PROBES) if real else []:
         name = BC.cell_name(int(np.floor(lat / t1["cell"])) * t1["cell"], int(np.floor(lon / t1["cell"])) * t1["cell"])
         if land and name not in t1["cells"]:
             problems.append("tier 1: probe %s,%s should be land but its cell %s is absent" % (lon, lat, name))
@@ -793,6 +903,9 @@ def check(out_dir, log=log, regions=None):
     if present == set(t1["cells"]) and t1.get("sha256") != BC.cells_digest(digests):
         problems.append("tier 1: content hash != index (tier1.sha256)")
     if real:
+        for name, sha in sorted(SAME_CELLS.items()):          # Hawaii stays as published in v2 (plan section 104)
+            if digests.get(name) != sha:
+                problems.append("tier 1 %s: not byte-identical to the published v2 cell" % name)
         for name, reg in regions.items():
             if not _pinned(reg["tiles_sha256"]):
                 log("  note: %s tiles_sha256 not pinned yet (%s)" % (name, index["bathy"][name]["sha256"]))
@@ -842,13 +955,19 @@ def main(argv=None):
     ap.add_argument("--out", help="output directory (build) or directory to upload")
     ap.add_argument("--check", metavar="DIR", help="validate a built v2 directory")
     ap.add_argument("--upload", metavar="PREFIX", help="upload --out to the R2 bucket under PREFIX")
+    ap.add_argument("--set", choices=sorted(SETS), default="v2", help="the coast set to build, check or upload")
     ap.add_argument("--replace", action="store_true", help="allow overwriting a different build under PREFIX")
     a = ap.parse_args(argv)
+    if a.set != SET:
+        use_set(a.set)
     if a.check:
         return 1 if check(a.check) else 0
     if a.upload:
         if not a.out:
             ap.error("--upload needs --out")
+        if a.upload.strip("/") != "static/coast/" + SET:          # the prefix is the set's own (G71 P3-4)
+            print("refusing to upload set %s under %r (its prefix is static/coast/%s)" % (SET, a.upload, SET))
+            return 1
         if check(a.out):
             print("refusing to upload a directory that fails --check")
             return 1

@@ -356,7 +356,7 @@ def test_incomplete_tiles_are_refused(world, tmp_path):
 
 def test_regions_match_the_bathy_builder():
     import bathy_sources as S
-    for name, reg in V2.REGIONS.items():
+    for name, reg in V2.ALL_REGIONS.items():
         assert tuple(S.REGIONS[name]["box"]) == reg["box"]
         assert S.REGIONS[name]["zmin"] == reg["zmin"]
 
@@ -375,11 +375,13 @@ def test_check_refuses_other_kinds(tmp_path):
 
 
 def test_workflow_builds_coast_v2_with_pinned_shapely():
-    """coast-build.yml set coast-v2: v1 from the pinned GSHHG, then v2 from the pinned tiles; shapely pinned in both pip
-    lines (the output hash PIN_TIER1_SHA256 depends on its version, FORMAT_KEY records major.minor)."""
+    """coast-build.yml sets coast-v2 / coast-v3: v1 from the pinned GSHHG, then the set from the pinned tiles; shapely
+    pinned in both pip lines (the output hash PIN_TIER1_SHA256 depends on its version, FORMAT_KEY records major.minor)."""
     wf = open(os.path.join(ROOT, ".github", "workflows", "coast-build.yml"), encoding="utf-8").read()
-    assert "--v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out build/coast/v2" in wf
+    assert ('--set "$V" --v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out "build/coast/$V"' in wf
+            and 'V="${SET#coast-}"' in wf)
     assert "coast-v2) CMD=(python tools/coast/build_coast_v2.py --out build/coast/v2 --upload static/coast/v2);;" in wf
+    assert "coast-v3) CMD=(python tools/coast/build_coast_v2.py --set v3 --out build/coast/v3 --upload static/coast/v3);;" in wf
     pips = [line for line in wf.splitlines() if "pip install" in line]
     assert len(pips) == 2 and all("shapely==2.2.0" in p and "pillow==" in p for p in pips)
     assert "|shapely=2.2" in V2.FORMAT_KEY or not shapely.__version__.startswith("2.2")
@@ -426,3 +428,197 @@ def test_check_counts_v2_vertices_on_a_box_line(world, tmp_path, monkeypatch):
     monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
     probs = V2.check(out, log=lambda m: None, regions=reg)
     assert any("box line" in p for p in probs)
+
+
+# ---------------------------------------------------------------- the coast sets (plan section 104)
+
+def test_v2_set_is_the_published_s1_configuration():
+    """Set v2 is exactly what static/coast/v2 was built with (the published bytes stay reproducible)."""
+    st = V2.SETS["v2"]
+    assert st["regions"] == ["hawaii", "nwhi-lidar"]
+    assert st["pin"] == "9a0ca75f08d7b2fb6bc4d6df0a43cb1653ddabbcb1fd4b1b5cf77cc6d21923f7"
+    assert st["v1_sqdeg"] == 1.456635 and st["same_cells"] == {}
+    assert V2.format_key({n: V2.ALL_REGIONS[n] for n in st["regions"]}) == (
+        "coast-v1-land2|base=coast-v1|z=15|block=8|tol=0.7|speck=2|q=100000|rule=tile>ancestor>gshhg|"
+        "boxes=hawaii:v2:-160.5,18.5,-154.5,22.5;nwhi-lidar:v1:-168.5,22.5,-160.5,24.5|shapely=%s"
+        % ".".join(shapely.__version__.split(".")[:2]))
+
+
+def test_later_sets_keep_hawaii_and_add_regions():
+    v2 = V2.SETS["v2"]
+    for name, st in V2.SETS.items():
+        assert set(st["regions"]) <= set(V2.ALL_REGIONS)
+        cands = {c for r in st["regions"] for c in V2.cells_overlapping(V2.ALL_REGIONS[r]["box"])}
+        assert set(st["expected_changed"]) <= cands, name
+        for lon, lat, _ in st["probes"]:
+            assert any(V2.ALL_REGIONS[r]["box"][0] <= lon <= V2.ALL_REGIONS[r]["box"][2] and
+                       V2.ALL_REGIONS[r]["box"][1] <= lat <= V2.ALL_REGIONS[r]["box"][3] for r in st["regions"]), (lon, lat)
+            assert cell_of(lon, lat) in st["expected_changed"], (name, lon, lat)
+        if name != "v2":
+            assert set(v2["regions"]) <= set(st["regions"]) and set(v2["expected_changed"]) <= set(st["expected_changed"])
+            assert sorted(st["same_cells"]) == sorted(v2["expected_changed"])
+            assert all(p in st["probes"] for p in v2["probes"])
+
+
+def test_use_set_switches_and_restores():
+    try:
+        V2.use_set("v3")
+        assert V2.SET == "v3" and "prvi" in V2.REGIONS and "prvi:v2:-68,17.25,-64.25,19" in V2.FORMAT_KEY
+        assert V2.SAME_CELLS == V2.V2_HAWAII_CELLS and "Puerto Rico" in V2.NOAA_CREDIT
+    finally:
+        V2.use_set("v2")
+    assert V2.SET == "v2" and set(V2.REGIONS) == {"hawaii", "nwhi-lidar"} and V2.SAME_CELLS == {}
+
+
+def test_check_flags_a_hawaii_cell_that_is_not_v2s(world, tmp_path, monkeypatch):
+    """A later set must carry Hawaii's published v2 cells byte for byte."""
+    t = full(WATER)
+    t[100:160, 20:200] = LAND
+    tdir, v1, reg = world({(15, X0 + 1, Y0): t, (14, (X0 + 1) >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    idx = json.load(open(os.path.join(out, "index.json")))
+    cell = idx["changed"][0]
+    sha = hashlib.sha256(open(os.path.join(out, idx["tier1"]["dir"], cell + ".bin"), "rb").read()).hexdigest()
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    monkeypatch.setattr(V2, "SAME_CELLS", {cell: sha})
+    assert not any("published v2 cell" in p for p in V2.check(out, log=lambda m: None, regions=reg))
+    monkeypatch.setattr(V2, "SAME_CELLS", {cell: "0" * 64})
+    assert any("%s: not byte-identical to the published v2 cell" % cell in p
+               for p in V2.check(out, log=lambda m: None, regions=reg))
+
+
+def test_a_region_may_set_its_own_speck_and_tolerance(world, tmp_path):
+    """Section 104: a region's own "speck" (and "tol") replaces the defaults for its trace only; an islet of 16 px^2
+    stays with the default (2) and goes with speck 32."""
+    t = full(WATER)
+    t[100:160, 20:200] = LAND                  # an island, kept either way
+    t[30:34, 100:104] = LAND                   # a 4 x 4 px islet (16 px^2)
+    tdir, v1, reg = world({(15, X0, Y0): t, (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    islet = (float(V2.px_lon(X0 * 256 + 102)), float(V2.px_lat(Y0 * 256 + 32)))
+    assert land_at(build(tmp_path, tdir, v1, reg, "a"), *islet)
+    reg2 = {n: dict(r, speck=32.0, tol=1.0) for n, r in reg.items()}
+    out = build(tmp_path, tdir, v1, reg2, "b")
+    assert not land_at(out, *islet)
+    assert land_at(out, float(V2.px_lon(X0 * 256 + 110)), float(V2.px_lat(Y0 * 256 + 130)))
+
+
+def test_v3_regions_carry_their_own_params_in_the_format_key():
+    try:
+        V2.use_set("v3")
+        for n in ("prvi", "marianas", "samoa"):
+            assert V2.REGIONS[n]["speck"] == 32.0 and V2.REGIONS[n]["tol"] == 1.0
+            assert ":speck=32:tol=1" in V2.FORMAT_KEY.split(n + ":")[1].split(";")[0]
+        assert "speck" not in V2.REGIONS["hawaii"] and "speck" not in V2.REGIONS["nwhi-lidar"]
+    finally:
+        V2.use_set("v2")
+
+
+# ---------------------------------------------------------------- G71 fixes
+
+class _Resp:
+    def __init__(self, status, body=b""):
+        self.status, self.reason, self.headers, self._b = status, "x", {}, body
+
+    def read(self):
+        return self._b
+
+
+def _fake_http(monkeypatch, answers):
+    """HTTPSConnection whose responses come from `answers` (a status, a (status, body) pair or an exception)."""
+    made = []
+
+    class Conn:
+        def __init__(self, host, context=None, timeout=None):
+            self.closed = False
+            made.append(self)
+
+        def request(self, method, path, headers=None):
+            self.path = path
+            assert headers["User-Agent"] == V2.UA
+
+        def getresponse(self):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return _Resp(*a) if isinstance(a, tuple) else _Resp(a)
+
+        def close(self):
+            self.closed = True
+    monkeypatch.setattr(V2.http.client, "HTTPSConnection", Conn)
+    monkeypatch.setattr(V2.time, "sleep", lambda s: None)
+    monkeypatch.setattr(V2, "_ssl_context", lambda: None)
+    V2._conn.__dict__.clear()
+    return made
+
+
+def test_get_keeps_one_connection_and_retries_on_a_fresh_one(monkeypatch):
+    import urllib.error
+    made = _fake_http(monkeypatch, [(200, b"a"), (200, b"b"), ConnectionResetError(), (200, b"c"), 500, (200, b"d")])
+    assert V2._get("https://h.example/x?y=1") == b"a" and made[0].path == "/x?y=1"
+    assert V2._get("https://h.example/z") == b"b" and len(made) == 1          # kept alive
+    assert V2._get("https://h.example/z") == b"c" and len(made) == 2 and made[0].closed   # a reset: a fresh connection
+    assert V2._get("https://h.example/z") == b"d"                            # a 500 is retried
+    made = _fake_http(monkeypatch, [404])
+    with pytest.raises(urllib.error.HTTPError):
+        V2._get("https://h.example/missing")
+    made = _fake_http(monkeypatch, [301, (200, b"never")])
+    with pytest.raises(urllib.error.HTTPError):                              # a redirect is not followed
+        V2._get("https://h.example/moved")
+    _fake_http(monkeypatch, [503, 503, 503, 503])
+    with pytest.raises(urllib.error.HTTPError):
+        V2._get("https://h.example/down", tries=4)
+    V2._conn.__dict__.clear()
+
+
+def test_upload_prefix_must_be_the_sets_own(world, tmp_path, monkeypatch):
+    tdir, v1, reg = world({(15, X0, Y0): island_with_lagoon(), (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    calls = []
+    monkeypatch.setattr(V2.BC, "upload", lambda *a, **k: calls.append(a) or True)
+    monkeypatch.setattr(V2, "check", lambda *a, **k: [])
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    try:
+        for args in (["--out", out, "--upload", "static/coast/v3"],                       # set v2 under v3's prefix
+                     ["--set", "v3", "--out", out, "--upload", "static/coast/v2", "--replace"]):   # v3 over the live v2
+            assert V2.main(args) == 1 and calls == [], args
+    finally:
+        V2.use_set("v2")
+    assert V2.SET == "v2"
+
+
+def test_v3_upload_gates(world, tmp_path, monkeypatch):
+    """--set v3: a build that is not from v3's pinned inputs (a v2 build, a synthetic one) or not v3's pin is refused,
+    and the set is v2 again afterwards (use_set restored)."""
+    tdir, v1, reg = world({(15, X0, Y0): island_with_lagoon(), (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    calls = []
+    monkeypatch.setattr(V2.BC, "upload", lambda *a, **k: calls.append(a) or True)
+    args = ["--set", "v3", "--out", out, "--upload", "static/coast/v3"]
+    try:
+        assert V2.main(args) == 1 and calls == []                       # synthetic: not v3's inputs
+        idx = json.load(open(os.path.join(out, "index.json")))
+        assert not V2.is_real(idx, {n: V2.ALL_REGIONS[n] for n in V2.SETS["v2"]["regions"]})
+        V2.use_set("v3")
+        fake = dict(idx, bathy={n: {"v": r["v"], "digest": r["digest"], "sha256": r["tiles_sha256"]}
+                                for n, r in V2.ALL_REGIONS.items() if n in V2.SETS["v2"]["regions"]},
+                    base_v1={"tier0_sha": V2.V1_PIN_TIER0_SHA256, "tier1_sha": V2.V1_PIN_TIER1_SHA256})
+        assert not V2.is_real(fake)                                      # a v2 build is not a v3 build
+        fake["bathy"].update({n: {"v": r["v"], "digest": r["digest"], "sha256": r["tiles_sha256"]}
+                              for n, r in V2.ALL_REGIONS.items()})
+        assert V2.is_real(fake)
+    finally:
+        V2.use_set("v2")
+    assert V2.SET == "v2" and V2.PIN_TIER1_SHA256 == V2.SETS["v2"]["pin"] and V2.SAME_CELLS == {}
+
+
+def test_index_records_the_regions_built(world, tmp_path):
+    """G71 P3-7: build() and check() take the format key from the regions they are given, not the active set."""
+    t = full(WATER)
+    t[100:160, 20:200] = LAND
+    tdir, v1, reg = world({(15, X0, Y0): t, (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    reg2 = {n: dict(r, speck=32.0, tol=1.0) for n, r in reg.items()}
+    out = build(tmp_path, tdir, v1, reg2)
+    idx = json.load(open(os.path.join(out, "index.json")))
+    assert ":speck=32:tol=1" in idx["format_key"] and idx["format_key"] == V2.format_key(reg2)
+    assert not any("format_key" in p for p in V2.check(out, log=lambda m: None, regions=reg2))
+    assert any("format_key" in p for p in V2.check(out, log=lambda m: None, regions=reg))

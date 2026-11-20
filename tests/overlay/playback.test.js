@@ -4255,3 +4255,29 @@ test('section 102 B1: an unreadable precip table: the total says so too; a saved
     offPrecip(o2);
   });
 });
+
+test('coast sets (plan sections 103-104): opts.coastSet v2 / v3 / v4 read static/coast/<set>; anything else is v1', () => {
+  const w = world();
+  for (const [set, dir] of [['v2', 'v2'], ['v3', 'v3'], ['v4', 'v4'], [undefined, 'v1'], ['v1', 'v1'], ['v5', 'v1'],
+                            ['V3', 'v1'], ['__proto__', 'v1'], ['constructor', 'v1'], ['../v3', 'v1']]) {
+    const o = w.create({ coast: true, coastSet: set });
+    assert.ok(o.coast.url.endsWith('/static/coast/' + dir), set + ' -> ' + o.coast.url);
+  }
+});
+
+test('coast sets (G71 P2-1): a set whose index.json answers 404 (not uploaded) falls back to v1 once; other failures do not', async () => {
+  const w = world();
+  w.coastAnswer = (url) => (url.indexOf('/static/coast/v3/') >= 0 ? { ok: false, status: 404 } : coastOk(url));
+  const o = w.create({ coast: true, coastSet: 'v3' });
+  const p = o.coast.load();
+  for (let i = 0; i < 6; i++) { while (w.pendingCoast.length) w.pendingCoast.shift()(); await settle(); }
+  assert.equal(await p, o.coast, 'the load resolves to the store, on v1');
+  assert.ok(o.coast.url.endsWith('/static/coast/v1') && o.coast.status === 'ok' && o.coast.fallbackUrl === null, o.coast.url);
+  const w2 = world();
+  w2.coastAnswer = (url) => (url.indexOf('/static/coast/v2/') >= 0 ? { ok: false, status: 503 } : coastOk(url));
+  const o2 = w2.create({ coast: true, coastSet: 'v2' });
+  const p2 = o2.coast.load();
+  for (let i = 0; i < 6; i++) { while (w2.pendingCoast.length) w2.pendingCoast.shift()(); await settle(); }
+  assert.equal(await p2, null);
+  assert.ok(o2.coast.url.endsWith('/static/coast/v2') && o2.coast.status === 'failed', 'a 503 is not "not published": no fallback');
+});

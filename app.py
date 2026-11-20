@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.30.2"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.31.2"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
@@ -4055,11 +4055,33 @@ def _swan_health():
 # background every two minutes (alert_sources.AlertService) and drawn on the map along each named zone's coastline
 # (alert_coast.json, tools/alerts/build_alert_coast.py). COASTAL_ALERTS=0 switches the layer off.
 COASTAL_ALERTS = os.environ.get("COASTAL_ALERTS", "1") != "0"
-# COAST_V2=1 (plan section 103) switches two things together: the overlay's land clip to static/coast/v2 (Hawaii's shore
-# = the bathymetry's MHHW edge) and the hazard lines to alert_coast_v2.json, built from it. Unset: v1 and alert_coast.json,
-# the page byte-identical. Forecast points, the exposure tool, the fill mask and the wind stations stay on v1.
-COAST_V2 = os.environ.get("COAST_V2", "0") == "1"
-ALERT_COAST_FILE = "alert_coast_v2.json" if COAST_V2 else "alert_coast.json"
+# COAST_SET=v2|v3|v4 (plan sections 103-104) switches two things together: the overlay's land clip to static/coast/<set>
+# (the shore = the bathymetry's MHHW edge: v2 Hawaii; v3 + Puerto Rico/USVI, Guam/CNMI, American Samoa; v4 + the US
+# mainland) and the hazard lines to alert_coast_<set>.json, built from it. A set whose hazard file is not in this
+# checkout, or any other value, is v1 (logged). COAST_V2=1 is the old name for COAST_SET=v2 (COAST_SET wins). Unset: v1
+# and alert_coast.json, the page byte-identical. Forecast points, the exposure tool, the fill mask and the wind stations
+# stay on v1.
+COAST_SETS = ("v1", "v2", "v3", "v4")
+
+
+def _coast_set(env=None):
+    env = os.environ if env is None else env
+    s = (env.get("COAST_SET") or "").strip()
+    if not s and env.get("COAST_V2", "0") == "1":
+        s = "v2"
+    if not s or s == "v1":
+        return "v1"
+    if s not in COAST_SETS:
+        logging.warning("COAST_SET=%r is not one of %s: coast set v1", s[:20], ", ".join(COAST_SETS))
+        return "v1"
+    if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "alert_coast_%s.json" % s)):
+        logging.warning("COAST_SET=%s: alert_coast_%s.json is not in this release: coast set v1", s, s)
+        return "v1"
+    return s
+
+
+COAST_SET = _coast_set()
+ALERT_COAST_FILE = "alert_coast.json" if COAST_SET == "v1" else "alert_coast_%s.json" % COAST_SET
 _ALERTS_HTTP = requests.Session()        # one attempt per read, no retry adapter (the next read is two minutes away)
 ALERTS = alert_sources.AlertService(os.path.join(os.path.dirname(os.path.abspath(__file__)), ALERT_COAST_FILE))
 
@@ -5622,7 +5644,7 @@ def index():
         coast_base=_coast_base(),
         places_base=_places_base(),
         coastal_alerts=COASTAL_ALERTS,              # the coastal hazards layer (plan section 90)
-        coast_set=("v2" if COAST_V2 else None),     # the overlay's coast set (COAST_V2, plan section 103; None = v1)
+        coast_set=(None if COAST_SET == "v1" else COAST_SET),   # the overlay's coast set (COAST_SET, plan sections 103-104; None = v1)
         geo_base=_geo_base(),
         retired_stations=sorted(BLANK_STATIONS),            # a stored default among them opens like none (G35 B-8)
         site_origin=SITE_ORIGIN,

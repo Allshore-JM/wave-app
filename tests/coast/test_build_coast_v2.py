@@ -511,3 +511,114 @@ def test_v3_regions_carry_their_own_params_in_the_format_key():
         assert "speck" not in V2.REGIONS["hawaii"] and "speck" not in V2.REGIONS["nwhi-lidar"]
     finally:
         V2.use_set("v2")
+
+
+# ---------------------------------------------------------------- G71 fixes
+
+class _Resp:
+    def __init__(self, status, body=b""):
+        self.status, self.reason, self.headers, self._b = status, "x", {}, body
+
+    def read(self):
+        return self._b
+
+
+def _fake_http(monkeypatch, answers):
+    """HTTPSConnection whose responses come from `answers` (a status, a (status, body) pair or an exception)."""
+    made = []
+
+    class Conn:
+        def __init__(self, host, context=None, timeout=None):
+            self.closed = False
+            made.append(self)
+
+        def request(self, method, path, headers=None):
+            self.path = path
+            assert headers["User-Agent"] == V2.UA
+
+        def getresponse(self):
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return _Resp(*a) if isinstance(a, tuple) else _Resp(a)
+
+        def close(self):
+            self.closed = True
+    monkeypatch.setattr(V2.http.client, "HTTPSConnection", Conn)
+    monkeypatch.setattr(V2.time, "sleep", lambda s: None)
+    monkeypatch.setattr(V2, "_ssl_context", lambda: None)
+    V2._conn.__dict__.clear()
+    return made
+
+
+def test_get_keeps_one_connection_and_retries_on_a_fresh_one(monkeypatch):
+    import urllib.error
+    made = _fake_http(monkeypatch, [(200, b"a"), (200, b"b"), ConnectionResetError(), (200, b"c"), 500, (200, b"d")])
+    assert V2._get("https://h.example/x?y=1") == b"a" and made[0].path == "/x?y=1"
+    assert V2._get("https://h.example/z") == b"b" and len(made) == 1          # kept alive
+    assert V2._get("https://h.example/z") == b"c" and len(made) == 2 and made[0].closed   # a reset: a fresh connection
+    assert V2._get("https://h.example/z") == b"d"                            # a 500 is retried
+    made = _fake_http(monkeypatch, [404])
+    with pytest.raises(urllib.error.HTTPError):
+        V2._get("https://h.example/missing")
+    made = _fake_http(monkeypatch, [301, (200, b"never")])
+    with pytest.raises(urllib.error.HTTPError):                              # a redirect is not followed
+        V2._get("https://h.example/moved")
+    _fake_http(monkeypatch, [503, 503, 503, 503])
+    with pytest.raises(urllib.error.HTTPError):
+        V2._get("https://h.example/down", tries=4)
+    V2._conn.__dict__.clear()
+
+
+def test_upload_prefix_must_be_the_sets_own(world, tmp_path, monkeypatch):
+    tdir, v1, reg = world({(15, X0, Y0): island_with_lagoon(), (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    calls = []
+    monkeypatch.setattr(V2.BC, "upload", lambda *a, **k: calls.append(a) or True)
+    monkeypatch.setattr(V2, "check", lambda *a, **k: [])
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    try:
+        for args in (["--out", out, "--upload", "static/coast/v3"],                       # set v2 under v3's prefix
+                     ["--set", "v3", "--out", out, "--upload", "static/coast/v2", "--replace"]):   # v3 over the live v2
+            assert V2.main(args) == 1 and calls == [], args
+    finally:
+        V2.use_set("v2")
+    assert V2.SET == "v2"
+
+
+def test_v3_upload_gates(world, tmp_path, monkeypatch):
+    """--set v3: a build that is not from v3's pinned inputs (a v2 build, a synthetic one) or not v3's pin is refused,
+    and the set is v2 again afterwards (use_set restored)."""
+    tdir, v1, reg = world({(15, X0, Y0): island_with_lagoon(), (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    out = build(tmp_path, tdir, v1, reg)
+    calls = []
+    monkeypatch.setattr(V2.BC, "upload", lambda *a, **k: calls.append(a) or True)
+    args = ["--set", "v3", "--out", out, "--upload", "static/coast/v3"]
+    try:
+        assert V2.main(args) == 1 and calls == []                       # synthetic: not v3's inputs
+        idx = json.load(open(os.path.join(out, "index.json")))
+        assert not V2.is_real(idx, {n: V2.ALL_REGIONS[n] for n in V2.SETS["v2"]["regions"]})
+        V2.use_set("v3")
+        fake = dict(idx, bathy={n: {"v": r["v"], "digest": r["digest"], "sha256": r["tiles_sha256"]}
+                                for n, r in V2.ALL_REGIONS.items() if n in V2.SETS["v2"]["regions"]},
+                    base_v1={"tier0_sha": V2.V1_PIN_TIER0_SHA256, "tier1_sha": V2.V1_PIN_TIER1_SHA256})
+        assert not V2.is_real(fake)                                      # a v2 build is not a v3 build
+        fake["bathy"].update({n: {"v": r["v"], "digest": r["digest"], "sha256": r["tiles_sha256"]}
+                              for n, r in V2.ALL_REGIONS.items()})
+        assert V2.is_real(fake)
+    finally:
+        V2.use_set("v2")
+    assert V2.SET == "v2" and V2.PIN_TIER1_SHA256 == V2.SETS["v2"]["pin"] and V2.SAME_CELLS == {}
+
+
+def test_index_records_the_regions_built(world, tmp_path):
+    """G71 P3-7: build() and check() take the format key from the regions they are given, not the active set."""
+    t = full(WATER)
+    t[100:160, 20:200] = LAND
+    tdir, v1, reg = world({(15, X0, Y0): t, (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    reg2 = {n: dict(r, speck=32.0, tol=1.0) for n, r in reg.items()}
+    out = build(tmp_path, tdir, v1, reg2)
+    idx = json.load(open(os.path.join(out, "index.json")))
+    assert ":speck=32:tol=1" in idx["format_key"] and idx["format_key"] == V2.format_key(reg2)
+    assert not any("format_key" in p for p in V2.check(out, log=lambda m: None, regions=reg2))
+    assert any("format_key" in p for p in V2.check(out, log=lambda m: None, regions=reg))

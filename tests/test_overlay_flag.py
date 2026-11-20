@@ -587,7 +587,7 @@ def test_coast_set_flag_and_the_page(monkeypatch):
             assert "__allshoreCoastSet" not in off[name]["body"], name
     src = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
     assert "var COAST_SETS_OK = { v2: true, v3: true, v4: true };" in src
-    assert "(COAST_SETS_OK[coastSet] === true ? '/static/coast/' + coastSet : '/static/coast/v1')" in src
+    assert "COAST_SETS_OK[coastSet] === true ? coastStore(this.root + '/static/coast/' + coastSet, null, this.root + '/static/coast/v1')" in src
 
 
 def test_coast_set_reads_the_environment():
@@ -598,6 +598,8 @@ def test_coast_set_reads_the_environment():
     assert f({"COAST_V2": "1"}) == "v2" and f({"COAST_SET": "v2"}) == "v2"
     assert f({"COAST_SET": "v3"}) == ("v3" if os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v3.json")) else "v1")
     assert f({"COAST_SET": "v1", "COAST_V2": "1"}) == "v1"                  # COAST_SET wins
-    for bad in ("v9", "V2", "../v2", "v2 ", "v2;", "__proto__"):
-        assert f({"COAST_SET": bad}) in ("v1", "v2"), bad                  # "v2 " is stripped to v2
+    for bad in ("v9", "V2", "../v2", "v2;", "__proto__", "v1 v2", "v3\n"):
+        assert f({"COAST_SET": bad}) == ("v3" if bad == "v3\n" and os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v3.json"))
+                                         else "v1"), bad
+    assert f({"COAST_SET": " v2 "}) == "v2"                                  # surrounding blanks are stripped
     assert f({"COAST_SET": "v4"}) == ("v4" if os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v4.json")) else "v1")

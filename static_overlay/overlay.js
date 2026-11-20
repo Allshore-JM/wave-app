@@ -1149,8 +1149,11 @@
   var LAKEOUT_TIER0 = 'lakeoutlines-i.bin', LAKEOUT_PREFIX = 'static/coast/lakeoutlines-v1', LAKE_OUTLINE_MIN_ZOOM = 4;
   // file: the set's tier-0 overview (the land set's world-i.bin; the Great Lakes set's lakes-i.bin): fetched beside
   // index.json, which must name the same file (a set is never mixed with another set's overview).
-  function coastStore(url, file) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url, file)); }
-  function CoastStore(url, file) {
+  function coastStore(url, file, fallbackUrl) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url, file, fallbackUrl)); }
+  // fallbackUrl (G71 P2-1): a coast set that is not published (its index.json answers 404) gives way to this one, once,
+  // so a COAST_SET switched on before its upload draws v1 instead of an unclipped overlay
+  function CoastStore(url, file, fallbackUrl) {
+    this.fallbackUrl = fallbackUrl || null;
     this.url = url; this.file = file || COAST_TIER0; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null; this.failedAt = 0;
     this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {};
     this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
@@ -1174,11 +1177,12 @@
     if (this.loading) return this.loading;
     if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     this.status = 'loading';
-    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs, over = false;
+    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs, over = false, missing = false;
     var arm = function () { if (over) return; clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, ms); };
     arm();
     this.loading = Promise.all([
       fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) {
+        if (r.status === 404) missing = true;
         if (!r.ok) throw new Error('coast ' + r.status);
         if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > MAX_INDEX_BYTES) throw new Error('unsupported coast index');
         arm();
@@ -1207,6 +1211,10 @@
         if (self.status === 'failed') self.failedAt = Date.now();
       }
       ctrl.abort();                                        // the other file stops too (its index failed: re-check R-4)
+      if (missing && self.fallbackUrl && self.status === 'failed') {   // this set is not published: the fallback set, once (G71 P2-1)
+        self.url = self.fallbackUrl; self.fallbackUrl = null; self.status = 'idle'; self.failedAt = 0;
+        return self.load();
+      }
       return null;
     });
     return this.loading;
@@ -7507,7 +7515,8 @@
     // 'v3' (+ Puerto Rico/USVI, Guam/CNMI, American Samoa) and 'v4' (+ the US mainland) have the shore at the bathymetry's
     // MHHW edge (the page's COAST_SET, plan sections 103-104: window.__allshoreCoastSet, or opts.coastSet); anything else is v1
     var coastSet = opts.coastSet || (typeof window !== 'undefined' && window.__allshoreCoastSet);
-    this.coast = opts.coast ? coastStore(this.root + (COAST_SETS_OK[coastSet] === true ? '/static/coast/' + coastSet : '/static/coast/v1')) : null;
+    this.coast = opts.coast ? (COAST_SETS_OK[coastSet] === true ? coastStore(this.root + '/static/coast/' + coastSet, null, this.root + '/static/coast/v1')
+                                                                : coastStore(this.root + '/static/coast/v1')) : null;
     // opts.sst: the sea surface temperature field is offered (plan section 44; the page's SST_OVERLAY setting). It is an
     // OBSERVATION: mode 'obs' while it is shown (no run, no frames, no player, no model choice), 'model' otherwise.
     this.sst = opts.sst ? sstStore(this.root) : null;

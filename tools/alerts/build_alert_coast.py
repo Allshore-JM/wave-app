@@ -49,7 +49,6 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.join(ROOT, "alert_coast.json")
-OUT_V2 = os.path.join(ROOT, "alert_coast_v2.json")         # from coast set v2 (plan section 103), served when COAST_SET=v2
 FORMAT = "alert-coast-v1"
 ZONES_FILE = "z_16ap26"                       # NWS public forecast zones, effective 16 April 2026
 ZONES_URL = "https://www.weather.gov/source/gis/Shapefiles/WSOM/" + ZONES_FILE + ".zip"

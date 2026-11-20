@@ -121,6 +121,14 @@ jobs:
           path: build/coast/${{ github.event.inputs.set == 'coast-v3' && 'v3' || 'v2' }}
           retention-days: 14
           if-no-files-found: error
+      - name: Keep a coast-v2/v3 build that failed --check (to compare with the laptop's, e.g. a pin mismatch; never uploaded)
+        if: ${{ failure() && (github.event.inputs.set == 'coast-v2' || github.event.inputs.set == 'coast-v3') }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f   # v6.0.0
+        with:
+          name: ${{ github.event.inputs.set }}-unchecked
+          path: build/coast/${{ github.event.inputs.set == 'coast-v3' && 'v3' || 'v2' }}
+          retention-days: 14
+          if-no-files-found: ignore
       - name: Upload to R2
         if: github.event.inputs.upload == 'true'
         shell: bash

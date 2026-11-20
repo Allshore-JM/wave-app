@@ -166,7 +166,7 @@ SETS = {
     "v3": dict(regions=["hawaii", "nwhi-lidar", "prvi", "marianas", "samoa"],
                expected_changed=["-15_-170", "-15_-175", "10_140", "10_145", "15_-155", "15_-160", "15_-65", "15_-70",
                                  "15_145", "20_-160", "20_-165", "20_-170"],
-               pin="0881b635c8d073476aa1aee576cfb754e9a2d024329d02e09bb65f61ffe82a56",  # laptop (Windows, shapely 2.2.0); runner dry run to confirm
+               pin="0881b635c8d073476aa1aee576cfb754e9a2d024329d02e09bb65f61ffe82a56",  # laptop and runner agree (coast-build dry run #731, ubuntu-24.04; shapely 2.2.0)
                v1_sqdeg=4.074942,                                                        # a real v3 build: 4.04433 (-0.75 %)
                probes=HAWAII_PROBES + S2_PROBES, same_cells=V2_HAWAII_CELLS, credit=NOAA_CREDIT_V3),
 }
@@ -196,8 +196,12 @@ def use_set(name):
     SET_PROBES = list(st["probes"])
     SAME_CELLS = dict(st["same_cells"])
     FORMAT_KEY = format_key(REGIONS)
-    SOURCE = "GSHHG 2.3.7 + NOAA bathymetry MHHW water edge (allshoresurf bathy regions %s)" % ", ".join(sorted(REGIONS))
+    SOURCE = source(REGIONS)
     NOAA_CREDIT = st["credit"]
+
+
+def source(regions):
+    return "GSHHG 2.3.7 + NOAA bathymetry MHHW water edge (allshoresurf bathy regions %s)" % ", ".join(sorted(regions))
 
 
 use_set("v2")
@@ -237,7 +241,7 @@ def _get(url, timeout=60, tries=4):
             if r.status == 200:
                 return data
             exc = urllib.error.HTTPError(url, r.status, r.reason, r.headers, None)
-            if r.status in (403, 404) or i == tries - 1:
+            if r.status in (403, 404) or 300 <= r.status < 400 or i == tries - 1:   # a redirect is not followed (G71 P3-3)
                 raise exc
         except urllib.error.HTTPError:
             raise
@@ -773,9 +777,9 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
     open(os.path.join(out_dir, t0f), "wb").write(tier0)
     index = {k: v for k, v in v1.items() if k not in ("tier1",)}
     index.update({
-        "kind": KIND, "set": SET, "format": "coast-v1", "format_key": FORMAT_KEY, "q": Q2,
+        "kind": KIND, "set": SET, "format": "coast-v1", "format_key": format_key(regions), "q": Q2,
         "q_note": "q of the changed cells; tier 0 and every other cell keep v1's 10000: each file carries its own q",
-        "source": SOURCE, "license": LICENSE,
+        "source": source(regions), "license": LICENSE,
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "base_v1": {"tier0_sha": v1["tier0"]["sha256"], "tier1_sha": v1["tier1"]["sha256"], "changed_sha": base_changed},
         "bathy": bathy, "changed": changed, "v1_rings_crossing_box": crossing,
@@ -824,8 +828,8 @@ def check(out_dir, log=log, regions=None):
         return ["index kind %r is not %r" % (index.get("kind"), KIND)]
     if index.get("format") != "coast-v1" or index.get("q") != Q2:
         problems.append("index format/q")
-    if index.get("format_key") != FORMAT_KEY:
-        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), FORMAT_KEY))
+    if index.get("format_key") != format_key(regions):
+        problems.append("index format_key %r != this builder's %r" % (index.get("format_key"), format_key(regions)))
     real = is_real(index, regions)
     base = index.get("base_v1") or {}
     t0 = index["tier0"]
@@ -961,6 +965,9 @@ def main(argv=None):
     if a.upload:
         if not a.out:
             ap.error("--upload needs --out")
+        if a.upload.strip("/") != "static/coast/" + SET:          # the prefix is the set's own (G71 P3-4)
+            print("refusing to upload set %s under %r (its prefix is static/coast/%s)" % (SET, a.upload, SET))
+            return 1
         if check(a.out):
             print("refusing to upload a directory that fails --check")
             return 1

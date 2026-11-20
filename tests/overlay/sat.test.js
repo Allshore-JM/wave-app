@@ -424,7 +424,11 @@ function ctl(w, opts) {
   ov._coastFirst = (p) => p; ov.coast = null;
   return ov;
 }
-test('controller: the own entry mounts in mode obs with the layer in obsPane, saves the field, credits Copernicus Marine, draws the last 24 h; the panel; Off', async () => {
+test('controller: the own entry mounts in mode obs with the layer in obsPane, saves the field, credits Copernicus Marine, draws the last 24 h; the panel; Off', async (tc) => {
+  // the wall clock pinned (still ticking) 3 h after the fixture's newest reading (14:59:50Z): the age on the readings line
+  // and the stale check never depend on the day the suite runs (a clock before the readings read 'under an hour ago')
+  const realNow = Date.now, shift = Date.parse('2026-11-04T18:00:00Z') - realNow();
+  Date.now = () => realNow() + shift; tc.after(() => { Date.now = realNow; });
   const w = world(), ov = ctl(w);
   ov.mount('sat');
   assert.equal(ov.mode, 'obs'); assert.equal(ov.field, 'sat'); assert.equal(w.saved.field, 'sat');
@@ -439,7 +443,7 @@ test('controller: the own entry mounts in mode obs with the layer in obsPane, sa
   assert.ok(w.attrs.length === 1 && /Copernicus Marine/.test(w.attrs[0]) && /^Overlay: /.test(w.attrs[0]));
   assert.equal(ov.last.state, 'ready');
   const t = ov.opts.panel.children.map((c) => c.textContent || '').join(' ');
-  assert.ok(ov.ui.obs && ov.ui.satLine && /Readings: last 24 h, newest T14:59 HST \(\d+ h ago\) · loading 0 of 2…/.test(ov.ui.satLine.textContent), ov.ui.satLine.textContent);
+  assert.ok(ov.ui.obs && ov.ui.satLine && /Readings: last 24 h, newest T14:59 HST \(3 h ago\) · loading 0 of 2…/.test(ov.ui.satLine.textContent), ov.ui.satLine.textContent);
   assert.ok(ov.ui.satSeg, 'the Heights | Swell switch (the swell is offered)');
   assert.ok(!ov.ui.play && !ov.ui.ribbon, 'no player');
   w.answer(wre('20261104T12'), chunkBytes('alt', [reading(0, { t: T0 + 1000 }), reading(1, { t: T0 + 2000, mission: 1 })], { window: '20261104T12', segments: [[0, 0, 1], [1, 1, 1]] }));
@@ -479,6 +483,9 @@ test('controller: the own entry mounts in mode obs with the layer in obsPane, sa
   assert.equal(ov.sat.pointer.build, '20261104T152000Z', 'not adopted yet: the 12Z chunk of the new pointer is out');
   w.answer(/\/w\/20261104T12\/20261104T172000Z/, chunkBytes('alt', [reading(0, { t: T0 + 1000 }), reading(1, { t: T0 + 2000, mission: 1 })], { window: '20261104T12', segments: [[0, 0, 1], [1, 1, 1]] }));
   assert.ok(await until(() => ov.sat.pointer.build === '20261104T172000Z'));
+  // the store adopts the pointer on the landing but rebuilds (and so tells the layer) one task later (_scheduleRebuild,
+  // a 0-ms timer): wait for the window itself, not only the adoption (a loaded runner polled between the two, run #734)
+  await until(() => ov.satLayer.win.ref === Date.parse('2026-11-04T17:29:00Z'));
   assert.equal(ov.satLayer.win.ref, Date.parse('2026-11-04T17:29:00Z'), 'the window follows the adopted pointer\'s newest');
   assert.deepEqual(w.pending(/\.bin$/).map((u) => /w\/([^/]+)\//.exec(u)[1]), ['20261104T15'], 'the window now reaches the 15Z chunk');
   w.answer(/\/w\/20261104T15\//, chunkBytes('alt', [reading(0, { t: T0 + 5 * 3.6e6 + 29 * 60000 })], { window: '20261104T15' }));

@@ -777,6 +777,7 @@
   var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
+  var COAST_SETS_OK = { v2: true, v3: true, v4: true };    // the bathymetry-shoreline coast sets (plan sections 103-104); anything else = v1
   var MAX_COAST_BYTES = 8 * 1024 * 1024;                  // one coast file is <= 1.4 MB (v1; v2's largest, 20_-160, 0.32 MB); nothing bigger is decoded
   var MAX_INDEX_BYTES = 1024 * 1024;                      // index.json is 29 KB; every 5-degree cell listed would be ~60 KB
   var MAX_CELLS_PER_TILE = 16;                            // a tile touches <= 4 cells at tier-1 zooms; more = tier 0 for that tile
@@ -1156,8 +1157,11 @@
   var LAKEOUT_TIER0 = 'lakeoutlines-i.bin', LAKEOUT_PREFIX = 'static/coast/lakeoutlines-v1', LAKE_OUTLINE_MIN_ZOOM = 4;
   // file: the set's tier-0 overview (the land set's world-i.bin; the Great Lakes set's lakes-i.bin): fetched beside
   // index.json, which must name the same file (a set is never mixed with another set's overview).
-  function coastStore(url, file) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url, file)); }
-  function CoastStore(url, file) {
+  function coastStore(url, file, fallbackUrl) { return COAST_STORES[url] || (COAST_STORES[url] = new CoastStore(url, file, fallbackUrl)); }
+  // fallbackUrl (G71 P2-1): a coast set that is not published (its index.json answers 404) gives way to this one, once,
+  // so a COAST_SET switched on before its upload draws v1 instead of an unclipped overlay
+  function CoastStore(url, file, fallbackUrl) {
+    this.fallbackUrl = fallbackUrl || null;
     this.url = url; this.file = file || COAST_TIER0; this.status = 'idle'; this.index = null; this.tier0 = null; this.loading = null; this.failedAt = 0;
     this.chunks = new Map(); this.bytes = 0; this.inflight = {}; this.queue = []; this.queued = {}; this.failed = {};
     this.rev = 0; this.onChange = null; this.onNeeded = null; this.abort = null; this.retryTimer = null;
@@ -1181,11 +1185,12 @@
     if (this.loading) return this.loading;
     if (this.status === 'failed' && Date.now() - this.failedAt < this.retryMs) return Promise.resolve(null);
     this.status = 'loading';
-    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs, over = false;
+    var base = this.url, ctrl = this.loadAbort = new AbortController(), sig = ctrl.signal, timedOut = false, watchdog = null, ms = this.timeoutMs, over = false, missing = false;
     var arm = function () { if (over) return; clearTimeout(watchdog); watchdog = setTimeout(function () { timedOut = true; ctrl.abort(); }, ms); };
     arm();
     this.loading = Promise.all([
       fetch(base + '/index.json', { signal: sig, mode: 'cors' }).then(function (r) {
+        if (r.status === 404) missing = true;
         if (!r.ok) throw new Error('coast ' + r.status);
         if (r.headers && r.headers.get && Number(r.headers.get('content-length') || 0) > MAX_INDEX_BYTES) throw new Error('unsupported coast index');
         arm();
@@ -1214,6 +1219,10 @@
         if (self.status === 'failed') self.failedAt = Date.now();
       }
       ctrl.abort();                                        // the other file stops too (its index failed: re-check R-4)
+      if (missing && self.fallbackUrl && self.status === 'failed') {   // this set is not published: the fallback set, once (G71 P2-1)
+        self.url = self.fallbackUrl; self.fallbackUrl = null; self.status = 'idle'; self.failedAt = 0;
+        return self.load();
+      }
       return null;
     });
     return this.loading;
@@ -7511,11 +7520,12 @@
     this._due = 0;                                          // when the frame being shown was due (the drift-free cadence)
     this._painting = false; this._paintWaiting = null; this._paintRaf = null; this._paintTask = null; this._paintFallback = null;   // the paint gate
     this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
-    // opts.coast: clip wave height / peak period to the coastlines published beside the frames. The coast set 'v2' (the
-    // page's COAST_V2, plan section 103: window.__allshoreCoastSet, or opts.coastSet) has Hawaii's shore at the
-    // bathymetry's MHHW edge; anything else is v1
+    // opts.coast: clip wave height / peak period to the coastlines published beside the frames. The coast sets 'v2' (Hawaii),
+    // 'v3' (+ Puerto Rico/USVI, Guam/CNMI, American Samoa) and 'v4' (+ the US mainland) have the shore at the bathymetry's
+    // MHHW edge (the page's COAST_SET, plan sections 103-104: window.__allshoreCoastSet, or opts.coastSet); anything else is v1
     var coastSet = opts.coastSet || (typeof window !== 'undefined' && window.__allshoreCoastSet);
-    this.coast = opts.coast ? coastStore(this.root + (coastSet === 'v2' ? '/static/coast/v2' : '/static/coast/v1')) : null;
+    this.coast = opts.coast ? (COAST_SETS_OK[coastSet] === true ? coastStore(this.root + '/static/coast/' + coastSet, null, this.root + '/static/coast/v1')
+                                                                : coastStore(this.root + '/static/coast/v1')) : null;
     // opts.sst: the sea surface temperature field is offered (plan section 44; the page's SST_OVERLAY setting). It is an
     // OBSERVATION: mode 'obs' while it is shown (no run, no frames, no player, no model choice), 'model' otherwise.
     this.sst = opts.sst ? sstStore(this.root) : null;

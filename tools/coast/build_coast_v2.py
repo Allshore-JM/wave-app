@@ -62,6 +62,11 @@ BPX = BLOCK * T.TILE                     # 2048 px
 WPX = T.TILE * 2 ** Z                    # the world in zoom-15 px
 TOL_PX = 0.7                             # Douglas-Peucker tolerance, zoom-15 px (~3 m in Hawaii)
 SPECK_PX2 = 2.0                          # land rings and holes smaller than this (zoom-15 px^2, ~40 m^2) are dropped
+# A region may set its own "speck" and "tol" (plan section 104, owner 2026-11-19): Puerto Rico's mangrove and lagoon
+# fragments made one zoom-12 tile's land clip 16.7 ms on a desktop (102 ms at 4x CPU throttle, the gate is 8 / 25 ms);
+# speck 32 px^2 (~650 m^2 at 18 N: islets and ponds under ~25 m across) with DP 1.0 px gives 5.0 / 14.9 ms, the edge
+# still at median 0 m, p90 4.5 m. Hawaii keeps the defaults (its cells stay v2's bytes).
+S2_SPECK_PX2, S2_TOL_PX = 32.0, 1.0
 Q2 = 100000                              # the changed cells' quantum (1e-5 degree, ~1.1 m)
 OUT, LAND, WATER = 0, 1, 2
 PUBLIC = "https://models.allshoresurf.com"
@@ -79,13 +84,15 @@ ALL_REGIONS = {
                        tiles_sha256="2c040fd2e5ca9172701ed3e578ba29c67f91aa854b43e3094d7f64d46b1e09b8"),
     "prvi": dict(v=2, box=(-68.0, 17.25, -64.25, 19.0), zmin=8,
                  digest="ec70e799bd9df888ff55f80900ff76091b9ea19651efc024c095c98466e90452",
-                 tiles_sha256="c733f6cedc74b6ae52cd2f0c729c8a2f3a8af31a1fb8bcea5c8cf7606d58e031"),
+                 tiles_sha256="c733f6cedc74b6ae52cd2f0c729c8a2f3a8af31a1fb8bcea5c8cf7606d58e031", speck=S2_SPECK_PX2, tol=S2_TOL_PX),
     "marianas": dict(v=2, box=(144.5, 13.0, 146.0, 15.5), zmin=8,
                      digest="bc283d8a2a75c5d261e22ece3c48c1bcf7d829477adbb7e3c059d79307398d79",
-                     tiles_sha256="15f2985069d6f391c7bec467d370a14f3c8c74d00a3ec0486a335da875e5325e"),
+                     tiles_sha256="15f2985069d6f391c7bec467d370a14f3c8c74d00a3ec0486a335da875e5325e", speck=S2_SPECK_PX2,
+                     tol=S2_TOL_PX),
     "samoa": dict(v=2, box=(-171.0, -14.5, -169.25, -14.0), zmin=8,
                   digest="8815034a8a28a5f09ffe72433fdd78114fc6b2194a21cb2e90f2966009261ba1",
-                  tiles_sha256="a65ba559e75e1e92c74272f6e3b50aaf67a278b68b7edc3c1fc41da75adf2a42"),
+                  tiles_sha256="a65ba559e75e1e92c74272f6e3b50aaf67a278b68b7edc3c1fc41da75adf2a42", speck=S2_SPECK_PX2,
+                  tol=S2_TOL_PX),
 }
 # The published v1 set this build starts from (static/coast/v1 index.json tier0.sha256 / tier1.sha256).
 V1_PIN_TIER0_SHA256 = "aabbff516107953c42915a11c70941682030ee3aecc29b0d0456d33b3ef9cebc"
@@ -159,8 +166,8 @@ SETS = {
     "v3": dict(regions=["hawaii", "nwhi-lidar", "prvi", "marianas", "samoa"],
                expected_changed=["-15_-170", "-15_-175", "10_140", "10_145", "15_-155", "15_-160", "15_-65", "15_-70",
                                  "15_145", "20_-160", "20_-165", "20_-170"],
-               pin="cfbef50d7a70ed8251a30a26ae0566ccec633f2224119396f05a9d3fb3aece28",  # laptop (Windows, shapely 2.2.0); runner dry run to confirm
-               v1_sqdeg=4.074942,                                                        # a real v3 build: 4.04445 (-0.75 %)
+               pin="0881b635c8d073476aa1aee576cfb754e9a2d024329d02e09bb65f61ffe82a56",  # laptop (Windows, shapely 2.2.0); runner dry run to confirm
+               v1_sqdeg=4.074942,                                                        # a real v3 build: 4.04433 (-0.75 %)
                probes=HAWAII_PROBES + S2_PROBES, same_cells=V2_HAWAII_CELLS, credit=NOAA_CREDIT_V3),
 }
 LICENSE = BC.LICENSE + "; NOAA NCEI CUDEM and NOAA NGS lidar (public domain) inside the bathymetry regions"
@@ -169,7 +176,8 @@ LICENSE = BC.LICENSE + "; NOAA NCEI CUDEM and NOAA NGS lidar (public domain) ins
 def format_key(regions):
     return ("coast-v1-land2|base=coast-v1|z=%d|block=%d|tol=%g|speck=%g|q=%d|rule=tile>ancestor>gshhg|boxes=%s|"
             "shapely=%s" % (Z, BLOCK, TOL_PX, SPECK_PX2, Q2,
-                            ";".join("%s:v%d:%s" % (n, r["v"], ",".join("%g" % v for v in r["box"]))
+                            ";".join("%s:v%d:%s%s" % (n, r["v"], ",".join("%g" % v for v in r["box"]),
+                                                      "".join(":%s=%g" % (k, r[k]) for k in ("speck", "tol") if k in r))
                                      for n, r in sorted(regions.items())),
                             ".".join(shapely.__version__.split(".")[:2])))
 
@@ -605,10 +613,11 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
                 polys.extend(mask_polygons(land, bx * BPX, by * BPX))
     stats["t_blocks_s"] = round(time.time() - t0, 1)
     u = shapely.union_all(polys) if polys else shapely.MultiPolygon()
-    kept, stats["speck_land"], stats["speck_holes"] = drop_specks(u, SPECK_PX2)
+    speck, tol = reg.get("speck", SPECK_PX2), reg.get("tol", TOL_PX)       # a region's own params (section 104)
+    kept, stats["speck_land"], stats["speck_holes"] = drop_specks(u, speck)
     # normalised first (G70 P2-1): the polygons, their rings and each ring's start vertex in a canonical order, so the
     # simplifier (anchored at the ring start) sees the same input whatever order GEOS's union produced on this platform
-    simp = shapely.normalize(shapely.MultiPolygon(kept)).simplify(TOL_PX, preserve_topology=True) if kept else shapely.MultiPolygon()
+    simp = shapely.normalize(shapely.MultiPolygon(kept)).simplify(tol, preserve_topology=True) if kept else shapely.MultiPolygon()
     out = []
     for p in polygons(simp):
         rings = [np.asarray(p.exterior.coords, np.float64)[:-1]] + [np.asarray(r.coords, np.float64)[:-1] for r in p.interiors]

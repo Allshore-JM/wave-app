@@ -485,3 +485,29 @@ def test_check_flags_a_hawaii_cell_that_is_not_v2s(world, tmp_path, monkeypatch)
     monkeypatch.setattr(V2, "SAME_CELLS", {cell: "0" * 64})
     assert any("%s: not byte-identical to the published v2 cell" % cell in p
                for p in V2.check(out, log=lambda m: None, regions=reg))
+
+
+def test_a_region_may_set_its_own_speck_and_tolerance(world, tmp_path):
+    """Section 104: a region's own "speck" (and "tol") replaces the defaults for its trace only; an islet of 16 px^2
+    stays with the default (2) and goes with speck 32."""
+    t = full(WATER)
+    t[100:160, 20:200] = LAND                  # an island, kept either way
+    t[30:34, 100:104] = LAND                   # a 4 x 4 px islet (16 px^2)
+    tdir, v1, reg = world({(15, X0, Y0): t, (14, X0 >> 1, Y0 >> 1): full(WATER)})
+    islet = (float(V2.px_lon(X0 * 256 + 102)), float(V2.px_lat(Y0 * 256 + 32)))
+    assert land_at(build(tmp_path, tdir, v1, reg, "a"), *islet)
+    reg2 = {n: dict(r, speck=32.0, tol=1.0) for n, r in reg.items()}
+    out = build(tmp_path, tdir, v1, reg2, "b")
+    assert not land_at(out, *islet)
+    assert land_at(out, float(V2.px_lon(X0 * 256 + 110)), float(V2.px_lat(Y0 * 256 + 130)))
+
+
+def test_v3_regions_carry_their_own_params_in_the_format_key():
+    try:
+        V2.use_set("v3")
+        for n in ("prvi", "marianas", "samoa"):
+            assert V2.REGIONS[n]["speck"] == 32.0 and V2.REGIONS[n]["tol"] == 1.0
+            assert ":speck=32:tol=1" in V2.FORMAT_KEY.split(n + ":")[1].split(";")[0]
+        assert "speck" not in V2.REGIONS["hawaii"] and "speck" not in V2.REGIONS["nwhi-lidar"]
+    finally:
+        V2.use_set("v2")

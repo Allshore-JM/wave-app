@@ -107,7 +107,10 @@
     attribution: '&copy; Esri & contributors',
     maxNativeZoom: 16,                                       // Esri's relief ends at zoom 16 (a flat placeholder past it): closer zooms scale its tiles up
     blend: 'multiply',                                       // the model pane over the relief (the particle pane is not blended)
-    ink: [34, 38, 46], gain: 1.4                             // the coastline's colour and strength (coastEdges)
+    ink: [34, 38, 46], gain: 1.4,                            // the coastline's colour and strength (coastEdges)
+    // a regional model's wind where no region has data (outside RRFS's grids): soft grey multiplied into the relief,
+    // not the relief's bare white sea (owner, 2026-11-19: option B #CFD2D6; the precipitation fields stay transparent)
+    outside: [207, 210, 214]
   };
   // Fixed opacity per field (owner, 2026-09-26: no slider): the waves over the imagery, the wind multiplied into the relief.
   var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75, precip: 0.75, ptot: 0.75 };   // precip: the radar's default (plan section 102)
@@ -1023,6 +1026,11 @@
     return { n: n, idx: idx.slice(0, n), a: a.slice(0, n) };
   }
   // The coastline into a composed tile: ink over the field's colour (a pixel without data takes the ink).
+  // Every pixel a composed tile left without data (alpha 0) -> rgb, opaque (a regional model's wind outside its grids).
+  function fillBlank(d, rgb) {
+    for (var k = 0; k < d.length; k += 4) if (!d[k + 3]) { d[k] = rgb[0]; d[k + 1] = rgb[1]; d[k + 2] = rgb[2]; d[k + 3] = 255; }
+    return d;
+  }
   function applyEdges(edges, d, ink) {
     for (var j = 0; j < edges.n; j++) {
       var k = edges.idx[j] * 4, e = edges.a[j], al = e * 255;
@@ -3526,6 +3534,7 @@
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       if (this._typed) composeTyped(codes, this._lut, img.data);
       else composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake);
+      if (this._regions && !this._typed && this.field === 'wind') fillBlank(img.data, WIND_LOOK.outside);   // outside RRFS: soft grey, before the coastline
       if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier, lake);
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
         if (el._ovEdgesOf !== land) { el._ovEdges = coastEdges(land, WIND_LOOK.gain); el._ovEdgesOf = land; }
@@ -10781,7 +10790,7 @@
       PAINT_FALLBACK_MS: PAINT_FALLBACK_MS, BUSY_STUCK_MS: BUSY_STUCK_MS, TRAIL_SPAN_MS: TRAIL_SPAN_MS, TRAIL_POINTS: TRAIL_POINTS, TRAIL_EVERY_MS: TRAIL_EVERY_MS,
       worldXY: worldXY, decodeCoast: decodeCoast, tileBox: tileBox, coastCellsForTile: coastCellsForTile, withinCell: withinCell, landPathsForTile: landPathsForTile,
       rasteriseScanline: rasteriseScanline, rasterise: rasterise, maskState: maskState, composeTile: composeTile, CoastStore: CoastStore, coastStore: coastStore,
-      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
+      LAND_ALL: LAND_ALL, CLIP_FIELDS: CLIP_FIELDS, OUTLINE_FIELDS: OUTLINE_FIELDS, WIND_LOOK: WIND_LOOK, FIXED_OPACITY: FIXED_OPACITY, BASE_FADE_MS: BASE_FADE_MS, RELIEF_RETRY_MS: RELIEF_RETRY_MS, coastEdges: coastEdges, applyEdges: applyEdges, fillBlank: fillBlank, LAND_READOUT: LAND_READOUT, MAX_CHUNK_BYTES: MAX_CHUNK_BYTES, MAX_COAST_INFLIGHT: MAX_COAST_INFLIGHT,
       validCoastIndex: validCoastIndex,
       SstStore: SstStore, sstStore: sstStore, validSstManifest: validSstManifest, validSstPointer: validSstPointer, sstTierFor: sstTierFor, SST_FDEF: SST_FDEF,
       SST_TIER_ZOOMS: SST_TIER_ZOOMS, SST_ATTRIBUTION: SST_ATTRIBUTION, SST_HEAD: SST_HEAD, SST_STALE_DAYS: SST_STALE_DAYS, sstDayText: sstDayText, sstAgeDays: sstAgeDays, buildLegend: buildLegend, SST_PREFIX: SST_PREFIX, SST_PAD_PX: SST_PAD_PX, MAX_SST_INFLIGHT: MAX_SST_INFLIGHT, MAX_SST_CHUNK_BYTES: MAX_SST_CHUNK_BYTES, cellsForTile: cellsForTile,

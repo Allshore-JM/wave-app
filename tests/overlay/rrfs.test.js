@@ -157,6 +157,42 @@ test('the layer draws a bundle: tiles, valueAt and readoutAt agree with the samp
   l._tiles = {}; l.clear(); assert.equal(l._regions, null);
 });
 
+test('outside RRFS the wind tile is soft grey #CFD2D6, opaque (owner 2026-11-19); inside it keeps the wind colours; GFS stays transparent', () => {
+  assert.deepEqual(I.WIND_LOOK.outside, [207, 210, 214]);
+  // fillBlank: only alpha-0 pixels change
+  const d = new Uint8ClampedArray([1, 2, 3, 0, 9, 8, 7, 255, 5, 5, 5, 40]);
+  assert.deepEqual(Array.from(I.fillBlank(d, [207, 210, 214])), [207, 210, 214, 255, 9, 8, 7, 255, 5, 5, 5, 40]);
+  // the coastline ink still lands over the grey
+  const e = I.fillBlank(new Uint8ClampedArray(8), [207, 210, 214]);
+  I.applyEdges({ n: 1, idx: [1], a: [1] }, e, I.WIND_LOOK.ink);
+  assert.deepEqual(Array.from(e.slice(4)), [...I.WIND_LOOK.ink, 255], 'full ink over the grey');
+  // a whole tile at the Hawaii grid's edge: the regional wind through _drawTile
+  const m = I.validateRegionalManifest(MAN(), PREFIX), fd = m.fields.wind, lut = I.buildLut('wind', fd.legend);
+  const l = new I.ModelGridLayer({ opacity: 1 });
+  l.setFrame({ regional: true, parts: [{ name: 'hi', grid: HI, frame: HIQ }], cols: 0, rows: 0, q: new Uint8Array(0) }, undefined, 'wind', fd, lut, m.frames[12], null);
+  const coords = { z: 4, x: 0, y: 7 }, img = { data: new Uint8ClampedArray(TILE * TILE * 4) };
+  const el = { getContext: () => ({ createImageData: () => img, putImageData() {}, clearRect() {} }) };
+  l._drawTile(el, coords);
+  const out = new Float64Array(TILE * TILE);
+  l.tileCodes(coords, out);
+  let inside = 0, outside = 0;
+  for (let i = 0; i < TILE * TILE; i++) {
+    const px = Array.from(img.data.slice(i * 4, i * 4 + 4));
+    if (out[i]) { inside++; assert.equal(px[3], 255); assert.notDeepEqual(px, [207, 210, 214, 255], 'pixel ' + i); }
+    else { outside++; assert.deepEqual(px, [207, 210, 214, 255], 'pixel ' + i); }
+  }
+  assert.ok(inside > 1000 && outside > 1000, `the tile spans the grid's edge (${inside} in, ${outside} out)`);
+  l._tiles = {}; l.clear();
+  // the global GFS-style wind (no regions): a pixel without data stays transparent
+  const G = { cols: 360, rows: 181, lat0: 90, lon0: -180, dlat: -1, dlon: 1, registration: 'center', lon_periodic: true };
+  const gq = { q: new Uint8Array(360 * 181), cols: 360, rows: 181 };
+  l.setFrame(gq, G, 'wind', fd, lut, m.frames[12], null);
+  const img2 = { data: new Uint8ClampedArray(TILE * TILE * 4).fill(1) };
+  l._drawTile({ getContext: () => ({ createImageData: () => img2, putImageData() {}, clearRect() {} }) }, coords);
+  for (let i = 3; i < img2.data.length; i += 4) assert.equal(img2.data[i], 0, 'GFS: transparent where no data');
+  l._tiles = {}; l.clear();
+});
+
 // ------------------------------------------------------------------------------------------- the regions near a view
 
 function viewAt(lat, lng, z, w, h) {

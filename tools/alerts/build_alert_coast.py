@@ -26,7 +26,7 @@ and ZONES_SHA256):
     python -I tools/alerts/build_alert_coast.py [--zones-zip z_ddmmyy.zip] [--cache DIR]
     python -I tools/alerts/build_alert_coast.py --check
 The bathymetry-shoreline coast sets (tools/coast/build_coast_v2.py: v2 = Hawaii, plan section 103; v3 = + Puerto
-Rico/USVI, Guam/CNMI and American Samoa, plan section 104) give alert_coast_<set>.json, the file the site serves with
+Rico/USVI, Guam/CNMI and American Samoa, plan section 104; v4 = + the US West Coast, section 104) give alert_coast_<set>.json, the file the site serves with
 COAST_SET=<set> (same rules; their changed cells carry q = 1e5 and clockwise holes, read by decode_cell, which takes q
 from each file's header):
     python -I tools/alerts/build_alert_coast.py --coast v3 [--coast-dir build/coast/v3]   (writes alert_coast_v3.json)
@@ -57,11 +57,11 @@ COAST_BASE = "https://models.allshoresurf.com/static/coast"
 # the sea coast; lakes of 100 km2 and more (the Great Lakes among them); the Great Lakes' smaller islands (lakes-v1:
 # only its rings lakeoutlines-v1 does not hold, see lake_islands)
 COAST_SETS = ("v1", "lakeoutlines-v1", "lakes-v1")
-LAND_SETS = ("v1", "v2", "v3")                              # the sea coast: GSHHG (v1) or a bathymetry shoreline set
+LAND_SETS = ("v1", "v2", "v3", "v4")                        # the sea coast: GSHHG (v1) or a bathymetry shoreline set
 BATHY_SETS = LAND_SETS[1:]                                  # the bathymetry-shoreline sets (plan sections 103-104)
 # water on the right of a ring's direction (+1) or left; the bathymetry sets' land is counter-clockwise like v1's and
 # their sea water enclosed by land runs clockwise, which also has the water on its right
-SEAWARD = {"v1": 1, "v2": 1, "v3": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
+SEAWARD = {"v1": 1, "v2": 1, "v3": 1, "v4": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
 
 
 def out_path(coast):
@@ -302,6 +302,47 @@ def decode_cell(buf):
         return z, z, z, z
     return (np.concatenate(xs) * inv, np.concatenate(ys) * inv, np.concatenate(pxs) * inv,
             np.concatenate(pys) * inv)
+
+
+def dissolve_cuts(edges, deg, q=100000):
+    """A cell's edges with the builder's split cuts dissolved (plan section 104: a big piece cut on the `deg` lines).
+    A cut runs along a line twice, once each way (land on both sides): both edges go, and the rest are chained end to
+    start into rings again, so the coast runs on across a cut instead of stopping there. Even-odd point-in-land is
+    unchanged (a pair crosses any ray together). Edges along a cut line without a reverse twin stay (densify skips them)."""
+    import numpy as np
+    xi, yi, xj, yj = edges
+    n = len(xi)
+    if not n:
+        return edges
+    XI, YI, XJ, YJ = (np.round(v * q).astype(np.int64) for v in (xi, yi, xj, yj))
+    g = int(round(deg * q))
+    cut = ((XI == XJ) & (XI % g == 0)) | ((YI == YJ) & (YI % g == 0))
+    ks = np.flatnonzero(cut)
+    fwd = {(int(XJ[k]), int(YJ[k]), int(XI[k]), int(YI[k])) for k in ks}
+    twin = np.zeros(n, bool)
+    for k in ks:
+        if (int(XI[k]), int(YI[k]), int(XJ[k]), int(YJ[k])) in fwd:
+            twin[k] = True
+    if not twin.any():
+        return edges
+    keep = np.flatnonzero(~twin)
+    starts = {}
+    for k in keep:
+        starts.setdefault((int(XJ[k]), int(YJ[k])), []).append(int(k))
+    used = np.zeros(n, bool)
+    order = []
+    for k0 in keep:
+        k = int(k0)
+        while not used[k]:
+            used[k] = True
+            order.append(k)
+            nxt = starts.get((int(XI[k]), int(YI[k])), ())
+            cand = [c for c in nxt if not used[c]]
+            if not cand:
+                break
+            k = k + 1 if (k + 1) in cand else cand[0]       # the ring's own next edge where it still is one
+    o = np.array(order, np.int64)
+    return xi[o], yi[o], xj[o], yj[o]
 
 
 def ring_starts(edges):
@@ -603,17 +644,20 @@ def classify_open(land, x, y, start, skip, zone, sign, every=OPEN_EVERY):
     return even_out(out, x, y, start, elig)
 
 
-def densify(edges, step=STEP):
+def densify(edges, step=STEP, split=None):
     """A coast cell's ring edges (point_forecast.decode_coast: edge = vertex j -> vertex i) as points in ring order:
     -> (x, y, start, skip). start = a new line begins at this point (its edge does not continue the previous one);
-    skip = the point lies on an edge along a 5-degree cell line (the builder's clip, not coast)."""
+    skip = the point lies on an edge along a 5-degree cell line (the builder's clip, not coast), or along a `split`-degree
+    line (a coast set's index.json "split": its big pieces cut on those lines in that cell, plan section 104)."""
     import numpy as np
     xi, yi, xj, yj = edges
     if not len(xi):
         z = np.zeros(0)
         return z, z, np.zeros(0, bool), np.zeros(0, bool)
-    on_line = ((np.abs(xi - xj) < EPS) & (np.abs(np.round(xi / 5) * 5 - xi) < EPS)) | \
-              ((np.abs(yi - yj) < EPS) & (np.abs(np.round(yi / 5) * 5 - yi) < EPS))
+    on_line = np.zeros(len(xi), bool)
+    for g in (5,) + ((split,) if split else ()):
+        on_line |= ((np.abs(xi - xj) < EPS) & (np.abs(np.round(xi / g) * g - xi) < EPS)) | \
+                   ((np.abs(yi - yj) < EPS) & (np.abs(np.round(yi / g) * g - yi) < EPS))
     n = np.maximum(1, np.ceil(np.hypot(xi - xj, yi - yj) / step)).astype(int)
     rep = np.repeat(np.arange(len(n)), n)
     t = (np.arange(rep.size) - np.repeat(np.cumsum(n) - n, n)) / n[rep]
@@ -828,6 +872,11 @@ def build(zip_bytes, cache, log=print, coast="v1"):
     coast_ids = {s: index[s]["tier1"].get("sha256") for s in sets}
     memo = {}
 
+    def split_of(set_name, cell):
+        """The split-line spacing of a cell whose pieces the builder cut (index.json "split", section 104), or None."""
+        sp = index[set_name].get("split") or {}
+        return sp.get("deg") if cell in (sp.get("cells") or ()) else None
+
     def edges(set_name, cell):
         """The cell's edges of a coast set (lakes-v1: its islands only); None when the set has nothing there."""
         key = (set_name, cell)
@@ -835,6 +884,8 @@ def build(zip_bytes, cache, log=print, coast="v1"):
             e = None
             if cell in index[set_name]["tier1"]["cells"]:
                 e = decode_cell(coast_cell(set_name, cell, cache))
+                if split_of(set_name, cell):
+                    e = dissolve_cuts(e, split_of(set_name, cell))
                 if set_name == "lakes-v1":
                     e = lake_islands(e, edges("lakeoutlines-v1", cell))
             memo[key] = e
@@ -845,9 +896,9 @@ def build(zip_bytes, cache, log=print, coast="v1"):
         lakes = [e for e in (edges("lakeoutlines-v1", cell), edges("lakes-v1", cell)) if e is not None]
         lake = tuple(np.concatenate(v) for v in zip(*lakes)) if lakes else None
         px, py = [], []
-        for e in (land, lake):
+        for e, sp in ((land, split_of(coast, cell)), (lake, None)):
             if e is not None and len(e[0]):
-                x, y, _st, sk = densify(e)
+                x, y, _st, sk = densify(e, split=sp)
                 px.append(x[~sk])
                 py.append(y[~sk])
         return land, lake, ((np.concatenate(px), np.concatenate(py)) if px else None)
@@ -867,7 +918,7 @@ def build(zip_bytes, cache, log=print, coast="v1"):
             e = edges(set_name, cell)
             if e is None or not len(e[0]):
                 continue
-            x, y, start, skip = densify(e)
+            x, y, start, skip = densify(e, split=split_of(set_name, cell))
             points += x.size
             zone = fill_holes(assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water),
                               x, y, start, skip)
@@ -1038,7 +1089,7 @@ def main(argv=None):
     ap.add_argument("--cache", default=os.path.join(HERE, ".cache"), help="where coast cells are kept")
     ap.add_argument("--out", default=None, help="default alert_coast.json (--coast v1) or alert_coast_<set>.json")
     ap.add_argument("--coast", default="v1", choices=LAND_SETS,
-                    help="the sea coast set: v1 (GSHHG), v2 (section 103) or v3 (section 104)")
+                    help="the sea coast set: v1 (GSHHG), v2 (section 103), v3 or v4 (section 104)")
     ap.add_argument("--coast-dir", help="read the --coast set from this local directory (a build not yet published)")
     ap.add_argument("--check", action="store_true", help="check the written file only")
     a = ap.parse_args(argv)

@@ -381,7 +381,13 @@ def test_workflow_builds_coast_v2_with_pinned_shapely():
     assert ('--set "$V" --v1 build/coast/v1 --tiles build/bathy-tiles --fetch --out "build/coast/$V"' in wf
             and 'V="${SET#coast-}"' in wf)
     assert "coast-v2) CMD=(python tools/coast/build_coast_v2.py --out build/coast/v2 --upload static/coast/v2);;" in wf
-    assert "coast-v3) CMD=(python tools/coast/build_coast_v2.py --set v3 --out build/coast/v3 --upload static/coast/v3);;" in wf
+    for v in sorted(V2.SETS):                          # every later set: built, kept as an artifact and uploaded
+        if v == "v2":
+            continue
+        assert ("coast-%s) CMD=(python tools/coast/build_coast_v2.py --set %s --out build/coast/%s --upload static/coast/%s);;"
+                % (v, v, v, v)) in wf
+        assert "github.event.inputs.set == 'coast-%s' && '%s'" % (v, v) in wf
+        assert wf.count("github.event.inputs.set == 'coast-%s'" % v) >= 4 and "coast-%s)" % v in wf
     pips = [line for line in wf.splitlines() if "pip install" in line]
     assert len(pips) == 2 and all("shapely==2.2.0" in p and "pillow==" in p for p in pips)
     assert "|shapely=2.2" in V2.FORMAT_KEY or not shapely.__version__.startswith("2.2")
@@ -445,8 +451,9 @@ def test_v2_set_is_the_published_s1_configuration():
 
 
 def test_later_sets_keep_hawaii_and_add_regions():
-    v2 = V2.SETS["v2"]
-    for name, st in V2.SETS.items():
+    names = sorted(V2.SETS, key=lambda n: int(n[1:]))
+    for prev_name, name in zip([None] + names[:-1], names):
+        st = V2.SETS[name]
         assert set(st["regions"]) <= set(V2.ALL_REGIONS)
         cands = {c for r in st["regions"] for c in V2.cells_overlapping(V2.ALL_REGIONS[r]["box"])}
         assert set(st["expected_changed"]) <= cands, name
@@ -454,10 +461,12 @@ def test_later_sets_keep_hawaii_and_add_regions():
             assert any(V2.ALL_REGIONS[r]["box"][0] <= lon <= V2.ALL_REGIONS[r]["box"][2] and
                        V2.ALL_REGIONS[r]["box"][1] <= lat <= V2.ALL_REGIONS[r]["box"][3] for r in st["regions"]), (lon, lat)
             assert cell_of(lon, lat) in st["expected_changed"], (name, lon, lat)
-        if name != "v2":
-            assert set(v2["regions"]) <= set(st["regions"]) and set(v2["expected_changed"]) <= set(st["expected_changed"])
-            assert sorted(st["same_cells"]) == sorted(v2["expected_changed"])
-            assert all(p in st["probes"] for p in v2["probes"])
+        if prev_name:                                   # each set builds on the one before it
+            prev = V2.SETS[prev_name]
+            assert set(prev["regions"]) <= set(st["regions"])
+            assert sorted(st["same_cells"]) == sorted(prev["expected_changed"])
+            assert not st["expected_changed"] or set(prev["expected_changed"]) <= set(st["expected_changed"])
+            assert all(p in st["probes"] for p in prev["probes"])
 
 
 def test_use_set_switches_and_restores():
@@ -604,7 +613,7 @@ def test_v3_upload_gates(world, tmp_path, monkeypatch):
                     base_v1={"tier0_sha": V2.V1_PIN_TIER0_SHA256, "tier1_sha": V2.V1_PIN_TIER1_SHA256})
         assert not V2.is_real(fake)                                      # a v2 build is not a v3 build
         fake["bathy"].update({n: {"v": r["v"], "digest": r["digest"], "sha256": r["tiles_sha256"]}
-                              for n, r in V2.ALL_REGIONS.items()})
+                              for n, r in V2.ALL_REGIONS.items() if n in V2.SETS["v3"]["regions"]})
         assert V2.is_real(fake)
     finally:
         V2.use_set("v2")
@@ -622,3 +631,139 @@ def test_index_records_the_regions_built(world, tmp_path):
     assert ":speck=32:tol=1" in idx["format_key"] and idx["format_key"] == V2.format_key(reg2)
     assert not any("format_key" in p for p in V2.check(out, log=lambda m: None, regions=reg2))
     assert any("format_key" in p for p in V2.check(out, log=lambda m: None, regions=reg))
+
+
+# ---------------------------------------------------------------- seam regions (section 104, the mainland)
+
+PXDEG = 360.0 / V2.WPX          # one zoom-15 pixel in longitude degrees
+
+
+def _seam_world(world, margin):
+    """A land band running east across a box line that cuts a pixel 0.6 px short of the tile edge, GSHHG's land
+    continuing past the line (the mainland case: the box cuts the continent)."""
+    t = full(LAND)
+    t[:100, :] = WATER                         # water in the north part of the tile, land below
+    full_box = tile_box(X0 - 1, Y0 - 1, X0 + 1, Y0 + 1)
+    box = (full_box[0], full_box[1], full_box[2] - 0.6 * PXDEG, full_box[3])
+    lat_n = centre(0, Y0 * 256 + 100)[1] + 0.0004
+    lat_s = centre(0, Y0 * 256 + 255)[1] - 0.00002     # the tiles' land ends with tile Y0 (below: water)
+    ring = [(box[2] - 0.0005, lat_s), (box[2] + 0.003, lat_s), (box[2] + 0.003, lat_n), (box[2] - 0.0005, lat_n)]
+    tdir, v1, reg = world({(15, X0 + 1, Y0): t, (14, (X0 + 1) >> 1, Y0 >> 1): full(WATER)},
+                          {cell_of(box[2], lat_n): [ring]}, box=box)
+    reg = {n: dict(r, margin_px=margin) if margin else dict(r) for n, r in reg.items()}
+    return tdir, v1, reg, box
+
+
+def test_seam_region_meets_gshhg_exactly_on_an_off_grid_box_line(world, tmp_path):
+    tdir, v1, reg, box = _seam_world(world, 2)
+    out = build(tmp_path, tdir, v1, reg, "seam")
+    lat = centre(0, Y0 * 256 + 200)[1]
+    for dx in (-2e-5, -1e-6, 1e-6, 2e-5, 0.001):
+        assert winding_at(out, box[2] + dx, lat) == 1, dx         # land on both sides, no crack, no double cover
+    assert V2.check(out, log=lambda m: None, regions=reg) == []
+    # (without the margin the traced land stops on the pixel grid, up to half a pixel short of the line: a crack the
+    # output's 1e-5-degree quantum can hide or not, so the margin is what makes the join exact)
+
+
+def test_seam_box_line_steps_are_measured(world, tmp_path, monkeypatch):
+    """Where the traced shore and GSHHG's disagree at a seam box line, an edge runs along the line: measured, and a
+    step longer than SEAM_STEP_MAX_M is a problem."""
+    tdir, v1, reg, box = _seam_world(world, 2)
+    out = build(tmp_path, tdir, v1, reg, "steps")
+    msgs = []
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    monkeypatch.setattr(V2, "SEAM_STEP_MAX_M", 600)
+    assert not any("seam box line" in p for p in V2.check(out, log=msgs.append, regions=reg))
+    assert any("seam box lines:" in m for m in msgs)
+    monkeypatch.setattr(V2, "SEAM_STEP_MAX_M", 1)
+    assert any("seam box line" in p for p in V2.check(out, log=lambda m: None, regions=reg))
+
+
+def test_exclusion_box_is_left_to_gshhg(world, tmp_path):
+    """Section 104 (Puget Sound): inside a region's exclusion box GSHHG decides, whatever the tiles say."""
+    t = full(WATER)
+    t[100:160, 20:120] = LAND                  # an island the tiles have, in the west half
+    box = tile_box(X0 - 1, Y0 - 1, X0 + 1, Y0 + 1)
+    lon_mid = centre(X0 * 256 + 128, 0)[0]
+    ex = (lon_mid, box[1], box[2], box[3])      # the east half of the box is excluded
+    lat_a, lat_b = centre(0, Y0 * 256 + 60)[1], centre(0, Y0 * 256 + 40)[1]
+    gs_lon0, gs_lon1 = centre(X0 * 256 + 170, 0)[0], centre(X0 * 256 + 200, 0)[0]
+    ring = [(gs_lon0, lat_a), (gs_lon1, lat_a), (gs_lon1, lat_b), (gs_lon0, lat_b)]   # GSHHG's islet in the east half
+    tdir, v1, reg = world({(15, X0, Y0): t, (14, X0 >> 1, Y0 >> 1): full(WATER)}, {cell_of(gs_lon0, lat_a): [ring]})
+    reg = {n: dict(r, exclude=[ex]) for n, r in reg.items()}
+    out = build(tmp_path, tdir, v1, reg)
+    assert land_at(out, *centre(X0 * 256 + 60, Y0 * 256 + 130))                      # the tiles' island (not excluded)
+    assert land_at(out, *centre(X0 * 256 + 185, Y0 * 256 + 50))                      # GSHHG's islet (excluded part)
+    assert not land_at(out, *centre(X0 * 256 + 185, Y0 * 256 + 130))
+
+
+def test_gshhg_fill_matches_the_per_pixel_test():
+    """The quadtree fill (section 104) gives exactly the per-pixel contains_xy answer, also for pixel centres lying on
+    the polygon's boundary (not inside) and on a ragged wanted set."""
+    n = 300
+    lons = -155.0 + (np.arange(n) + 0.5) * 0.001
+    lats = 20.0 - (np.arange(n) + 0.5) * 0.001          # north to south, like a block's rows
+    ring = [(lons[40], lats[250]), (lons[260], lats[250]), (lons[260], lats[60]), (lons[150], lats[20]),
+            (lons[40], lats[60])]                       # vertices and edges on pixel centres
+    gs = Polygon(ring, [[(lons[100], lats[200]), (lons[100], lats[120]), (lons[180], lats[120]), (lons[180], lats[200])]])
+    shapely.prepare(gs)
+    rng = np.random.default_rng(7)
+    for want in (np.ones((n, n), bool), rng.random((n, n)) < 0.6):
+        rr, cc = np.nonzero(want)
+        old = np.zeros_like(want)
+        hit = shapely.contains_xy(gs, lons[cc], lats[rr])
+        old[rr[hit], cc[hit]] = True
+        new = V2.gshhg_fill(gs, lons, lats, want)
+        assert (old == new).all()
+        assert old.any() and not old.all()
+
+
+def test_split_big_cuts_only_big_pieces_on_the_split_lines(monkeypatch):
+    """Section 104 rung a: a piece over SPLIT_VERTS is cut into its parts in the SPLIT_DEG squares (area kept, holes
+    kept, every part inside one square); smaller pieces are left whole."""
+    monkeypatch.setattr(V2, "SPLIT_VERTS", 500)
+    t = np.linspace(0, 2 * np.pi, 2001)[:-1]
+    r = 0.6 + 0.05 * np.sin(40 * t)
+    big = Polygon(np.column_stack([-123.6 + r * np.cos(t), 46.6 + r * np.sin(t)]),
+                  [np.column_stack([-123.6 + 0.1 * np.cos(-t[::20]), 46.6 + 0.1 * np.sin(-t[::20])])])
+    small = Polygon([(-122.2, 46.1), (-121.9, 46.1), (-121.9, 46.4)])        # crosses -122 and 46.25, 4 vertices
+    geom, cut = V2.split_big(shapely.MultiPolygon([big, small]))
+    parts = V2.polygons(geom)
+    assert cut == 1
+    assert abs(sum(p.area for p in parts) - big.area - small.area) < 1e-12
+    assert any(p.equals(small) for p in parts)
+    for p in parts:
+        if p.equals(small):
+            continue
+        x0, y0, x1, y1 = p.bounds
+        assert np.floor(x0 / 0.25 + 1e-9) == np.ceil(x1 / 0.25 - 1e-9) - 1     # one column of squares
+        assert np.floor(y0 / 0.25 + 1e-9) == np.ceil(y1 / 0.25 - 1e-9) - 1     # one row
+    assert shapely.union_all(parts).symmetric_difference(shapely.MultiPolygon([big, small])).area < 1e-12
+
+
+def test_split_is_recorded_for_seam_sets_only(world, tmp_path, monkeypatch):
+    """index.json "split" (deg, cells cut) and the format key's split term come with a seam region only: the v2 / v3
+    keys and indexes stay as published."""
+    tdir, v1, reg, box = _seam_world(world, 2)
+    monkeypatch.setattr(V2, "SPLIT_VERTS", 3)                 # every piece is "big": the band is cut where it can be
+    out = build(tmp_path, tdir, v1, reg, "split")
+    idx = json.load(open(os.path.join(out, "index.json")))
+    assert idx["split"]["deg"] == V2.SPLIT_DEG and isinstance(idx["split"]["cells"], list)
+    assert V2.format_key(reg).endswith("|split=%g>%d" % (V2.SPLIT_DEG, 3))
+    assert V2.check(out, log=lambda m: None, regions=reg) == []
+    for name in ("v2", "v3"):
+        regs = {n: V2.ALL_REGIONS[n] for n in V2.SETS[name]["regions"]}
+        assert "split" not in V2.format_key(regs)
+
+
+def test_seam_steps_cancel_split_cuts_and_keep_one_way_stretches():
+    """Edges along a seam box line: a split cut (both ways, land on both sides) cancels; a stretch one way only is a
+    step, measured in metres (along x = const in latitude degrees, along y = const in longitude at that latitude)."""
+    iv = {("45_-125", "y", 47.0): [(-124.0, -123.75, True), (-124.0, -123.75, False),
+                                   (-123.70, -123.69, True)],
+          ("45_-125", "x", -119.5): [(40.0, 40.25, False), (40.0, 40.25, True)]}
+    steps = V2.seam_step_lengths(iv, q=100000)
+    assert len(steps) == 1 and steps[0][0] == "45_-125"
+    assert abs(steps[0][1] - 0.01 * 111320.0 * np.cos(np.radians(47.0))) < 1.0
+    assert V2.seam_step_lengths({("c", "x", 1.0): [(0.0, 0.002, True)]}, q=100000) == [("c", 222.6)]
+    assert V2.seam_step_lengths({("c", "x", 1.0): [(0.0, 0.000004, True)]}, q=100000) == []     # under half a unit

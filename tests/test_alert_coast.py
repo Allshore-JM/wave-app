@@ -166,6 +166,39 @@ def test_densify_flags_new_lines_and_cell_line_edges():
     assert start2.tolist() == [True] + [False] * 19 + [True, False]
 
 
+def test_densify_skips_split_line_edges_only_when_asked():
+    """Section 104: a cell whose big pieces the builder cut on 0.25-degree lines (index.json "split") skips edges along
+    those lines; without `split` they are coast, as in every other cell."""
+    # coast along 46.6 N, then the cut along 124 W and 46.75 N (0.25-degree lines), back along 124.1 W (coast)
+    xi = np.array([-124.0, -124.0, -124.1, -124.1])
+    yi = np.array([46.6, 46.75, 46.75, 46.6])
+    xj = np.array([-124.1, -124.0, -124.0, -124.1])
+    yj = np.array([46.6, 46.6, 46.75, 46.75])
+    _x, _y, _s, skip = A.densify((xi, yi, xj, yj), step=0.05)
+    assert not skip.any()
+    _x, _y, _s, skip = A.densify((xi, yi, xj, yj), step=0.05, split=0.25)
+    per = np.maximum(1, np.ceil(np.hypot(xi - xj, yi - yj) / 0.05)).astype(int).tolist()   # points per edge
+    assert skip.tolist() == [False] * per[0] + [True] * (per[1] + per[2]) + [False] * per[3]
+
+
+def test_dissolve_cuts_rejoins_a_piece_cut_on_a_split_line():
+    """Section 104: two pieces cut apart on the -124 line (one cut edge each way) become one ring of the outer edges,
+    so densify sees one continuous coast; an edge along a cut line without a twin stays."""
+    def ring(pts):                                           # edges j -> i of a closed ring, as decode_cell gives them
+        xs, ys = np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+        return xs, ys, np.roll(xs, 1), np.roll(ys, 1)
+    a = ring([(-124.1, 46.6), (-124.0, 46.6), (-124.0, 46.7), (-124.1, 46.7)])        # west of the cut, CCW
+    b = ring([(-124.0, 46.6), (-123.9, 46.6), (-123.9, 46.7), (-124.0, 46.7)])        # east of the cut, CCW
+    e = tuple(np.concatenate([u, v]) for u, v in zip(a, b))
+    d = A.dissolve_cuts(e, 0.25)                             # lines every 0.25 degree: -124.0 is one, the rest are not
+    assert len(d[0]) == 6 and len(A.ring_starts(d)) == 1
+    outer = {(round(x, 6), round(y, 6)) for x, y in zip(d[0], d[1])}
+    assert outer == {(-124.1, 46.6), (-124.0, 46.6), (-123.9, 46.6), (-123.9, 46.7), (-124.0, 46.7), (-124.1, 46.7)}
+    assert A.dissolve_cuts(a, 0.25)[0].tolist() == a[0].tolist()                      # no twin: unchanged
+    _x, _y, start, skip = A.densify(d, step=0.05, split=0.25)
+    assert start.sum() == 1 and not skip.any()
+
+
 def test_runs_join_a_ring_across_its_start_point():
     # a closed square ring of 8 points, 0.001 apart; zone 0 holds the end and the start, zone 1 the middle
     x = np.array([0, 1, 2, 2, 2, 1, 0, 0], float) * 0.001
@@ -663,3 +696,19 @@ def test_committed_set_files_follow_the_pinned_coasts():
         assert pin, "set %s is not pinned" % cs
         with open(path, encoding="utf-8") as f:
             assert json.load(f)["coast"][cs] == pin.group(1), cs
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v4.json")), reason="alert_coast_v4.json not built")
+def test_committed_v4_file_passes_its_check_and_differs_only_where_v4_does():
+    """alert_coast_v4.json (served with COAST_SET=v4, plan section 104 release 2): its own check; every zone outside
+    California, Oregon and Washington identical to alert_coast_v3.json (v4 keeps v3's cells byte for byte), the same
+    zone list."""
+    with open(os.path.join(ROOT, "alert_coast_v4.json"), encoding="utf-8") as f:
+        v4 = json.load(f)
+    with open(os.path.join(ROOT, "alert_coast_v3.json"), encoding="utf-8") as f:
+        v3 = json.load(f)
+    assert v4["zones_file"] == A.ZONES_FILE and v4["rules"] == A.RULES and "v4" in v4["coast"]
+    assert A.check(v4, log=lambda *a: None) == []
+    west = ("CA", "OR", "WA")
+    assert all(v4["zones"][z] == v3["zones"][z] for z in v3["zones"] if not z.startswith(west))
+    assert set(v4["zones"]) == set(v3["zones"])

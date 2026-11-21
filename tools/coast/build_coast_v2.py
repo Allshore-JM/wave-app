@@ -252,7 +252,9 @@ SETS = {
                expected_changed=["-15_-170", "-15_-175", "10_140", "10_145", "15_-155", "15_-160", "15_-65", "15_-70",
                                  "15_145", "20_-160", "20_-165", "20_-170", "30_-120", "30_-125", "35_-120", "35_-125",
                                  "40_-120", "40_-125", "45_-125", "45_-130"],
-               pin="6e5740bf56c4ba312ee2860bb441993f4cd8480e37d5940fea32f58162fb445a",   # laptop; the runner's dry run decides
+               # the runner's build (dry run #745): the laptop's (6e5740bf) is the same coast, 208 rings of the GEOS-joined
+               # West Coast cells starting at another vertex
+               pin="58d55125de71c316f5d974c1edd7ebac0bf691d52e76cfd12f6f5ea251ac5004",
                v1_sqdeg=121.761359,                                                      # a real v4 build: 121.56886 (-0.16 %)
                probes=HAWAII_PROBES + S2_PROBES + WEST_PROBES, same_cells=V3_CELLS, credit=NOAA_CREDIT_V4),
 }

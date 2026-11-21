@@ -32,6 +32,9 @@ After the fixes:
   521 m, size gates met: biggest cell 45_-125 1.0 MB / 440k vertices, biggest piece < 15k). The runner's dry run of
   the code before these fixes (#742, 55f28c9) differed from the laptop pin by a few bytes in the GEOS-joined West
   Coast cells, as expected; the runner's build is the reference, pinned from the next dry run.
+- Dry run #745 (658c7f6): every gate but the pin passed; the runner's build (58d55125, pinned) is the laptop's coast
+  exactly (symmetric difference 0 m2, the same vertices), 208 rings of the five GEOS-joined cells starting at another
+  vertex. alert_coast_v4.json is rebuilt from the runner's bytes.
 - alert_coast_v4.json: every zone outside CA/OR/WA identical to v3; the Puget Sound zones' lines on v3's (median 0 m;
   run ends may move a few hundred metres); West Coast lines 2,847 -> 3,191 km, 126 -> 259 lines (creek mouths and
   inlets that GSHHG closes off now break the open-coast line, as in Hawaii; 25 small closed loops are sea stacks).

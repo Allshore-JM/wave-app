@@ -310,8 +310,8 @@ def test_encoding_ranges_cover_legend_and_tp_floor():
     assert abs(jet["legend"][0] - 50 * E.KT) < 1e-9 and abs(jet["legend"][1] - 200 * E.KT) < 1e-9
     assert E.quantum(jet["lo"], jet["hi"]) / E.KT < 1.0                 # about 1 kt a code
     assert {k: v for k, v in jdir.items()} == {k: v for k, v in E.FIELDS["wdir"].items()}   # coded exactly like the wind direction
-    assert (jhgt["lo"], jhgt["hi"], jhgt["units"], jhgt["fill"]) == (9000.0, 11295.0, "m", False) and "circular" not in jhgt
-    assert E.quantum(jhgt["lo"], jhgt["hi"]) < 9.1                     # 9 m a code: the 60-m contours move < a sixth of an interval
+    assert (jhgt["lo"], jhgt["hi"], jhgt["units"], jhgt["fill"]) == (8750.0, 11290.0, "m", False) and "circular" not in jhgt
+    assert E.quantum(jhgt["lo"], jhgt["hi"]) == 10.0                   # G74a A-1: below the austral-winter 8,901 m, 10 m a code
     assert not set(E.FILL_INFO["fields"]) & {"jet", "jdir", "jhgt"}
     assert [R.MODEL["fields"][n]["label"] for n in ("jet", "jdir", "jhgt")] == ["Jet stream", "Jet stream direction", "250 hPa height"]
     assert E.quantum(pres["lo"], pres["hi"]) < 0.56                    # owner 2026-10-17 (G32a A-1): 0.551 hPa a code
@@ -521,7 +521,7 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
                                                                        "pdir": "circular", "wdir": "circular", "pres": "bilinear",
                                                                        "jet": "bilinear", "jdir": "circular", "jhgt": "bilinear"}
-    assert man["fields"]["jhgt"] == {"lo": 9000.0, "hi": 11295.0, "legend": [9000.0, 11295.0], "units": "m",
+    assert man["fields"]["jhgt"] == {"lo": 8750.0, "hi": 11290.0, "legend": [8750.0, 11290.0], "units": "m",
                                      "interpolation": "bilinear", "resolutions": ["half"]}
     assert man["fields"]["jdir"] == dict(man["fields"]["wdir"]) and man["fields"]["jet"]["resolutions"] == ["full", "half"]
     assert man["fields"]["pres"] == {"lo": 920.0, "hi": 1060.0, "legend": [920.0, 1060.0], "units": "hPa",
@@ -1051,8 +1051,10 @@ def test_the_gfs_jet_stream_comes_from_the_250_mb_records(monkeypatch):
     assert [k for _, k in asked] == [tuple(R.WAVE_KEYS.values()), R.ATMOS_KEYS + R.JET_KEYS]
     assert asked[1][0] == R.F.atmos_url(RUN, 6)
     assert R.JET_KEYS == ("UGRD:250 mb", "VGRD:250 mb", "HGT:250 mb")
-    for k in R.JET_KEYS:
-        assert D.EXPECT[k][1:] == ("isobaricInhPa", 250)
+    # G74a A-3: the identity rows, literally (step 1 read them from real records: complex packing, gpm for HGT)
+    assert [D.EXPECT[k] for k in R.JET_KEYS] == [("u", "isobaricInhPa", 250), ("v", "isobaricInhPa", 250), ("gh", "isobaricInhPa", 250)]
+    assert [D.EXPECT_ECMWF[k] for k in ("u:pl:250", "v:pl:250", "gh:pl:250")] == [("u", "isobaricInhPa", 250), ("v", "isobaricInhPa", 250),
+                                                                               ("gh", "isobaricInhPa", 250)]
 
 
 def test_jet_summary_line():
@@ -1060,7 +1062,7 @@ def test_jet_summary_line():
               {"fields": {"jet": {"max": 131.0, "clamped_high": 4}, "jhgt": {"min": 8990.0, "max": 11090.0, "clamped_low": 2, "clamped_high": 0}}},
               {"fields": {"hs": {}}}]
     assert R.jet_summary(frames) == ("jet stream 250 hPa: peak 254.6 kt (top 252.7 kt, 4 clamped cell-frames); height 8990-11090 m "
-                                     "(encode 9000-11295; 2 low / 0 high clamped cell-frames)")
+                                     "(encode 8750-11290; 2 low / 0 high clamped cell-frames)")
     assert R.jet_summary([{"fields": {"hs": {}}}]) is None and R.jet_summary([]) is None
 
 
@@ -1319,6 +1321,13 @@ def test_a_field_added_since_a_run_was_built_is_not_other_encode_ranges(monkeypa
     wider["pres"] = dict(wider["pres"], lo=940.0)
     _manifest(c, "2026092212", "20260922T200000Z", dict(old, fields=wider, published_utc="2026-09-22T20:00:00Z"))
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) == 2, "the new field's own range is compared too"
+    # G74a A-2: the same for every jet stream field (a run published with them is never rebuilt under another range)
+    for n, change in (("jet", {"hi": 120.0}), ("jdir", {"circular": False}), ("jhgt", {"lo": 9000.0})):
+        other = {k: dict(f) for k, f in E.FIELDS.items()}
+        other[n] = dict(other[n], **change)
+        stamp = {"jet": "21", "jdir": "22", "jhgt": "23"}[n]
+        _manifest(c, "2026092212", f"20260922T{stamp}0000Z", dict(old, fields=other, published_utc=f"2026-09-22T{stamp}:00:00Z"))
+        assert R.fill_guard(store, "2026092212", "2026092212", partial=False) == 2, n
 
 
 def test_pressure_summary_reports_the_range_and_the_clamps():

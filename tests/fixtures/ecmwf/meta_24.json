@@ -1,0 +1,834 @@
+{
+ "records": {
+  "10u": {
+   "cells": [
+    [
+     0,
+     0,
+     0.817886
+    ],
+    [
+     720,
+     1439,
+     -2.275864
+    ],
+    [
+     300,
+     0,
+     -10.963364
+    ],
+    [
+     300,
+     1439,
+     -11.275864
+    ],
+    [
+     274,
+     88,
+     -3.744614
+    ],
+    [
+     400,
+     720,
+     -3.369614
+    ],
+    [
+     180,
+     300,
+     1.505386
+    ],
+    [
+     500,
+     1000,
+     7.349136
+    ],
+    [
+     284,
+     87,
+     -7.025864
+    ],
+    [
+     22,
+     1329,
+     -7.119614
+    ],
+    [
+     638,
+     630,
+     4.255386
+    ],
+    [
+     596,
+     1042,
+     3.130386
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 10,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "10 metre U wind component",
+    "packingType": "grid_ccsds",
+    "shortName": "10u",
+    "stepRange": "24",
+    "typeOfLevel": "heightAboveGround",
+    "units": "m s**-1"
+   },
+   "span": [
+    21861517,
+    733903
+   ]
+  },
+  "10v": {
+   "cells": [
+    [
+     0,
+     0,
+     2.804535
+    ],
+    [
+     720,
+     1439,
+     -1.039215
+    ],
+    [
+     300,
+     0,
+     -4.382965
+    ],
+    [
+     300,
+     1439,
+     -4.164215
+    ],
+    [
+     274,
+     88,
+     -2.351715
+    ],
+    [
+     400,
+     720,
+     5.242035
+    ],
+    [
+     180,
+     300,
+     -0.476715
+    ],
+    [
+     500,
+     1000,
+     -4.820465
+    ],
+    [
+     284,
+     87,
+     -6.101715
+    ],
+    [
+     22,
+     1329,
+     -5.757965
+    ],
+    [
+     638,
+     630,
+     5.304535
+    ],
+    [
+     596,
+     1042,
+     -8.820465
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 10,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "10 metre V wind component",
+    "packingType": "grid_ccsds",
+    "shortName": "10v",
+    "stepRange": "24",
+    "typeOfLevel": "heightAboveGround",
+    "units": "m s**-1"
+   },
+   "span": [
+    24963210,
+    725199
+   ]
+  },
+  "gh:pl:250": {
+   "cells": [
+    [
+     0,
+     0,
+     9730.265625
+    ],
+    [
+     720,
+     1439,
+     9493.765625
+    ],
+    [
+     300,
+     0,
+     11002.265625
+    ],
+    [
+     300,
+     1439,
+     11001.765625
+    ],
+    [
+     274,
+     88,
+     10863.265625
+    ],
+    [
+     400,
+     720,
+     10999.265625
+    ],
+    [
+     180,
+     300,
+     10122.765625
+    ],
+    [
+     500,
+     1000,
+     10750.765625
+    ],
+    [
+     284,
+     87,
+     10937.765625
+    ],
+    [
+     22,
+     1329,
+     9724.265625
+    ],
+    [
+     638,
+     630,
+     9724.765625
+    ],
+    [
+     596,
+     1042,
+     9907.765625
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 250,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "Geopotential height",
+    "packingType": "grid_ccsds",
+    "shortName": "gh",
+    "stepRange": "24",
+    "typeOfLevel": "isobaricInhPa",
+    "units": "gpm"
+   },
+   "span": [
+    8546822,
+    461794
+   ]
+  },
+  "msl": {
+   "cells": [
+    [
+     0,
+     0,
+     101836.9375
+    ],
+    [
+     720,
+     1439,
+     100588.9375
+    ],
+    [
+     300,
+     0,
+     101380.9375
+    ],
+    [
+     300,
+     1439,
+     101384.9375
+    ],
+    [
+     274,
+     88,
+     101872.9375
+    ],
+    [
+     400,
+     720,
+     101476.9375
+    ],
+    [
+     180,
+     300,
+     102224.9375
+    ],
+    [
+     500,
+     1000,
+     101980.9375
+    ],
+    [
+     284,
+     87,
+     101584.9375
+    ],
+    [
+     22,
+     1329,
+     100752.9375
+    ],
+    [
+     638,
+     630,
+     99372.9375
+    ],
+    [
+     596,
+     1042,
+     96812.9375
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 0,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "Mean sea level pressure",
+    "packingType": "grid_ccsds",
+    "shortName": "msl",
+    "stepRange": "24",
+    "typeOfLevel": "meanSea",
+    "units": "Pa"
+   },
+   "span": [
+    9397306,
+    511637
+   ]
+  },
+  "mwd": {
+   "cells": [
+    [
+     0,
+     0,
+     null
+    ],
+    [
+     720,
+     1439,
+     null
+    ],
+    [
+     300,
+     0,
+     74.500006
+    ],
+    [
+     300,
+     1439,
+     75.000006
+    ],
+    [
+     274,
+     88,
+     null
+    ],
+    [
+     400,
+     720,
+     177.500006
+    ],
+    [
+     180,
+     300,
+     null
+    ],
+    [
+     500,
+     1000,
+     296.000006
+    ],
+    [
+     284,
+     87,
+     84.000006
+    ],
+    [
+     22,
+     1329,
+     304.000006
+    ],
+    [
+     638,
+     630,
+     265.000006
+    ],
+    [
+     596,
+     1042,
+     299.500006
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 0,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "Mean wave direction",
+    "packingType": "grid_ccsds",
+    "shortName": "mwd",
+    "stepRange": "24",
+    "typeOfLevel": "surface",
+    "units": "Degree true"
+   },
+   "span": [
+    1336316,
+    484830
+   ]
+  },
+  "pp1d": {
+   "cells": [
+    [
+     0,
+     0,
+     null
+    ],
+    [
+     720,
+     1439,
+     null
+    ],
+    [
+     300,
+     0,
+     9.135057
+    ],
+    [
+     300,
+     1439,
+     9.135057
+    ],
+    [
+     274,
+     88,
+     null
+    ],
+    [
+     400,
+     720,
+     13.541307
+    ],
+    [
+     180,
+     300,
+     null
+    ],
+    [
+     500,
+     1000,
+     9.603807
+    ],
+    [
+     284,
+     87,
+     8.072557
+    ],
+    [
+     22,
+     1329,
+     21.260057
+    ],
+    [
+     638,
+     630,
+     28.978807
+    ],
+    [
+     596,
+     1042,
+     12.416307
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 0,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "Peak wave period",
+    "packingType": "grid_ccsds",
+    "shortName": "pp1d",
+    "stepRange": "24",
+    "typeOfLevel": "surface",
+    "units": "s"
+   },
+   "span": [
+    2544074,
+    456289
+   ]
+  },
+  "swh": {
+   "cells": [
+    [
+     0,
+     0,
+     null
+    ],
+    [
+     720,
+     1439,
+     null
+    ],
+    [
+     300,
+     0,
+     3.426267
+    ],
+    [
+     300,
+     1439,
+     3.457517
+    ],
+    [
+     274,
+     88,
+     null
+    ],
+    [
+     400,
+     720,
+     1.770017
+    ],
+    [
+     180,
+     300,
+     null
+    ],
+    [
+     500,
+     1000,
+     2.051267
+    ],
+    [
+     284,
+     87,
+     2.691892
+    ],
+    [
+     22,
+     1329,
+     0.004392
+    ],
+    [
+     638,
+     630,
+     0.004392
+    ],
+    [
+     596,
+     1042,
+     2.723142
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 0,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "Significant height of combined wind waves and swell",
+    "packingType": "grid_ccsds",
+    "shortName": "swh",
+    "stepRange": "24",
+    "typeOfLevel": "surface",
+    "units": "m"
+   },
+   "span": [
+    945678,
+    390638
+   ]
+  },
+  "u:pl:250": {
+   "cells": [
+    [
+     0,
+     0,
+     -6.585983
+    ],
+    [
+     720,
+     1439,
+     10.039017
+    ],
+    [
+     300,
+     0,
+     11.539017
+    ],
+    [
+     300,
+     1439,
+     10.664017
+    ],
+    [
+     274,
+     88,
+     53.914017
+    ],
+    [
+     400,
+     720,
+     13.789017
+    ],
+    [
+     180,
+     300,
+     26.164017
+    ],
+    [
+     500,
+     1000,
+     18.789017
+    ],
+    [
+     284,
+     87,
+     38.914017
+    ],
+    [
+     22,
+     1329,
+     -5.460983
+    ],
+    [
+     638,
+     630,
+     21.664017
+    ],
+    [
+     596,
+     1042,
+     6.664017
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 250,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "U component of wind",
+    "packingType": "grid_ccsds",
+    "shortName": "u",
+    "stepRange": "24",
+    "typeOfLevel": "isobaricInhPa",
+    "units": "m s**-1"
+   },
+   "span": [
+    100508767,
+    482677
+   ]
+  },
+  "v:pl:250": {
+   "cells": [
+    [
+     0,
+     0,
+     -8.017242
+    ],
+    [
+     720,
+     1439,
+     -7.142242
+    ],
+    [
+     300,
+     0,
+     12.982758
+    ],
+    [
+     300,
+     1439,
+     12.920258
+    ],
+    [
+     274,
+     88,
+     10.295258
+    ],
+    [
+     400,
+     720,
+     -15.642242
+    ],
+    [
+     180,
+     300,
+     -1.392242
+    ],
+    [
+     500,
+     1000,
+     26.420258
+    ],
+    [
+     284,
+     87,
+     11.045258
+    ],
+    [
+     22,
+     1329,
+     5.607758
+    ],
+    [
+     638,
+     630,
+     30.357758
+    ],
+    [
+     596,
+     1042,
+     -25.892242
+    ]
+   ],
+   "meta": {
+    "Ni": 1440,
+    "Nj": 721,
+    "alternativeRowScanning": 0,
+    "dataDate": 20261121,
+    "dataTime": 0,
+    "gridType": "regular_ll",
+    "iDirectionIncrementInDegrees": 0.25,
+    "iScansNegatively": 0,
+    "jDirectionIncrementInDegrees": 0.25,
+    "jPointsAreConsecutive": 0,
+    "jScansPositively": 0,
+    "latitudeOfFirstGridPointInDegrees": 90.0,
+    "latitudeOfLastGridPointInDegrees": -90.0,
+    "level": 250,
+    "longitudeOfFirstGridPointInDegrees": 180.0,
+    "missingValue": 9999,
+    "name": "V component of wind",
+    "packingType": "grid_ccsds",
+    "shortName": "v",
+    "stepRange": "24",
+    "typeOfLevel": "isobaricInhPa",
+    "units": "m s**-1"
+   },
+   "span": [
+    99177827,
+    633549
+   ]
+  }
+ },
+ "run": "2026112100",
+ "step": 24
+}

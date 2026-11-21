@@ -8,6 +8,9 @@ on:
   push:
     branches: ["feat/jet"]
     paths: ["tools/model_frames/**", ".github/workflows/jet-dryrun.yml"]
+concurrency:                               # G74a B-6: a newer push replaces a dry run still building
+  group: jet-dryrun
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:

@@ -28,7 +28,7 @@ STEP_SCHEDULE = [[0, 144, 3], [150, 360, 6]]    # [first, last, every] in hours,
 CYCLES = (0, 12)
 WAVE_PARAMS = ("swh", "pp1d", "mwd")
 # A surface record is named by its MARS param ("10u"); a pressure-level record by "<param>:pl:<hPa>" (plan section 106:
-# the jet stream's 250 hPa wind and height; u / v / gh appear at 13 levels in the same file).
+# the jet stream's 250 hPa wind and height; u / v / gh appear at 14 levels in the same file).
 JET_PARAMS = ("u:pl:250", "v:pl:250", "gh:pl:250")
 OPER_PARAMS = ("10u", "10v", "msl") + JET_PARAMS
 STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
@@ -141,16 +141,16 @@ def select(index, params, run_dt, step, stream):
     hits = {}
     for rec in index:
         p = rec.get("param")
-        if p not in want:
+        if not isinstance(p, str) or p not in want:
             continue
         lt = rec.get("levtype")
-        name = want[p].get((lt, None if lt == "sfc" else str(rec.get("levelist"))))
+        name = want[p].get((lt, None if lt == "sfc" else str(rec.get("levelist")))) if isinstance(lt, str) else None
         if name is None and set(want[p]) != {("sfc", None)} and lt == "pl":
             continue                                    # the same param at a level not asked for
         label = name or p
         if label in hits:
             raise RuntimeError(f"duplicate record for {label} in the {stream} index of step {step}")
-        exp_lt = "sfc" if name is None else spec(name)[1]
+        exp_lt = spec(name)[1] if name is not None else ("sfc" if set(want[p]) == {("sfc", None)} else "pl")
         if (name is None or str(rec.get("date")) != f"{run_dt:%Y%m%d}" or str(rec.get("time")) != f"{run_dt:%H}00"
                 or str(rec.get("step")) != str(step) or rec.get("stream") != stream or lt != exp_lt
                 or rec.get("type") != "fc"):

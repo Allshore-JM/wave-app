@@ -168,6 +168,11 @@ def test_pressure_level_records_are_picked_by_param_levtype_and_level():
     odd = [dict(r, levtype="sfc") if r["param"] == "u" and r.get("levelist") == "500" else r for r in idx]
     with pytest.raises(RuntimeError, match="is not oper fc"):
         EF.select(odd, EF.OPER_PARAMS, RUN, 150, "oper")
+    # G74a A-6: an index line with an unhashable param / levtype is skipped / refused as before, never a TypeError
+    assert EF.select(idx + [dict(idx[0], param=["u"])], EF.OPER_PARAMS, RUN, 150, "oper") == spans
+    odd = [dict(r, levtype=["pl"]) if r["param"] == "v" and r.get("levelist") == "250" else r for r in idx]
+    with pytest.raises(RuntimeError, match="v is not oper fc pl"):
+        EF.select(odd, EF.OPER_PARAMS, RUN, 150, "oper")
     # the section-43 guard: 10u (asked for at the surface only) on a pressure level is refused, never skipped
     odd = [dict(r, levtype="pl", levelist="250") if r["param"] == "10u" else r for r in idx]
     with pytest.raises(RuntimeError, match="10u is not oper fc sfc"):
@@ -272,6 +277,28 @@ def test_identity_of_the_real_records_and_the_gfs_table_untouched():
     assert all(95000 < v < 104000 for _, _, v in REC["msl"]["cells"])     # defined everywhere, land and poles too
     with pytest.raises(ValueError):                                   # GFS's PRMSL key is not the ECMWF msl record
         D.check_identity(m, "PRMSL:mean sea level", RUN, 150)
+
+
+def test_identity_of_the_real_250_hpa_records():
+    """G74a A-3 (plan section 106): the three jet stream records of a real run (2026112100 step 24, captured from
+    data.ecmwf.int with tests/capture_ecmwf_fixtures.py: the AWS mirror throttled the older run's capture) match the
+    identity rows, are picked from the real index, and decode on the site grid with sane values."""
+    meta24 = json.load(open(os.path.join(FIX, "meta_24.json"), encoding="utf-8"))
+    run24 = datetime(2026, 11, 21, 0, tzinfo=timezone.utc)
+    rec = meta24["records"]
+    spans = EF.select(EF.parse_index(open(os.path.join(FIX, "oper_24.index"), encoding="utf-8").read()), EF.OPER_PARAMS, run24, 24, "oper")
+    for p, units in (("u:pl:250", "m s**-1"), ("v:pl:250", "m s**-1"), ("gh:pl:250", "gpm")):
+        m = rec[p]["meta"]
+        D.check_identity(m, p, run24, 24, D.EXPECT_ECMWF)
+        with pytest.raises(ValueError):
+            D.check_identity(m, p, run24, 27, D.EXPECT_ECMWF)
+        assert (m["typeOfLevel"], m["level"], m["units"], m["gridType"]) == ("isobaricInhPa", 250, units, "regular_ll")
+        assert list(spans[p]) == rec[p]["span"]
+        D.check_geometry_ecmwf(m)
+    with pytest.raises(ValueError):                                   # the 250 hPa u is not the 10 m u
+        D.check_identity(rec["u:pl:250"]["meta"], "10u", run24, 24, D.EXPECT_ECMWF)
+    assert all(8750 < v < 11290 for _, _, v in rec["gh:pl:250"]["cells"])
+    assert all(abs(v) < 130 for p in ("u:pl:250", "v:pl:250") for _, _, v in rec[p]["cells"])
 
 
 def test_geometry_of_the_real_records_and_its_guards():

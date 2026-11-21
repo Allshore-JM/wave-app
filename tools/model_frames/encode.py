@@ -70,13 +70,16 @@ FIELDS = {
              "resolutions": ("half",)},
     # The jet stream (plan section 106): 250 hPa wind speed, its direction and the 250 hPa height (the contours). Ranges from
     # the step-1 check (GFS + ECMWF, 2026-11-20/21, 36 steps): speed up to 110.5 m/s already in November (winter cores
-    # pass 120 m/s), so 0-130 m/s (0.51 m/s = 1.0 kt a code); height 9,304-11,094 m, so 9,000-11,295 m (9 m a code).
+    # pass 120 m/s), so 0-130 m/s (0.51 m/s = 1.0 kt a code). Height: 9,304-11,094 m in November, but archived GFS
+    # analyses reach 8,901 m in the austral-winter vortex (G74a A-1: 2026-09-12; highest seen 11,173 m, Tibet, G74a B-1),
+    # so 8,750-11,290 m
+    # (exactly 10 m a code).
     # Never filled (defined everywhere). The legend starts at the 50-kt core line.
     "jet":  {"lo": 0.0, "hi": 130.0,    "legend": [50 * KT, 200 * KT], "units": "m/s", "interpolation": "bilinear", "fill": False,
              "resolutions": FULL_HALF},
     "jdir": {"lo": 0.0, "hi": 360.0,    "legend": [0.0, 360.0],   "units": "deg", "interpolation": "circular", "fill": False, "resolutions": ("half",),
              "circular": True, "convention": "from"},
-    "jhgt": {"lo": 9000.0, "hi": 11295.0, "legend": [9000.0, 11295.0], "units": "m", "interpolation": "bilinear", "fill": False,
+    "jhgt": {"lo": 8750.0, "hi": 11290.0, "legend": [8750.0, 11290.0], "units": "m", "interpolation": "bilinear", "fill": False,
              "resolutions": ("half",)},
 }
 FILL_CELLS = 4

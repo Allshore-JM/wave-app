@@ -27,7 +27,10 @@ STEPS = list(range(0, 145, 3)) + list(range(150, 361, 6))
 STEP_SCHEDULE = [[0, 144, 3], [150, 360, 6]]    # [first, last, every] in hours, for the manifest
 CYCLES = (0, 12)
 WAVE_PARAMS = ("swh", "pp1d", "mwd")
-OPER_PARAMS = ("10u", "10v", "msl")
+# A surface record is named by its MARS param ("10u"); a pressure-level record by "<param>:pl:<hPa>" (plan section 106:
+# the jet stream's 250 hPa wind and height; u / v / gh appear at 13 levels in the same file).
+JET_PARAMS = ("u:pl:250", "v:pl:250", "gh:pl:250")
+OPER_PARAMS = ("10u", "10v", "msl") + JET_PARAMS
 STREAMS = {"wave": WAVE_PARAMS, "oper": OPER_PARAMS}
 AWS_TRIES = 2                                   # quick tries on the mirror for a NON-throttling error before the second host
 AWS_COOLDOWN_S = 600                            # after an AWS outage (not throttling), reads go straight to data.ecmwf.int this long
@@ -116,24 +119,46 @@ def parse_index(text):
     return out
 
 
+def spec(name):
+    """A requested record's name -> (MARS param, levtype, level or None): "10u" -> ("10u", "sfc", None),
+    "u:pl:250" -> ("u", "pl", "250")."""
+    parts = name.split(":")
+    if len(parts) == 1:
+        return name, "sfc", None
+    if len(parts) != 3 or parts[1] != "pl" or not parts[2].isdigit():
+        raise ValueError(f"bad record name {name!r}")
+    return parts[0], "pl", parts[2]
+
+
 def select(index, params, run_dt, step, stream):
-    """{param: (offset, length)} for the requested params. Guards: each param exactly once, a surface record of
-    this cycle, step and stream, a sane span."""
+    """{name: (offset, length)} for the requested records (spec() names). Guards: each record exactly once, of this
+    cycle, step and stream, a sane span. A param asked for only at the surface rejects any other record of it (the
+    section-43 guard); a param asked for at pressure levels skips its records at the other levels."""
+    want = {}
+    for name in params:
+        p, lt, lev = spec(name)
+        want.setdefault(p, {})[(lt, lev)] = name
     hits = {}
     for rec in index:
         p = rec.get("param")
-        if p not in params:
+        if p not in want:
             continue
-        if p in hits:
-            raise RuntimeError(f"duplicate record for {p} in the {stream} index of step {step}")
-        if (str(rec.get("date")) != f"{run_dt:%Y%m%d}" or str(rec.get("time")) != f"{run_dt:%H}00"
-                or str(rec.get("step")) != str(step) or rec.get("stream") != stream or rec.get("levtype") != "sfc"
+        lt = rec.get("levtype")
+        name = want[p].get((lt, None if lt == "sfc" else str(rec.get("levelist"))))
+        if name is None and set(want[p]) != {("sfc", None)} and lt == "pl":
+            continue                                    # the same param at a level not asked for
+        label = name or p
+        if label in hits:
+            raise RuntimeError(f"duplicate record for {label} in the {stream} index of step {step}")
+        exp_lt = "sfc" if name is None else spec(name)[1]
+        if (name is None or str(rec.get("date")) != f"{run_dt:%Y%m%d}" or str(rec.get("time")) != f"{run_dt:%H}00"
+                or str(rec.get("step")) != str(step) or rec.get("stream") != stream or lt != exp_lt
                 or rec.get("type") != "fc"):
-            raise RuntimeError(f"index record for {p} is not {stream} fc sfc {run_dt:%Y%m%d %H}z step {step}: {rec}")
+            raise RuntimeError(f"index record for {label} is not {stream} fc {exp_lt} {run_dt:%Y%m%d %H}z step {step}: {rec}")
         off, n = rec.get("_offset"), rec.get("_length")
         if not (isinstance(off, int) and isinstance(n, int) and off >= 0 and 0 < n < 64 * 2 ** 20):
-            raise RuntimeError(f"bad span for {p}: {off}/{n}")
-        hits[p] = (off, n)
+            raise RuntimeError(f"bad span for {label}: {off}/{n}")
+        hits[name] = (off, n)
     missing = [p for p in params if p not in hits]
     if missing:
         raise RuntimeError(f"records not in the {stream} index of step {step}: {missing}")

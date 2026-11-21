@@ -294,13 +294,26 @@ def test_encoding_ranges_cover_legend_and_tp_floor():
         assert f["lo"] <= f["legend"][0] and f["hi"] >= f["legend"][1]
     assert E.FIELDS["tp"]["lo"] <= 1.09                                 # WW3 physical floor
     assert {n: f["interpolation"] for n, f in E.FIELDS.items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
-                                                                   "pdir": "circular", "wdir": "circular", "pres": "bilinear"}
+                                                                   "pdir": "circular", "wdir": "circular", "pres": "bilinear",
+                                                                   "jet": "bilinear", "jdir": "circular", "jhgt": "bilinear"}
     assert {n: tuple(f["resolutions"]) for n, f in E.FIELDS.items()} == {"hs": ("full", "half"), "tp": ("full", "half"),
                                                                         "wind": ("full", "half"), "pdir": ("full", "half"), "wdir": ("half",),
-                                                                        "pres": ("half",)}
+                                                                        "pres": ("half",), "jet": ("full", "half"), "jdir": ("half",),
+                                                                        "jhgt": ("half",)}
     pres = E.FIELDS["pres"]                                             # plan section 46: the isobars under the wind overlay
     assert (pres["lo"], pres["hi"], pres["legend"], pres["units"]) == (920.0, 1060.0, [920.0, 1060.0], "hPa")
-    assert pres["fill"] is False and "circular" not in pres and list(E.FIELDS)[-1] == "pres"
+    assert pres["fill"] is False and "circular" not in pres and list(E.FIELDS)[:6] == ["hs", "tp", "wind", "pdir", "wdir", "pres"]
+    # plan section 106: the jet stream fields come after the older six (the older fields' order and bytes are unchanged)
+    assert list(E.FIELDS)[6:] == ["jet", "jdir", "jhgt"]
+    jet, jdir, jhgt = E.FIELDS["jet"], E.FIELDS["jdir"], E.FIELDS["jhgt"]
+    assert (jet["lo"], jet["hi"], jet["units"], jet["fill"]) == (0.0, 130.0, "m/s", False) and "circular" not in jet
+    assert abs(jet["legend"][0] - 50 * E.KT) < 1e-9 and abs(jet["legend"][1] - 200 * E.KT) < 1e-9
+    assert E.quantum(jet["lo"], jet["hi"]) / E.KT < 1.0                 # about 1 kt a code
+    assert {k: v for k, v in jdir.items()} == {k: v for k, v in E.FIELDS["wdir"].items()}   # coded exactly like the wind direction
+    assert (jhgt["lo"], jhgt["hi"], jhgt["units"], jhgt["fill"]) == (9000.0, 11295.0, "m", False) and "circular" not in jhgt
+    assert E.quantum(jhgt["lo"], jhgt["hi"]) < 9.1                     # 9 m a code: the 60-m contours move < a sixth of an interval
+    assert not set(E.FILL_INFO["fields"]) & {"jet", "jdir", "jhgt"}
+    assert [R.MODEL["fields"][n]["label"] for n in ("jet", "jdir", "jhgt")] == ["Jet stream", "Jet stream direction", "250 hPa height"]
     assert E.quantum(pres["lo"], pres["hi"]) < 0.56                    # owner 2026-10-17 (G32a A-1): 0.551 hPa a code
     assert "pres" not in E.FILL_INFO["fields"] and R.MODEL["fields"]["pres"]["label"] == "Sea-level pressure"
     for n in ("pdir", "wdir"):
@@ -480,9 +493,12 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     puts = [k for op, k in c.log if op == "put"]
     assert puts[-1] == P.LATEST_KEY and puts[-2].startswith(f"{P.PREFIX}/2026092212/manifest-")
     assert puts[-3].startswith(f"{P.PREFIX}/2026092212/stats-")           # sidecar BEFORE the manifest
-    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 209 * (4 * 2 + 2) + 3   # hs tp wind pdir full+half, wdir pres half
+    assert all(k.endswith(".png") for k in puts[:-3]) and len(puts) == 209 * (5 * 2 + 4) + 3   # hs tp wind pdir jet full+half, wdir pres jdir jhgt half
     assert f"{P.PREFIX}/2026092212/half/wdir/f000.png" in puts and f"{P.PREFIX}/2026092212/wdir/f000.png" not in puts
     assert f"{P.PREFIX}/2026092212/half/pres/f384.png" in puts and f"{P.PREFIX}/2026092212/pres/f000.png" not in puts
+    assert f"{P.PREFIX}/2026092212/jet/f384.png" in puts and f"{P.PREFIX}/2026092212/half/jet/f384.png" in puts
+    for n in ("jdir", "jhgt"):
+        assert f"{P.PREFIX}/2026092212/half/{n}/f384.png" in puts and f"{P.PREFIX}/2026092212/{n}/f000.png" not in puts
     assert f"{P.PREFIX}/2026092212/pdir/f384.png" in puts and f"{P.PREFIX}/2026092212/half/pdir/f384.png" in puts
     assert f"{P.PREFIX}/2026092212/hs/f001.png" in puts and f"{P.PREFIX}/2026092212/hs/f121.png" not in puts
     latest = json.loads(c.objects[P.LATEST_KEY]["body"])
@@ -494,7 +510,7 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert man["stats"] == puts[-3] and "_stats" not in man and set(man["frames"][0]) == {"step", "valid_utc"}
     assert len(c.objects[latest["manifest"]]["body"]) < 20_000                 # the custom domain serves it compressed (was < 12 KB for r2.dev)
     stats = json.loads(c.objects[man["stats"]]["body"])
-    assert len(stats["frames"]) == 209 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir", "pres"}
+    assert len(stats["frames"]) == 209 and set(stats["frames"][0]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir", "pres", "jet", "jdir", "jhgt"}
     assert all(f["pdir_mask_mismatch"] == 0 for f in stats["frames"])
     assert stats["frames"][0]["fields"]["wdir"]["bytes_full"] == 0 and stats["frames"][0]["fields"]["wdir"]["bytes_half"] > 0
     assert stats["frames"][0]["fields"]["pres"]["bytes_full"] == 0 and stats["frames"][0]["fields"]["pres"]["bytes_half"] > 0
@@ -503,13 +519,17 @@ def test_complete_build_order_frames_manifest_pointer(offline_build, monkeypatch
     assert man["encoding_spec"]["missing"] == 0 and man["fields"]["tp"]["legend"] == [4.0, 22.0]
     assert man["frame_schedule"] == [[0, 120, 1], [123, 384, 3]] and man["expected_frames"] == 209 and "frame_hours" not in man
     assert {n: f["interpolation"] for n, f in man["fields"].items()} == {"hs": "bilinear", "tp": "bilinear", "wind": "bilinear",
-                                                                       "pdir": "circular", "wdir": "circular", "pres": "bilinear"}
+                                                                       "pdir": "circular", "wdir": "circular", "pres": "bilinear",
+                                                                       "jet": "bilinear", "jdir": "circular", "jhgt": "bilinear"}
+    assert man["fields"]["jhgt"] == {"lo": 9000.0, "hi": 11295.0, "legend": [9000.0, 11295.0], "units": "m",
+                                     "interpolation": "bilinear", "resolutions": ["half"]}
+    assert man["fields"]["jdir"] == dict(man["fields"]["wdir"]) and man["fields"]["jet"]["resolutions"] == ["full", "half"]
     assert man["fields"]["pres"] == {"lo": 920.0, "hi": 1060.0, "legend": [920.0, 1060.0], "units": "hPa",
                                      "interpolation": "bilinear", "resolutions": ["half"]}
     assert man["fields"]["pdir"] == {"lo": 0.0, "hi": 360.0, "legend": [0.0, 360.0], "units": "deg", "interpolation": "circular",
                                      "resolutions": ["full", "half"], "circular": True, "convention": "from"}
     assert man["fields"]["wdir"]["resolutions"] == ["half"] and man["fields"]["hs"]["resolutions"] == ["full", "half"]
-    assert "circular" not in man["fields"]["hs"] and set(man["model"]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir", "pres"}
+    assert "circular" not in man["fields"]["hs"] and set(man["model"]["fields"]) == {"hs", "tp", "wind", "pdir", "wdir", "pres", "jet", "jdir", "jhgt"}
     assert man["fill"] == E.FILL_INFO
     f0 = stats["frames"][0]["fields"]
     assert f0["hs"]["filled_points"] == f0["tp"]["filled_points"] == f0["pdir"]["filled_points"] == rows * 8
@@ -980,8 +1000,9 @@ def test_each_published_field_decodes_to_its_own_grib_record(offline_build, monk
     """Per-key constants end to end: a swapped key, a sign slip in the wind direction or a field
     published under another field's name shows up as a wrong decoded value in the bucket."""
     const = {"HTSGW:surface": 2.0, "PERPW:surface": 12.0, "DIRPW:surface": 45.0,
-             "UGRD:10 m above ground": 5.0, "VGRD:10 m above ground": 0.0, "PRMSL:mean sea level": 101325.0}
-    assert set(const) == set(R.WAVE_KEYS.values()) | set(R.ATMOS_KEYS) and len(R.ATMOS_KEYS) == 3
+             "UGRD:10 m above ground": 5.0, "VGRD:10 m above ground": 0.0, "PRMSL:mean sea level": 101325.0,
+             "UGRD:250 mb": 0.0, "VGRD:250 mb": -60.0, "HGT:250 mb": 10350.0}
+    assert set(const) == set(R.WAVE_KEYS.values()) | set(R.ATMOS_KEYS) | set(R.JET_KEYS) and len(R.ATMOS_KEYS) == 3
     monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None:
                         (np.full((721, 1440), const[key], np.float32), {}))
     c = FakeClient()
@@ -1001,6 +1022,46 @@ def test_each_published_field_decodes_to_its_own_grib_record(offline_build, monk
     pres = E.FIELDS["pres"]                                                    # Pa in the GRIB, hPa in the frame
     assert np.abs(values("pres", True) - 1013.25).max() <= (pres["hi"] - pres["lo"]) / 508 + 1e-9
     assert P.frame_key("2026092212", "pres", 0, half=False) not in c.objects
+    # plan section 106: v = -60 blows south: a 60 m/s jet FROM the north; the height is the gpm record unchanged
+    for half in (False, True):
+        assert np.abs(values("jet", half) - 60.0).max() <= E.FIELDS["jet"]["hi"] / 508 + 1e-9
+    assert ang(values("jdir", True), 0.0).max() <= 360.0 / 508 + 1e-9
+    jh = E.FIELDS["jhgt"]
+    assert np.abs(values("jhgt", True) - 10350.0).max() <= (jh["hi"] - jh["lo"]) / 508 + 1e-9
+    for n in ("jdir", "jhgt"):
+        assert P.frame_key("2026092212", n, 0, half=False) not in c.objects
+
+
+def test_the_gfs_jet_stream_comes_from_the_250_mb_records(monkeypatch):
+    """Plan section 106: jet / jdir from UGRD / VGRD 250 mb (never the 10 m wind), jhgt the HGT 250 mb record in gpm with
+    nothing added; one ranged read of the atmos file carries the older keys and the jet keys."""
+    vals = {"UGRD:10 m above ground": 3.0, "VGRD:10 m above ground": 4.0, "UGRD:250 mb": 70.0, "VGRD:250 mb": -24.0,
+            "HGT:250 mb": 10512.5, "PRMSL:mean sea level": 101000.0}
+    monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None:
+                        (np.full((721, 1440), vals.get(key, 1.0), np.float32), {}))
+    keys = list(R.WAVE_KEYS.values())
+    g = R.GFS.decode(({k: b"x" for k in keys}, {k: b"x" for k in R.ATMOS_KEYS + R.JET_KEYS}), RUN, 0)
+    assert list(g) == ["hs", "tp", "pdir", "wind", "wdir", "pres", "jet", "jdir", "jhgt"]
+    assert np.allclose(g["wind"], 5.0) and np.allclose(g["jet"], 74.0)
+    assert np.allclose(g["jdir"], np.degrees(np.arctan2(-70.0, 24.0)) % 360)          # blowing east-south-east: FROM ~289 deg
+    assert np.array_equal(g["jhgt"], np.full((721, 1440), 10512.5, np.float32)) and g["jhgt"].dtype == np.float32
+    asked = []
+    monkeypatch.setattr(R.F, "fetch_records", lambda url, keys: asked.append((url, tuple(keys))) or {k: b"x" for k in keys})
+    R.GFS.fetch(RUN, 6)
+    assert [k for _, k in asked] == [tuple(R.WAVE_KEYS.values()), R.ATMOS_KEYS + R.JET_KEYS]
+    assert asked[1][0] == R.F.atmos_url(RUN, 6)
+    assert R.JET_KEYS == ("UGRD:250 mb", "VGRD:250 mb", "HGT:250 mb")
+    for k in R.JET_KEYS:
+        assert D.EXPECT[k][1:] == ("isobaricInhPa", 250)
+
+
+def test_jet_summary_line():
+    frames = [{"fields": {"jet": {"max": 95.0, "clamped_high": 0}, "jhgt": {"min": 9310.0, "max": 11020.0, "clamped_low": 0, "clamped_high": 0}}},
+              {"fields": {"jet": {"max": 131.0, "clamped_high": 4}, "jhgt": {"min": 8990.0, "max": 11090.0, "clamped_low": 2, "clamped_high": 0}}},
+              {"fields": {"hs": {}}}]
+    assert R.jet_summary(frames) == ("jet stream 250 hPa: peak 254.6 kt (top 252.7 kt, 4 clamped cell-frames); height 8990-11090 m "
+                                     "(encode 9000-11295; 2 low / 0 high clamped cell-frames)")
+    assert R.jet_summary([{"fields": {"hs": {}}}]) is None and R.jet_summary([]) is None
 
 
 def test_wind_dir_from_never_returns_360():
@@ -1058,7 +1119,7 @@ def test_pipelined_build_publishes_the_same_bytes_with_any_number_of_encode_thre
         return {k: v["body"] for k, v in c.objects.items() if k.endswith(".png")}, [k for op, k in c.log if op == "put"]
     one, puts1 = build(1)
     five, puts5 = build(5)
-    assert one == five and len(one) == 3 * 10                                                  # identical frames, all of them
+    assert one == five and len(one) == 3 * 14                                                  # identical frames, all of them
     for puts in (puts1, puts5):
         assert all(k.endswith(".png") for k in puts[:-2]) and puts[-2].startswith(f"{P.PREFIX}/2026092212/stats-")       # every frame first,
         assert puts[-1].startswith(f"{P.PREFIX}/2026092212/partial-")                                                  # then the sidecar and the manifest
@@ -1228,14 +1289,18 @@ def test_a_field_added_since_a_run_was_built_is_not_other_encode_ranges(monkeypa
     are added; the five old fields are rewritten byte for byte); a shared field with another range is still refused."""
     c = FakeClient()
     monkeypatch.setattr(R.F, "latest_complete_run", lambda: RUN)
-    before = {n: dict(f) for n, f in E.FIELDS.items() if n != "pres"}
+    before = {n: dict(f) for n, f in E.FIELDS.items() if n not in R.ADDED_FIELDS}
     old = {"run": "2026092212", "complete": True, "encoding": E.ENCODING, "frames": [{"step": 0}] * len(F.STEPS),
            "published_utc": "2026-09-22T18:00:00Z", "fill": E.FILL_INFO, "fields": before}
     _manifest(c, "2026092212", "20260922T180000Z", old)
     store = P.Store(c, "b")
     assert R.fill_guard(store, "2026092212", "2026092212", partial=False) is None
     a, b = R.comparable_ranges(R.ranges_key(before), R.ranges_key(E.FIELDS))
-    assert a == b and "pres" not in [t[0] for t in a] and len(a) == 5 and R.ADDED_FIELDS == ("pres",)
+    assert a == b and "pres" not in [t[0] for t in a] and len(a) == 5 and R.ADDED_FIELDS == ("pres", "jet", "jdir", "jhgt")
+    # plan section 106: a run published with the pressure but before the jet stream fields may be rebuilt too
+    with_pres = {n: dict(f) for n, f in E.FIELDS.items() if n not in ("jet", "jdir", "jhgt")}
+    a, b = R.comparable_ranges(R.ranges_key(with_pres), R.ranges_key(E.FIELDS))
+    assert a == b and len(a) == 6
     # G32a A-2: only a field named in ADDED_FIELDS may be missing; anything else about the old block is "other ranges"
     lost = {n: f for n, f in before.items() if n != "hs"}
     renamed = dict(lost, Hs=dict(before["hs"]))
@@ -1278,8 +1343,8 @@ def test_the_gfs_pressure_is_the_record_over_100_exactly(monkeypatch):
     one = np.ones((721, 1440), np.float32)
     monkeypatch.setattr(R.D, "decode", lambda blob, key=None, run_dt=None, step=None: (pa if key == "PRMSL:mean sea level" else one, {}))
     keys = list(R.WAVE_KEYS.values())
-    g = R.GFS.decode(({k: b"x" for k in keys}, {k: b"x" for k in R.ATMOS_KEYS}), RUN, 0)
-    assert list(g)[-1] == "pres" and g["pres"].dtype == np.float32
+    g = R.GFS.decode(({k: b"x" for k in keys}, {k: b"x" for k in R.ATMOS_KEYS + R.JET_KEYS}), RUN, 0)
+    assert list(g)[5] == "pres" and g["pres"].dtype == np.float32
     assert np.array_equal(g["pres"], (pa.astype(np.float64) / 100.0).astype(np.float32))
 
 

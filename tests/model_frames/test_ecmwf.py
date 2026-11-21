@@ -120,7 +120,8 @@ def test_index_selects_the_real_spans():
         spans = EF.select(EF.parse_index(_index(stream)), params, RUN, 150, stream)
         assert set(spans) == set(params)
         for p in params:
-            assert list(spans[p]) == REC[p]["span"], p
+            if p in REC or ":" not in p:                                # the 250 hPa records: also the test below
+                assert list(spans[p]) == REC[p]["span"], p
 
 
 @pytest.mark.parametrize("field,value,match", [
@@ -135,6 +136,42 @@ def test_index_guards(field, value, match):
             rec[field] = value
     with pytest.raises(RuntimeError, match=match):
         EF.select(idx, EF.WAVE_PARAMS, RUN, 150, "wave")
+
+
+def test_pressure_level_records_are_picked_by_param_levtype_and_level():
+    """Plan section 106: u / v / gh appear at 13 levels in the oper file; only the 250 hPa record is read, the surface
+    records are picked exactly as before, and a param asked for at the surface alone still refuses any other record."""
+    idx = EF.parse_index(_index("oper"))
+    assert sum(1 for r in idx if r["param"] == "u" and r["levtype"] == "pl") >= 10
+    spans = EF.select(idx, EF.OPER_PARAMS, RUN, 150, "oper")
+    assert list(spans) == ["msl", "10u", "10v", "gh:pl:250", "u:pl:250", "v:pl:250"]           # index order
+    for p in ("u:pl:250", "v:pl:250", "gh:pl:250"):                    # the 250 hPa line of the committed index, nothing else
+        param = p.split(":")[0]
+        (rec,) = [r for r in idx if r["param"] == param and r["levtype"] == "pl" and r["levelist"] == "250"]
+        assert spans[p] == (rec["_offset"], rec["_length"])
+    surface = EF.select(idx, ("10u", "10v", "msl"), RUN, 150, "oper")
+    assert surface == {p: spans[p] for p in ("10u", "10v", "msl")}
+    assert EF.spec("10u") == ("10u", "sfc", None) and EF.spec("gh:pl:250") == ("gh", "pl", "250")
+    for bad in ("u:pl", "u:ml:250", "u:pl:x", "u:pl:250:1"):
+        with pytest.raises(ValueError):
+            EF.spec(bad)
+    # a second 250 hPa u line, the 250 hPa line gone, or the record of another cycle: refused
+    with pytest.raises(RuntimeError, match="duplicate record for u:pl:250"):
+        EF.select(idx + [dict(r) for r in idx if r["param"] == "u" and r.get("levelist") == "250"], EF.OPER_PARAMS, RUN, 150, "oper")
+    with pytest.raises(RuntimeError, match="not in the oper index"):
+        EF.select([r for r in idx if not (r["param"] == "gh" and r.get("levelist") == "250")], EF.OPER_PARAMS, RUN, 150, "oper")
+    for field, value in (("step", "144"), ("date", "20261013"), ("type", "cf"), ("stream", "wave")):
+        bad = [dict(r, **{field: value}) if r["param"] == "v" and r.get("levelist") == "250" else r for r in idx]
+        with pytest.raises(RuntimeError, match="v:pl:250 is not oper fc pl"):
+            EF.select(bad, EF.OPER_PARAMS, RUN, 150, "oper")
+    # u at another level is skipped, but a u record that is not on a pressure level is not silently taken or skipped
+    odd = [dict(r, levtype="sfc") if r["param"] == "u" and r.get("levelist") == "500" else r for r in idx]
+    with pytest.raises(RuntimeError, match="is not oper fc"):
+        EF.select(odd, EF.OPER_PARAMS, RUN, 150, "oper")
+    # the section-43 guard: 10u (asked for at the surface only) on a pressure level is refused, never skipped
+    odd = [dict(r, levtype="pl", levelist="250") if r["param"] == "10u" else r for r in idx]
+    with pytest.raises(RuntimeError, match="10u is not oper fc sfc"):
+        EF.select(odd, EF.OPER_PARAMS, RUN, 150, "oper")
 
 
 def test_index_duplicate_or_missing_record_and_malformed_lines():
@@ -200,8 +237,8 @@ def test_fetch_falls_back_to_data_ecmwf_int_and_keeps_the_aws_error(monkeypatch)
         a, b = (int(x) for x in rng.split("=")[1].split("-"))
         return 206, _grib(b - a + 1)
     monkeypatch.setattr(EF, "_request", aws_down)
-    assert set(EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)) == {"10u", "10v", "msl"}
-    assert hosts.count("data.ecmwf.int") == 4 and EF.HTTP == "https://data.ecmwf.int/forecasts"
+    assert set(EF.fetch_records(RUN, 150, "oper", EF.OPER_PARAMS)) == {"10u", "10v", "msl", "u:pl:250", "v:pl:250", "gh:pl:250"}
+    assert hosts.count("data.ecmwf.int") == 7 and EF.HTTP == "https://data.ecmwf.int/forecasts"
 
     EF._aws_down_until[0] = 0.0                                      # the AWS failure above started the cooldown
 
@@ -368,9 +405,11 @@ def test_complete_ecmwf_build_publishes_under_its_own_prefix_and_pointer(ecmwf_o
     assert c.objects[P.LATEST_KEY]["body"] == gfs_latest                         # the GFS pointer is never touched
     assert all(k.startswith(f"{EPRE}/2026101412/") for k in puts[:-1]) and puts[-1] == ELATEST
     assert puts[-2].startswith(f"{EPRE}/2026101412/manifest-") and puts[-3].startswith(f"{EPRE}/2026101412/stats-")
-    assert len(puts) == 85 * (4 * 2 + 2) + 3
+    assert len(puts) == 85 * (5 * 2 + 4) + 3                                    # + jet full+half, jdir + jhgt half (section 106)
     assert f"{EPRE}/2026101412/half/wdir/f360.png" in puts and f"{EPRE}/2026101412/hs/f147.png" not in puts
     assert f"{EPRE}/2026101412/half/pres/f360.png" in puts and f"{EPRE}/2026101412/pres/f360.png" not in puts
+    assert f"{EPRE}/2026101412/jet/f360.png" in puts and f"{EPRE}/2026101412/half/jhgt/f360.png" in puts
+    assert f"{EPRE}/2026101412/half/jdir/f360.png" in puts and f"{EPRE}/2026101412/jdir/f360.png" not in puts
     latest = json.loads(c.objects[ELATEST]["body"])
     assert latest == {"run": "2026101412", "manifest": puts[-2], "complete": True, "encoding": E.ENCODING,
                       "published_utc": m["published_utc"], "frames": 85}
@@ -384,8 +423,10 @@ def test_complete_ecmwf_build_publishes_under_its_own_prefix_and_pointer(ecmwf_o
     assert man["fields"] == json.loads(json.dumps({n: {k: f[k] for k in R.FIELD_KEYS if k in f} for n, f in E.FIELDS.items()}))
     assert man["fill"] == E.FILL_INFO and man["grid"] == R.GRID_FULL and man["encoding"] == E.ENCODING
     # every field from its own record, in the GFS order
-    assert ecmwf_offline[:6] == [("swh", "swh", 0), ("pp1d", "pp1d", 0), ("mwd", "mwd", 0), ("10u", "10u", 0), ("10v", "10v", 0),
-                                 ("msl", "msl", 0)]
+    assert ecmwf_offline[:9] == [("swh", "swh", 0), ("pp1d", "pp1d", 0), ("mwd", "mwd", 0), ("10u", "10u", 0), ("10v", "10v", 0),
+                                 ("msl", "msl", 0), ("u:pl:250", "u:pl:250", 0), ("v:pl:250", "v:pl:250", 0),
+                                 ("gh:pl:250", "gh:pl:250", 0)]
+    assert man["model"]["fields"]["jet"]["grib"] == "u/v 250 hPa" and man["model"]["fields"]["jhgt"]["grib"] == "gh 250 hPa"
     assert man["model"]["fields"]["pres"] == {"label": "Sea-level pressure", "grib": "msl",
                                               "definition": "IFS mean sea level pressure, hPa (the isobars drawn over the wind overlay)"}
 
@@ -403,9 +444,16 @@ def test_ecmwf_wind_fields_come_from_10u_and_10v(monkeypatch):
     v = np.full((721, 1440), -4.0, np.float32)
     base = np.full((721, 1440), 1.0, np.float32)
     msl = np.full((721, 1440), 98765.0, np.float32)
-    monkeypatch.setattr(D, "decode_ecmwf", lambda blob, p, run_dt, step: ({"10u": u, "10v": v, "msl": msl}.get(p, base), {}))
+    ju = np.full((721, 1440), 80.0, np.float32)
+    jv = np.full((721, 1440), 60.0, np.float32)
+    gh = np.full((721, 1440), 10432.0, np.float32)
+    monkeypatch.setattr(D, "decode_ecmwf", lambda blob, p, run_dt, step: ({"10u": u, "10v": v, "msl": msl, "u:pl:250": ju,
+                                                                            "v:pl:250": jv, "gh:pl:250": gh}.get(p, base), {}))
     g = X.SOURCE.decode(X.SOURCE.fetch(RUN, 0), RUN, 0)
-    assert list(g) == ["hs", "tp", "pdir", "wind", "wdir", "pres"]
+    assert list(g) == ["hs", "tp", "pdir", "wind", "wdir", "pres", "jet", "jdir", "jhgt"]
+    # plan section 106: the jet from the 250 hPa u / v (not the 10 m wind), the height in gpm unchanged
+    assert np.allclose(g["jet"], 100.0) and np.allclose(g["jdir"], np.degrees(np.arctan2(-80.0, -60.0)) % 360)
+    assert np.array_equal(g["jhgt"], gh)
     assert np.allclose(g["pres"], 987.65) and g["pres"].dtype == np.float32           # Pa -> hPa; never masked as calm
     assert np.allclose(g["wind"], 5.0) and np.allclose(g["wdir"], np.degrees(np.arctan2(-3.0, 4.0)) % 360)
 

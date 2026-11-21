@@ -40,6 +40,7 @@ import publish as P      # noqa: E402
 
 WAVE_KEYS = {"hs": "HTSGW:surface", "tp": "PERPW:surface", "pdir": "DIRPW:surface"}
 ATMOS_KEYS = ("UGRD:10 m above ground", "VGRD:10 m above ground", "PRMSL:mean sea level")
+JET_KEYS = ("UGRD:250 mb", "VGRD:250 mb", "HGT:250 mb")    # the jet stream (plan section 106), from the same atmos file
 FAILED_RETRY_AFTER_S = 3 * 3600         # a cycle that failed to build is retried after 3 h, max 3 times
 FAILED_MAX_ATTEMPTS = 3
 NOTREADY_WARN = 6                       # NotReady exits in a row for one cycle before the summary warns
@@ -71,6 +72,11 @@ MODEL = {
                  "definition": "GFS 10 m wind direction: degrees true, the direction the wind blows FROM (atan2(-u, -v))"},
         "pres": {"label": "Sea-level pressure", "grib": "PRMSL mean sea level",
                  "definition": "GFS pressure reduced to mean sea level, hPa (the isobars drawn over the wind overlay)"},
+        "jet":  {"label": "Jet stream", "grib": "UGRD/VGRD 250 mb", "definition": "GFS 250 hPa wind speed (sqrt(u^2+v^2))"},
+        "jdir": {"label": "Jet stream direction", "grib": "UGRD/VGRD 250 mb",
+                 "definition": "GFS 250 hPa wind direction: degrees true, the direction the wind blows FROM (atan2(-u, -v))"},
+        "jhgt": {"label": "250 hPa height", "grib": "HGT 250 mb",
+                 "definition": "GFS 250 hPa geopotential height, m (the contours drawn over the jet stream overlay)"},
     },
 }
 FIELD_KEYS = ("lo", "hi", "legend", "units", "interpolation", "resolutions", "circular", "convention")
@@ -106,10 +112,10 @@ class GfsSource:
 
     def fetch(self, run_dt, step):
         return (F.fetch_records(F.wave_url(run_dt, step), list(WAVE_KEYS.values())),
-                F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS)))
+                F.fetch_records(F.atmos_url(run_dt, step), list(ATMOS_KEYS) + list(JET_KEYS)))
 
     def decode(self, records, run_dt, step):
-        """{hs, tp, pdir, wind, wdir, pres} on the site grid."""
+        """{hs, tp, pdir, wind, wdir, pres, jet, jdir, jhgt} on the site grid."""
         wave, atmos = records
         grids = {name: D.decode(wave[key], key, run_dt, step)[0] for name, key in WAVE_KEYS.items()}
         u, _ = D.decode(atmos[ATMOS_KEYS[0]], ATMOS_KEYS[0], run_dt, step)
@@ -117,6 +123,11 @@ class GfsSource:
         grids["wind"] = D.wind_speed(u, v)
         grids["wdir"] = D.wind_dir_from(u, v)
         grids["pres"] = D.hpa(D.decode(atmos[ATMOS_KEYS[2]], ATMOS_KEYS[2], run_dt, step)[0])
+        ju, _ = D.decode(atmos[JET_KEYS[0]], JET_KEYS[0], run_dt, step)
+        jv, _ = D.decode(atmos[JET_KEYS[1]], JET_KEYS[1], run_dt, step)
+        grids["jet"] = D.wind_speed(ju, jv)
+        grids["jdir"] = D.wind_dir_from(ju, jv)
+        grids["jhgt"] = D.decode(atmos[JET_KEYS[2]], JET_KEYS[2], run_dt, step)[0]
         return grids
 
 
@@ -254,7 +265,7 @@ def ranges_key(fields):
     return tuple(out)
 
 
-ADDED_FIELDS = ("pres",)                # fields a run published before them may lack (plan section 46)
+ADDED_FIELDS = ("pres", "jet", "jdir", "jhgt")   # fields a run published before them may lack (plan sections 46, 106)
 
 
 def comparable_ranges(old, new):
@@ -319,6 +330,23 @@ def pressure_summary(frames):
     f = E.FIELDS["pres"]
     return (f"sea-level pressure {min(lows):.1f}-{max(highs):.1f} hPa (encode {f['lo']:.0f}-{f['hi']:.0f}; "
             f"{sum(p['clamped_low'] for p in pf)} low / {sum(p['clamped_high'] for p in pf)} high clamped cell-frames)")
+
+
+def jet_summary(frames):
+    """The run summary's line for the jet stream fields (plan section 106; None without them): the run's peak 250 hPa
+    speed and height range, and how many cells reached the encode range's ends."""
+    jf = [f["fields"]["jet"] for f in frames if "jet" in f.get("fields", {})]
+    hf = [f["fields"]["jhgt"] for f in frames if "jhgt" in f.get("fields", {})]
+    peaks = [p["max"] for p in jf if p.get("max") is not None]
+    lows = [p["min"] for p in hf if p.get("min") is not None]
+    highs = [p["max"] for p in hf if p.get("max") is not None]
+    if not peaks or not lows:
+        return None
+    fj, fh = E.FIELDS["jet"], E.FIELDS["jhgt"]
+    return (f"jet stream 250 hPa: peak {max(peaks) / E.KT:.1f} kt (top {fj['hi'] / E.KT:.1f} kt, "
+            f"{sum(p['clamped_high'] for p in jf)} clamped cell-frames); height {min(lows):.0f}-{max(highs):.0f} m "
+            f"(encode {fh['lo']:.0f}-{fh['hi']:.0f}; {sum(p['clamped_low'] for p in hf)} low / "
+            f"{sum(p['clamped_high'] for p in hf)} high clamped cell-frames)")
 
 
 STALE_ALARM_EVERY_H = 6                 # a stale source fails the workflow at most once in this many hours (GitHub mails each failure)
@@ -489,9 +517,9 @@ def main(argv=None, src=GFS):
     _summary("field peaks: " + ", ".join(
         f"{n} {peaks[n] * site[n][0]:.1f} {site[n][1]} (top {E.FIELDS[n]['hi'] * site[n][0]:.1f} {site[n][1]}, {tops[n]} clamped cell-frames)"
         for n in tops))
-    line = pressure_summary(manifest["_stats"]["frames"])
-    if line:
-        _summary(line)
+    for line in (pressure_summary(manifest["_stats"]["frames"]), jet_summary(manifest["_stats"]["frames"])):
+        if line:
+            _summary(line)
     bad = [f["step"] for f in manifest["_stats"]["frames"] if f.get("pdir_mask_mismatch")]
     if bad:
         _summary(f"WARNING: wave direction and wave height cover different cells at {len(bad)} steps (first f{bad[0]:03d})")

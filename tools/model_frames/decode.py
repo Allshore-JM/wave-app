@@ -17,6 +17,9 @@ EXPECT = {
     "UGRD:10 m above ground": ("10u",   "heightAboveGround", 10),
     "VGRD:10 m above ground": ("10v",   "heightAboveGround", 10),
     "PRMSL:mean sea level":   ("prmsl", "meanSea",           0),    # pressure reduced to MSL, Pa (not MSLET, the Eta reduction)
+    "UGRD:250 mb":            ("u",     "isobaricInhPa",     250),  # the jet stream (plan section 106), m/s
+    "VGRD:250 mb":            ("v",     "isobaricInhPa",     250),
+    "HGT:250 mb":             ("gh",    "isobaricInhPa",     250),  # geopotential height, gpm
 }
 
 
@@ -28,6 +31,9 @@ EXPECT_ECMWF = {
     "10u":  ("10u",  "heightAboveGround", 10),
     "10v":  ("10v",  "heightAboveGround", 10),
     "msl":  ("msl",  "meanSea",           0),   # mean sea level pressure, Pa (plan section 46)
+    "u:pl:250":  ("u",  "isobaricInhPa", 250),   # the jet stream (plan section 106), m/s
+    "v:pl:250":  ("v",  "isobaricInhPa", 250),
+    "gh:pl:250": ("gh", "isobaricInhPa", 250),   # geopotential height, gpm
 }
 ECMWF_CIRCULAR = ("mwd",)                       # angles: never interpolated linearly
 # The open data's grids: 0.25 deg today; ECMWF has said the tier moves to 0.1 deg (owner 2026-10-14: build on 0.25 deg,

@@ -5853,7 +5853,10 @@
   // else [[up to zoom, interval], ...] plus the whole-world one), the labels' and the readout's scale and unit, H / L marks.
   var CONTOUR_SPECS = {
     pres: { units: 'hPa', intervals: null, world: null, scale: 1, unit: 'hPa', hl: true },
-    jhgt: { units: 'm', intervals: [[5.9, 120], [99, 60]], world: 240, scale: 0.1, unit: 'dam', hl: false }   // 12 dam; 24 whole world; 6 from zoom 6
+    // 12 dam; 24 whole world; 6 from zoom 6. Dark lines over a light halo: the jet leaves most of the map on the pale relief,
+    // where the isobars' white lines vanish (seen on the first local check)
+    jhgt: { units: 'm', intervals: [[5.9, 120], [99, 60]], world: 240, scale: 0.1, unit: 'dam', hl: false,
+      lineStyle: { halo: 'rgba(255,255,255,0.55)', haloW: 2.6, core: 'rgba(40,50,70,0.6)', coreW: 1.1 } }
   };
   function contourSpecOf(name) { return CONTOUR_SPECS[name] || CONTOUR_SPECS.pres; }
   function contourInterval(spec, z, spanDeg) {
@@ -7368,7 +7371,7 @@
       labels = placeLabels(paths, v, function (t) { return ctx.measureText(t).width; }, marks,
         sp.scale !== 1 ? function (lv) { return String(Math.round(lv * sp.scale)); } : null);
     }
-    drawIsobars(ctx, paths, labels, ISO_STYLE, marks);
+    drawIsobars(ctx, paths, labels, sp.lineStyle ? (sp._style || (sp._style = Object.assign({}, ISO_STYLE, sp.lineStyle))) : ISO_STYLE, marks);
     this.drawn = { lines: paths.length, labels: labels.length, hl: marks.length };
     this.lastMs = Math.round((nowMs() - t0) * 10) / 10;
   };
@@ -7753,6 +7756,7 @@
     this._regionNames = null;                                // the view may have moved since the last mount (G67 P1-1)
     this._loadManifest(sig).then(function (m) {
       if ((fieldName === 'precip' || fieldName === 'ptot') && !m.fields.precip) throw new Error(m.precipBad ? 'precipitation frames unreadable' : 'no precipitation frames in this update yet');
+      if (fieldName === 'jet' && !m.fields.jet) throw new Error('no jet stream frames in this run yet');   // plan section 106: a run published before the field
       if (!m.fields[fieldName] || !RAMPS[fieldName]) throw new Error('layer "' + fieldName + '" is not in this run');
       if (sig.aborted || !self.layer) throw abortError();
       self.n = m.frames.length;

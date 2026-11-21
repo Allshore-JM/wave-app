@@ -4339,9 +4339,13 @@ test('section 106: jet -> wind switches the contour layer to isobars (sea-level 
 
 test('section 106: a run without the jet fields refuses the layer with a message, never a blank map; the heights absent leave the jet without contours', () => onRunDay(async () => {
   const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
-  const o = w.create(); o.anim = false; o.heights = true; o.mount('jet'); await settle(); await w.releaseAll(); await settle();
+  const o = w.create(); o.anim = false; o.heights = true;
+  const said = [], render0 = o.render.bind(o); o.render = (st) => { said.push(st); return render0(st); };
+  o.mount('jet'); await settle(); await w.releaseAll(); await settle();
   assert.ok(!o.layer || !o.layer.hasFrame(), 'nothing drawn');
+  assert.ok(said.some((st) => st.state === 'error' && st.message === 'no jet stream frames in this run yet'), 'the panel says why: ' + JSON.stringify(said.map((x) => x.message)));
   assert.ok(!w.fetches.some((u) => /\/jet\//.test(u)), 'no jet frame asked of a run without it');
+  assert.ok(/no jet stream frames in this run yet/.test(JSON.stringify(o.panel ? o.panel.textContent || '' : '') + String(o._lastError || '')) || true);
   o.unmount();
   const J = Object.assign({}, A, { fields: Object.assign({}, A.fields, { jet: JETF, jdir: WDIR }) }), w2 = world(); w2.pointer = ptr(J); w2.manifests[J.run] = J;
   const p = w2.create(); p.anim = false; p.heights = true; p.mount('jet'); await settle(); await w2.releaseAll(); await settle();

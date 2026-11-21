@@ -9,7 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_rrfs_precip: false, overlay_rrfs_precip_total: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false };
+const SUBS = { model_frames_base: 'https://frames.example/gfswave/0p25/v1', overlay_asset_version: '9.9.9', forecast_tz_name: 'Pacific/Honolulu', overlay_models: ['gfswave'], overlay_sst: false, overlay_radar: false, overlay_bathy: false, overlay_rrfs_precip: false, overlay_rrfs_precip_total: false, overlay_sat: false, overlay_swell: false, overlay_grid: false, overlay_glwu: false, overlay_jet: false };
 function gatedScript(subs) {
   subs = Object.assign({}, SUBS, subs || {});
   const tpl = fs.readFileSync(path.join(__dirname, '..', '..', 'templates', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
@@ -68,7 +68,7 @@ function page(opt) {
       const ov = { field: null, mounts: [], opts: o,
         mount(f, r) { this.field = f; this.mounts.push([f, r]); log.push('mount ' + f + ' ' + r); },
         unmount() { this.field = null; log.push('unmount'); }, refresh() { log.push('refresh'); }, _persist() { log.push('persist'); },
-        setIsobars(v) { log.push('isobars ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); },
+        setIsobars(v) { log.push('isobars ' + v); }, setHeights(v) { log.push('heights ' + v); }, setParticleOpacity(v) { log.push('particles ' + v); },
         settled() { return this._sp || (this._sp = new Promise((r) => { this.settle = r; })); } };
       overlays.push(ov); log.push('create'); return ov;
     } };
@@ -513,4 +513,28 @@ test('77d review P3-4: a table that moved to its new run by itself (quiet) updat
   p.log.length = 0; delete ov.refreshRunTail;                                   // an overlay without the method (an older asset): the full refresh
   p.listeners.doc['allshore:forecast'].forEach((l) => l.fn({ detail: { station: '51201', tz: 'UTC', model: 'GFS', view: 'Table', quiet: true } }));
   assert.deepEqual(p.log, ['refresh']);
+});
+
+test('section 106: "Jet stream" is offered only with JET_OVERLAY (JET), a saved jet without it starts Off; with it a "Height contours" gear row (on unless "0" is saved) reaches the module', async () => {
+  const SRC_JET = gatedScript({ overlay_jet: true }), OPTS_JET = ['', 'hs', 'tp', 'wind', 'jet'];
+  assert.ok(SRC.indexOf('var JET = false;') >= 0 && SRC_JET.indexOf('var JET = true;') >= 0 && SRC.indexOf('jet: JET, heights: HEIGHTS') >= 0);
+  const off = page({ complete: true }), on = page({ complete: true, src: SRC_JET, opts: OPTS_JET });
+  assert.ok(off.boxes[0].innerHTML.indexOf('value="jet"') < 0, 'no option without the setting');
+  assert.ok(on.boxes[0].innerHTML.indexOf('<option value="wind">Wind speed</option><option value="jet">Jet stream</option>') >= 0, 'right after Wind speed');
+  const saved = page({ init: { field: 'jet' }, opts: OPTS_JET });
+  assert.equal(saved.sel.value, '', 'a saved jet without the setting starts Off');
+  const p = page({ settings: true, local: {}, init: { field: 'jet' }, src: SRC_JET, opts: OPTS_JET });
+  assert.equal(p.sel.value, 'jet');
+  const kids = p.gear.children;
+  assert.equal(kids.length, 4, 'gridlines, isobars, particles, then the height contours');
+  const hgt = p.byId.ovHeights;
+  assert.equal(hgt.type, 'checkbox'); assert.equal(hgt.checked, true); assert.equal(kids[3].children[1].textContent, 'Height contours (jet stream)');
+  const ov = await created(p);
+  assert.deepEqual(ov.mounts, [['jet', true]]); assert.equal(ov.opts.jet, true); assert.equal(ov.opts.heights, true);
+  hgt.checked = false; hgt.fire('change');
+  assert.equal(p.local.get('allshore.heights.v1'), '0'); assert.ok(p.log.includes('heights false'));
+  const q = page({ settings: true, local: { 'allshore.heights.v1': '0' }, init: { field: 'jet' }, src: SRC_JET, opts: OPTS_JET });
+  assert.equal(q.byId.ovHeights.checked, false); assert.equal((await created(q)).opts.heights, false);
+  const r = page({ settings: true, local: {}, init: { field: 'wind' } });
+  assert.equal(r.byId.ovHeights, undefined, 'no heights row without the setting'); assert.equal(r.gear.children.length, 3);
 });

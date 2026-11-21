@@ -41,6 +41,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("RADAR_OVERLAY", raising=False)
     monkeypatch.delenv("BATHY_OVERLAY", raising=False)
+    monkeypatch.delenv("JET_OVERLAY", raising=False)
     monkeypatch.delenv("RRFS_PRECIP", raising=False)
     monkeypatch.delenv("RRFS_PRECIP_TOTAL", raising=False)
     monkeypatch.delenv("GEO_BASE", raising=False)
@@ -101,6 +102,8 @@ def test_flag_on_adds_only_the_gated_block(monkeypatch):
         assert "var BATHY = false;" in body and "bathy: BATHY" in body and 'value="bathy">Bathymetry' in body   # section 93b: offered only with BATHY_OVERLAY=1
         assert "var GRID = false;" in body and "sat: SAT, swell: SWELL, grid: GRID" in body                            # section 82
         assert "var GLWU = false;" in body and "glwu: GLWU" in body and "return { model: 'GLWU' }" in body   # section 50: the Great Lakes under GFS (GLWU_OVERLAY=1)
+        assert "var JET = false;" in body and "jet: JET, heights: HEIGHTS" in body and 'value="jet">Jet stream' in body   # section 106: offered only with JET_OVERLAY=1
+        assert "'allshore.heights.v1'" in body and "'Height contours (jet stream)'" in body and "overlay.setHeights(HEIGHTS)" in body
         assert "'allshore.isobars.v1'" in body and "'allshore.particles.v1'" in body               # section 46: the gear's two rows, kept in this browser
         assert "isobars: ISOBARS, particles: PARTICLES / 100" in body and "'ovIsobars'" in body and "'ovParticles'" in body
         assert "overlay.setIsobars(ISOBARS)" in body and "overlay.setParticleOpacity(v / 100)" in body and "'Pressure isobars (wind)'" in body
@@ -242,7 +245,7 @@ def test_overlay_js_syntax_and_contract_strings():
                    "MODEL_DEFS", "'ecmwf/0p25/v1'", "ov-model-sel", "'Overlay model'", "setModel", "_dropRun", "_carry", "_modelBase", "CC BY 4.0",   # section 43
                    "hasModel", "_switchT", "_fetchJson", "LOAD_STALL_MS", "/notice/ecmwf",                                                       # G30 fix round
                    "IsobarLayer", "'ovIsoPane'", "traceIsolines", "isoBlur", "findCentres", "projectCentres", "placeLabels", "viewOf", "placeCanvas", "PRES_WAIT_MS",                        # section 46 step 3
-                   "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "' hPa'",                  # section 46 step 4
+                   "PRES_FIELD", "pcache", "_wantPres", "_kindReady", "_startKind", "_syncIsobars", "setIsobars", "unit: 'hPa'", "unit: 'dam'", "setHeights", "CORE_FLOOR", "'jhgt'",                  # section 46 step 4
                    "particleOpacityOf", "setParticleOpacity", "_paneOpacity", "opts.particles",                                            # section 46 step 5
                    "prominenceMap", "ISO_HL_PROM_CODES", "'terrain_half.png'", "ISO_TERRAIN_M", "setTerrain", "_hpaText", "self._hpaText(latlng.lat, latlng.lng)", "destination-out", "_presWait", "ISO_CLAMP_PATCH_MAX",
                    "LAKEOUT_TIER0", "'lakeoutlines-i.bin'", "'static/coast/lakeoutlines-v1'", "setLakeOutlineCoast", "_lakeOutFor", "_syncLakeOutlines", "dropQueue", "self._syncLakeOutlines(); self._syncRegions(); });",
@@ -298,6 +301,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_swell|tojson }}", json.dumps(False))
                    .replace("{{ overlay_grid|tojson }}", json.dumps(False))
                    .replace("{{ overlay_glwu|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_jet|tojson }}", json.dumps(False))
                    .replace("{{ forecast_tz_name|tojson }}", json.dumps(tz)))
         assert got[0] == want, name
     node_src = open(os.path.join(HERE, "overlay", "bootstrap.test.js"), encoding="utf-8").read()
@@ -450,6 +454,34 @@ def test_bathy_overlay_env_and_the_page(monkeypatch):
     monkeypatch.setenv("BATHY_OVERLAY", "1")
     for name, rec in G.run_scenarios(A).items():
         assert "var BATHY" not in rec["body"] and 'value="bathy"' not in rec["body"], name
+
+
+def test_jet_overlay_env_and_the_page(monkeypatch):
+    """JET_OVERLAY (section 106): "1" offers "Jet stream" and the gear's height contours (the page's JET, handed to the module);
+    anything else does not; the flag-on page differs from the default only in that line; the flag-off page never carries it."""
+    _on(monkeypatch)
+    for env, want in (("1", True), ("0", False), ("", False), ("true", False)):
+        monkeypatch.setenv("JET_OVERLAY", env)
+        assert A._jet_overlay_enabled() is want, env
+    monkeypatch.setenv("JET_OVERLAY", "1")
+    on = G.run_scenarios(A)
+    monkeypatch.delenv("JET_OVERLAY")
+    off = G.run_scenarios(A)
+    for name in GOLDEN:
+        assert "var JET = true;" in on[name]["body"], name
+        assert on[name]["body"].replace("var JET = true;", "var JET = false;") == off[name]["body"], name
+    monkeypatch.delenv("MODEL_OVERLAYS")
+    monkeypatch.setenv("JET_OVERLAY", "1")
+    for name, rec in G.run_scenarios(A).items():
+        assert "var JET" not in rec["body"] and 'value="jet"' not in rec["body"], name
+
+
+def test_the_ecmwf_notice_names_the_jet_stream_fields():
+    """Section 106: CC BY 4.0 asks what was used and changed: the notice names the 250 hPa wind and height and the speed /
+    direction computed from the components."""
+    body = A.app.test_client().get("/notice/ecmwf").get_data(as_text=True)
+    assert "250 hPa wind and geopotential height" in body and "mean sea level pressure" in body
+    assert "wind speed and direction computed from the wind components" in body
 
 
 def test_the_bathy_notice_the_credit_links():

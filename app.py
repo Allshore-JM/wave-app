@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.31.2"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.32.0"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
@@ -384,6 +384,13 @@ def _bathy_overlay_enabled() -> bool:
     tools/bathy/build_bathy.py under the frames bucket's static/bathy/). Off by default: the client ships first, the setting
     goes on once checked on the test site."""
     return os.environ.get("BATHY_OVERLAY", "0") == "1"
+
+
+def _jet_overlay_enabled() -> bool:
+    """JET_OVERLAY=1: the overlay dropdown offers "Jet stream" for GFS and ECMWF (plan section 106: 250 hPa wind speed as
+    jet cores with particles and 250 hPa height contours, the frames job's jet / jdir / jhgt fields) and the settings gear
+    its "Height contours" row. Off by default: on once checked on the test site."""
+    return os.environ.get("JET_OVERLAY", "0") == "1"
 
 
 def _sat_overlay_enabled() -> bool:
@@ -468,9 +475,10 @@ ECMWF_NOTICE = "\n".join([
     "Licence: This data is published under a Creative Commons Attribution 4.0 International (CC BY 4.0) licence:",
     "https://creativecommons.org/licenses/by/4.0/",
     "",
-    "The ECMWF overlays (wave height, peak period, mean wave direction, 10 m wind) are based on data and products of",
-    "ECMWF (IFS wave model ecWAM and IFS, open data at 0.25 degrees), modified by Allshore Surf: quantised to 8 bits,",
-    "calm water and sea ice left empty, filled along the coasts and rendered as map overlays.",
+    "The ECMWF overlays (wave height, peak period, mean wave direction, 10 m wind, mean sea level pressure, and the jet",
+    "stream: 250 hPa wind and geopotential height) are based on data and products of ECMWF (IFS wave model ecWAM and IFS,",
+    "open data at 0.25 degrees), modified by Allshore Surf: wind speed and direction computed from the wind components,",
+    "quantised to 8 bits, calm water and sea ice left empty, filled along the coasts and rendered as map overlays.",
     "",
     "Disclaimer: ECMWF does not accept any liability whatsoever for any error or omission in the data, their",
     "availability, or for any loss or damage arising from their use. ECMWF does not endorse this product.",
@@ -5688,7 +5696,7 @@ def _overlay_context(selected_station, selected_tz, payload):
         return {"model_overlays": False}
     tz_name = (payload.get("tz_label") if payload else None) or _effective_tz_name(selected_station, selected_tz)
     return {"model_overlays": True, "model_frames_base": base, "overlay_models": _overlay_models(),
-            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_bathy": _bathy_overlay_enabled(), "overlay_rrfs_precip": _rrfs_precip_enabled(), "overlay_rrfs_precip_total": _rrfs_precip_total_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(),
+            "overlay_sst": _sst_overlay_enabled(), "overlay_radar": _radar_overlay_enabled(), "overlay_bathy": _bathy_overlay_enabled(), "overlay_rrfs_precip": _rrfs_precip_enabled(), "overlay_rrfs_precip_total": _rrfs_precip_total_enabled(), "overlay_sat": _sat_overlay_enabled(), "overlay_swell": _swell_overlay_enabled(), "overlay_grid": _grid_overlay_enabled(), "overlay_glwu": _glwu_overlay_enabled(), "overlay_jet": _jet_overlay_enabled(),
             "overlay_asset_version": OVERLAY_ASSET_VERSION, "forecast_tz_name": tz_name}
 
 

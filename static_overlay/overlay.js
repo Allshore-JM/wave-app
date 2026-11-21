@@ -32,10 +32,10 @@
   // The ECMWF credit is the short form; the title carries the notice; the manifest's model block has the full text.
   var MODEL_DEFS = {
     // lakes: the Great Lakes wave frames (NOAA GLWU, plan section 50) are drawn under this model's wave height and period
-    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION, lakes: true, fields: ['hs', 'tp', 'wind'] },
+    gfswave: { prefix: 'gfswave/0p25/v1', label: 'GFS-Wave (WAVEWATCH III)', short: 'GFS', cycleMs: 6 * 3.6e6, staleS: 9 * 3600, table: 'cycle', attribution: ATTRIBUTION, lakes: true, fields: ['hs', 'tp', 'wind', 'jet'] },
     // the credit's "ECMWF" opens the site's notice (/notice/ecmwf: copyright, source, licence, ECMWF's disclaimer, what
     // Allshore Surf changed; owner, G30-4: a notice, linked from the credit)
-    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model', fields: ['hs', 'tp', 'wind'],
+    ecmwf: { prefix: 'ecmwf/0p25/v1', label: 'ECMWF IFS wave (ecWAM)', short: 'ECMWF', cycleMs: 12 * 3.6e6, staleS: 15 * 3600, table: 'model', fields: ['hs', 'tp', 'wind', 'jet'],
       attribution: 'Overlay: <a href="/notice/ecmwf" target="_blank" rel="noopener" ' +
         'title="Based on data and products of ECMWF (CC BY 4.0), modified by Allshore Surf: quantised, calm water and sea ice left empty, coast-filled and rendered. ECMWF does not endorse this product.">ECMWF</a> ' +
         '<a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener license">CC BY 4.0</a>' },
@@ -70,8 +70,14 @@
     // wind: blue at the calm end (never white: it covers land), a hue change every ~2 m/s up to ~20 m/s
     // (0 2 4 6 8 10 12 14 16 18 21 25 m/s over the 0-30.9 m/s legend), purple then pale mauve at the top
     wind: [[0,'#6271b7'],[0.0648,'#3961a0'],[0.1296,'#4a94a9'],[0.1944,'#4d8d7b'],[0.2592,'#53a553'],[0.324,'#359f35'],
-           [0.3888,'#a79d51'],[0.4536,'#9f7f3a'],[0.5184,'#a16c5c'],[0.5832,'#813a4e'],[0.6804,'#af5088'],[0.81,'#754a93'],[1,'#d9c2d9']]
+           [0.3888,'#a79d51'],[0.4536,'#9f7f3a'],[0.5184,'#a16c5c'],[0.5832,'#813a4e'],[0.6804,'#af5088'],[0.81,'#754a93'],[1,'#d9c2d9']],
+    // the jet stream (plan section 106): the cores only, over the legend's 50-200 kt (below 50 kt nothing is drawn: CORE_FLOOR):
+    // teal at the core's edge, then green, yellow, orange, red, magenta, pale violet at 200 kt and over (look A)
+    jet:  [[0,'#2f8f9d'],[0.13,'#3fb27f'],[0.27,'#a8cf45'],[0.4,'#f4d03f'],[0.53,'#f39c32'],[0.67,'#e0503a'],[0.8,'#b5287d'],[0.9,'#7b2fa8'],[1,'#e3c8f2']]
   };
+  // Fields drawn only from their legend's floor up (plan section 106: the jet stream's cores, 50 kt): a pixel whose value is
+  // under the legend's first value is left transparent (the relief shows), and its particles are never born there.
+  var CORE_FLOOR = { jet: true };
   // The radar's colours over the legend's 5-65 dBZ (the familiar radar scale) and the tint over the area radar sees, 16 % white
   // (the owner's pick on real frames, plan section 85).
   RAMPS.radar = [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
@@ -113,7 +119,7 @@
     outside: [207, 210, 214]
   };
   // Fixed opacity per field (owner, 2026-09-26: no slider): the waves over the imagery, the wind multiplied into the relief.
-  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, sst: 0.75, precip: 0.75, ptot: 0.75 };   // precip: the radar's default (plan section 102)
+  var FIXED_OPACITY = { hs: 0.65, tp: 0.65, wind: 1, jet: 1, sst: 0.75, precip: 0.75, ptot: 0.75 };   // precip: the radar's default (plan section 102)
   // Leaflet fires a tile layer's 'load' when its last tile STARTS its 200-ms fade-in (G14 P1-1: removing the old
   // basemap then showed the bare map for ~200 ms): the old one leaves this long after.
   var BASE_FADE_MS = 300;
@@ -150,6 +156,7 @@
     'hs|US': [0, 3, 6, 10, 15, 20], 'hs|Metric': [0, 1, 2, 3, 4, 6],
     'tp|US': [4, 8, 12, 16], 'tp|Metric': [4, 8, 12, 16],
     'wind|US': [0, 20, 40], 'wind|Metric': [0, 25, 50, 75],
+    'jet|US': [60, 100, 150], 'jet|Metric': [100, 150, 200, 250, 300],   // plan section 106: 50-200 kt = 58-230 mph / 93-370 km/h
     'sst|US': [40, 50, 60, 70, 80], 'sst|Metric': [0, 5, 10, 15, 20, 25],
     'radar|US': [10, 20, 30, 40, 50], 'radar|Metric': [10, 20, 30, 40, 50]
   };
@@ -676,7 +683,7 @@
     var sc = scaleFor(field, fdef.legend), um = unit === 'Metric' ? 'Metric' : 'US';
     var vals = (sc && sc.ticks && sc.ticks[um]) || TICKS[field + '|' + um] || [fdef.legend[0]];
     var out = vals.map(function (v, i) {
-      var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9;          // values under the legend floor exist (Tp)
+      var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9 && !CORE_FLOOR[field];   // values under the legend floor exist (Tp; a cores-only field draws none)
       return { pos: legendPos(field, fdef.legend, u.inv ? u.inv(v) : v / per), label: (below ? '≤' : '') + fmtTick(v) };
     });
     out.push({ pos: 1, label: u.top ? u.top(hi) : Math.round(hi) + '+ ' + u.label });
@@ -735,11 +742,11 @@
   // frames until zoom 7 (a 0.25 deg cell is 22 px there); wind frames are ~2.7x larger (land included), so
   // wind stays at half resolution until zoom 7 everywhere (full loop 32 MB vs 10 MB).
   function wantHalf(zoom, width, field) {
-    if (field === 'wind' || width < 700) return zoom < 7;
+    if (field === 'wind' || field === 'jet' || width < 700) return zoom < 7;    // the jet's frames are wind-sized (plan section 106)
     return zoom < 3.5;
   }
   function wantFull(zoom, width, field) {
-    if (field === 'wind' || width < 700) return zoom >= 7.5;
+    if (field === 'wind' || field === 'jet' || width < 700) return zoom >= 7.5;
     return zoom >= 4;
   }
   // Pixel centre of a Web-Mercator tile pixel (the same expressions tileCodes uses).
@@ -773,7 +780,7 @@
   // Tier 0 (~1 km, one file) serves tile zooms up to index.tier0.max_zoom; tier 1 (full resolution,
   // 5-degree cells) is fetched per cell in view for higher zooms, tier 0 standing in until it lands.
   // Wind is never clipped (owner decision: the full field over land).
-  var CLIP_FIELDS = { hs: true, tp: true, wind: false, sst: true, sat: true };   // sat: the gridded map of the Satellite waves entry (plan section 82)
+  var CLIP_FIELDS = { hs: true, tp: true, wind: false, jet: false, sst: true, sat: true };   // sat: the gridded map of the Satellite waves entry (plan section 82)
   var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
@@ -994,20 +1001,25 @@
   // times the ocean fraction (255 - land). lake (plan section 50): the tile's Great Lakes water coverage (0..255 per
   // pixel, or null): the lakes are land in the coastline set, so a lake pixel's alpha is its lake coverage instead
   // (the larger of the two: one alpha rule, shared with the readout and the particles).
-  function composeTile(codes, land, lut, lo, hi, L0, L1, d, lake) {
+  // core (plan section 106): a value under L0 is left transparent (CORE_FLOOR fields).
+  function composeTile(codes, land, lut, lo, hi, L0, L1, d, lake, core) {
     var scale = 255 / (L1 - L0);
     for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
       var code = codes[i], a = land === LAND_ALL ? 0 : land ? 255 - land[i] : 255;   // LAND_ALL: a tile of nothing but land (its lakes' water comes from lake)
       if (lake && lake[i] > a) a = lake[i];
       if (!code || !a) { d[k + 3] = 0; continue; }
-      var t = Math.round((lo + (code - 1) / 254 * (hi - lo) - L0) * scale);
+      var val = lo + (code - 1) / 254 * (hi - lo);
+      if (core && val < L0) { d[k + 3] = 0; continue; }
+      var t = Math.round((val - L0) * scale);
       t = t < 0 ? 0 : t > 255 ? 255 : t;
       d[k] = lut[t * 3]; d[k + 1] = lut[t * 3 + 1]; d[k + 2] = lut[t * 3 + 2]; d[k + 3] = a;
     }
     return d;
   }
   // Fields drawn over land whose tiles carry the coastline as a thin line (no clipping).
-  var OUTLINE_FIELDS = { wind: true };
+  var OUTLINE_FIELDS = { wind: true, jet: true };
+  // Fields drawn over the neutral relief map instead of the imagery (WIND_LOOK; plan section 106: the jet too).
+  var RELIEF_FIELDS = { wind: true, jet: true };
   // The coastline of a tile's land mask (anti-aliased, 0..255): the mask's gradient (central differences,
   // one-sided on the tile's border) is large only where the mask crosses from sea to land, so its magnitude
   // times gain / 255 is the line's ink (about 1.5 px wide in all). Computed once per mask; a sparse list.
@@ -3542,7 +3554,7 @@
       var codes = this.tileCodes(coords, this._codes, tier, lake);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       if (this._typed) composeTyped(codes, this._lut, img.data);
-      else composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake);
+      else composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake, !!CORE_FLOOR[this.field]);
       if (this._regions && !this._typed && this.field === 'wind') fillBlank(img.data, WIND_LOOK.outside);   // outside RRFS: soft grey, before the coastline
       if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier, lake);
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field
@@ -5829,14 +5841,29 @@
   // the map, never an older one under a newer time: a step change clears the canvas until that step's
   // direction frame has landed (the frames load through the same scheduler, target field first, then
   // the target direction, then the ring interleaved, never more than MAX_INFLIGHT fetches in all).
-  var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir' };
+  var DIR_FIELDS = { hs: 'pdir', tp: 'pdir', wind: 'wdir', jet: 'jdir' };
   // The isobars (plan section 46): a THIRD frame kind, 'pres' = the run's sea-level pressure (half resolution only), loaded
   // beside the wind frame and its direction, drawn by the IsobarLayer for the step on the map, never an older step's lines
   // under a newer time (the same entry rule as the particles). Wind only (the owner); a run without the field has none.
   var PRES_WAIT_MS = 1000;                                  // the longest a step waits for its pressure frame (G32)
-  var PRES_FIELD = 'pres', PRES_UNDER = { wind: true };
-  function presFieldOk(f) {
-    return !!(f && f.interpolation === 'bilinear' && f.units === 'hPa' && typeof f.lo === 'number' && typeof f.hi === 'number' && f.lo < f.hi &&
+  // plan section 106: the contour field under each field: wind -> the sea-level pressure (isobars), jet -> the 250 hPa height
+  // (metres in the frames, drawn and read in dam). The third frame kind 'pres' carries whichever it is.
+  var PRES_FIELD = 'pres', PRES_UNDER = { wind: 'pres', jet: 'jhgt' };
+  // Per contour field: the units its manifest entry must carry, its intervals by zoom (null: the isobars' isoInterval;
+  // else [[up to zoom, interval], ...] plus the whole-world one), the labels' and the readout's scale and unit, H / L marks.
+  var CONTOUR_SPECS = {
+    pres: { units: 'hPa', intervals: null, world: null, scale: 1, unit: 'hPa', hl: true },
+    jhgt: { units: 'm', intervals: [[5.9, 120], [99, 60]], world: 240, scale: 0.1, unit: 'dam', hl: false }   // 12 dam; 24 whole world; 6 from zoom 6
+  };
+  function contourSpecOf(name) { return CONTOUR_SPECS[name] || CONTOUR_SPECS.pres; }
+  function contourInterval(spec, z, spanDeg) {
+    if (!spec || !spec.intervals) return isoInterval(z, spanDeg);
+    if (spanDeg >= ISO_WORLD_DEG) return spec.world;
+    for (var i = 0; i < spec.intervals.length; i++) if (z <= spec.intervals[i][0]) return spec.intervals[i][1];
+    return spec.intervals[spec.intervals.length - 1][1];
+  }
+  function presFieldOk(f, name) {
+    return !!(f && f.interpolation === 'bilinear' && f.units === contourSpecOf(name || PRES_FIELD).units && typeof f.lo === 'number' && typeof f.hi === 'number' && f.lo < f.hi &&
       Array.isArray(f.resolutions) && f.resolutions.indexOf('half') >= 0 && !f.circular);
   }
   var ANIM_BUDGET_MS = { desktop: 4, phone: 8 };           // animation time per animation frame (plan section 21)
@@ -5845,24 +5872,28 @@
   // site): px2 = screen pixels per particle (the density before section 42: its count is what the main thread pays for;
   // +25 % cost the 1080p frame rate), the line widths (a light core over a dark halo) per field, heavier than before, and
   // the head's and the tail's opacities, brighter than before.
-  var LOOK = { px2: 900, style: { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 };
+  var LOOK = { px2: 900, style: { wind: { width: 1.6, halo: 3.4 }, jet: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } }, head: 0.95, headHalo: 0.4, tail: 0.55, tailHalo: 0.25 };
   var PARTICLE_PX2 = LOOK.px2;
   var OV_DEBUG = (function () { try { return /[?&]ovdebug=1(?:&|$)/.test(pageQuery()); } catch (e) { return false; } })();
   var WATCHDOG_MS = 2000;                                  // the animator restarts itself when it should run and does not (iPad)
   var BUSY_STUCK_MS = 10000;                               // a map "busy" this long in one go is a flag stuck true, not a gesture
   var PARTICLE_PX_PER_S = 3;                               // screen px/s per m/s of wind, before the latitude stretch
+  var JET_CORE_MS = 50 * 1852 / 3600, JET_PX_PER_MS = 1.3;  // the jet's particles: from 50 kt, 1.3 px/s per m/s (plan section 106)
   // Particle speed in screen px/s (before the Mercator stretch) from the field value under it: wind by
   // its speed; swell lines by the wave height (nothing under the 0.1 m floor) or by the peak period (the
   // deep-water group speed grows with the period; nothing under the model's 3 s no-wave floor).
   var FLOW_SPEED = {
     wind: function (v) { return PARTICLE_PX_PER_S * v; },
+    // the jet stream (plan section 106): only in the cores (from 50 kt, the legend's floor), slower per m/s than the wind so a
+    // 150-kt core (77 m/s, 100 px/s) moves visibly without streaking
+    jet: function (v) { return v < JET_CORE_MS ? 0 : JET_PX_PER_MS * v; },
     hs: function (v) { return v < 0.1 ? 0 : 8 + 3 * v; },
     tp: function (v) { return v < 3 ? 0 : 1.5 * v; }
   };
   var FLOW_STYLE = LOOK.style;
   var TRAIL_POINTS = 10, TRAIL_EVERY_MS = 66;              // a particle's tail: its last 10 positions, one every 66 ms (~0.6 s), drawn fresh each frame
   var TRAIL_SPAN_MS = (TRAIL_POINTS + 1) * TRAIL_EVERY_MS; // ... and never older than this in FLOW time (G29 B-P3-1; owner: the same length at every speed)
-  var PARTICLE_LIFE_MS = { wind: [1000, 2500], hs: [2000, 4500], tp: [2000, 4500] };   // a particle lives this long (uniform), then respawns
+  var PARTICLE_LIFE_MS = { wind: [1000, 2500], jet: [1500, 3500], hs: [2000, 4500], tp: [2000, 4500] };   // a particle lives this long (uniform), then respawns
   var CODE_SIN = new Float64Array(256), CODE_COS = new Float64Array(256);
   (function () { for (var q = 1; q < 255; q++) { var a = (q - 1) / 254 * 2 * Math.PI; CODE_SIN[q] = Math.sin(a); CODE_COS[q] = Math.cos(a); } })();
   // A manifest field usable as a direction: circular over 0-360, the FROM convention, published resolutions.
@@ -7108,7 +7139,7 @@
   // ISO_LABEL_EDGE_PX, clear of the H / L marks and of every pill already placed (ISO_LABEL_GAP_PX apart; a grid of
   // ISO_LABEL_GRID_PX buckets, each box filed in every bucket it covers). The pill is rotated along the line, its text
   // kept upright. measure(text) -> width in px. -> [{x, y, w, h, a, text}] (x, y = the pill's centre, a = its angle).
-  function placeLabels(paths, view, measure, marks) {
+  function placeLabels(paths, view, measure, marks, fmt) {
     var out = [], grid = new Map(), G = ISO_LABEL_GRID_PX, P = ISO_LABEL_GAP_PX, cache = {}, hb = [];
     function width(t) { return cache[t] === undefined ? (cache[t] = measure(t)) : cache[t]; }
     function key(gx, gy) { return (gx + 4096) * 8192 + (gy + 4096); }
@@ -7138,7 +7169,7 @@
       var xy = paths[l].xy, inView = 0, m;
       for (m = 2; m < xy.length; m += 2) if (isoSegIn(xy, m, view)) inView += Math.hypot(xy[m] - xy[m - 2], xy[m + 1] - xy[m - 1]);
       if (inView < ISO_LABEL_MIN_PX) continue;
-      var text = String(paths[l].level), w = width(text) + 2 * ISO_STYLE.padX, hh = ISO_STYLE.h;
+      var text = fmt ? fmt(paths[l].level) : String(paths[l].level), w = width(text) + 2 * ISO_STYLE.padX, hh = ISO_STYLE.h;
       for (var a = 0; a < ISO_LABEL_AT.length; a++) {
         var target = inView * ISO_LABEL_AT[a], walked = 0, x = null, y = null, ang = 0;
         for (m = 2; m < xy.length; m += 2) {
@@ -7237,6 +7268,7 @@
     this.map = map; this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null; this.P = {}; this.terrain = null;
     this.pending = null; this._listeners = []; this.lastMs = 0; this.drawn = { lines: 0, labels: 0, hl: 0 };
+    this.spec = CONTOUR_SPECS.pres;                          // plan section 106: what the lines are (isobars, or the jet's heights)
   }
   IsobarLayer.prototype.raf = FlowAnimator.prototype.raf;
   IsobarLayer.prototype.caf = FlowAnimator.prototype.caf;
@@ -7284,6 +7316,12 @@
     this.frame = frame; this.grid = grid; this.entry = entry || null; this.fdef = fdef;
     this._schedule();
   };
+  // Another contour field (wind <-> jet): its lines go at once, the next frame draws with the new spec.
+  IsobarLayer.prototype.setSpec = function (spec) {
+    if (!spec || spec === this.spec) return;
+    this.spec = spec;
+    this.clearData();
+  };
   IsobarLayer.prototype.clearData = function () {
     this.frame = null; this.grid = null; this.entry = null; this.fdef = null;
     if (this.pending !== null) { this.caf(this.pending); this.pending = null; }
@@ -7315,19 +7353,20 @@
     this.ctx.clearRect(0, 0, v.w, v.h);
     if (!this.frame || !this.grid || !this.fdef) { this.drawn = { lines: 0, labels: 0, hl: 0 }; return; }
     var t0 = nowMs(), ctx = this.ctx, grid = this.grid, worldPx = TILE * Math.pow(2, v.z);
-    var span = v.w / worldPx * 360, interval = isoInterval(v.z, span);
+    var sp = this.spec || CONTOUR_SPECS.pres, span = v.w / worldPx * 360, interval = contourInterval(sp, v.z, span);
     var win = nodeWindow(v, grid, this.frame, 0), nodePx = worldPx * Math.abs(grid.dlon) / 360;
     var stride = isoStride(v.z, grid.dlon), g = isoValues(this.frame, this.fdef, win, stride, this.S);
     this.S = g.scratch;
     var paths = projectIsolines(traceIsolines(g.V, g.R, g.C, interval), g, grid, v);
     var rad = Math.max(1, Math.round(ISO_HL_PX / nodePx));
-    var marks = projectCentres(findCentres(this.frame, this.fdef, win, rad, { stride: stride, margin: Math.max(2 * rad, 16), grid: grid,
+    var marks = !sp.hl ? [] : projectCentres(findCentres(this.frame, this.fdef, win, rad, { stride: stride, margin: Math.max(2 * rad, 16), grid: grid,
       terrain: this.terrain, terrainMin: ISO_TERRAIN_M / TERRAIN_M_PER_CODE, strongLowHpa: ISO_STRONG_LOW_HPA, terrainCap: ISO_TERRAIN_CAP_M / TERRAIN_M_PER_CODE,
       promNodesMax: ISO_PROM_NODES_MAX, scratch: this.P }), grid, v);
     var labels = [];
     if (v.z >= ISO_LABEL_MIN_Z && span < ISO_WORLD_DEG) {
       ctx.font = ISO_STYLE.font;
-      labels = placeLabels(paths, v, function (t) { return ctx.measureText(t).width; }, marks);
+      labels = placeLabels(paths, v, function (t) { return ctx.measureText(t).width; }, marks,
+        sp.scale !== 1 ? function (lv) { return String(Math.round(lv * sp.scale)); } : null);
     }
     drawIsobars(ctx, paths, labels, ISO_STYLE, marks);
     this.drawn = { lines: paths.length, labels: labels.length, hl: marks.length };
@@ -7566,6 +7605,7 @@
     // The isobars (plan section 46): on unless the page says otherwise (its settings gear); the pressure frames' cache
     // and their layer (made under wind when the run has the field).
     this.isobars = opts.isobars !== false;
+    this.heights = opts.heights !== false;                   // the jet stream's 250 hPa height contours (plan section 106)
     this.pcache = new FrameCache(MAX_DECODED); this.iso = null;
     // The Great Lakes (plan section 50; the page's GLWU_OVERLAY setting): the lake run's store, the lakes coast set, and
     // the two lake frame kinds' caches; _lakeWait = the step's wait record for its lake frames (capped like the pressure's).
@@ -7598,7 +7638,7 @@
     this._unattribute();
     // Under wind the relief stays while the next model's wind loads (its landing calls _syncLook; Off restores the
     // imagery): a switch never flashes the satellite map (G30-8).
-    if (this.field !== 'wind') this._syncLook();
+    if (!RELIEF_FIELDS[this.field]) this._syncLook();
   };
   // The model dropdown (plan section 43): the choice is saved for the tab. Off: the next mount loads the new model.
   // On: the requested time and the play state are carried (this._carry) into the ONE loading path, mount(): the old
@@ -7694,7 +7734,7 @@
       if (this.iso) this.iso.clearData();
       // nothing drawn: the imagery, the waves' opacity; wind -> wind (a model switch) keeps the relief while the next
       // wind frame loads (G30-8: never a satellite flash under the wind; its landing calls _syncLook)
-      if (fieldName !== 'wind') this._syncLook();
+      if (!RELIEF_FIELDS[fieldName]) this._syncLook();
     }
     this.render({ state: 'loading' });
     var prevValid = keep !== null && this.manifest.frames[keep] ? Date.parse(this.manifest.frames[keep].valid_utc) : null;
@@ -8443,7 +8483,7 @@
       var li = this._lakeIndex(idx), lm = this.lake ? this.lake.manifest : null;
       return li < 0 || !lm ? 'glwu/-' : 'glwu/' + lm.run + '/' + kind + '/' + (kind === 'lake' ? this.field : LAKE_DIR_FIELD) + '/' + lm.frames[li].step;
     }
-    var res = kind === 'dir' ? this.dres : kind === 'pres' ? 'half' : this.res, name = kind === 'dir' ? DIR_FIELDS[this.field] : kind === 'pres' ? PRES_FIELD : this.field;
+    var res = kind === 'dir' ? this.dres : kind === 'pres' ? 'half' : this.res, name = kind === 'dir' ? DIR_FIELDS[this.field] : kind === 'pres' ? this._presName() : this.field;
     return this.model + '/' + this.manifest.run + '/' + res + '/' + name + '/' + this.manifest.frames[idx].step;
   };
   Overlay.prototype._cacheOf = function (kind) { return kind === 'dir' ? this.dcache : kind === 'pres' ? this.pcache : kind === 'lake' ? this.lcache : kind === 'lakedir' ? this.ldcache : this.cache; };
@@ -8669,7 +8709,7 @@
         var li = this._lakeIndex(idx);
         if (li < 0 || !lm) throw new Error('no lake frame for this time');
         url = this.root + '/' + frameKey(lm, lm.frames[li], kind === 'lake' ? this.field : LAKE_DIR_FIELD, false); grid = lm.grid;
-      } else { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : pres ? PRES_FIELD : this.field, half); grid = half ? m.grid_half : m.grid; }
+      } else { url = this.root + '/' + frameKey(m, m.frames[idx], dir ? DIR_FIELDS[this.field] : pres ? this._presName() : this.field, half); grid = half ? m.grid_half : m.grid; }
     } catch (e) { return Promise.reject(e); }                                // never a throw: _prefetch runs from UI handlers (setSpeed, pause)
     function mine() { return self.inflight[key] === rec; }
     // The watchdog times the DOWNLOAD only (until the body has arrived): a decode that waits behind a busy page
@@ -9448,7 +9488,7 @@
       var op = this._opacityFor(layer.field || this.field);
       if (!layer.options || layer.options.opacity !== op) layer.setOpacity(op);   // (called on every landing: only on a change)
     }
-    var wind = !!(layer && layer.hasFrame() && layer.field === 'wind');
+    var wind = !!(layer && layer.hasFrame() && RELIEF_FIELDS[layer.field]);
     var failed = this._reliefFailed && Date.now() - this._reliefFailed < RELIEF_RETRY_MS;
     var want = wind && img && WIND_LOOK.base && !failed ? 'relief' : 'imagery';
     if (want === 'relief' && this._base !== 'relief' && !map.hasLayer(img)) want = 'imagery';   // the page's imagery is not on the map: leave the basemap alone
@@ -9569,9 +9609,11 @@
   // ---- the isobars (plan section 46) ----
   // The run's pressure field, when it can be drawn: in the manifest, usable, with a valid half grid (memoised per
   // manifest like the direction's). A run published before the field existed has none: no lines, no message.
+  // The contour field under the field on show (plan section 106: 'pres' under wind, 'jhgt' under the jet).
+  Overlay.prototype._presName = function () { var n = PRES_UNDER[this.field]; return typeof n === 'string' ? n : PRES_FIELD; };
   Overlay.prototype._presDef = function () {
-    var m = this.manifest, f = m ? m.fields[PRES_FIELD] : null;
-    if (!presFieldOk(f)) return null;
+    var name = this._presName(), m = this.manifest, f = m ? m.fields[name] : null;
+    if (!presFieldOk(f, name)) return null;
     if (this._presGridFor !== m || this._presGridField !== f) {
       this._presGridFor = m; this._presGridField = f;
       try { validateGrid(m.grid_half, { cols: m.grid_half.cols, rows: m.grid_half.rows, q: { length: m.grid_half.cols * m.grid_half.rows } }, f); this._presGridOk = true; }
@@ -9579,7 +9621,9 @@
     }
     return this._presGridOk ? f : null;
   };
-  Overlay.prototype._wantPres = function () { return !!(this.isobars && this.layer && PRES_UNDER[this.field] && this._presDef()); };
+  Overlay.prototype._wantPres = function () {
+    return !!((this.field === 'jet' ? this.heights : this.isobars) && this.layer && PRES_UNDER[this.field] && this._presDef());
+  };
   // The isobar layer exists exactly while the isobars are wanted (the setting on, wind shown, the run has the field).
   Overlay.prototype._ensureIso = function () {
     if (!this._wantPres()) { if (this.iso) { this.iso.detach(); this.iso = null; } return; }
@@ -9588,6 +9632,7 @@
       iso.attach();
       loadTerrain(this.opts).then(function (q) { if (self.iso === iso) iso.setTerrain(q); });
     }
+    this.iso.setSpec(contourSpecOf(this._presName()));
   };
   // The half grid's terrain (the asset terrain_half.png, one fetch per page: the marks of every later layer share it); null
   // when it cannot be had (the marks are then drawn over high ground too; asked again by the next layer).
@@ -9606,7 +9651,7 @@
     var self = this, m = this.manifest, field = this.field;
     return this._ensure(idx, 'pres').then(function (frame) {
       if (self.iso && self.layer && self.layer.hasFrame() && self.layer.entry === m.frames[idx] && self.manifest === m && self.field === field && self._wantPres()) {
-        self._isoData(frame, m.grid_half, m.frames[idx], m.fields[PRES_FIELD]);
+        self._isoData(frame, m.grid_half, m.frames[idx], m.fields[self._presName()]);
       }
     }).catch(function (err) {
       if (err && !err.unavailable && err.name !== 'AbortError' && typeof console !== 'undefined' && console.warn) console.warn('overlay isobars', err);
@@ -9620,7 +9665,7 @@
     var m = this.manifest, entry = m.frames[idx];
     if (!this._wantPres() || !this.layer.hasFrame() || this.layer.entry !== entry) { if (this.iso.entry !== entry) this.iso.clearData(); return; }
     var hit = this.pcache.get(this._key(idx, 'pres'));
-    if (hit) { this._isoData(hit, m.grid_half, entry, m.fields[PRES_FIELD]); return; }
+    if (hit) { this._isoData(hit, m.grid_half, entry, m.fields[this._presName()]); return; }
     if (this.iso.entry !== entry) this.iso.clearData();
     if (this.target === null || this.target === idx) this._startKind(idx, 'pres');
   };
@@ -9654,9 +9699,17 @@
   // The page's setting (the gear): off drops the pressure downloads and frames at once; on fetches the shown step's.
   Overlay.prototype.setIsobars = function (on) {
     this.isobars = !!on;
+    this._contourPrefChanged();
+  };
+  // The gear's height contours under the jet stream (plan section 106): the same as the isobars' setting, for the jet.
+  Overlay.prototype.setHeights = function (on) {
+    this.heights = !!on;
+    this._contourPrefChanged();
+  };
+  Overlay.prototype._contourPrefChanged = function () {
     if (!this.manifest || !this.field || !this.layer) return;
     this._ensureIso();
-    if (!this.isobars) {
+    if (!this._wantPres()) {
       for (var k in this.inflight) if (this.inflight[k].kind === 'pres') { this.inflight[k].abort.abort(); delete this.inflight[k]; }
       this.pcache.clear();
     }
@@ -9713,17 +9766,17 @@
   // step on the map (never another step's lines' frame), else null.
   Overlay.prototype._hpaAt = function (lat, lng) {
     if (!this.iso || !this.iso.frame || !this.layer || this.iso.entry !== this.layer.entry) return null;
-    var v = this.iso.valueAt(lat, lng);
-    return v === null ? null : Math.round(v);
+    var v = this.iso.valueAt(lat, lng), sc = (this.iso.spec || CONTOUR_SPECS.pres).scale;
+    return v === null ? null : Math.round(v * sc);              // hPa, or the jet's height in dam (plan section 106)
   };
   // The readout's text for it: "<= 920" / ">= 1060" within half a code of the field's clamped ends (the stored range;
   // a typhoon's eye below 920 hPa reads "<= 920", not "920"), else the rounded value.
   Overlay.prototype._hpaText = function (lat, lng) {
     var h = this._hpaAt(lat, lng);
     if (h === null) return null;
-    var f = this.iso.fdef, v = this.iso.valueAt(lat, lng), half = (f.hi - f.lo) / 254 / 2;
-    if (v <= f.lo + half) return '≤ ' + Math.round(f.lo);
-    if (v >= f.hi - half) return '≥ ' + Math.round(f.hi);
+    var f = this.iso.fdef, v = this.iso.valueAt(lat, lng), half = (f.hi - f.lo) / 254 / 2, sc = (this.iso.spec || CONTOUR_SPECS.pres).scale;
+    if (v <= f.lo + half) return '≤ ' + Math.round(f.lo * sc);
+    if (v >= f.hi - half) return '≥ ' + Math.round(f.hi * sc);
     return String(h);
   };
   // The readout's word on lake water without a value (plan section 50; G33 B-2, owner): under peak period, water whose
@@ -9863,7 +9916,7 @@
       var txt = u.f(v).toFixed(u.d) + ' ' + u.label;
       if (v <= f.lo + 1e-9 && f.lo > 0) txt = '≤ ' + txt; else if (v >= f.hi - 1e-9) txt = '≥ ' + txt;   // "<=" only where values below lo exist (Tp)
       var hpa = self._hpaText(latlng.lat, latlng.lng);
-      if (hpa !== null) txt += ' · ' + hpa + ' hPa';
+      if (hpa !== null) txt += ' · ' + hpa + ' ' + (self.iso && self.iso.spec ? self.iso.spec.unit : 'hPa');   // 1004 hPa / 1032 dam (section 106)
       el.textContent = txt; place(pt);
     }
     var hoverable = !window.matchMedia || window.matchMedia('(hover: hover) and (pointer: fine)').matches;
@@ -10808,7 +10861,7 @@
       LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
       lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeNearView: lakeNearView, LAKE_NEAR_SCREENS: LAKE_NEAR_SCREENS, lakeVec: lakeVec,
       COAST_TIER0: COAST_TIER0, LAKES_TIER0: LAKES_TIER0, LAKEOUT_TIER0: LAKEOUT_TIER0, LAKEOUT_PREFIX: LAKEOUT_PREFIX, LAKE_OUTLINE_MIN_ZOOM: LAKE_OUTLINE_MIN_ZOOM, LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_CALM_M: LAKE_CALM_M, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
-      IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
+      IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, CONTOUR_SPECS: CONTOUR_SPECS, contourSpecOf: contourSpecOf, contourInterval: contourInterval, CORE_FLOOR: CORE_FLOOR, RELIEF_FIELDS: RELIEF_FIELDS, JET_CORE_MS: JET_CORE_MS, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,
       ISO_LABEL_MIN_PX: ISO_LABEL_MIN_PX, ISO_LABEL_AT: ISO_LABEL_AT, ISO_LABEL_EDGE_PX: ISO_LABEL_EDGE_PX,

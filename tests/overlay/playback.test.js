@@ -4281,3 +4281,70 @@ test('coast sets (G71 P2-1): a set whose index.json answers 404 (not uploaded) f
   assert.equal(await p2, null);
   assert.ok(o2.coast.url.endsWith('/static/coast/v2') && o2.coast.status === 'failed', 'a 503 is not "not published": no fallback');
 });
+
+// ---- plan section 106: the jet stream (250 hPa speed + direction, the 250 hPa height contours through the isobar layer) ----
+const JETF = { lo: 0, hi: 130, legend: [50 * 1852 / 3600, 200 * 1852 / 3600], units: 'm/s', interpolation: 'bilinear', resolutions: ['full', 'half'] };
+const JHGTF = { lo: 8750, hi: 11290, legend: [8750, 11290], units: 'm', interpolation: 'bilinear', resolutions: ['half'] };
+const withJet = (m) => Object.assign({}, m, { fields: Object.assign({}, m.fields, { jet: JETF, jdir: WDIR, jhgt: JHGTF }) });
+const isHgt = (k) => k.indexOf('/jhgt/') >= 0;
+
+test('section 106: the jet loads its own frames and the 250 hPa heights (never the sea-level pressure); the readout says dam', () => onRunDay(async () => {
+  const J = withJet(A), w = world(); w.pointer = ptr(J); w.manifests[J.run] = J;
+  const o = w.create(); o.anim = false; o.isobars = false; o.heights = true; o.mount('jet'); await settle(); await w.releaseAll(); await settle();
+  assert.ok(o.layer && o.layer.hasFrame() && o.layer.field === 'jet');
+  assert.ok(w.fetches.some((u) => /\/half\/jet\/f\d{3}\.png$/.test(u)), 'the jet frames (half at the default zoom, like wind)');
+  assert.ok(w.fetches.some((u) => /\/half\/jhgt\/f\d{3}\.png$/.test(u)), 'the heights');
+  assert.ok(!w.fetches.some((u) => u.indexOf('/pres/') >= 0), 'no sea-level pressure under the jet (the isobars setting is off and would not apply)');
+  assert.ok(o.iso && o.iso.spec === w.I.CONTOUR_SPECS.jhgt, 'the contour layer draws heights');
+  assert.ok(o.iso.frame, 'the shown step\'s height frame landed');
+  const half = (11290 - 8750) / 254 / 2;
+  o.iso.valueAt = () => 10321; assert.equal(o._hpaText(21, -158), '1032');
+  o.iso.valueAt = () => 8750 + half - 0.1; assert.equal(o._hpaText(21, -158), '≤ 875');
+  o.iso.valueAt = () => 11290; assert.equal(o._hpaText(21, -158), '≥ 1129');
+  assert.equal(o._presName(), 'jhgt'); assert.equal(o._presDef(), J.fields.jhgt);
+  o.unmount();
+}));
+
+test('section 106: the height contours follow their own gear setting (not the isobars\'); off drops their fetches, on fetches the shown step', () => onRunDay(async () => {
+  const J = withJet(A), w = world(); w.pointer = ptr(J); w.manifests[J.run] = J;
+  const o = w.create(); o.anim = false; o.isobars = true; o.heights = false; o.mount('jet'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.iso, null, 'heights off: no contour layer although the isobars are on');
+  assert.ok(!w.fetches.some((u) => isHgt(u) || u.indexOf('/pres/') >= 0), 'no contour frame of any kind');
+  const n0 = w.fetches.length;
+  o.setHeights(true); await settle();
+  assert.ok(o.iso && o.iso.spec === w.I.CONTOUR_SPECS.jhgt);
+  assert.ok(w.fetches.slice(n0).some(isHgt), 'the shown step\'s height asked at once');
+  await w.releaseAll(); await settle();
+  o.setHeights(false); await settle();
+  assert.equal(o.iso, null); assert.ok(!Object.keys(o.inflight).some(isHgt)); assert.equal(o.pcache.size(), 0);
+  o.setIsobars(false); o.setIsobars(true); await settle();
+  assert.equal(o.iso, null, 'the isobars setting never brings the heights back under the jet');
+  o.unmount();
+}));
+
+test('section 106: jet -> wind switches the contour layer to isobars (sea-level pressure, H / L) and back; no height frame reaches the isobars', () => onRunDay(async () => {
+  const J = withJet(A), w = world(); w.pointer = ptr(J); w.manifests[J.run] = J;
+  const o = w.create(); o.anim = false; o.isobars = true; o.heights = true; o.mount('jet'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.iso.spec, w.I.CONTOUR_SPECS.jhgt);
+  const n0 = w.fetches.length;
+  o.mount('wind'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.layer.field, 'wind'); assert.equal(o.iso.spec, w.I.CONTOUR_SPECS.pres);
+  assert.ok(w.fetches.slice(n0).some(isPres), 'the pressure under wind');
+  assert.equal(o.iso.fdef, J.fields.pres, 'the isobars hold the pressure field');
+  assert.equal(o._presName(), 'pres');
+  o.mount('jet'); await settle(); await w.releaseAll(); await settle();
+  assert.equal(o.iso.spec, w.I.CONTOUR_SPECS.jhgt); assert.equal(o.iso.fdef, J.fields.jhgt);
+  o.unmount();
+}));
+
+test('section 106: a run without the jet fields refuses the layer with a message, never a blank map; the heights absent leave the jet without contours', () => onRunDay(async () => {
+  const w = world(); w.pointer = ptr(A); w.manifests[A.run] = A;
+  const o = w.create(); o.anim = false; o.heights = true; o.mount('jet'); await settle(); await w.releaseAll(); await settle();
+  assert.ok(!o.layer || !o.layer.hasFrame(), 'nothing drawn');
+  assert.ok(!w.fetches.some((u) => /\/jet\//.test(u)), 'no jet frame asked of a run without it');
+  o.unmount();
+  const J = Object.assign({}, A, { fields: Object.assign({}, A.fields, { jet: JETF, jdir: WDIR }) }), w2 = world(); w2.pointer = ptr(J); w2.manifests[J.run] = J;
+  const p = w2.create(); p.anim = false; p.heights = true; p.mount('jet'); await settle(); await w2.releaseAll(); await settle();
+  assert.ok(p.layer.hasFrame()); assert.equal(p.iso, null); assert.equal(p._wantPres(), false);
+  p.unmount();
+}));

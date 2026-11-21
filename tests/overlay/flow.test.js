@@ -309,7 +309,7 @@ test('G12: a half-resolution field under a full-resolution direction (a phone zo
 // ---- plan section 42 step 3: the look table, the playback rate, the watchdog, the canvas after a zoom, the readout ----
 test('section 42: the one particle look (the owner\'s pick D, 2026-10-13): the density before section 42, 2-px cores over 4-px halos, brighter tails', () => {
   assert.equal(I.LOOK.px2, 900, 'the density: one particle per 30x30 px (a denser look cost the 1080p frame rate)');
-  assert.deepEqual(I.LOOK.style, { wind: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } });
+  assert.deepEqual(I.LOOK.style, { wind: { width: 1.6, halo: 3.4 }, jet: { width: 1.6, halo: 3.4 }, hs: { width: 2.0, halo: 4.0 }, tp: { width: 2.0, halo: 4.0 } });   // jet: the wind's look (section 106)
   assert.equal(I.LOOK.head, 0.95); assert.equal(I.LOOK.headHalo, 0.4); assert.equal(I.LOOK.tail, 0.55); assert.equal(I.LOOK.tailHalo, 0.25);
   assert.equal(I.PARTICLE_PX2, I.LOOK.px2); assert.equal(I.FLOW_STYLE, I.LOOK.style);
   assert.equal(I.LOOKS, undefined, 'the candidate table is gone'); assert.equal(I.lookFor, undefined);

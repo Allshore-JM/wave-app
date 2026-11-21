@@ -5049,15 +5049,17 @@
       var SWELL = {{ overlay_swell|tojson }};                   // ... with the Sentinel-1 swell switch (SARSWELL; plan section 81)
       var GRID = {{ overlay_grid|tojson }};                     // ... with the "Gridded map" box (ALT_GRID; plan section 82)
       var GLWU = {{ overlay_glwu|tojson }};                     // the Great Lakes waves under GFS (GLWU_OVERLAY; plan section 50)
+      var JET = {{ overlay_jet|tojson }};                       // "Jet stream" for GFS / ECMWF + the gear's height contours (JET_OVERLAY; plan section 106)
       var TZ = {{ forecast_tz_name|tojson }};
       // The settings gear's overlay rows (plan section 46), remembered in this browser: the pressure isobars under the wind
       // overlay (on unless turned off) and the particles' strength (100 = today's look, 0 = no particles). The lakes'
       // shores under wind are always drawn (plan section 51; the row and its key are gone: owner, 2026-10-23).
-      var ISO_KEY = 'allshore.isobars.v1', PART_KEY = 'allshore.particles.v1';
+      var ISO_KEY = 'allshore.isobars.v1', PART_KEY = 'allshore.particles.v1', HGT_KEY = 'allshore.heights.v1';
       function readPref(k) { try { return window.localStorage.getItem(k); } catch (e) { return null; } }
       function writePref(k, v) { try { window.localStorage.setItem(k, v); } catch (e) {} }
       try { window.localStorage.removeItem('allshore.lakeOutlines.v1'); } catch (e) {}
       var ISOBARS = readPref(ISO_KEY) !== '0';
+      var HEIGHTS = readPref(HGT_KEY) !== '0';                  // the 250 hPa height contours under the jet stream (plan section 106)
       var PARTICLES = (function (v) { return /^\d{1,3}$/.test(v || '') && +v <= 100 ? +v : 100; })(readPref(PART_KEY));
       var lastTz = TZ;                                          // the zone of the forecast on screen (the window announces each one)
       // (the model pane is created by the module on the first selection, so Off leaves the map's panes untouched)
@@ -5070,6 +5072,7 @@
           box.innerHTML = '<select id="ovField" autocomplete="off" aria-label="Map overlay">' +
             '<option value="">Off</option><option value="hs">Wave height</option>' +
             '<option value="tp">Peak period</option><option value="wind">Wind speed</option>' +
+            (JET ? '<option value="jet">Jet stream</option>' : '') +
             (PRECIP ? '<option value="precip">Precipitation</option>' : '') +
             (PTOT ? '<option value="ptot">Precipitation total</option>' : '') +
             (SST ? '<option value="sst">Sea surface temperature</option>' : '') +
@@ -5139,6 +5142,7 @@
       if (SAT) FIELDS.sat = 1;                                  // likewise 'sat' (plan section 81)
       if (PRECIP) FIELDS.precip = 1;                            // likewise 'precip' (plan section 102)
       if (PTOT) FIELDS.ptot = 1;                                // ... and 'ptot' (plan section 102 B1)
+      if (JET) FIELDS.jet = 1;                                  // likewise 'jet' (plan section 106)
       function stored() {
         try { var o = JSON.parse(sessionStorage.getItem(KEY) || '{}'); return o && typeof o === 'object' && !Array.isArray(o) ? o : {}; } catch (e) { return {}; }
       }
@@ -5158,7 +5162,7 @@
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
             fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, radar: RADAR, bathy: BATHY, sat: SAT, swell: SWELL, grid: GRID, glwu: GLWU,
-            isobars: ISOBARS, particles: PARTICLES / 100
+            isobars: ISOBARS, particles: PARTICLES / 100, jet: JET, heights: HEIGHTS
           });
           overlay.mount(field, restore);
           if (overlay.settled) overlay.settled().then(settleFirst, settleFirst);
@@ -5224,6 +5228,16 @@
         var said = function () { part.setAttribute('aria-valuetext', PARTICLES ? PARTICLES + '%' : 'off'); };
         said();
         row2.appendChild(t2); row2.appendChild(part); gear.appendChild(row2);
+        if (JET) {                                              // plan section 106: the jet stream's 250 hPa height contours
+          var row3 = document.createElement('label'); row3.className = 'ov-setting form-check mb-0 mt-2';
+          var hgt = document.createElement('input'); hgt.type = 'checkbox'; hgt.id = 'ovHeights'; hgt.className = 'form-check-input'; hgt.checked = HEIGHTS;
+          var t3 = document.createElement('span'); t3.className = 'form-check-label'; t3.textContent = 'Height contours (jet stream)';
+          row3.appendChild(hgt); row3.appendChild(t3); gear.appendChild(row3);
+          hgt.addEventListener('change', function () {
+            HEIGHTS = !!hgt.checked; writePref(HGT_KEY, HEIGHTS ? '1' : '0');
+            if (overlay && overlay.setHeights) overlay.setHeights(HEIGHTS);
+          });
+        }
         iso.addEventListener('change', function () {
           ISOBARS = !!iso.checked; writePref(ISO_KEY, ISOBARS ? '1' : '0');
           if (overlay) overlay.setIsobars(ISOBARS);

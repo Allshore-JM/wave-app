@@ -1099,7 +1099,8 @@ def check(out_dir, log=log, regions=None):
                 log("  note: %s tiles_sha256 not pinned yet (%s)" % (name, index["bathy"][name]["sha256"]))
         near = 0                                          # v2 vertices within ~1 zoom-15 px (5e-5 deg) of a box line (G70 P3-4)
         tight = [r for r in regions.values() if not r.get("margin_px")]   # a seam region's box lines are measured below instead
-        seam_boxes = [r["box"] for r in regions.values() if r.get("margin_px")]
+        # a seam region's box lines and its exclusion boxes' lines (where its traced shore meets GSHHG's inside the raster)
+        seam_boxes = [b for r in regions.values() if r.get("margin_px") for b in [r["box"]] + list(r.get("exclude", ()))]
         seam_steps = []                                   # (cell, length m) of output edges lying along a seam box line
         # the edges along each seam box line, by cell, as (lo, hi, direction) intervals on the line: a split cut (rung
         # a) along a box line runs both ways (land on both sides) and cancels; a step between the two shores does not

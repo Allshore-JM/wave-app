@@ -166,19 +166,18 @@ def test_densify_flags_new_lines_and_cell_line_edges():
     assert start2.tolist() == [True] + [False] * 19 + [True, False]
 
 
-def test_densify_skips_split_line_edges_only_when_asked():
-    """Section 104: a cell whose big pieces the builder cut on 0.25-degree lines (index.json "split") skips edges along
-    those lines; without `split` they are coast, as in every other cell."""
-    # coast along 46.6 N, then the cut along 124 W and 46.75 N (0.25-degree lines), back along 124.1 W (coast)
+def test_a_real_shore_edge_on_a_split_line_stays_coast():
+    """G72 #1: a zoom-15 pixel edge can round onto a 0.25-degree split line. Such an edge has no reverse twin (land on one
+    side only): dissolve_cuts keeps it and densify does not skip it, so the hazard line has no gap there."""
+    # a ring whose east side runs along 124 W (a split line), as a shore lying on a pixel column there would
     xi = np.array([-124.0, -124.0, -124.1, -124.1])
-    yi = np.array([46.6, 46.75, 46.75, 46.6])
+    yi = np.array([46.6, 46.7, 46.7, 46.6])
     xj = np.array([-124.1, -124.0, -124.0, -124.1])
-    yj = np.array([46.6, 46.6, 46.75, 46.75])
-    _x, _y, _s, skip = A.densify((xi, yi, xj, yj), step=0.05)
-    assert not skip.any()
-    _x, _y, _s, skip = A.densify((xi, yi, xj, yj), step=0.05, split=0.25)
-    per = np.maximum(1, np.ceil(np.hypot(xi - xj, yi - yj) / 0.05)).astype(int).tolist()   # points per edge
-    assert skip.tolist() == [False] * per[0] + [True] * (per[1] + per[2]) + [False] * per[3]
+    yj = np.array([46.6, 46.6, 46.7, 46.7])
+    d = A.dissolve_cuts((xi, yi, xj, yj), 0.25)
+    assert d[0].tolist() == xi.tolist()
+    _x, _y, start, skip = A.densify(d, step=0.05)
+    assert not skip.any() and start.sum() == 1
 
 
 def test_dissolve_cuts_rejoins_a_piece_cut_on_a_split_line():
@@ -195,7 +194,7 @@ def test_dissolve_cuts_rejoins_a_piece_cut_on_a_split_line():
     outer = {(round(x, 6), round(y, 6)) for x, y in zip(d[0], d[1])}
     assert outer == {(-124.1, 46.6), (-124.0, 46.6), (-123.9, 46.6), (-123.9, 46.7), (-124.0, 46.7), (-124.1, 46.7)}
     assert A.dissolve_cuts(a, 0.25)[0].tolist() == a[0].tolist()                      # no twin: unchanged
-    _x, _y, start, skip = A.densify(d, step=0.05, split=0.25)
+    _x, _y, start, skip = A.densify(d, step=0.05)
     assert start.sum() == 1 and not skip.any()
 
 
@@ -712,3 +711,29 @@ def test_committed_v4_file_passes_its_check_and_differs_only_where_v4_does():
     west = ("CA", "OR", "WA")
     assert all(v4["zones"][z] == v3["zones"][z] for z in v3["zones"] if not z.startswith(west))
     assert set(v4["zones"]) == set(v3["zones"])
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v4.json")), reason="alert_coast_v4.json not built")
+def test_v4_puget_sound_zones_keep_v3s_coast():
+    """G72 #3: Puget Sound is an exclusion box (v1's own rings in v4), so its zones' lines run along v3's: every zone
+    whose lines lie wholly inside the box has its points on v3's lines at the median (ring starts and simplification may
+    move where a run begins or ends)."""
+    with open(os.path.join(ROOT, "alert_coast_v4.json"), encoding="utf-8") as f:
+        v4 = json.load(f)["zones"]
+    with open(os.path.join(ROOT, "alert_coast_v3.json"), encoding="utf-8") as f:
+        v3 = json.load(f)["zones"]
+    w, s, e, n = -123.2 + 0.02, 46.9 + 0.02, -121.8, 49.1         # the exclusion box, a little inside its west / south
+    inside = [z for z in v4 if z.startswith("WA") and all(
+        w <= p[0] <= e and s <= p[1] <= n for line in v4[z]["lines"] for p in A.decode(line))]
+    assert len(inside) >= 3
+    for z in inside:
+        segs = [np.array(A.decode(line)) for line in v3[z]["lines"]]
+        a = np.concatenate([g[:-1] for g in segs]); b = np.concatenate([g[1:] for g in segs])
+        d = []
+        for line in v4[z]["lines"]:
+            for p in np.array(A.decode(line)):
+                ab, ap = b - a, p - a
+                t = np.clip((ap * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-18), 0, 1)
+                q = a + ab * t[:, None]
+                d.append(np.min(np.hypot((p[0] - q[:, 0]) * np.cos(np.radians(p[1])), p[1] - q[:, 1])) * 111320)
+        assert np.median(d) <= 1.0, (z, np.median(d))

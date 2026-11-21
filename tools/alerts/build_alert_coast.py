@@ -308,7 +308,8 @@ def dissolve_cuts(edges, deg, q=100000):
     """A cell's edges with the builder's split cuts dissolved (plan section 104: a big piece cut on the `deg` lines).
     A cut runs along a line twice, once each way (land on both sides): both edges go, and the rest are chained end to
     start into rings again, so the coast runs on across a cut instead of stopping there. Even-odd point-in-land is
-    unchanged (a pair crosses any ray together). Edges along a cut line without a reverse twin stay (densify skips them)."""
+    unchanged (a pair crosses any ray together). An edge along a cut line without a reverse twin is real shore (a
+    zoom-15 pixel edge can round onto a split line, G72 #1) and stays, as coast."""
     import numpy as np
     xi, yi, xj, yj = edges
     n = len(xi)
@@ -644,20 +645,18 @@ def classify_open(land, x, y, start, skip, zone, sign, every=OPEN_EVERY):
     return even_out(out, x, y, start, elig)
 
 
-def densify(edges, step=STEP, split=None):
+def densify(edges, step=STEP):
     """A coast cell's ring edges (point_forecast.decode_coast: edge = vertex j -> vertex i) as points in ring order:
     -> (x, y, start, skip). start = a new line begins at this point (its edge does not continue the previous one);
-    skip = the point lies on an edge along a 5-degree cell line (the builder's clip, not coast), or along a `split`-degree
-    line (a coast set's index.json "split": its big pieces cut on those lines in that cell, plan section 104)."""
+    skip = the point lies on an edge along a 5-degree cell line (the builder's clip, not coast). (A split cell's cuts are
+    dissolved before this, dissolve_cuts: an edge left on a split line is real shore and is kept, G72 #1.)"""
     import numpy as np
     xi, yi, xj, yj = edges
     if not len(xi):
         z = np.zeros(0)
         return z, z, np.zeros(0, bool), np.zeros(0, bool)
-    on_line = np.zeros(len(xi), bool)
-    for g in (5,) + ((split,) if split else ()):
-        on_line |= ((np.abs(xi - xj) < EPS) & (np.abs(np.round(xi / g) * g - xi) < EPS)) | \
-                   ((np.abs(yi - yj) < EPS) & (np.abs(np.round(yi / g) * g - yi) < EPS))
+    on_line = ((np.abs(xi - xj) < EPS) & (np.abs(np.round(xi / 5) * 5 - xi) < EPS)) | \
+              ((np.abs(yi - yj) < EPS) & (np.abs(np.round(yi / 5) * 5 - yi) < EPS))
     n = np.maximum(1, np.ceil(np.hypot(xi - xj, yi - yj) / step)).astype(int)
     rep = np.repeat(np.arange(len(n)), n)
     t = (np.arange(rep.size) - np.repeat(np.cumsum(n) - n, n)) / n[rep]
@@ -896,9 +895,9 @@ def build(zip_bytes, cache, log=print, coast="v1"):
         lakes = [e for e in (edges("lakeoutlines-v1", cell), edges("lakes-v1", cell)) if e is not None]
         lake = tuple(np.concatenate(v) for v in zip(*lakes)) if lakes else None
         px, py = [], []
-        for e, sp in ((land, split_of(coast, cell)), (lake, None)):
+        for e in (land, lake):
             if e is not None and len(e[0]):
-                x, y, _st, sk = densify(e, split=sp)
+                x, y, _st, sk = densify(e)
                 px.append(x[~sk])
                 py.append(y[~sk])
         return land, lake, ((np.concatenate(px), np.concatenate(py)) if px else None)
@@ -918,7 +917,7 @@ def build(zip_bytes, cache, log=print, coast="v1"):
             e = edges(set_name, cell)
             if e is None or not len(e[0]):
                 continue
-            x, y, start, skip = densify(e, split=split_of(set_name, cell))
+            x, y, start, skip = densify(e)
             points += x.size
             zone = fill_holes(assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water),
                               x, y, start, skip)

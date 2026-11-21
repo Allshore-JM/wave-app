@@ -168,6 +168,18 @@ WEST_PROBES = [
     (-124.11257, 46.89775, True),       # Westport inland
     (-122.36, 47.60, False),            # Elliott Bay, Puget Sound (GSHHG's, as in v1)
     (-122.53, 47.63, True),             # Bainbridge Island (GSHHG's, as in v1)
+    # bays and estuaries (G72 #4: the area gate is mostly inland GSHHG fill, too coarse to see a bay flip)
+    (-122.30, 37.70, False),            # SF Bay, central
+    (-122.38, 37.80, False),            # SF Bay off Treasure Island
+    (-122.43, 37.862, True),            # Angel Island
+    (-122.35, 38.05, False),            # San Pablo Bay
+    (-122.05, 38.06, False),            # Suisun Bay (GSHHG: land)
+    (-121.60, 38.04, False),            # Franks Tract, the flooded Delta island (GSHHG: land)
+    (-121.72, 38.07, True),             # Sherman Island, a diked Delta island below sea level
+    (-124.22, 40.72, False),            # Humboldt Bay, south (GSHHG: land)
+    (-124.00, 46.24, False),            # the Columbia River mouth
+    (-123.95, 46.55, False),            # Willapa Bay
+    (-124.00, 46.95, False),            # Grays Harbor
 ]
 NOAA_CREDIT_V2 = """
 Inside the bathymetry regions (Hawaii: 160.5-154.5 W, 18.5-22.5 N; the NW Hawaiian Islands: 168.5-160.5 W,
@@ -240,7 +252,7 @@ SETS = {
                expected_changed=["-15_-170", "-15_-175", "10_140", "10_145", "15_-155", "15_-160", "15_-65", "15_-70",
                                  "15_145", "20_-160", "20_-165", "20_-170", "30_-120", "30_-125", "35_-120", "35_-125",
                                  "40_-120", "40_-125", "45_-125", "45_-130"],
-               pin="ce6a538e42b544ae65eb1e1c05f2e17fc1d428d109949875e6ca558cab91ffae",   # laptop; the runner's dry run decides
+               pin="6e5740bf56c4ba312ee2860bb441993f4cd8480e37d5940fea32f58162fb445a",   # laptop; the runner's dry run decides
                v1_sqdeg=121.761359,                                                      # a real v4 build: 121.56886 (-0.16 %)
                probes=HAWAII_PROBES + S2_PROBES + WEST_PROBES, same_cells=V3_CELLS, credit=NOAA_CREDIT_V4),
 }
@@ -895,6 +907,10 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
                        "digest": tiles.index.get("digest"), "tiles": n, "sha256": sha}
     boxes = shapely.union_all([sbox(*r["box"]) for r in regions.values()])
     boxes_line = boxes.boundary
+    # where the traced land is used: the boxes less their exclusion boxes (G72 #3: Puget Sound keeps v1's own rings, cut
+    # exactly on the exclusion box lines like a seam; the raster there is GSHHG's pixels only so the trace crosses them)
+    excl = [sbox(*e) for r in regions.values() for e in r.get("exclude", ())]
+    traced_area = boxes.difference(shapely.union_all(excl)) if excl else boxes
     v2_parts = [pt for name in sorted(region_geom) for pt in region_geom[name]]   # the boxes touch at a corner only
     candidates = sorted({c for r in regions.values() for c in cells_overlapping(r["box"])})
     listing, digests, changed, base_changed, crossing = {}, {}, [], {}, 0
@@ -926,7 +942,8 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
                     log("cell %s: %d v1 rings cross a box edge: joined with GEOS (not bit-exact across platforms)" % (name, n_cross))
                     v2g = [Polygon(np.column_stack(sh), [np.column_stack(h) for h in hs]) for sh, hs in v2_parts
                            if sh[0].max() >= lo and sh[0].min() <= lo + deg and sh[1].max() >= la and sh[1].min() <= la + deg]
-                    geom = shapely.union_all([shapely.union_all(v2g).intersection(boxes)] + ([g1.difference(boxes)] if g1 is not None else []))
+                    geom = shapely.union_all([shapely.union_all(v2g).intersection(traced_area)] +
+                                             ([g1.difference(traced_area)] if g1 is not None else []))
                     geom = geom.intersection(cbox)
                     if seam_here:
                         geom, n_cut = split_big(geom)

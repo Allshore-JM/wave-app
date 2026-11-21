@@ -767,3 +767,25 @@ def test_seam_steps_cancel_split_cuts_and_keep_one_way_stretches():
     assert abs(steps[0][1] - 0.01 * 111320.0 * np.cos(np.radians(47.0))) < 1.0
     assert V2.seam_step_lengths({("c", "x", 1.0): [(0.0, 0.002, True)]}, q=100000) == [("c", 222.6)]
     assert V2.seam_step_lengths({("c", "x", 1.0): [(0.0, 0.000004, True)]}, q=100000) == []     # under half a unit
+
+
+def test_exclusion_in_a_seam_region_keeps_v1_rings_exactly(world, tmp_path):
+    """G72 #3: in a seam region the exclusion box is applied at the cell stage, so GSHHG's islet inside it comes out as
+    v1's own ring (its vertices, q 1e4 scaled to 1e5), not a traced, speck-filtered, simplified copy of its pixels."""
+    t = full(WATER)
+    t[100:160, 20:120] = LAND
+    box = tile_box(X0 - 1, Y0 - 1, X0 + 1, Y0 + 1)
+    lon_mid = centre(X0 * 256 + 128, 0)[0]
+    ex = (lon_mid, box[1], box[2], box[3])
+    lat_a, lat_b = centre(0, Y0 * 256 + 60)[1], centre(0, Y0 * 256 + 40)[1]
+    gs_lon0, gs_lon1 = centre(X0 * 256 + 170, 0)[0], centre(X0 * 256 + 200, 0)[0]
+    ring = [(gs_lon0, lat_a), (gs_lon1, lat_a), (gs_lon1, lat_b), (gs_lon0, lat_b)]
+    tdir, v1, reg = world({(15, X0, Y0): t, (14, X0 >> 1, Y0 >> 1): full(WATER)}, {cell_of(gs_lon0, lat_a): [ring]})
+    reg = {n: dict(r, exclude=[ex], margin_px=2) for n, r in reg.items()}
+    out = build(tmp_path, tdir, v1, reg, "exseam")
+    d = BC.decode_file(open(os.path.join(out, "f", cell_of(gs_lon0, lat_a) + ".bin"), "rb").read())
+    want = {(int(round(x * 1e4)) * 10, int(round(y * 1e4)) * 10) for x, y in ring}
+    shells = [set(zip(pc["rings"][0][0].tolist(), pc["rings"][0][1].tolist())) for pc in d["pieces"]]
+    assert want in shells
+    assert land_at(out, *centre(X0 * 256 + 60, Y0 * 256 + 130))                      # the tiles' island stays
+    assert V2.check(out, log=lambda m: None, regions=reg) == []

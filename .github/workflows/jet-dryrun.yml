@@ -1,0 +1,51 @@
+# TEMPORARY (plan section 106, step 3): proves the jet stream fields of both frame jobs on GitHub's runner with the pinned
+# environment (eccodes 2.48: GFS complex packing + JPEG2000 waves, ECMWF CCSDS) before any merge: full no-upload builds
+# of the newest GFS and ECMWF runs (build time vs the budgets) and jet_dryrun_check.py (jet frames vs eccodes, older
+# fields vs production). Runs on pushes to the feature branch only, uploads nothing, needs no secrets.
+# REMOVE before the job-only merge, together with tools/model_frames/jet_dryrun_check.py.
+name: jet-dryrun
+on:
+  push:
+    branches: ["feat/jet"]
+    paths: ["tools/model_frames/**", ".github/workflows/jet-dryrun.yml"]
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: frames
+          create-args: >-
+            python=3.11.16
+            eccodes=2.48.0
+            python-eccodes=2.48.0
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+          cache-environment: true
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Jet frames vs eccodes, older fields vs production
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail                 # a custom shell has no -e of its own
+          /usr/bin/time -v -o time.txt python tools/model_frames/jet_dryrun_check.py | tee check.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          while IFS= read -r line; do echo "::notice title=Jet check::$line"; done < check.txt
+          echo "::notice title=Jet check resources::$(grep -E 'Maximum resident|Elapsed' time.txt | paste -sd ";" -)"
+      - name: Full GFS build, no upload
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail
+          /usr/bin/time -v -o time.txt python tools/model_frames/run.py --dry-run | tee gfs.txt
+          echo "::notice title=GFS full dry run::$(grep -E 'publishing run' gfs.txt | head -1); $(grep -E 'Maximum resident|Elapsed' time.txt | paste -sd ";" -); $(grep -E 'jet stream 250' "$GITHUB_STEP_SUMMARY" | tail -1)"
+      - name: Full ECMWF build, no upload
+        shell: bash -l {0}
+        run: |
+          set -eo pipefail
+          /usr/bin/time -v -o time.txt python tools/model_frames/ecmwf.py --dry-run | tee ec.txt
+          echo "::notice title=ECMWF full dry run::$(grep -E 'publishing run' ec.txt | head -1); $(grep -ciE 'throttl' ec.txt) throttle lines; $(grep -E 'Maximum resident|Elapsed' time.txt | paste -sd ";" -); $(grep -E 'jet stream 250' "$GITHUB_STEP_SUMMARY" | tail -1)"

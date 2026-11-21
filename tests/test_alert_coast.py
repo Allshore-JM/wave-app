@@ -166,6 +166,38 @@ def test_densify_flags_new_lines_and_cell_line_edges():
     assert start2.tolist() == [True] + [False] * 19 + [True, False]
 
 
+def test_a_real_shore_edge_on_a_split_line_stays_coast():
+    """G72 #1: a zoom-15 pixel edge can round onto a 0.25-degree split line. Such an edge has no reverse twin (land on one
+    side only): dissolve_cuts keeps it and densify does not skip it, so the hazard line has no gap there."""
+    # a ring whose east side runs along 124 W (a split line), as a shore lying on a pixel column there would
+    xi = np.array([-124.0, -124.0, -124.1, -124.1])
+    yi = np.array([46.6, 46.7, 46.7, 46.6])
+    xj = np.array([-124.1, -124.0, -124.0, -124.1])
+    yj = np.array([46.6, 46.6, 46.7, 46.7])
+    d = A.dissolve_cuts((xi, yi, xj, yj), 0.25)
+    assert d[0].tolist() == xi.tolist()
+    _x, _y, start, skip = A.densify(d, step=0.05)
+    assert not skip.any() and start.sum() == 1
+
+
+def test_dissolve_cuts_rejoins_a_piece_cut_on_a_split_line():
+    """Section 104: two pieces cut apart on the -124 line (one cut edge each way) become one ring of the outer edges,
+    so densify sees one continuous coast; an edge along a cut line without a twin stays."""
+    def ring(pts):                                           # edges j -> i of a closed ring, as decode_cell gives them
+        xs, ys = np.array([p[0] for p in pts]), np.array([p[1] for p in pts])
+        return xs, ys, np.roll(xs, 1), np.roll(ys, 1)
+    a = ring([(-124.1, 46.6), (-124.0, 46.6), (-124.0, 46.7), (-124.1, 46.7)])        # west of the cut, CCW
+    b = ring([(-124.0, 46.6), (-123.9, 46.6), (-123.9, 46.7), (-124.0, 46.7)])        # east of the cut, CCW
+    e = tuple(np.concatenate([u, v]) for u, v in zip(a, b))
+    d = A.dissolve_cuts(e, 0.25)                             # lines every 0.25 degree: -124.0 is one, the rest are not
+    assert len(d[0]) == 6 and len(A.ring_starts(d)) == 1
+    outer = {(round(x, 6), round(y, 6)) for x, y in zip(d[0], d[1])}
+    assert outer == {(-124.1, 46.6), (-124.0, 46.6), (-123.9, 46.6), (-123.9, 46.7), (-124.0, 46.7), (-124.1, 46.7)}
+    assert A.dissolve_cuts(a, 0.25)[0].tolist() == a[0].tolist()                      # no twin: unchanged
+    _x, _y, start, skip = A.densify(d, step=0.05)
+    assert start.sum() == 1 and not skip.any()
+
+
 def test_runs_join_a_ring_across_its_start_point():
     # a closed square ring of 8 points, 0.001 apart; zone 0 holds the end and the start, zone 1 the middle
     x = np.array([0, 1, 2, 2, 2, 1, 0, 0], float) * 0.001
@@ -663,3 +695,45 @@ def test_committed_set_files_follow_the_pinned_coasts():
         assert pin, "set %s is not pinned" % cs
         with open(path, encoding="utf-8") as f:
             assert json.load(f)["coast"][cs] == pin.group(1), cs
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v4.json")), reason="alert_coast_v4.json not built")
+def test_committed_v4_file_passes_its_check_and_differs_only_where_v4_does():
+    """alert_coast_v4.json (served with COAST_SET=v4, plan section 104 release 2): its own check; every zone outside
+    California, Oregon and Washington identical to alert_coast_v3.json (v4 keeps v3's cells byte for byte), the same
+    zone list."""
+    with open(os.path.join(ROOT, "alert_coast_v4.json"), encoding="utf-8") as f:
+        v4 = json.load(f)
+    with open(os.path.join(ROOT, "alert_coast_v3.json"), encoding="utf-8") as f:
+        v3 = json.load(f)
+    assert v4["zones_file"] == A.ZONES_FILE and v4["rules"] == A.RULES and "v4" in v4["coast"]
+    assert A.check(v4, log=lambda *a: None) == []
+    west = ("CA", "OR", "WA")
+    assert all(v4["zones"][z] == v3["zones"][z] for z in v3["zones"] if not z.startswith(west))
+    assert set(v4["zones"]) == set(v3["zones"])
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v4.json")), reason="alert_coast_v4.json not built")
+def test_v4_puget_sound_zones_keep_v3s_coast():
+    """G72 #3: Puget Sound is an exclusion box (v1's own rings in v4), so its zones' lines run along v3's: every zone
+    whose lines lie wholly inside the box has its points on v3's lines at the median (ring starts and simplification may
+    move where a run begins or ends)."""
+    with open(os.path.join(ROOT, "alert_coast_v4.json"), encoding="utf-8") as f:
+        v4 = json.load(f)["zones"]
+    with open(os.path.join(ROOT, "alert_coast_v3.json"), encoding="utf-8") as f:
+        v3 = json.load(f)["zones"]
+    w, s, e, n = -123.2 + 0.02, 46.9 + 0.02, -121.8, 49.1         # the exclusion box, a little inside its west / south
+    inside = [z for z in v4 if z.startswith("WA") and all(
+        w <= p[0] <= e and s <= p[1] <= n for line in v4[z]["lines"] for p in A.decode(line))]
+    assert len(inside) >= 3
+    for z in inside:
+        segs = [np.array(A.decode(line)) for line in v3[z]["lines"]]
+        a = np.concatenate([g[:-1] for g in segs]); b = np.concatenate([g[1:] for g in segs])
+        d = []
+        for line in v4[z]["lines"]:
+            for p in np.array(A.decode(line)):
+                ab, ap = b - a, p - a
+                t = np.clip((ap * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-18), 0, 1)
+                q = a + ab * t[:, None]
+                d.append(np.min(np.hypot((p[0] - q[:, 0]) * np.cos(np.radians(p[1])), p[1] - q[:, 1])) * 111320)
+        assert np.median(d) <= 1.0, (z, np.median(d))

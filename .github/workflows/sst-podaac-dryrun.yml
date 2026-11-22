@@ -1,5 +1,5 @@
 # TEMPORARY (plan section 107): proves the SST job's NASA PO.DAAC source on GitHub's runner with a dry run (no
-# uploads: no R2 secrets are given). Remove before any merge (tests/model_frames/test_sst.py checks it is gone).
+# uploads: no R2 secrets are given; run 3 = with the Earthdata secrets). Remove before any merge (tests/model_frames/test_sst.py checks it is gone).
 name: sst-podaac-dryrun
 on:
   push:

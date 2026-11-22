@@ -100,15 +100,23 @@ SHELTERED = [
     ("Kaneohe Bay inside its barrier reef, Oahu",
      [(21.455, -157.768), (21.525, -157.828), (21.535, -157.850), (21.400, -157.870), (21.400, -157.775),
       (21.430, -157.758)]),
-    # section 105 (coast v5): the bathymetry's barrier islands are narrower than GSHHG's, and the open test's samples
-    # can step over a narrow island: three shores v5 newly drew as open (v4's own bay lines are left as they were)
+]
+# ... and per coast set: shores only that set needs. Section 105 (coast v5): the bathymetry's barrier islands are
+# narrower than GSHHG's, and the open test's samples can step over a narrow island: three shores v5 newly drew as open.
+# Set-only, so the shared RULES and every earlier set's file stay as they were (v4's own bay lines are left alone).
+SHELTERED_BY_SET = {"v5": [
     ("Pamlico Sound's Hyde County shore (Swan Quarter - Engelhard), North Carolina",
      [(35.25, -76.45), (35.65, -76.45), (35.65, -75.80), (35.45, -75.80), (35.25, -76.10)]),
     ("Croatan Sound and the mainland across it (Manns Harbor - Stumpy Point), North Carolina",
      [(35.55, -75.95), (35.95, -75.95), (35.95, -75.72), (35.55, -75.72)]),
     ("Tangier Sound's eastern shore (Deal Island - Crisfield) and Smith Island, Chesapeake Bay",
      [(37.85, -76.10), (38.25, -76.10), (38.25, -75.75), (37.85, -75.75)]),
-]
+]}
+
+
+def sheltered_areas(coast="v1"):
+    """The SHELTERED polygons a build on sea coast set `coast` uses: the shared ones, then that set's own."""
+    return SHELTERED + SHELTERED_BY_SET.get(coast, [])
 TOL = 0.0005        # Douglas-Peucker tolerance (deg, ~50 m)
 MIN_KM = 0.3        # shorter pieces are dropped (a speck the near rule caught)
 Q = 1e6             # zone vertices compared at this precision (the shapefile shares edges exactly)
@@ -929,7 +937,7 @@ def build(zip_bytes, cache, log=print, coast="v1"):
             points += x.size
             zone = fill_holes(assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water),
                               x, y, start, skip)
-            zone[sheltered(x, y)] = -1
+            zone[sheltered(x, y, sheltered_areas(coast))] = -1
             assigned += int((zone >= 0).sum())
             zone = np.where(classify_open(land, x, y, start, skip, zone, SEAWARD[set_name]), zone, -1)
             kept += int((zone >= 0).sum())
@@ -952,10 +960,15 @@ RULES = {"step_deg": STEP, "near_km": NEAR_KM, "near_along": NEAR_ALONG, "tol_de
          "sheltered": [n for n, _p in SHELTERED]}
 
 
-def write(zones, coast_ids, zones_sha, path=OUT):
+def rules_for(coast="v1"):
+    """RULES as a file built on sea coast set `coast` records them: its sheltered list names that set's own shores."""
+    return dict(RULES, sheltered=[n for n, _p in sheltered_areas(coast)])
+
+
+def write(zones, coast_ids, zones_sha, path=OUT, coast="v1"):
     doc = {"format": FORMAT, "zones_file": ZONES_FILE, "zones_sha256": zones_sha, "coast": coast_ids,
            "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-           "rules": RULES,
+           "rules": rules_for(coast),
            "zones": zones}
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(doc, f, separators=(",", ":"), sort_keys=True)
@@ -1122,7 +1135,7 @@ def main(argv=None):
         print(f"PROBLEM zone file sha256 {sha} is not the pinned {ZONES_SHA256} (a new NWS file: bump the pins)")
         return 1
     zones, coast_ids = build(data, a.cache, coast=a.coast)
-    doc = write(zones, coast_ids, sha, a.out)
+    doc = write(zones, coast_ids, sha, a.out, coast=a.coast)
     probs = check(doc)
     for p in probs:
         print("PROBLEM", p)

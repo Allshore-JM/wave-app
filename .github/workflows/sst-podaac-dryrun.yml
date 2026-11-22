@@ -36,6 +36,7 @@ jobs:
           [ -n "$EARTHDATA_USERNAME" ] && u=set
           [ -n "$EARTHDATA_PASSWORD" ] && p=set
           echo "EARTHDATA_USERNAME $u, EARTHDATA_PASSWORD $p" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=secrets::EARTHDATA_USERNAME $u, EARTHDATA_PASSWORD $p"
       - name: Fallback order without a login (no download expected; ERDDAP /files/ is off)
         shell: bash -l {0}
         run: |
@@ -44,6 +45,7 @@ jobs:
           cat nologin.txt
           echo "exit $rc" | tee -a "$GITHUB_STEP_SUMMARY"
           grep -E "^(PO.DAAC|ERDDAP) " nologin.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E "^(PO.DAAC|ERDDAP) " nologin.txt | while IFS= read -r line; do echo "::notice title=nologin::$line"; done
           grep -q "PO.DAAC download: SourceError: EARTHDATA_USERNAME / EARTHDATA_PASSWORD not set \[structural\]" nologin.txt
           grep -q "^ERDDAP download: " nologin.txt
           [ "$rc" -ne 0 ]
@@ -57,6 +59,12 @@ jobs:
           /usr/bin/time -v -o time.txt python tools/model_frames/sst.py --dry-run > run.txt 2>&1 || rc=$?
           cat run.txt
           grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          # the run's key lines as annotations (readable without signing in); GitHub masks secrets in them too
+          grep -E "^(PO.DAAC|ERDDAP) |^building|^downloaded|^### MUR|^pixels|^t[012]:|Error|exit" run.txt | head -20 | while IFS= read -r line; do
+            echo "::notice title=sst::${line//::/ }"
+          done
+          grep -E "Maximum resident|Elapsed" time.txt | while IFS= read -r line; do echo "::notice title=time::$line"; done || true
+          echo "::notice title=exit::$rc"
           # the credential must never reach the log (GitHub masks secrets anyway; this checks our own text)
           if [ -n "$EARTHDATA_PASSWORD" ] && grep -qF -- "$EARTHDATA_PASSWORD" run.txt; then echo "password in the log"; exit 1; fi
           grep -q "from PO.DAAC" run.txt

@@ -393,7 +393,8 @@ class RrfsWinds:
 
 
 def merge(gfs, rrfs):
-    """The table's wind map: GFS's hours as (speed, dir, None, None), RRFS's hours over them."""
-    out = {t: (v[0], v[1], None, None) for t, v in (gfs or {}).items()}
+    """The table's wind map: GFS's hours as (speed, dir, None, label) -- label None, or "GFS 06Z" when an earlier run
+    stands in (app._gfs_wind_kept, plan section 108) -- RRFS's hours over them."""
+    out = {t: (v[0], v[1], None, v[3] if len(v) > 3 else None) for t, v in (gfs or {}).items()}
     out.update(rrfs or {})
     return out

@@ -2228,7 +2228,7 @@ _GFS_WINDS_RUNS = OrderedDict()        # run -> {"stations": {sid: slot}, "body"
 _GFS_WINDS_FAILED = {}                 # run -> monotonic time before which it is not asked again
 _GFS_WINDS_INFLIGHT = {}               # run -> Lock (singleflight)
 _GFS_WINDS_STATS = {"r2": 0, "nomads": 0, "not_in_run": 0, "run_missing": 0, "errors": 0, "last_error": None,
-                    "last_run": None}
+                    "last_run": None, "keep_last": 0, "keep_last_run": None}
 
 
 def _gfs_winds_note(key, detail=None, run=None):
@@ -2769,7 +2769,8 @@ def _parse_bull_uncached(station_id: str, target_tz_name: str | None = None):
 
     # GFS wind for the Wind table columns -- pinned to the SAME cycle as this
     # bull so the two can never skew across a run rollover. {} on failure.
-    wind_map = _with_rrfs_station(station_id, get_station_wind(station_id, date_str, run_str))
+    # The run's winds not published yet: the newest earlier run's (plan section 108).
+    wind_map = _with_rrfs_station(station_id, _gfs_wind_kept(station_id, date_str, run_str))
     return _parse_bull_text(text, station_id, target_tz_name, date_str, run_str, wind_map)
 
 
@@ -3396,11 +3397,55 @@ def _nwps_point_str(doc, st):
     return _fmt_latlon(lat, lon)
 
 
+# Keep-last GFS winds (plan section 108): the run probe can find a new GFS run before the GFS winds job has put that run
+# in the bucket (a 404, "run_missing") and NOMADS's .spec then often gives nothing either: the table used to get NO GFS
+# wind at all (51201's SWAN table on 2026-11-22 showed only its RRFS hours). The newest EARLIER run the bucket holds
+# stands in: its hours are joined on the UTC hour like any run's, labelled with its cycle ("GFS 06Z") so the window's
+# source line says so, and the build is marked so the table is built again within minutes (when the new run lands).
+# Bucket only: an outage of the bucket never turns into 4 x 7.75 MB of NOMADS downloads per station.
+_WIND_KEEPLAST_STEPS = 4                # 6-h cycles back from the run asked (24 h; the job keeps more)
+
+
+def _gfs_wind_kept(station_id, date_str=None, run_str=None):
+    """get_station_wind() of the run asked (None, None = the latest), or, when that gives nothing, the newest of the
+    _WIND_KEEPLAST_STEPS earlier cycles in the GFS winds bucket with the station, its values labelled "GFS HHZ"
+    (speed, dir, None, label). {} when none has it."""
+    wind = get_station_wind(station_id, date_str, run_str)
+    if wind:
+        return wind
+    try:
+        if not date_str or not run_str:
+            date_str, run_str = get_latest_run()
+        if not date_str or not run_str:
+            return {}
+        base = datetime.strptime(date_str + run_str, "%Y%m%d%H")
+    except (TypeError, ValueError):
+        return {}
+    for k in range(1, _WIND_KEEPLAST_STEPS + 1):
+        c = base - timedelta(hours=6 * k)
+        d, r = c.strftime("%Y%m%d"), c.strftime("%H")
+        table = _gfs_winds_run(d, r)
+        older = _gfs_winds_station(table, station_id, d, r) if table is not None else None
+        if older:
+            label = f"GFS {r}Z"
+            with _GFS_WINDS_LOCK:
+                _GFS_WINDS_STATS["keep_last"] += 1
+                first = _GFS_WINDS_STATS["keep_last_run"] != d + r
+                _GFS_WINDS_STATS["keep_last_run"] = d + r
+            if first:
+                logger.warning("GFS winds %s%s give nothing for %s: run %s%s stands in (plan section 108)",
+                               date_str, run_str, station_id, d, r)
+            _rrfs_mark(True)                                  # built again soon: the asked run lands within minutes
+            return {t: (v[0], v[1], None, label) for t, v in older.items()}
+    return {}
+
+
 def _gfs_wind_cover(station_id, first_utc):
     """The GFS station winds for a table starting at first_utc (naive UTC): the latest GFS run, plus the run whose
     cycle holds first_utc when the latest starts after it (the newest run wins where both cover an hour). {} on any
-    failure: the waves never wait for the wind (plan sections 27 and 59)."""
-    wind_map = get_station_wind(station_id)
+    failure: the waves never wait for the wind (plan sections 27 and 59). The latest run's winds not published yet:
+    the newest earlier run in the bucket (plan section 108)."""
+    wind_map = _gfs_wind_kept(station_id)
     if wind_map and first_utc is not None and first_utc < min(wind_map):
         cycle = first_utc - timedelta(hours=first_utc.hour % 6)
         older = get_station_wind(station_id, cycle.strftime("%Y%m%d"), cycle.strftime("%H"),
@@ -3806,7 +3851,7 @@ def _parse_gfs_spectral_uncached(station_id: str, target_tz_name: str | None, ru
         local_tz = UTC
     run_dt = datetime.strptime(run, "%Y%m%d%H")
     # the wind of THIS run (the winds product publishes it minutes before the spectral one); {} on failure
-    wind = _with_rrfs_station(station_id, get_station_wind(station_id, run[:8], run[8:]))
+    wind = _with_rrfs_station(station_id, _gfs_wind_kept(station_id, run[:8], run[8:]))   # keep-last: section 108
     rows = gspec_rows(dec, run_dt, local_tz, wind)
     if not rows:
         return None, None, None, None, effective_tz_name, f"No spectral forecast for {station_id} in run {run}"
@@ -4477,7 +4522,7 @@ def build_html_table(cycle_str: str, location_str: str, model_run_str: str | Non
     sky = sky if compact and sky and len(sky) == len(rows) else None
     # RRFS (plan section 99): rows of 25 cells carry gust (22) and the source (23); a table with any RRFS hour shows
     # Spd | Gust | Dir, a source line above it and a top border on each row where the wind's source changes
-    rrfs = any(len(r) >= 25 and r[23] for r in rows)
+    rrfs = any(len(r) >= 25 and str(r[23] or "").startswith("RRFS") for r in rows)   # a "GFS 06Z" label alone: no Gust
     group_colors = [
         {"header": "#C00000", "subheader": "#F8B4B4", "data": "#F9DCDC"},
         {"header": "#ED7D31", "subheader": "#FBE5D6", "data": "#FDE7D4"},

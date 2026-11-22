@@ -1,0 +1,64 @@
+# TEMPORARY (plan section 107): proves the SST job's NASA PO.DAAC source on GitHub's runner with a dry run (no
+# uploads: no R2 secrets are given). Remove before any merge (tests/model_frames/test_sst.py checks it is gone).
+name: sst-podaac-dryrun
+on:
+  push:
+    branches: [fix/sst-podaac]
+    paths: [".github/workflows/sst-podaac-dryrun.yml"]
+permissions:
+  contents: read
+jobs:
+  dryrun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: sst
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+            h5py=3.14.0
+          cache-environment: true
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Earthdata secrets present?
+        shell: bash
+        env:
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+        run: |
+          u=unset; p=unset
+          [ -n "$EARTHDATA_USERNAME" ] && u=set
+          [ -n "$EARTHDATA_PASSWORD" ] && p=set
+          echo "EARTHDATA_USERNAME $u, EARTHDATA_PASSWORD $p" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Fallback order without a login (no download expected; ERDDAP /files/ is off)
+        shell: bash -l {0}
+        run: |
+          rc=0
+          env -u EARTHDATA_USERNAME -u EARTHDATA_PASSWORD python tools/model_frames/sst.py --dry-run > nologin.txt 2>&1 || rc=$?
+          cat nologin.txt
+          echo "exit $rc" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E "^(PO.DAAC|ERDDAP) " nologin.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -q "PO.DAAC download: SourceError: EARTHDATA_USERNAME / EARTHDATA_PASSWORD not set \[structural\]" nologin.txt
+          grep -q "^ERDDAP download: " nologin.txt
+          [ "$rc" -ne 0 ]
+      - name: Dry run from NASA PO.DAAC (download + build, no upload)
+        shell: bash -l {0}
+        env:
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
+        run: |
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/sst.py --dry-run > run.txt 2>&1 || rc=$?
+          cat run.txt
+          grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
+          # the credential must never reach the log (GitHub masks secrets anyway; this checks our own text)
+          if [ -n "$EARTHDATA_PASSWORD" ] && grep -qF -- "$EARTHDATA_PASSWORD" run.txt; then echo "password in the log"; exit 1; fi
+          grep -q "from PO.DAAC" run.txt
+          grep -qE "^### MUR day [0-9]{8} via PO.DAAC" run.txt
+          exit "$rc"

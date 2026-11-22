@@ -4345,10 +4345,30 @@ test('section 106: a run without the jet fields refuses the layer with a message
   assert.ok(!o.layer || !o.layer.hasFrame(), 'nothing drawn');
   assert.ok(said.some((st) => st.state === 'error' && st.message === 'no jet stream frames in this run yet'), 'the panel says why: ' + JSON.stringify(said.map((x) => x.message)));
   assert.ok(!w.fetches.some((u) => /\/jet\//.test(u)), 'no jet frame asked of a run without it');
-  assert.ok(/no jet stream frames in this run yet/.test(JSON.stringify(o.panel ? o.panel.textContent || '' : '') + String(o._lastError || '')) || true);
   o.unmount();
   const J = Object.assign({}, A, { fields: Object.assign({}, A.fields, { jet: JETF, jdir: WDIR }) }), w2 = world(); w2.pointer = ptr(J); w2.manifests[J.run] = J;
   const p = w2.create(); p.anim = false; p.heights = true; p.mount('jet'); await settle(); await w2.releaseAll(); await settle();
   assert.ok(p.layer.hasFrame()); assert.equal(p.iso, null); assert.equal(p._wantPres(), false);
   p.unmount();
+}));
+
+test('section 106 (G74 A-1): Wind speed of a run without the jet, then Jet stream: the message; once a run with the jet is published, Retry (with or without the half-hourly check) adopts it at the wind\'s time', () => onRunDay(async () => {
+  const E2 = (() => { const m = manifest('2026092212', '2026-09-22T12:00:00Z', 6, false, E_STEPS); m.files.template = `ecmwf/0p25/v1/${m.run}/{res}{field}/f{step:03d}.png`; return withJet(m); })();
+  for (const check of [true, false]) {
+    const w = world(); w.pointers = { ecmwf: eptr(E) }; w.manifests['ecmwf/' + E.run] = E; w.manifests['ecmwf/' + E2.run] = E2;
+    const o = w.create({ models: ['ecmwf', 'gfswave'] }); o.heights = true;
+    o.mount('wind'); await settle(); await w.releaseAll();
+    assert.equal(o.last.state, 'ready');
+    const tWind = o.manifest.frames[o.frameIndex].valid_utc;
+    o.mount('jet'); await settle(); await w.releaseAll();
+    assert.equal(o.last.message, 'no jet stream frames in this run yet');
+    assert.equal(o.frameIndex, null, 'the old run is no longer pinned');
+    w.pointers = { ecmwf: eptr(E2) };
+    if (check) { o._checkRun(); await settle(); }
+    o._retry(); await settle(); await w.releaseAll(); await settle();
+    assert.equal(o.manifest.run, E2.run, `check ${check}: the newer run adopted`);
+    assert.equal(o.last.state, 'ready'); assert.ok(o.layer.hasFrame(), 'the jet drawn');
+    assert.equal(o.manifest.frames[o.frameIndex].valid_utc, tWind, 'at the wind\'s time');
+    o.unmount();
+  }
 }));

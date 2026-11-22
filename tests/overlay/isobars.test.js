@@ -972,6 +972,22 @@ test('the layer draws on the next animation frame: halos then cores in two strok
   assert.ok(il.lastMs >= 0);
 });
 
+test('plan section 106 (G74 A-10): the layer under the jet spec draws the 250 hPa heights: pills in dam every 12 dam, no H / L, the dark lines over the light halo', () => {
+  const JH = { lo: 8750, hi: 11290, legend: [8750, 11290], units: 'm', interpolation: 'bilinear', resolutions: ['half'] }, S = I.CONTOUR_SPECS.jhgt;
+  const hcode = (m) => Math.max(1, Math.min(255, 1 + Math.round((m - JH.lo) / (JH.hi - JH.lo) * 254)));
+  const q = new Uint8Array(720 * 361);
+  for (let r = 0; r < 361; r++) for (let c = 0; c < 720; c++) { const la = 90 - r * 0.5, lo = -180 + c * 0.5; q[r * 720 + c] = hcode(10400 - 400 * Math.exp(-((la - 30) ** 2 + (lo + 150) ** 2) / 60)); }
+  const { il, ctx } = isoLayer();
+  const styles = [], stroke0 = ctx.stroke; ctx.stroke = function () { styles.push(ctx.strokeStyle); stroke0(); };
+  il.setSpec(S); il.setData({ q, cols: 720, rows: 361 }, HALF, { step: 0 }, JH); il.pendingFn();
+  assert.ok(il.drawn.lines >= 3, `${il.drawn.lines} lines`); assert.equal(il.drawn.hl, 0, 'no H / L marks on the heights');
+  assert.deepEqual(ctx.widths, [S.lineStyle.haloW, S.lineStyle.coreW]); assert.deepEqual(styles, [S.lineStyle.halo, S.lineStyle.core], 'the own line style of the heights');
+  const pills = ctx.texts.filter((t, k) => ctx.fonts[k] === I.ISO_STYLE.font);
+  assert.ok(pills.length >= 1 && pills.length === il.drawn.labels);
+  assert.ok(pills.every((t) => /^1\d{3}$/.test(t) && +t % 12 === 0), 'dam, every 12 dam at zoom 5: ' + pills.join(' '));
+  assert.ok(ctx.texts.every((t) => t !== 'L' && t !== 'H'));
+});
+
 test('the layer: no pills below zoom 4 or while the whole world is in view; 8 hPa there', () => {
   const z3 = isoLayer({ w: 1200, h: 800 }, 3.5);
   z3.il.setData(lowAt(30, -150, 30), HALF, { step: 0 }, PRES); z3.il.pendingFn();

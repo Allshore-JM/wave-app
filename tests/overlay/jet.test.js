@@ -92,10 +92,9 @@ test('legend ticks in the site\'s units: 50-200 kt as 58-230 mph / 93-370 km/h, 
   assert.ok(I.legendTicks('tp', { lo: 1, hi: 30, legend: [4, 22] }, 'US')[0].label.startsWith('≤'), 'peak period keeps its "<="');
 });
 
-test('particles: none under 50 kt, 1.3 px/s per m/s above; vectorNodes marks the sub-core nodes absent', () => {
-  assert.equal(I.FLOW_SPEED.jet(49.9 * KT), 0); assert.equal(I.FLOW_SPEED.jet(10), 0);
+test('particles: none under the legend floor (50 kt, from the manifest), 1.3 px/s per m/s above; vectorNodes marks the sub-core nodes absent', () => {
   assert.ok(Math.abs(I.FLOW_SPEED.jet(77) - 100.1) < 1e-9, '150 kt = 77 m/s: 100 px/s');
-  assert.ok(Math.abs(I.JET_CORE_MS - 50 * KT) < 1e-12);
+  assert.equal(I.JET_CORE_MS, undefined, 'no hard-coded floor (G74 A-3)');
   const jet = frame(720, 361, (r, c) => codeOf(c < 360 ? 20 : 70, JET)), jdir = frame(720, 361, () => dcode(270));
   const l = new I.ModelGridLayer({ opacity: 1 });
   l.setFrame(jet, HALF, 'jet', JET, I.buildLut('jet', JET.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
@@ -103,6 +102,34 @@ test('particles: none under 50 kt, 1.3 px/s per m/s above; vectorNodes marks the
   const west = 100 * 720 + 100, east = 100 * 720 + 500;
   assert.equal(N.M[west], 0, '20 m/s (39 kt): no particle'); assert.equal(N.U[west], 0);
   assert.equal(N.M[east], 1); assert.ok(Math.abs(N.U[east] - 1.3 * 70) < 0.6 && Math.abs(N.V[east]) < 1.5, `from the west: east at 91 px/s (${N.U[east]}, ${N.V[east]})`);
+  assert.equal(N.floor, JET.legend[0]); assert.ok(Math.abs(N.S[west] - 20) < 0.3 && Math.abs(N.S[east] - 70) < 0.3, 'node values kept');
+  // the floor follows the manifest: a 60-kt legend moves it (the shade edge and the particles together)
+  const l60 = new I.ModelGridLayer({ opacity: 1 }), J60 = Object.assign({}, JET, { legend: [60 * KT, 200 * KT] });
+  l60.setFrame(frame(720, 361, () => codeOf(55 * KT, JET)), HALF, 'jet', J60, I.buildLut('jet', J60.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
+  assert.equal(I.vectorNodes('jet', l60, jdir, HALF).M[west], 0, '55 kt under a 60-kt floor');
+  const wind = new I.ModelGridLayer({ opacity: 1 });
+  wind.setFrame(jet, HALF, 'wind', JET, I.buildLut('wind', JET.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
+  const NW = I.vectorNodes('wind', wind, jdir, HALF);
+  assert.equal(NW.S, null); assert.equal(NW.M[west], 1, 'the wind has no floor');
+});
+
+test('particles at the cores\' rims (G74 A-2): a lattice point takes a vector only where the value interpolated there reaches the floor', () => {
+  // nodes: calm west of 20 E, 70 m/s from 20 E; the value between 19.5 E and 20 E reaches 50 kt at 37 % of the cell
+  const jet = frame(720, 361, (r, c) => codeOf(c < 400 ? 0 : 70, JET)), jdir = frame(720, 361, () => dcode(270));
+  const l = new I.ModelGridLayer({ opacity: 1 });
+  l.setFrame(jet, HALF, 'jet', JET, I.buildLut('jet', JET.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
+  const N = I.vectorNodes('jet', l, jdir, HALF), z = 9, s = 2, w = 600, h = 20;
+  const p = I.forwardPixel(0, 19.75, z), view = { z, w, h, ox: p.x - w / 2, oy: p.y - h / 2, zt: z };
+  const vf = I.flowField(view, s, N, HALF, l, false), n = 256 * Math.pow(2, z), edge = (25.722 - 0) / 70;
+  let rim = 0, onFloor = 0, inCore = 0;
+  for (let i = 0; i < vf.cols; i++) {
+    const lon = (view.ox + i * s) / n * 360 - 180, f = (lon - 19.5) / 0.5, u = vf.u[5 * vf.cols + i];
+    if (f < 0 || f > 1) continue;
+    if (f < edge - 0.01) { assert.equal(u, 0, `lon ${lon.toFixed(3)}: ${(70 * f / KT).toFixed(1)} kt, under the floor`); if (f >= 0.25) rim++; }
+    else if (f > edge + 0.01) { assert.ok(u > 0, `lon ${lon.toFixed(3)}: in the core`); inCore++; }
+    else onFloor++;
+  }
+  assert.ok(rim >= 5 && inCore > 10, `the old node-weight rule alone would have moved ${rim} rim points; ${inCore} in the core`);
 });
 
 test('the contour spec per field: isobars under wind (unchanged), the 250 hPa height under the jet in dam, no H / L', () => {
@@ -136,4 +163,37 @@ test('the isobar layer takes the jet\'s spec: setSpec clears the lines at once, 
   iso.setSpec(I.CONTOUR_SPECS.pres); assert.ok(iso.frame, 'the same spec keeps the frame');
   iso.setSpec(I.CONTOUR_SPECS.jhgt);
   assert.equal(iso.spec, I.CONTOUR_SPECS.jhgt); assert.equal(iso.frame, null); assert.equal(iso.entry, null);
+});
+
+test('G74 A-10: a drawn jet tile carries the shade under 50 kt (the layer passes CORE_FLOOR), the ramp above', () => {
+  let put = null;
+  const ctx = { clearRect() {}, createImageData: () => ({ data: new Uint8ClampedArray(65536 * 4) }), putImageData(img) { put = img.data; } };
+  global.document = { createElement: () => ({ getContext: () => ctx }) };
+  try {
+    const l = new I.ModelGridLayer({ opacity: 1 }), jet = frame(720, 361, (r, c) => codeOf(c < 360 ? 20 : 70, JET));
+    l.setFrame(jet, HALF, 'jet', JET, I.buildLut('jet', JET.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
+    for (const [x, want] of [[1, 'shade'], [2, 'ramp']]) {
+      const el = { getContext: () => ctx };
+      put = null; l._drawTile(el, { z: 2, x, y: 1 });
+      assert.ok(put, 'the tile was painted');
+      const k = (128 * 256 + 128) * 4, px = [...put.slice(k, k + 4)];
+      if (want === 'shade') {
+        assert.equal(px[3], 204, 'the shade at 80 %, never opaque teal: ' + px);
+        const U = I.CORE_FLOOR.jet, f = 20 / JET.legend[0];
+        for (let i = 0; i < 3; i++) assert.ok(Math.abs(px[i] - (U.from[i] + f * (U.to[i] - U.from[i]))) <= 2, 'shade colour ' + px);
+      } else assert.equal(px[3], 255, 'the ramp, opaque');
+    }
+  } finally { delete global.document; }
+});
+
+test('G74 A-10 / A-9: the readout\'s contour part carries the spec\'s unit; 24 dam to zoom 2.9', () => {
+  const o = Object.create(I.Overlay.prototype), entry = { step: 0 };
+  o.layer = { entry }; o.iso = { frame: {}, entry, fdef: JHGT, spec: I.CONTOUR_SPECS.jhgt, valueAt: () => 10324 };
+  assert.equal(o._contourReadout(30, -150), '1032 dam');
+  o.iso = { frame: {}, entry, fdef: PRES, spec: I.CONTOUR_SPECS.pres, valueAt: () => 1004.2 };
+  assert.equal(o._contourReadout(30, -150), '1004 hPa');
+  o.iso.entry = { step: 1 }; assert.equal(o._contourReadout(30, -150), null, 'another step\'s contours: nothing');
+  const H = I.CONTOUR_SPECS.jhgt;
+  assert.equal(I.contourInterval(H, 1.7, 162), 240, 'a portrait phone\'s widest view'); assert.equal(I.contourInterval(H, 2.9, 200), 240);
+  assert.equal(I.contourInterval(H, 3, 200), 120);
 });

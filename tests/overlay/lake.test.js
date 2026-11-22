@@ -712,7 +712,7 @@ test('the credit names the lakes while a lake frame is drawn under the model and
   try {
     const container = { appendChild() {}, addEventListener() {}, removeEventListener() {} };
     const ctx = { map: { getContainer: () => container, getZoom: () => 7 }, opts: { getUnit: () => 'US' }, _listeners: [],
-      _on(ev, fn) { handlers[ev] = fn; }, _hpaText: () => null, _lakeWord: I.Overlay.prototype._lakeWord,
+      _on(ev, fn) { handlers[ev] = fn; }, _hpaText: () => null, _contourReadout: () => null, _lakeWord: I.Overlay.prototype._lakeWord,
       layer: { fdef: HS, field: 'hs', _tileZoom: 7, readoutAt: (lat) => (lat > 45 ? 1.5 : null), lakeAt: (lat) => lat > 40 } };
     I.Overlay.prototype._bindReadout.call(ctx);
     const el = ctx.readout, move = (lat) => handlers.mousemove({ latlng: { lat, lng: -87 }, containerPoint: { x: 10, y: 20 }, originalEvent: { pointerType: 'mouse', target: null } });

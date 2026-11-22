@@ -102,7 +102,7 @@ test('particles: none under the legend floor (50 kt, from the manifest), 1.3 px/
   const west = 100 * 720 + 100, east = 100 * 720 + 500;
   assert.equal(N.M[west], 0, '20 m/s (39 kt): no particle'); assert.equal(N.U[west], 0);
   assert.equal(N.M[east], 1); assert.ok(Math.abs(N.U[east] - 1.3 * 70) < 0.6 && Math.abs(N.V[east]) < 1.5, `from the west: east at 91 px/s (${N.U[east]}, ${N.V[east]})`);
-  assert.equal(N.floor, JET.legend[0]); assert.ok(Math.abs(N.S[west] - 20) < 0.3 && Math.abs(N.S[east] - 70) < 0.3, 'node values kept');
+  assert.equal(N.floor, JET.legend[0]);
   // the floor follows the manifest: a 60-kt legend moves it (the shade edge and the particles together)
   const l60 = new I.ModelGridLayer({ opacity: 1 }), J60 = Object.assign({}, JET, { legend: [60 * KT, 200 * KT] });
   l60.setFrame(frame(720, 361, () => codeOf(55 * KT, JET)), HALF, 'jet', J60, I.buildLut('jet', J60.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
@@ -110,7 +110,7 @@ test('particles: none under the legend floor (50 kt, from the manifest), 1.3 px/
   const wind = new I.ModelGridLayer({ opacity: 1 });
   wind.setFrame(jet, HALF, 'wind', JET, I.buildLut('wind', JET.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
   const NW = I.vectorNodes('wind', wind, jdir, HALF);
-  assert.equal(NW.S, null); assert.equal(NW.M[west], 1, 'the wind has no floor');
+  assert.equal(NW.floor, null); assert.equal(NW.M[west], 1, 'the wind has no floor');
 });
 
 test('particles at the cores\' rims (G74 A-2): a lattice point takes a vector only where the value interpolated there reaches the floor', () => {
@@ -196,4 +196,23 @@ test('G74 A-10 / A-9: the readout\'s contour part carries the spec\'s unit; 24 d
   const H = I.CONTOUR_SPECS.jhgt;
   assert.equal(I.contourInterval(H, 1.7, 162), 240, 'a portrait phone\'s widest view'); assert.equal(I.contourInterval(H, 2.9, 200), 240);
   assert.equal(I.contourInterval(H, 3, 200), 120);
+});
+
+test('G74 B-P1-1: at full resolution (zoom 9) no lattice point flows where the DRAWN value is under 50 kt, though its half-grid direction nodes would carry it; every point drawn in the core with a core node flows', () => {
+  const GRID = { cols: 1440, rows: 721, lon0: -180, lat0: 90, dlon: 0.25, dlat: -0.25, registration: 'center', lon_periodic: true };
+  // the speed on the full grid: a core with a one-cell dip to 15 m/s at 20.25 E; the half-grid direction nodes (20.0, 20.5 E)
+  // both sit in the core, so their weights alone would carry the flow straight across the drawn shade
+  const jet = frame(1440, 721, (r, c) => codeOf(c === 801 ? 15 : 60, JET)), jdir = frame(720, 361, () => dcode(270));
+  const l = new I.ModelGridLayer({ opacity: 1 });
+  l.setFrame(jet, GRID, 'jet', JET, I.buildLut('jet', JET.legend), { step: 0, valid_utc: '2026-11-22T00:00:00Z' });
+  const N = I.vectorNodes('jet', l, jdir, HALF), z = 9, s = 4, w = 800, h = 40;
+  const p = I.forwardPixel(0, 20.2, z), view = { z, w, h, ox: p.x - w / 2, oy: p.y - h / 2, zt: z };
+  const vf = I.flowField(view, s, N, HALF, l, false), n = 256 * Math.pow(2, z);
+  let under = 0, flowing = 0;
+  for (let j = 0; j < vf.rows; j++) for (let i = 0; i < vf.cols; i++) {
+    const lon = (view.ox + i * s) / n * 360 - 180, lat = I.latOfWorldY(view.oy + j * s, n), v = l.valueAt(lat, lon), u = vf.u[j * vf.cols + i];
+    if (v < JET.legend[0]) { assert.equal(u, 0, `lon ${lon.toFixed(3)}: drawn at ${(v / KT).toFixed(1)} kt, no flow`); under++; }
+    else { assert.ok(u > 0, `lon ${lon.toFixed(3)}: drawn in the core`); flowing++; }
+  }
+  assert.ok(under > 50 && flowing > 50, `${under} points under the floor, ${flowing} in the core`);
 });

@@ -5977,14 +5977,12 @@
     var cols = dframe.cols, rows = dframe.rows, n = cols * rows, reuse = prev && prev.cols === cols && prev.rows === rows;
     var U = reuse ? prev.U : new Float32Array(n), V = reuse ? prev.V : new Float32Array(n), M = reuse ? prev.M : new Uint8Array(n);
     var f = layer._frame, g = layer._grid, spd = FLOW_SPEED[field] || FLOW_SPEED.wind, lo = layer._lo, hi = layer._hi, q = dframe.q;
-    // a CORE_FLOOR field (the jet, G74 A-2 / A-3): no speed under the legend's floor, and each node's value kept (S, NaN where
-    // absent) so flowField gates every lattice point by the value interpolated there, not only by its nodes
+    // a CORE_FLOOR field (the jet, G74 A-3): no speed under the manifest's legend floor (flowField also gates every lattice
+    // point by the value drawn there: G74 A-2 / B-P1-1)
     var floorV = CORE_FLOOR[field] && layer._legend ? layer._legend[0] : null;
-    var S = floorV === null ? null : reuse && prev.S ? prev.S : new Float32Array(n);
     var colPos = new Float64Array(cols), codes = new Float64Array(cols), i, j, ii;
     var r0 = win ? Math.max(0, win.r0) : 0, r1 = win ? Math.min(rows - 1, win.r1) : rows - 1, c0 = win ? ((win.c0 % cols) + cols) % cols : 0, count = win ? Math.min(cols, win.count) : cols;
     if (win && reuse) M.fill(0);
-    if (S && (win || !(reuse && prev.S))) S.fill(NaN);
     for (i = 0; i < cols; i++) { var lng = dgrid.lon0 + i * dgrid.dlon; colPos[i] = ((((lng - g.lon0) / g.dlon) % f.cols) + f.cols) % f.cols; }
     for (j = r0; j <= r1; j++) {
       var lat = dgrid.lat0 + j * dgrid.dlat, r = (g.lat0 - lat) / -g.dlat, base = j * cols;
@@ -5992,13 +5990,12 @@
       for (ii = 0; ii < count; ii++) {
         i = c0 + ii; if (i >= cols) i -= cols;
         var d = q[base + i], c = codes[i];
-        if (!d || d === 255 || !c) { M[base + i] = 0; U[base + i] = 0; V[base + i] = 0; if (S) S[base + i] = NaN; continue; }
+        if (!d || d === 255 || !c) { M[base + i] = 0; U[base + i] = 0; V[base + i] = 0; continue; }
         var val = lo + (c - 1) / 254 * (hi - lo), sp = floorV !== null && val < floorV ? 0 : spd(val);
-        if (S) S[base + i] = val;
         M[base + i] = sp > 0 ? 1 : 0; U[base + i] = -sp * CODE_SIN[d]; V[base + i] = -sp * CODE_COS[d];   // FROM -> TOWARD
       }
     }
-    return { cols: cols, rows: rows, U: U, V: V, M: M, S: S, floor: floorV, win: win ? { r0: r0, r1: r1, c0: c0, count: count } : null };
+    return { cols: cols, rows: rows, U: U, V: V, M: M, floor: floorV, win: win ? { r0: r0, r1: r1, c0: c0, count: count } : null };
   }
   // The node window for a view plus `margin` screens on every side (default 1: what the animator computes; 0: what a
   // view needs, the coverage test), in direction-grid rows and columns (wrapping), with one node of margin for the
@@ -6049,8 +6046,17 @@
     var cols = Math.ceil(view.w / s) + 1, rows = Math.ceil(view.h / s) + 1, n = TILE * Math.pow(2, view.z), reuse = prev && prev.cols === cols && prev.rows === rows;
     var u = reuse ? prev.u : new Float32Array(cols * rows), v = reuse ? prev.v : new Float32Array(cols * rows);
     if (reuse) { u.fill(0); v.fill(0); }
-    var nc = nodes.cols, nr = nodes.rows, U = nodes.U, V = nodes.V, M = nodes.M, S = nodes.S || null, FL = nodes.floor, cp = new Float64Array(cols), i, j;
+    var nc = nodes.cols, nr = nodes.rows, U = nodes.U, V = nodes.V, M = nodes.M, cp = new Float64Array(cols), i, j;
     for (i = 0; i < cols; i++) cp[i] = ((((lngOfWorldX(view.ox + i * s, n) - dgrid.lon0) / dgrid.dlon) % nc) + nc) % nc;
+    // a CORE_FLOOR field (the jet): a lattice point flows only where the value DRAWN there (the layer's own sampler on its own
+    // frame, full or half: the tiles' and the readout's) reaches the floor, so no particle starts or runs on the shade at the
+    // cores' rims, at any zoom (G74 A-2 / B-P1-1). FLC: the lowest code at or above the floor.
+    var gate = nodes.floor != null && layer._frame && !layer._regions, LG = gate ? layer._grid : null, LFR = gate ? layer._frame : null;
+    var gcp = gate ? new Float64Array(cols) : null, gco = gate ? new Float64Array(cols) : null, FLC = 0;
+    if (gate) {
+      for (i = 0; i < cols; i++) gcp[i] = ((((lngOfWorldX(view.ox + i * s, n) - LG.lon0) / LG.dlon) % LFR.cols) + LFR.cols) % LFR.cols;
+      FLC = 1 + (nodes.floor - layer._lo) / (layer._hi - layer._lo) * 254;          // value(code) >= floor  <=>  code >= FLC
+    }
     var scale = Math.pow(2, view.z - view.zt), tiles = clip ? layer._tiles : null, lakes = !!(tiles && layer._lakeMask), lastKey = null, lastMask, lastLake = null;
     var LF = lake ? lake.lf.q : null, LD = lake ? lake.ld.q : null, lg = lake ? lake.grid : null, lcols = lg ? lg.cols : 0, lrows = lg ? lg.rows : 0;
     var lspd = lake ? (FLOW_SPEED[lake.field] || FLOW_SPEED.wind) : null, llo = lake ? lake.lo : 0, lhi = lake ? lake.hi : 0;
@@ -6062,6 +6068,7 @@
       var k = Math.min(3, 1 / Math.max(1e-6, Math.cos(lat * Math.PI / 180)));
       var r0 = Math.floor(r), r1 = r0 + 1 < nr ? r0 + 1 : r0, fr = r - r0, w0 = 1 - fr, b0 = r0 * nc, b1 = r1 * nc;
       var Y = (view.oy + j * s) / scale, ty = Math.floor(Y / TILE), py = Math.floor(Y - ty * TILE);
+      if (gate) { var gr = (LG.lat0 - lat) / -LG.dlat; if (!(gr >= 0 && gr <= LFR.rows - 1)) continue; layer._codeRow(gr, gcp, cols, gco, 0); }
       var lfy = lake ? (lg.lat0 - lat) / -lg.dlat : -1, lr0 = Math.floor(lfy), lr1 = lr0 + 1 < lrows ? lr0 + 1 : lr0, lfr = lfy - lr0, lw0 = 1 - lfr, lb0 = lr0 * lcols, lb1 = lr1 * lcols;
       for (i = 0; i < cols; i++) {
         var onLake = false;
@@ -6094,14 +6101,7 @@
         if (M[c]) { wt = fr * (1 - fc); x += U[c] * wt; y += V[c] * wt; w += wt; }
         if (M[d]) { wt = fr * fc; x += U[d] * wt; y += V[d] * wt; w += wt; }
         if (w < 0.25) continue;
-        if (S) {                                                                // a cores field: the value here (all present nodes) >= the floor
-          var sv = 0, sw = 0;
-          if (S[a] === S[a]) { wt = w0 * (1 - fc); sv += S[a] * wt; sw += wt; }
-          if (S[b] === S[b]) { wt = w0 * fc; sv += S[b] * wt; sw += wt; }
-          if (S[c] === S[c]) { wt = fr * (1 - fc); sv += S[c] * wt; sw += wt; }
-          if (S[d] === S[d]) { wt = fr * fc; sv += S[d] * wt; sw += wt; }
-          if (sv < FL * sw) continue;
-        }
+        if (gate && !(gco[i] >= FLC)) continue;                                 // drawn under the floor (or nothing drawn)
         u[base + i] = k * x / w; v[base + i] = -k * y / w;
       }
     }

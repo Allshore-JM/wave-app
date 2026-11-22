@@ -82,6 +82,10 @@ S2_SPECK_PX2, S2_TOL_PX = 32.0, 1.0
 # 10-20 ms a tile at 4x CPU throttle). The overlay only fills the pieces (one nonzero path; its coast line under wind
 # comes from the filled mask), so the cuts never show; the alert builder skips edges along them (index.json "split").
 SPLIT_DEG, SPLIT_VERTS = 0.25, 20000
+# section 105: the East cells cut finer (Hampton NH, the Great Marsh traced in full: two 20k-vertex pieces met one zoom-12
+# tile, 40k vertices walked, 39 ms at 4x CPU throttle against the 25 ms gate). 0.125-degree lines include the 0.25 ones,
+# so one set-level split grid (index.json "split": deg) covers the West cells' cuts too.
+EAST_SPLIT_DEG, EAST_SPLIT_VERTS = 0.125, 5000
 # section 104 size gates per changed cell (the client's per-tile cost and first-load bytes)
 MAX_CELL_BYTES, MAX_CELL_VERTS, MAX_PIECE_VERTS = 2 * 1024 * 1024, 600000, 150000
 SEAM_MARGIN_PX = 2                       # section 104: a seam region's raster reaches this far past its box
@@ -406,14 +410,17 @@ def format_key(regions):
                                      for n, r in sorted(regions.items())),
                             ".".join(shapely.__version__.split(".")[:2]))) + (
         "|split=%g>%d" % (SPLIT_DEG, SPLIT_VERTS) if any(r.get("margin_px") for r in regions.values()) else "") + (
+        "|eastsplit=%g>%d" % (EAST_SPLIT_DEG, EAST_SPLIT_VERTS) if any(r.get("mode") for r in regions.values()) else "") + (
         "|east=%s|band=%s|coarse=z%d,speck=%g,tol=%g,pad=%g,open=cross" % (
             ",".join(EAST_ORDER), (BAND or {}).get("sha256", "none")[:16], COARSE_Z, COARSE_SPECK_M2, COARSE_TOL_PX,
             COARSE_PAD_PX) if two else "")
 
 
-def split_big(geom):
+def split_big(geom, deg=None, verts=None):
     """-> (the Polygon parts of geom, each of more than SPLIT_VERTS vertices cut into its pieces inside the SPLIT_DEG
-    squares its bounds meet, the number of parts cut). Section 104 rung a; the squares are exact multiples of SPLIT_DEG."""
+    squares its bounds meet, the number of parts cut). Section 104 rung a; the squares are exact multiples of SPLIT_DEG.
+    deg / verts: another grid and threshold (section 105: the East cells)."""
+    SPLIT_DEG, SPLIT_VERTS = (deg or globals()["SPLIT_DEG"]), (verts or globals()["SPLIT_VERTS"])   # noqa: N806
     out, cut = [], 0
     for p in polygons(geom):
         if shapely.get_num_coordinates(p) <= SPLIT_VERTS:
@@ -1455,7 +1462,7 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
             geom = shapely.union_all(here + ([g1.difference(east_area)] if g1 is not None else [])).intersection(cbox)
             v1c = g1.intersection(cbox) if g1 is not None else shapely.MultiPolygon()
             if shapely.symmetric_difference(geom, v1c).area > 1e-12:
-                geom, n_cut = split_big(geom)
+                geom, n_cut = split_big(geom, EAST_SPLIT_DEG, EAST_SPLIT_VERTS)
                 if n_cut:
                     split_cells.append(name)
                 pieces = cell_pieces(geom)
@@ -1534,7 +1541,8 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
                      "coarse": {"z": COARSE_Z, "speck_m2": COARSE_SPECK_M2, "tol_px": COARSE_TOL_PX, "pad_px": COARSE_PAD_PX,
                                 "opening": "3x3 cross"}}}
            if any(r.get("mode") == "two_tier" for r in regions.values()) else {}),
-        **({"split": {"deg": SPLIT_DEG, "min_vertices": SPLIT_VERTS, "cells": split_cells,
+        **({"split": {"deg": EAST_SPLIT_DEG if east_geom else SPLIT_DEG, "min_vertices": SPLIT_VERTS, "cells": split_cells,
+                      **({"east": {"deg": EAST_SPLIT_DEG, "min_vertices": EAST_SPLIT_VERTS}} if east_geom else {}),
                       "note": "pieces cut on these lines in these cells: edges along them are not coast"}}
            if any(r.get("margin_px") for r in regions.values()) else {}),
         "stats": {"regions": rstats, "cells": cell_stats},

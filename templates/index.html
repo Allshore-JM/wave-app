@@ -5224,14 +5224,7 @@
         var iso = document.createElement('input'); iso.type = 'checkbox'; iso.id = 'ovIsobars'; iso.className = 'form-check-input'; iso.checked = ISOBARS;
         var t1 = document.createElement('span'); t1.className = 'form-check-label'; t1.textContent = 'Pressure isobars (wind)';
         row1.appendChild(iso); row1.appendChild(t1); gear.appendChild(row1);
-        var row2 = document.createElement('label'); row2.className = 'ov-setting ov-range mb-0 mt-2'; row2.setAttribute('for', 'ovParticles');
-        var t2 = document.createElement('span'); t2.textContent = 'Particles';
-        var part = document.createElement('input'); part.type = 'range'; part.id = 'ovParticles';
-        part.min = '0'; part.max = '100'; part.step = '5'; part.value = String(PARTICLES);
-        var said = function () { part.setAttribute('aria-valuetext', PARTICLES ? PARTICLES + '%' : 'off'); };
-        said();
-        row2.appendChild(t2); row2.appendChild(part); gear.appendChild(row2);
-        if (JET) {                                              // plan section 106: the jet stream's 250 hPa height contours
+        if (JET) {                                              // plan section 106: the jet stream's 250 hPa height contours, next to the isobars (G74 B-P3)
           var row3 = document.createElement('label'); row3.className = 'ov-setting form-check mb-0 mt-2';
           var hgt = document.createElement('input'); hgt.type = 'checkbox'; hgt.id = 'ovHeights'; hgt.className = 'form-check-input'; hgt.checked = HEIGHTS;
           var t3 = document.createElement('span'); t3.className = 'form-check-label'; t3.textContent = 'Height contours (jet stream)';
@@ -5241,6 +5234,13 @@
             if (overlay && overlay.setHeights) overlay.setHeights(HEIGHTS);
           });
         }
+        var row2 = document.createElement('label'); row2.className = 'ov-setting ov-range mb-0 mt-2'; row2.setAttribute('for', 'ovParticles');
+        var t2 = document.createElement('span'); t2.textContent = 'Particles';
+        var part = document.createElement('input'); part.type = 'range'; part.id = 'ovParticles';
+        part.min = '0'; part.max = '100'; part.step = '5'; part.value = String(PARTICLES);
+        var said = function () { part.setAttribute('aria-valuetext', PARTICLES ? PARTICLES + '%' : 'off'); };
+        said();
+        row2.appendChild(t2); row2.appendChild(part); gear.appendChild(row2);
         iso.addEventListener('change', function () {
           ISOBARS = !!iso.checked; writePref(ISO_KEY, ISOBARS ? '1' : '0');
           if (overlay) overlay.setIsobars(ISOBARS);

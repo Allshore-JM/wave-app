@@ -526,9 +526,9 @@ test('section 106: "Jet stream" is offered only with JET_OVERLAY (JET), a saved 
   const p = page({ settings: true, local: {}, init: { field: 'jet' }, src: SRC_JET, opts: OPTS_JET });
   assert.equal(p.sel.value, 'jet');
   const kids = p.gear.children;
-  assert.equal(kids.length, 4, 'gridlines, isobars, particles, then the height contours');
+  assert.equal(kids.length, 4, 'gridlines, isobars, the height contours right under them (G74 B-P3-3), then particles');
   const hgt = p.byId.ovHeights;
-  assert.equal(hgt.type, 'checkbox'); assert.equal(hgt.checked, true); assert.equal(kids[3].children[1].textContent, 'Height contours (jet stream)');
+  assert.equal(hgt.type, 'checkbox'); assert.equal(hgt.checked, true); assert.equal(kids[2].children[1].textContent, 'Height contours (jet stream)'); assert.equal(kids[1].children[1].textContent, 'Pressure isobars (wind)'); assert.equal(kids[3].children[0].textContent, 'Particles');
   const ov = await created(p);
   assert.deepEqual(ov.mounts, [['jet', true]]); assert.equal(ov.opts.jet, true); assert.equal(ov.opts.heights, true);
   hgt.checked = false; hgt.fire('change');

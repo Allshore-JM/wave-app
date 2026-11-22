@@ -692,6 +692,23 @@ retention are shared, so the browser draws both models with the same code.
   files and each record's metadata and a few cell values, incl. three sea-ice cells) for `tests/model_frames/test_ecmwf.py`.
   Review record: `docs/reviews/overlays-G30a-adversarial.md`.
 
+### Jet stream (plan section 106: job + client, overlay asset 2.32.4)
+- **What**: the 250 hPa jet for GFS and ECMWF (not RRFS). The frames jobs of both models write three more fields
+  per step from the same files they already read: `jet` (250 hPa speed, 0-130 m/s, full + half), `jdir` (its direction
+  FROM, circular, half) and `jhgt` (250 hPa geopotential height, 8,750-11,290 m, half). GFS keys `UGRD/VGRD/HGT:250 mb`;
+  ECMWF selects (param, levtype `pl`, level 250) while its surface selection stays byte-identical. Every older field is
+  unchanged. First runs with the jet: GFS 2026-11-21 18Z, ECMWF 2026-11-22 00Z; a run without the jet says "no jet
+  stream frames in this run yet". Cost: ~120k more R2 writes a month (~$0.55), ~0.8 GB stored, GFS build +~6 min.
+- **Client** (behind `JET_OVERLAY=1`, read by `app.py`; unset = no "Jet stream" option and no heights checkbox):
+  ramp teal -> violet over 50-200+ kt, a pale teal shade under 50 kt (80 %), particles from `jdir` only where the drawn
+  value is at or above the legend floor, relief + outlines as Wind speed, the 250 hPa heights through the isobar layer
+  (24 / 12 / 6 dam by zoom, dam labels, no H / L, dark lines over a light halo; gear checkbox "Height contours (jet
+  stream)", key `allshore.heights.v1`), readout "<speed> · <height> dam". `/notice/ecmwf` names the 250 hPa fields
+  whether or not the flag is set.
+- **Turn off**: unset `JET_OVERLAY` on the Render service (the frames keep publishing, harmless). Code rollback: tag
+  `prod-pre-jet` (client) / `prod-pre-jet-job` (job). Review records: `docs/reviews/jet-G74a-adversarial.md` (job),
+  `docs/reviews/jet-G74-adversarial.md` (client).
+
 ### Great Lakes frames (plan section 50, the job)
 
 The GFS-Wave frames have no Great Lakes data. `tools/model_frames/glwu.py` (GitHub Actions `model-glwu.yml`, its own

@@ -960,3 +960,44 @@ def test_seam_allow_names_one_stretch_only():
     iv = {("c", "y", 30.6): [(-91.31, -91.30, True)]}
     (d,) = V2.seam_step_lengths(iv, q=100000, detail=True)
     assert d[0] == "c" and d[2:4] == ("y", 30.6) and abs(d[4] + 91.305) < 1e-9
+    assert V2.stale_allows([step], allow) == [] and V2.stale_allows([], allow) == list(allow)   # G73: no stale entry
+
+
+def test_seam_chains_join_a_staircase_the_per_line_gate_misses():
+    """G73 #2: a disagreement that follows a diagonal band boundary is many short one-way steps on alternate x and y
+    lines (each well under 600 m), but one chain several km long; matched two-way edges and a named stretch drop out."""
+    d = 0.001                                                   # ~111 m in latitude
+    iv = {}
+    for k in range(10):                                         # a staircase: up d on x = k*d, right d on y = (k+1)*d
+        iv.setdefault(("c", "x", k * d), []).append((k * d, (k + 1) * d, True))
+        iv.setdefault(("c", "y", (k + 1) * d), []).append((k * d, (k + 1) * d, True))
+    steps = V2.seam_step_lengths(iv)
+    assert max(m for _, m in steps) < 120
+    chains = V2.seam_chains(iv)
+    assert len(chains) == 1 and 2000 < chains[0][0] < 2300     # 20 legs of ~111 m (x legs a little shorter: cos lat)
+    two_way = {k: v + [(lo, hi, not up) for lo, hi, up in v] for k, v in iv.items()}
+    assert V2.seam_chains(two_way) == []                       # a split cut (land both sides) cancels
+    allowed = {("c", "x", 0.0, d / 2)}
+    assert len(V2.seam_chains(iv, allowed)) == 1 and V2.seam_chains(iv, allowed)[0][0] < chains[0][0]
+
+
+def test_edge_fill_carries_the_data_across_a_box_line():
+    """G73 #3: the bathy tiles mark the pixels on a region's box line 'outside'; edge_fill gives those within px of the
+    line the nearest data class, so a river stays water and a beach stays land across the line, and pixels farther
+    than px from the line stay 'outside' (GSHHG fills them)."""
+    O, L, W = V2.OUT, V2.LAND, V2.WATER
+    n = 20
+    lons = np.arange(n) * 0.001 - 80.0
+    lats = 30.0 - np.arange(n) * 0.001
+    cls = np.full((n, n), L, np.uint8)
+    cls[8:12, :] = W                                           # a river running east
+    cls[:, 0:3] = W                                            # the sea to the west
+    cls[:, 10:] = O                                            # the box line at column 10; outside beyond it
+    box = (lons[0] - 1.0, lats[-1] - 1.0, lons[10], lats[0] + 1.0)
+    before = cls.copy()
+    k = V2.edge_fill(cls, lons, lats, box)
+    assert k == 3 * n                                          # columns 10-12: the line and 2 px beyond
+    assert (cls[8:12, 10:13] == W).all() and (cls[:8, 10:13] == L).all() and (cls[12:, 10:13] == L).all()
+    assert (cls[:, 13:] == O).all() and (cls[:, :10] == before[:, :10]).all()
+    far = np.full((n, n), O, np.uint8); far[:, :3] = L         # data only far from every box line: nothing filled
+    assert V2.edge_fill(far, lons, lats, box) == 0 and (far[:, 3:] == O).all()

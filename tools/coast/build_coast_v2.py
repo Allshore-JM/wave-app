@@ -278,6 +278,23 @@ EAST_PROBES = [
     (-94.85, 29.55, False),             # Galveston Bay
     (-73.10, 40.85, True),              # Long Island inland
     (-81.80, 31.50, True),              # Georgia inland
+    # G73 #4: a water probe in each large bay, sound and lagoon the set-wide area gate could not see flip to land
+    (-75.20, 39.05, False),             # Delaware Bay
+    (-73.10, 41.05, False),             # Long Island Sound
+    (-76.10, 36.05, False),             # Albemarle Sound
+    (-90.10, 30.20, False),             # Lake Pontchartrain
+    (-89.65, 30.05, False),             # Lake Borgne
+    (-74.125, 39.85, False),            # Barnegat Bay
+    (-80.58, 28.05, False),             # the Indian River Lagoon
+    (-88.90, 30.30, False),             # Mississippi Sound
+    (-97.30, 26.80, False),             # the Laguna Madre
+    (-80.25, 25.55, False),             # Biscayne Bay
+    (-82.10, 26.80, False),             # Charlotte Harbor
+    (-84.95, 29.68, False),             # Apalachicola Bay
+    (-93.85, 29.85, False),             # Sabine Lake
+    (-96.30, 28.55, False),             # Matagorda Bay
+    (-71.35, 41.60, False),             # Narragansett Bay
+    (-68.90, 44.20, False),             # Penobscot Bay
 ]
 NOAA_CREDIT_V2 = """
 Inside the bathymetry regions (Hawaii: 160.5-154.5 W, 18.5-22.5 N; the NW Hawaiian Islands: 168.5-160.5 W,
@@ -876,6 +893,42 @@ def seam_allowed(step, allow):
     name, m, kind, line, mid = step
     return any(a[0] == name and a[1] == kind and abs(a[2] - line) < 1e-9 and abs(a[3] - mid) < 0.01 and m <= a[4]
                for a in allow)
+
+
+def stale_allows(steps, allow):
+    """The seam_allow entries no measured step (seam_step_lengths detail) matches: each must name a real stretch."""
+    return [a for a in allow if not any(seam_allowed(st, [a]) for st in steps)]
+
+
+def seam_chains(seam_iv, skip=(), q=None):
+    """Section 105 (G73 #2): the one-way stretches of seam_iv joined where they meet (a band line's staircase corners,
+    5-degree cell lines) -> [(metres along the chain, lon, lat of its middle vertex)]. A disagreement that follows a
+    diagonal stretch of band for kilometres is many short steps to seam_step_lengths; here it is one chain. skip:
+    (cell, kind, line, middle) of stretches the set's seam_allow names (they are judged on their own)."""
+    q = q or Q2
+    segs = []
+    for (name, kind, line), ivs in sorted(seam_iv.items()):
+        ways = [shapely.union_all([shapely.LineString([(lo, 0.0), (hi, 0.0)]) for lo, hi, up in ivs if up == w])
+                for w in (True, False)]
+        for part in line_parts(shapely.symmetric_difference(*ways)):
+            if part.length * q < 0.5:
+                continue
+            c = np.asarray(part.coords)[:, 0]
+            lo, hi = float(c.min()), float(c.max())
+            if (name, kind, float(line), (lo + hi) / 2) in skip:
+                continue
+            pts = [(line, lo), (line, hi)] if kind == "x" else [(lo, line), (hi, line)]
+            segs.append(shapely.LineString(np.round(np.array(pts, np.float64) * q) / q))   # ends meet exactly
+    if not segs:
+        return []
+    out = []
+    for p in line_parts(shapely.line_merge(shapely.union_all(segs))):
+        c = np.asarray(p.coords)
+        dx = np.diff(c[:, 0]) * np.cos(np.radians((c[:-1, 1] + c[1:, 1]) / 2))
+        m = float(np.hypot(dx, np.diff(c[:, 1])).sum() * 111320.0)
+        mid = c[len(c) // 2]
+        out.append((round(m, 1), float(mid[0]), float(mid[1])))
+    return sorted(out, reverse=True)
 
 
 def band_lines(regions):
@@ -1717,6 +1770,8 @@ def check(out_dir, log=log, regions=None):
         allowed = [st for st in detail if seam_allowed(st, SEAM_ALLOW)]
         for st in allowed:
             log("  seam step allowed (set seam_allow): %s %.0f m on %s = %g at %.4f" % (st[0], st[1], st[2], st[3], st[4]))
+        for a in stale_allows(detail, SEAM_ALLOW):        # G73: a stale entry would quietly allow a future step there
+            problems.append("seam_allow %s %s = %g at %g matches no step (remove it)" % (a[0], a[1], a[2], a[3]))
         seam_steps = [(st[0], st[1]) for st in detail if st not in allowed]
         if seam_boxes or blines:
             longest = max((m for _, m in seam_steps), default=0.0)
@@ -1724,6 +1779,13 @@ def check(out_dir, log=log, regions=None):
             if longest > SEAM_STEP_MAX_M:
                 problems.append("a %.0f m edge lies along a seam box line (more than %d m: the two shores disagree there)"
                                 % (longest, SEAM_STEP_MAX_M))
+        if blines:                                        # G73 #2: steps joined across band staircase corners
+            chains = seam_chains(seam_iv, {(st[0], st[2], st[3], st[4]) for st in allowed})
+            top = chains[0] if chains else (0.0, 0.0, 0.0)
+            log("  seam chains (joined across corners): %d, longest %.0f m at %.4f, %.4f" % (len(chains), *top))
+            if top[0] > SEAM_STEP_MAX_M:
+                problems.append("a %.0f m chain of one-way edges follows the band/box lines near %.4f, %.4f (more than "
+                                "%d m: the two tiers disagree there)" % (top[0], top[1], top[2], SEAM_STEP_MAX_M))
         if near:
             problems.append("%d v2 vertices lie within 5e-5 deg of a region box line (none expected in S1)" % near)
         if index.get("v1_rings_crossing_box") != 0 and not seam_boxes:

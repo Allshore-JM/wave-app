@@ -26,7 +26,7 @@ and ZONES_SHA256):
     python -I tools/alerts/build_alert_coast.py [--zones-zip z_ddmmyy.zip] [--cache DIR]
     python -I tools/alerts/build_alert_coast.py --check
 The bathymetry-shoreline coast sets (tools/coast/build_coast_v2.py: v2 = Hawaii, plan section 103; v3 = + Puerto
-Rico/USVI, Guam/CNMI and American Samoa, plan section 104; v4 = + the US West Coast, section 104) give alert_coast_<set>.json, the file the site serves with
+Rico/USVI, Guam/CNMI and American Samoa, plan section 104; v4 = + the US West Coast, section 104; v5 = + the US East and Gulf coasts, section 105) give alert_coast_<set>.json, the file the site serves with
 COAST_SET=<set> (same rules; their changed cells carry q = 1e5 and clockwise holes, read by decode_cell, which takes q
 from each file's header):
     python -I tools/alerts/build_alert_coast.py --coast v3 [--coast-dir build/coast/v3]   (writes alert_coast_v3.json)
@@ -57,11 +57,11 @@ COAST_BASE = "https://models.allshoresurf.com/static/coast"
 # the sea coast; lakes of 100 km2 and more (the Great Lakes among them); the Great Lakes' smaller islands (lakes-v1:
 # only its rings lakeoutlines-v1 does not hold, see lake_islands)
 COAST_SETS = ("v1", "lakeoutlines-v1", "lakes-v1")
-LAND_SETS = ("v1", "v2", "v3", "v4")                        # the sea coast: GSHHG (v1) or a bathymetry shoreline set
+LAND_SETS = ("v1", "v2", "v3", "v4", "v5")                        # the sea coast: GSHHG (v1) or a bathymetry shoreline set
 BATHY_SETS = LAND_SETS[1:]                                  # the bathymetry-shoreline sets (plan sections 103-104)
 # water on the right of a ring's direction (+1) or left; the bathymetry sets' land is counter-clockwise like v1's and
 # their sea water enclosed by land runs clockwise, which also has the water on its right
-SEAWARD = {"v1": 1, "v2": 1, "v3": 1, "v4": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
+SEAWARD = {"v1": 1, "v2": 1, "v3": 1, "v4": 1, "v5": 1, "lakeoutlines-v1": -1, "lakes-v1": -1}
 
 
 def out_path(coast):
@@ -101,6 +101,22 @@ SHELTERED = [
      [(21.455, -157.768), (21.525, -157.828), (21.535, -157.850), (21.400, -157.870), (21.400, -157.775),
       (21.430, -157.758)]),
 ]
+# ... and per coast set: shores only that set needs. Section 105 (coast v5): the bathymetry's barrier islands are
+# narrower than GSHHG's, and the open test's samples can step over a narrow island: three shores v5 newly drew as open.
+# Set-only, so the shared RULES and every earlier set's file stay as they were (v4's own bay lines are left alone).
+SHELTERED_BY_SET = {"v5": [
+    ("Pamlico Sound's Hyde County shore (Swan Quarter - Engelhard), North Carolina",
+     [(35.25, -76.45), (35.65, -76.45), (35.65, -75.80), (35.45, -75.80), (35.25, -76.10)]),
+    ("Croatan Sound and the mainland across it (Manns Harbor - Stumpy Point), North Carolina",
+     [(35.55, -75.95), (35.95, -75.95), (35.95, -75.72), (35.55, -75.72)]),
+    ("Tangier Sound's eastern shore (Deal Island - Crisfield) and Smith Island, Chesapeake Bay",
+     [(37.85, -76.10), (38.25, -76.10), (38.25, -75.75), (37.85, -75.75)]),
+]}
+
+
+def sheltered_areas(coast="v1"):
+    """The SHELTERED polygons a build on sea coast set `coast` uses: the shared ones, then that set's own."""
+    return SHELTERED + SHELTERED_BY_SET.get(coast, [])
 TOL = 0.0005        # Douglas-Peucker tolerance (deg, ~50 m)
 MIN_KM = 0.3        # shorter pieces are dropped (a speck the near rule caught)
 Q = 1e6             # zone vertices compared at this precision (the shapefile shares edges exactly)
@@ -921,7 +937,7 @@ def build(zip_bytes, cache, log=print, coast="v1"):
             points += x.size
             zone = fill_holes(assign(x, y, skip, pieces, paths, boxes, near, start=start, water=water),
                               x, y, start, skip)
-            zone[sheltered(x, y)] = -1
+            zone[sheltered(x, y, sheltered_areas(coast))] = -1
             assigned += int((zone >= 0).sum())
             zone = np.where(classify_open(land, x, y, start, skip, zone, SEAWARD[set_name]), zone, -1)
             kept += int((zone >= 0).sum())
@@ -944,10 +960,15 @@ RULES = {"step_deg": STEP, "near_km": NEAR_KM, "near_along": NEAR_ALONG, "tol_de
          "sheltered": [n for n, _p in SHELTERED]}
 
 
-def write(zones, coast_ids, zones_sha, path=OUT):
+def rules_for(coast="v1"):
+    """RULES as a file built on sea coast set `coast` records them: its sheltered list names that set's own shores."""
+    return dict(RULES, sheltered=[n for n, _p in sheltered_areas(coast)])
+
+
+def write(zones, coast_ids, zones_sha, path=OUT, coast="v1"):
     doc = {"format": FORMAT, "zones_file": ZONES_FILE, "zones_sha256": zones_sha, "coast": coast_ids,
            "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-           "rules": RULES,
+           "rules": rules_for(coast),
            "zones": zones}
     with open(path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(doc, f, separators=(",", ":"), sort_keys=True)
@@ -1007,6 +1028,9 @@ NO_LINE = [
     (36.9770, -76.3990, 1.0),               # Newport News, Hampton Roads
     (41.0230, -73.5200, 1.0),               # Stamford, Long Island Sound
     (35.4660, -76.9830, 1.0),               # the Pamlico River
+    (35.3440, -76.2590, 1.0),               # Swan Quarter, Pamlico Sound's mainland shore (section 105)
+    (35.5860, -75.8550, 1.0),               # Stumpy Point, the mainland across Croatan / Pamlico Sound
+    (37.9380, -75.8290, 1.0),               # Deal Island, Chesapeake Bay's eastern shore
     (21.4330, -157.8070, 1.0),              # Heeia, inside Kaneohe Bay's reef
     (21.4600, -157.8420, 1.0),              # Kahaluu, inside Kaneohe Bay's reef
 ]
@@ -1088,7 +1112,7 @@ def main(argv=None):
     ap.add_argument("--cache", default=os.path.join(HERE, ".cache"), help="where coast cells are kept")
     ap.add_argument("--out", default=None, help="default alert_coast.json (--coast v1) or alert_coast_<set>.json")
     ap.add_argument("--coast", default="v1", choices=LAND_SETS,
-                    help="the sea coast set: v1 (GSHHG), v2 (section 103), v3 or v4 (section 104)")
+                    help="the sea coast set: v1 (GSHHG), v2 (section 103), v3 or v4 (section 104), v5 (section 105)")
     ap.add_argument("--coast-dir", help="read the --coast set from this local directory (a build not yet published)")
     ap.add_argument("--check", action="store_true", help="check the written file only")
     a = ap.parse_args(argv)
@@ -1111,7 +1135,7 @@ def main(argv=None):
         print(f"PROBLEM zone file sha256 {sha} is not the pinned {ZONES_SHA256} (a new NWS file: bump the pins)")
         return 1
     zones, coast_ids = build(data, a.cache, coast=a.coast)
-    doc = write(zones, coast_ids, sha, a.out)
+    doc = write(zones, coast_ids, sha, a.out, coast=a.coast)
     probs = check(doc)
     for p in probs:
         print("PROBLEM", p)

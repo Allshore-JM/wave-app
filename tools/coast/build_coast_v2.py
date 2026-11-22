@@ -1,6 +1,16 @@
 """Coast sets v2+ (plan sections 103-104): the coast-v1 land set with GSHHG replaced, inside bathymetry regions, by the
 bathymetry's own MHHW water edge. SETS: v2 = Hawaii (stage S1); v3 = v2 + Puerto Rico / USVI, Guam / CNMI and American
-Samoa (stage S2), Hawaii's cells byte-identical to v2's. --set picks one (default v2).
+Samoa (stage S2), Hawaii's cells byte-identical to v2's; v4 = v3 + the US West Coast (section 104); v5 = v4 + the US
+East and Gulf coasts (section 105), v4's cells byte-identical. --set picks one (default v2).
+
+Section 105, the East and Gulf regions (ALL_REGIONS "mode"): Maine/NH "full" (rule 1 over the box, like the West
+Coast); the other eight "two_tier": rule 1 at zoom 15 inside the open-coast band (tools/coast/band_v5.json, made once by
+make_coast_band.py and pinned by its sha256: the beaches) and the coarse zoom-12 class in the rest of the box (bays,
+sounds, marsh, tidal rivers; COARSE_*), instead of GSHHG. Each region owns its box less the boxes before it in
+EAST_ORDER; its land is cut to its owned box, the fine tier to the band, the coarse tier outside it; an East cell is one
+GEOS union of those with GSHHG v1 outside the East boxes. A two-tier region fetches zooms <= 12 whole and zooms 13-15
+only for the blocks the band needs. --check also measures one-way edges along the band lines (and every East box line)
+against SEAM_STEP_MAX_M; a set may name an accepted stretch in "seam_allow".
 
 Inputs: a coast-v1 build (static/coast/v1, from build_coast.py) and the published bathymetry tiles of the regions in
 REGIONS at zooms zmin-15 (static/bathy/<region>/v<N>/, tools/bathy). Output: a directory in the same coast-v1 format
@@ -72,6 +82,10 @@ S2_SPECK_PX2, S2_TOL_PX = 32.0, 1.0
 # 10-20 ms a tile at 4x CPU throttle). The overlay only fills the pieces (one nonzero path; its coast line under wind
 # comes from the filled mask), so the cuts never show; the alert builder skips edges along them (index.json "split").
 SPLIT_DEG, SPLIT_VERTS = 0.25, 20000
+# section 105: the East cells cut finer (Hampton NH, the Great Marsh traced in full: two 20k-vertex pieces met one zoom-12
+# tile, 40k vertices walked, 39 ms at 4x CPU throttle against the 25 ms gate). 0.125-degree lines include the 0.25 ones,
+# so one set-level split grid (index.json "split": deg) covers the West cells' cuts too.
+EAST_SPLIT_DEG, EAST_SPLIT_VERTS = 0.125, 5000
 # section 104 size gates per changed cell (the client's per-tile cost and first-load bytes)
 MAX_CELL_BYTES, MAX_CELL_VERTS, MAX_PIECE_VERTS = 2 * 1024 * 1024, 600000, 150000
 SEAM_MARGIN_PX = 2                       # section 104: a seam region's raster reaches this far past its box
@@ -119,7 +133,48 @@ ALL_REGIONS = {
                      digest="49cba467bd4faf6713ba24033599787fd4c4627da2c0bf5068eacf042b606379",
                         tiles_sha256="79cc15320127ba55b8da0bcad4015985f14e62b0c4fd2109d876805fdb468a04",
                      speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, exclude=[PUGET_SOUND]),
+    # the US East and Gulf coasts (plan section 105, coast set v5; owner 2026-11-21 option A): Maine/NH traced in full
+    # like the West Coast ("full"); the other eight "two_tier": the zoom-15 trace inside the open-coast band
+    # (tools/coast/band_v5.json, make_coast_band.py) and the coarse zoom-12 trace (COARSE_*) in the rest of the box,
+    # instead of GSHHG. Each is cut to its owned box (its box less the boxes before it in EAST_ORDER).
+    "us-me-nh": dict(v=1, box=(-71.2, 42.8, -66.8, 47.5), zmin=8,
+                     digest="aeda1e313b2a51372c9cf18ecd2812d4ccb117f0de7859124c9909fe58bb45f5", tiles_sha256="c769be308ea0d688fcdcbf83d6d40890930f81b52438309f49f5c8b1aef97a72",
+                     speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="full"),
+    "us-sne-ny": dict(v=1, box=(-74.5, 40.4, -69.8, 42.8), zmin=8,
+                      digest="f6abd79a0790976bbbcbf5da1faf9dc19acb2a71a4a9c9089a299b838f48e836", tiles_sha256="6c65a015cbfc28dda19dd17965d088592b324ce49df27d539e4bb8a2e0d1d60e",
+                      speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-nj-ches": dict(v=1, box=(-77.7, 36.9, -73.5, 40.4), zmin=8,
+                       digest="aab89403f3f3767c6fdf59c170f336f7d7d7c8190a91c29bd4734a614fb91263", tiles_sha256="9dcec443305e028265f909bc0e4ca0df5bc6445bc56c627300618b4a7925cef9",
+                       speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-va-nc": dict(v=1, box=(-79.5, 33.7, -75.0, 36.9), zmin=8,
+                     digest="9e03e64a6fce69f5fc83ed336ecb8f50151df740f1f74d0c556681c2cd67a1df", tiles_sha256="4f1915789c93cc7fd93e188d4b6b583319bf2b2f6e8c6c85a248b6c1880fedba",
+                     speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-sc-ga": dict(v=1, box=(-82.0, 30.7, -77.5, 33.7), zmin=8,
+                     digest="4d118ffd03d8d353c18b5bab113e627a83f5a96c66ce9f8752cb8b74633947d2", tiles_sha256="c1e167de3ed2d8cff337d88dc72b13f5afbf42a89381b7d13187ff37cf0182f2",
+                     speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-fl-east": dict(v=1, box=(-81.6, 26.0, -79.7, 30.7), zmin=8,
+                       digest="d0c56c1a591b16f220f42d730794781219d20a40c764e29f0f4db44ed20ee8c1", tiles_sha256="4f6ef9d55edb2336282e08baeb8a3d4ca3ded832e56b2cb05e24334eff2c6aba",
+                       speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-fl-south": dict(v=1, box=(-83.2, 24.3, -79.7, 26.0), zmin=8,
+                        digest="0cd1b80cde1d0884f2d8b6be09386ce93254d00070dcbfbbc11f2e406f370383", tiles_sha256="5eb343a917acc9d21a0d57d364168cd09fb67b4b7213d3537d2c4b3008057d5d",
+                        speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-gulf-east": dict(v=1, box=(-88.45, 26.0, -81.6, 31.2), zmin=8,
+                         digest="e801a036456b4db1ca70712ddb4090d27dd8092df1a256b10c4c0c464928ecfd", tiles_sha256="6b60dee643e58ae5267198b18c27885e5fba46639cc37139acdb2a536e41329e",
+                         speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
+    "us-gulf-west": dict(v=1, box=(-97.7, 25.7, -88.45, 30.6), zmin=8,
+                         digest="8049cdf606105f4d7827871ff7a0b67335289667136b3d064cd007585754fae1", tiles_sha256="7d731ddade3adb06e1019f3eef8ba069e78e3abf51dfedda76d2c48eb0d81c3e",
+                         speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
 }
+# Section 105: the East/Gulf regions' precedence (the bathy layer's: us-sc-ga wins its corner over us-gulf-east; the
+# other boxes only touch). A region owns its box less the boxes of the regions before it.
+EAST_ORDER = ["us-me-nh", "us-sne-ny", "us-nj-ches", "us-va-nc", "us-sc-ga", "us-fl-east", "us-fl-south", "us-gulf-east",
+              "us-gulf-west"]
+# The coarse tier (section 105, owner 2026-11-21 option A): the zoom-12 class (tile, else ancestor; 'outside' ->
+# GSHHG), water opened with the 3 x 3 cross (channels 1-2 z12 px wide, under ~65 m, close), land rings and holes under
+# COARSE_SPECK_M2 dropped, Douglas-Peucker 1 z12 px; the raster reaches COARSE_PAD_PX past the box (a zoom-15 margin is
+# under one zoom-12 px). Measured in step 1: 0.82 M vertices for the eight boxes, worst z12 tile 2.3 k.
+COARSE_Z, COARSE_SPECK_M2, COARSE_TOL_PX, COARSE_PAD_PX, COARSE_HALO = 12, 20000.0, 1.0, 3.5, 4
+BAND_Z = 10                              # make_coast_band.ZB: the band is a zoom-10 raster
 # The published v1 set this build starts from (static/coast/v1 index.json tier0.sha256 / tier1.sha256).
 V1_PIN_TIER0_SHA256 = "aabbff516107953c42915a11c70941682030ee3aecc29b0d0456d33b3ef9cebc"
 V1_PIN_TIER1_SHA256 = "a4b97403aac09c0a4ca88f50d77d8e339eb061342204a0dd227294e71cf001c6"
@@ -181,6 +236,66 @@ WEST_PROBES = [
     (-123.95, 46.55, False),            # Willapa Bay
     (-124.00, 46.95, False),            # Grays Harbor
 ]
+# the US East and Gulf coasts (section 105; picked in step 2 from the build): at each beach the v5 water point under
+# GSHHG land farthest from v5's shore (within 0.03 deg) and the land point farthest inland; then the coarse tier
+EAST_PROBES = [
+    (-70.58375, 43.23400, False),       # Ogunquit, 136 m off the shore (GSHHG: land)
+    (-70.60550, 43.23250, True),        # Ogunquit inland
+    (-71.95550, 41.02500, False),       # Montauk (GSHHG: land)
+    (-71.94325, 41.04625, True),        # Montauk inland
+    (-74.06000, 40.09750, False),       # Manasquan (GSHHG: land)
+    (-74.04900, 40.08625, True),        # Manasquan inland
+    (-75.17600, 38.18675, False),       # Assateague (GSHHG: land)
+    (-75.16750, 38.17500, True),        # Assateague, the island
+    (-75.63375, 35.94725, False),       # Nags Head, the Roanoke Sound side (GSHHG: land)
+    (-75.64025, 35.97200, True),        # Nags Head, the island
+    (-77.80875, 34.20250, False),       # Wrightsville (GSHHG: land)
+    (-77.81225, 34.23225, True),        # Wrightsville inland
+    (-79.97000, 32.65975, False),       # Folly, 1.4 km off the v5 shore (GSHHG: land)
+    (-79.94725, 32.65450, True),        # Folly Island
+    (-81.42000, 30.26575, False),       # Jacksonville Beach, the Intracoastal (GSHHG: land)
+    (-81.40075, 30.28975, True),        # Jacksonville Beach inland
+    (-80.62875, 28.29875, False),       # Cocoa, the Banana River (GSHHG: land)
+    (-80.61150, 28.33200, True),        # Cocoa Beach, the island
+    (-80.15800, 25.78625, False),       # Miami, Biscayne Bay (GSHHG: land)
+    (-80.13575, 25.79050, True),        # Miami Beach
+    (-81.81375, 26.15600, False),       # Naples (GSHHG: land)
+    (-81.79550, 26.15625, True),        # Naples inland
+    (-87.14100, 30.36000, False),       # Pensacola, the sound (GSHHG: land)
+    (-87.18375, 30.35375, True),        # Pensacola Beach, the island
+    (-90.00000, 29.19000, False),       # Grand Isle, Caminada Pass side (GSHHG: land)
+    (-89.97900, 29.24500, True),        # Grand Isle, the island
+    (-94.84375, 29.28150, False),       # Galveston (GSHHG: land)
+    (-94.81750, 29.28650, True),        # Galveston inland
+    (-97.19000, 26.07000, False),       # South Padre, the Laguna Madre (GSHHG: land)
+    (-97.16325, 26.08050, True),        # South Padre Island
+    # the coarse tier (bays, sounds, inland)
+    (-75.90, 35.30, False),             # Pamlico Sound
+    (-76.25, 38.10, False),             # Chesapeake Bay
+    (-75.60, 38.70, True),              # Delmarva inland
+    (-82.60, 27.75, False),             # Tampa Bay
+    (-88.00, 30.50, False),             # Mobile Bay
+    (-94.85, 29.55, False),             # Galveston Bay
+    (-73.10, 40.85, True),              # Long Island inland
+    (-81.80, 31.50, True),              # Georgia inland
+    # G73 #4: a water probe in each large bay, sound and lagoon the set-wide area gate could not see flip to land
+    (-75.20, 39.05, False),             # Delaware Bay
+    (-73.10, 41.05, False),             # Long Island Sound
+    (-76.10, 36.05, False),             # Albemarle Sound
+    (-90.10, 30.20, False),             # Lake Pontchartrain
+    (-89.65, 30.05, False),             # Lake Borgne
+    (-74.125, 39.85, False),            # Barnegat Bay
+    (-80.58, 28.05, False),             # the Indian River Lagoon
+    (-88.90, 30.30, False),             # Mississippi Sound
+    (-97.30, 26.80, False),             # the Laguna Madre
+    (-80.25, 25.55, False),             # Biscayne Bay
+    (-82.10, 26.80, False),             # Charlotte Harbor
+    (-84.95, 29.68, False),             # Apalachicola Bay
+    (-93.85, 29.85, False),             # Sabine Lake
+    (-96.30, 28.55, False),             # Matagorda Bay
+    (-71.35, 41.60, False),             # Narragansett Bay
+    (-68.90, 44.20, False),             # Penobscot Bay
+]
 NOAA_CREDIT_V2 = """
 Inside the bathymetry regions (Hawaii: 160.5-154.5 W, 18.5-22.5 N; the NW Hawaiian Islands: 168.5-160.5 W,
 22.5-24.5 N) the coastline is the mean-higher-high-water edge of the allshoresurf.com bathymetry tiles, built from
@@ -224,6 +339,29 @@ allshoresurf.com bathymetry tiles, built from NOAA NCEI Continuously Updated Dig
 NOAA OCS BlueTopo and USACE topobathy data (NOAA Digital Coast). These US government data are in the public domain.
 Elsewhere the coastline is GSHHG's. Not for navigation.
 """
+# v4's twenty changed cells as published in static/coast/v4 (sha256; the runner's build 58d55125): v5 keeps them.
+V4_CELLS = dict(V3_CELLS, **{
+    "30_-120": "3d2830bdb2b509dd0cfa6c7c5d9a1c28b5c3596c8a1684747430c9adf00bbe04",
+    "30_-125": "f9b9f1ae086f761c2d6695bcced8a2c864ecfb0adcc10c01e9f3a6446fc8fcd3",
+    "35_-120": "4c288dae7a2a104c23ccbf5bc6d3cb1b0cd43c7f4eaf2faf10c087aad341678a",
+    "35_-125": "9f6d1bb38bf63883f8d3a1fb854357bfb24af8f0308d52a7ea4f4835709b261c",
+    "40_-120": "a93f70d873e04ccd645820344e8b8a1d9c0b3e353f02ff599364f4887f22c343",
+    "40_-125": "e2e2b6151c7cfa954a96c39c331beb0a61c25bff8560132b1e8031621e3f9b32",
+    "45_-125": "20cfbe236a8b6cde39855931a85ed388bf7ff3a945744b8c10b992d7c67be6fd",
+    "45_-130": "ab50daeb542627696e7f59fde22a31ba11c54bad7d88f901e8a3016959c2c3f7",
+})
+NOAA_CREDIT_V5 = """
+Inside the bathymetry regions (Hawaii: 160.5-154.5 W, 18.5-22.5 N; the NW Hawaiian Islands: 168.5-160.5 W,
+22.5-24.5 N; Puerto Rico and the US Virgin Islands: 68-64.25 W, 17.25-19 N; Guam and the CNMI: 144.5-146 E,
+13-15.5 N; American Samoa: 171-169.25 W, 14.5-14 S; the US West Coast: California, Oregon and the outer coast of
+Washington, 125.2-116.9 W, 32.4-49.1 N, Puget Sound excepted; the US East and Gulf coasts from Maine to Texas,
+97.7-66.8 W, 24.3-47.5 N) the coastline is the mean-higher-high-water edge of the allshoresurf.com bathymetry tiles,
+built from NOAA NCEI Continuously Updated Digital Elevation Models (CUDEM, 1/9 and 1/3 arc-second), the NOAA NGS 2021
+Northwestern Hawaiian Islands topobathy lidar, USGS CoNED topobathymetric models, NOAA OCS BlueTopo and USACE topobathy
+data (NOAA Digital Coast). These US government data are in the public domain. On the East and Gulf coasts the open
+coast is traced at full detail and bays, sounds, marshes and tidal rivers at about 30 m. Elsewhere the coastline is
+GSHHG's. Not for navigation.
+"""
 # The coast sets (plan sections 103-104). Per set:
 #   regions           the bathymetry regions traced;
 #   expected_changed  the tier-1 cells a real build changes (every other cell is v1's bytes);
@@ -257,24 +395,52 @@ SETS = {
                pin="58d55125de71c316f5d974c1edd7ebac0bf691d52e76cfd12f6f5ea251ac5004",
                v1_sqdeg=121.761359,                                                      # a real v4 build: 121.56886 (-0.16 %)
                probes=HAWAII_PROBES + S2_PROBES + WEST_PROBES, same_cells=V3_CELLS, credit=NOAA_CREDIT_V4),
+    # section 105: v4 + the US East and Gulf coasts (two-tier, band file pinned by its sha256)
+    "v5": dict(regions=["hawaii", "nwhi-lidar", "prvi", "marianas", "samoa", "us-ca-south", "us-ca-north", "us-or-wa"]
+               + EAST_ORDER,
+               expected_changed=["-15_-170", "-15_-175", "10_140", "10_145", "15_-155", "15_-160", "15_-65", "15_-70",
+                                 "15_145", "20_-160", "20_-165", "20_-170", "30_-120", "30_-125", "35_-120", "35_-125",
+                                 "40_-120", "40_-125", "45_-125", "45_-130",
+                                 # the East and Gulf (20_-80 and 25_-80 come out as v1's: copied)
+                                 "20_-85", "25_-100", "25_-85", "25_-90", "25_-95", "30_-80", "30_-85", "30_-90", "30_-95",
+                                 "35_-75", "35_-80", "40_-70", "40_-75", "40_-80", "45_-70", "45_-75"],
+               # the runner's build (dry run #761, b9c36c1): the laptop's (9b68e70e) is the same coast, its GEOS-joined
+               # cells (5 West, the East unions) a few bytes apart
+               pin="f356dd68d0d7b14c45ec81ed733c4bb0c2a981673950607cbf27e02ea31dc942",
+               v1_sqdeg=342.759945,                                                      # a real v5 build: 340.20 (-0.75 %)
+               probes=HAWAII_PROBES + S2_PROBES + WEST_PROBES + EAST_PROBES, same_cells=V4_CELLS, credit=NOAA_CREDIT_V5,
+               band="band_v5.json", band_sha256="3a55267de86907193277e1d143d50336ed86aa7522087567d4a24d7b360babf1",
+               # seam steps over SEAM_STEP_MAX_M the owner accepts (plan section 105 step 2): (cell, "x"|"y", line,
+               # along, max m, why)
+               seam_allow=[("30_-95", "y", 30.6, -91.3075, 900.0,
+                            "the Mississippi River crossing us-gulf-west's north box line: the bathymetry's tidal river "
+                            "inside the box meets GSHHG's land outside it, a cut straight across the river")]),
 }
 LICENSE = BC.LICENSE + "; NOAA NCEI CUDEM and NOAA NGS lidar (public domain) inside the bathymetry regions"
 
 
 def format_key(regions):
+    two = any(r.get("mode") == "two_tier" for r in regions.values())
     return ("coast-v1-land2|base=coast-v1|z=%d|block=%d|tol=%g|speck=%g|q=%d|rule=tile>ancestor>gshhg|boxes=%s|"
             "shapely=%s" % (Z, BLOCK, TOL_PX, SPECK_PX2, Q2,
                             ";".join("%s:v%d:%s%s" % (n, r["v"], ",".join("%g" % v for v in r["box"]),
                                                       "".join(":%s=%g" % (k, r[k]) for k in ("speck", "tol", "margin_px") if k in r) +
-                                                      "".join(":exclude=%s" % ",".join("%g" % v for v in e) for e in r.get("exclude", ())))
+                                                      "".join(":exclude=%s" % ",".join("%g" % v for v in e) for e in r.get("exclude", ())) +
+                                                      (":mode=%s" % r["mode"] if r.get("mode") else ""))
                                      for n, r in sorted(regions.items())),
                             ".".join(shapely.__version__.split(".")[:2]))) + (
-        "|split=%g>%d" % (SPLIT_DEG, SPLIT_VERTS) if any(r.get("margin_px") for r in regions.values()) else "")
+        "|split=%g>%d" % (SPLIT_DEG, SPLIT_VERTS) if any(r.get("margin_px") for r in regions.values()) else "") + (
+        "|eastsplit=%g>%d" % (EAST_SPLIT_DEG, EAST_SPLIT_VERTS) if any(r.get("mode") for r in regions.values()) else "") + (
+        "|east=%s|band=%s|coarse=z%d,speck=%g,tol=%g,pad=%g,open=cross" % (
+            ",".join(EAST_ORDER), (BAND or {}).get("sha256", "none")[:16], COARSE_Z, COARSE_SPECK_M2, COARSE_TOL_PX,
+            COARSE_PAD_PX) if two else "")
 
 
-def split_big(geom):
+def split_big(geom, deg=None, verts=None):
     """-> (the Polygon parts of geom, each of more than SPLIT_VERTS vertices cut into its pieces inside the SPLIT_DEG
-    squares its bounds meet, the number of parts cut). Section 104 rung a; the squares are exact multiples of SPLIT_DEG."""
+    squares its bounds meet, the number of parts cut). Section 104 rung a; the squares are exact multiples of SPLIT_DEG.
+    deg / verts: another grid and threshold (section 105: the East cells)."""
+    SPLIT_DEG, SPLIT_VERTS = (deg or globals()["SPLIT_DEG"]), (verts or globals()["SPLIT_VERTS"])   # noqa: N806
     out, cut = [], 0
     for p in polygons(geom):
         if shapely.get_num_coordinates(p) <= SPLIT_VERTS:
@@ -295,9 +461,11 @@ def use_set(name):
     """Make coast set `name` the active one: the module-level REGIONS, EXPECTED_CHANGED, PIN_TIER1_SHA256,
     V1_CHANGED_SQDEG, SET_PROBES, SAME_CELLS, FORMAT_KEY, SOURCE and NOAA_CREDIT the build and check read."""
     global SET, REGIONS, EXPECTED_CHANGED, PIN_TIER1_SHA256, V1_CHANGED_SQDEG, SET_PROBES, SAME_CELLS
-    global FORMAT_KEY, SOURCE, NOAA_CREDIT
+    global FORMAT_KEY, SOURCE, NOAA_CREDIT, BAND, SEAM_ALLOW
     st = SETS[name]
     SET = name
+    SEAM_ALLOW = list(st.get("seam_allow", ()))
+    BAND = load_band(os.path.join(HERE, st["band"]), st.get("band_sha256")) if st.get("band") else None
     REGIONS = {n: ALL_REGIONS[n] for n in st["regions"]}
     EXPECTED_CHANGED = list(st["expected_changed"])
     PIN_TIER1_SHA256 = st["pin"]
@@ -311,6 +479,65 @@ def use_set(name):
 
 def source(regions):
     return "GSHHG 2.3.7 + NOAA bathymetry MHHW water edge (allshoresurf bathy regions %s)" % ", ".join(sorted(regions))
+
+
+BAND = None                               # the open-coast band of the active set (section 105), load_band()
+
+
+def load_band(path, sha=None):
+    """The band file (make_coast_band.py) as a dict with "sha256"; refuses a file whose sha256 is not the pinned one."""
+    raw = open(path, "rb").read()
+    h = hashlib.sha256(raw).hexdigest()
+    if sha is not None and h != sha:
+        raise ValueError("%s: sha256 %s is not the pinned %s" % (path, h[:12], sha[:12]))
+    band = json.loads(raw.decode("utf-8"))
+    if band.get("format") != "coast-band-v1" or band.get("zoom") != BAND_Z:
+        raise ValueError("%s is not a coast-band-v1 zoom-%d file" % (path, BAND_Z))
+    band["sha256"] = h
+    band["_cache"] = {}
+    return band
+
+
+def band_raster(name, band=None):
+    """(bool mask h x w, x0, y0) of region name's band at zoom 10 (x0, y0 = the first px), or None."""
+    band = band or BAND
+    e = (band or {}).get("regions", {}).get(name)
+    if e is None:
+        return None
+    m = np.zeros((e["h"], e["w"]), bool)
+    for row in e["runs"]:
+        y = row[0]
+        for i in range(1, len(row), 2):
+            m[y, row[i]:row[i + 1]] = True
+    return m, e["x0"], e["y0"]
+
+
+def band_px_lon(X):
+    return np.asarray(X, np.float64) / (T.TILE * 2 ** BAND_Z) * 360.0 - 180.0
+
+
+def band_px_lat(Y):
+    return np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * np.asarray(Y, np.float64) / (T.TILE * 2 ** BAND_Z)))))
+
+
+def band_polygon(name, band=None):
+    """Region name's band as an exact lon/lat polygon (zoom-10 pixel edges: constant-longitude / latitude lines)."""
+    band = band or BAND
+    cache = band["_cache"]
+    if name not in cache:
+        m, x0, y0 = band_raster(name, band)
+        g = shapely.union_all(mask_polygons(m, x0, y0)) if m.any() else shapely.MultiPolygon()
+        cache[name] = shapely.transform(g, lambda a: np.column_stack([band_px_lon(a[:, 0]), band_px_lat(a[:, 1])]))
+    return cache[name]
+
+
+def owned_box(name, regions):
+    """An East region's box less the boxes of the East regions before it in EAST_ORDER (section 105)."""
+    g = sbox(*regions[name]["box"])
+    for r in EAST_ORDER[:EAST_ORDER.index(name)]:
+        if r in regions:
+            g = g.difference(sbox(*regions[r]["box"]))
+    return g
 
 
 use_set("v2")
@@ -415,7 +642,8 @@ def fetch_tiles(tiles_dir, regions=None, workers=16):
             if not os.path.exists(p):
                 open(p, "wb").write(_get(base + "/idx/%s.bin" % cell))
             idx[cell] = open(p, "rb").read()
-        want = listed_tiles(index, idx)
+        listed = listed_tiles(index, idx)
+        want = [t for t in listed if t[0] <= COARSE_Z] if reg.get("mode") == "two_tier" else listed
 
         def one(t):
             z, x, y = t
@@ -431,6 +659,11 @@ def fetch_tiles(tiles_dir, regions=None, workers=16):
         t0 = time.time()
         with ThreadPoolExecutor(workers) as ex:
             n = sum(ex.map(one, want))
+        if reg.get("mode") == "two_tier":           # then zooms 13-15 of the blocks the band needs (section 105)
+            want2 = two_tier_expect(tiles_dir, name, reg, listed)[1]
+            with ThreadPoolExecutor(workers) as ex:
+                n += sum(ex.map(one, want2))
+            want = want + want2
         log("fetch %s v%d: %d tiles listed at zooms %d-%d, %d downloaded (%.0f s)" % (
             name, reg["v"], len(want), reg["zmin"], Z, n, time.time() - t0))
 
@@ -453,10 +686,83 @@ def fetch_v1(v1_dir):
     log("fetch v1: %d files" % len(rels))
 
 
+def region_listed(tiles_dir, name, reg):
+    """The tiles a region's published index lists (its idx files read from tiles_dir)."""
+    d = os.path.join(tiles_dir, name, "v%d" % reg["v"])
+    index = json.load(open(os.path.join(d, "index.json")))
+    if "levels" not in index:                     # a synthetic test region: what is on disk
+        out = []
+        for z in range(reg["zmin"], Z + 1):
+            zd = os.path.join(d, "t", str(z))
+            for x in (os.listdir(zd) if os.path.isdir(zd) else ()):
+                out += [(z, int(x), int(f[:-4])) for f in os.listdir(os.path.join(zd, x)) if f.endswith(".png")]
+        return sorted(out)
+    idx = {c: open(os.path.join(d, "idx", c + ".bin"), "rb").read() for c in index.get("t10") or ()}
+    return listed_tiles(index, idx)
+
+
+def band_window(band_mask, x0, y0, bx, by, grow=1):
+    """The zoom-10 band over block bx/by (NBZ x NBZ px), grown by `grow` px (8-connected)."""
+    nb = BPX >> (Z - BAND_Z)
+    w = np.zeros((nb + 2 * grow, nb + 2 * grow), bool)
+    cx, cy = bx * nb - x0 - grow, by * nb - y0 - grow
+    sx0, sy0 = max(0, cx), max(0, cy)
+    sx1, sy1 = min(band_mask.shape[1], cx + nb + 2 * grow), min(band_mask.shape[0], cy + nb + 2 * grow)
+    if sx1 > sx0 and sy1 > sy0:
+        w[sy0 - cy:sy1 - cy, sx0 - cx:sx1 - cx] = band_mask[sy0:sy1, sx0:sx1]
+    if grow:
+        from scipy import ndimage
+        w = ndimage.binary_dilation(w, np.ones((3, 3), bool), iterations=grow)[grow:-grow, grow:-grow]
+    return w
+
+
+def fine_blocks(tiles, reg, band=None):
+    """Section 105: the blocks a two-tier region traces at zoom 15 = those the band (grown 1 px) meets whose zoom-12
+    class there (tile, else ancestor) is not all water (or that no tile covers: GSHHG decides). Reads zooms <= 12."""
+    m, x0, y0 = band_raster(tiles.name, band)
+    x_0, y_0, x_1, y_1 = T.tiles_in_box(raster_box(reg), Z - 3)
+    out = set()
+    for bx in range(x_0, x_1 + 1):
+        for by in range(y_0, y_1 + 1):
+            w = band_window(m, x0, y0, bx, by)
+            if not w.any():
+                continue
+            c = None
+            if (bx, by) in tiles.present.get(Z - 3, ()):
+                c = tiles.cls(Z - 3, bx, by)
+            else:
+                for za in range(Z - 4, reg["zmin"] - 1, -1):
+                    sh = (Z - 3) - za
+                    if (bx >> sh, by >> sh) in tiles.present.get(za, ()):
+                        a = tiles.cls(za, bx >> sh, by >> sh)
+                        kk = T.TILE >> sh
+                        ox, oy = (bx - ((bx >> sh) << sh)) * kk, (by - ((by >> sh) << sh)) * kk
+                        c = np.repeat(np.repeat(a[oy:oy + kk, ox:ox + kk], 1 << sh, 0), 1 << sh, 1)
+                        break
+            if c is None:
+                out.add((bx, by))
+                continue
+            r = T.TILE // w.shape[0]                    # band px -> z12 px
+            if ((c != WATER) & np.repeat(np.repeat(w, r, 0), r, 1)).any():
+                out.add((bx, by))
+    return out
+
+
+def two_tier_expect(tiles_dir, name, reg, listed=None, band=None):
+    """-> (the fine blocks, the zoom 13-15 tiles of the listed set inside them). Needs zooms <= 12 on disk."""
+    listed = listed if listed is not None else region_listed(tiles_dir, name, reg)
+    tiles = Tiles(tiles_dir, name, reg, expect="any")      # zooms <= 12 are what fine_blocks reads
+    blocks = fine_blocks(tiles, reg, band)
+    want = [t for t in listed if t[0] > COARSE_Z and (t[1] >> (t[0] - (Z - 3)), t[2] >> (t[0] - (Z - 3))) in blocks]
+    return blocks, want
+
+
 class Tiles:
     """One region's tiles on disk (tiles_dir/<region>/v<N>/t/z/x/y.png + index.json): presence, classes, ancestors."""
 
-    def __init__(self, tiles_dir, name, reg):
+    def __init__(self, tiles_dir, name, reg, expect=None):
+        """expect: {zoom: set of (x, y)} the tiles that must be on disk (a two-tier region fetches only part of its
+        zooms 13-15, section 105); None = every tile the index lists; "any" = no check."""
         self.name, self.reg = name, reg
         self.dir = os.path.join(tiles_dir, name, "v%d" % reg["v"])
         self.index = json.load(open(os.path.join(self.dir, "index.json")))
@@ -472,6 +778,15 @@ class Tiles:
                         if f.endswith(".png"):
                             s.add((int(x), int(f[:-4])))
             self.present[z] = s
+            if expect == "any":                      # no completeness check (fetch_tiles' own block test)
+                continue
+            if expect is not None:                   # read exactly the expected tiles (others on disk are ignored)
+                miss = expect.get(z, set()) - s
+                if miss:
+                    raise ValueError("%s: zoom %d lacks %d of the %d tiles the band needs (incomplete download?)"
+                                     % (name, z, len(miss), len(expect.get(z, ()))))
+                self.present[z] = set(expect.get(z, set()))
+                continue
             want = int((self.index.get("tiles") or {}).get(str(z), 0))
             if len(s) != want:
                 raise ValueError("%s: zoom %d holds %d tiles, the index lists %d (incomplete download?)"
@@ -551,7 +866,7 @@ def to_lonlat(geom):
     return shapely.transform(geom, lambda a: np.column_stack([px_lon(a[:, 0]), px_lat(a[:, 1])]))
 
 
-def seam_step_lengths(seam_iv, q=None):
+def seam_step_lengths(seam_iv, q=None, detail=False):
     """{(cell, "x"|"y", line value): [(lo, hi, upward?), ...]} edges lying along seam box lines -> [(cell, metres)] of
     the stretches covered one way only: a split cut runs both ways (land on both sides) and cancels; a step where the
     traced shore and GSHHG's disagree does not. ("x": the line is x = value, so lengths are in latitude.)"""
@@ -564,8 +879,101 @@ def seam_step_lengths(seam_iv, q=None):
             if part.length * q < 0.5:                    # quantum noise where the two ways' vertices differ by a unit
                 continue
             m = part.length * 111320.0 * (1.0 if kind == "x" else np.cos(np.radians(line)))
-            out.append((name, round(float(m), 1)))
+            if detail:                                   # + where: the line and the stretch's middle along it
+                c = np.asarray(part.coords)[:, 0]
+                out.append((name, round(float(m), 1), kind, float(line), float((c.min() + c.max()) / 2)))
+            else:
+                out.append((name, round(float(m), 1)))
     return out
+
+
+def seam_allowed(step, allow):
+    """Section 105: a seam step named in the set's seam_allow list (cell, "x"|"y", line, along, max m, why): the same
+    cell and line, its middle within 0.01 degree of `along`, no longer than max m."""
+    name, m, kind, line, mid = step
+    return any(a[0] == name and a[1] == kind and abs(a[2] - line) < 1e-9 and abs(a[3] - mid) < 0.01 and m <= a[4]
+               for a in allow)
+
+
+def stale_allows(steps, allow):
+    """The seam_allow entries no measured step (seam_step_lengths detail) matches: each must name a real stretch."""
+    return [a for a in allow if not any(seam_allowed(st, [a]) for st in steps)]
+
+
+def seam_chains(seam_iv, skip=(), q=None):
+    """Section 105 (G73 #2): the one-way stretches of seam_iv joined where they meet (a band line's staircase corners,
+    5-degree cell lines) -> [(metres along the chain, lon, lat of its middle vertex)]. A disagreement that follows a
+    diagonal stretch of band for kilometres is many short steps to seam_step_lengths; here it is one chain. skip:
+    (cell, kind, line, middle) of stretches the set's seam_allow names (they are judged on their own)."""
+    q = q or Q2
+    segs = []
+    for (name, kind, line), ivs in sorted(seam_iv.items()):
+        ways = [shapely.union_all([shapely.LineString([(lo, 0.0), (hi, 0.0)]) for lo, hi, up in ivs if up == w])
+                for w in (True, False)]
+        for part in line_parts(shapely.symmetric_difference(*ways)):
+            if part.length * q < 0.5:
+                continue
+            c = np.asarray(part.coords)[:, 0]
+            lo, hi = float(c.min()), float(c.max())
+            if (name, kind, float(line), (lo + hi) / 2) in skip:
+                continue
+            pts = [(line, lo), (line, hi)] if kind == "x" else [(lo, line), (hi, line)]
+            segs.append(shapely.LineString(np.round(np.array(pts, np.float64) * q) / q))   # ends meet exactly
+    if not segs:
+        return []
+    out = []
+    for p in line_parts(shapely.line_merge(shapely.union_all(segs))):
+        c = np.asarray(p.coords)
+        dx = np.diff(c[:, 0]) * np.cos(np.radians((c[:-1, 1] + c[1:, 1]) / 2))
+        m = float(np.hypot(dx, np.diff(c[:, 1])).sum() * 111320.0)
+        mid = c[len(c) // 2]
+        out.append((round(m, 1), float(mid[0]), float(mid[1])))
+    return sorted(out, reverse=True)
+
+
+def band_lines(regions):
+    """Section 105: the band lines of the two-tier regions inside their owned boxes, as {("x"|"y", value): sorted
+    [(lo, hi)]} ("x": a line of constant longitude, the interval in latitude). {} without two-tier regions."""
+    out = {}
+    for name, reg in regions.items():
+        if reg.get("mode") != "two_tier":
+            continue
+        lines = shapely.intersection(band_polygon(name).boundary, owned_box(name, regions))
+        for ln in line_parts(lines):
+            c = np.asarray(ln.coords)
+            for (x0, y0), (x1, y1) in zip(c[:-1], c[1:]):
+                if x0 == x1 and y0 != y1:
+                    out.setdefault(("x", float(x0)), []).append((min(y0, y1), max(y0, y1)))
+                elif y0 == y1 and x0 != x1:
+                    out.setdefault(("y", float(y0)), []).append((min(x0, x1), max(x0, x1)))
+    for k in out:
+        out[k] = sorted(set(out[k]))
+    return out
+
+
+def band_line_edges(cell, x, y, blines, seam_iv, tol):
+    """Add a ring's edges that lie along a band line (within tol of it, the edge's middle inside one of its intervals)
+    to seam_iv[(cell, "x"|"y", line)] as (lo, hi, upward?), the form seam_step_lengths reads."""
+    if not hasattr(band_line_edges, "_idx") or band_line_edges._key is not blines:
+        band_line_edges._key = blines
+        band_line_edges._idx = {k: np.array(sorted(v for kk, v in blines if kk == k)) for k in ("x", "y")}
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    for kind, along, nxt, run, run_n in (("x", x, xn, y, yn), ("y", y, yn, x, xn)):
+        vals = band_line_edges._idx[kind]
+        if not len(vals):
+            continue
+        cand = np.nonzero((np.abs(along - nxt) < tol) & (run != run_n))[0]
+        if not len(cand):
+            continue
+        j = np.clip(np.searchsorted(vals, along[cand]), 1, len(vals) - 1)
+        near = np.where(np.abs(vals[j - 1] - along[cand]) <= np.abs(vals[j] - along[cand]), vals[j - 1], vals[j])
+        for k, v in zip(cand, near):
+            if abs(along[k] - v) >= tol or abs(nxt[k] - v) >= tol:
+                continue
+            a, b = float(run[k]), float(run_n[k])
+            mid = (a + b) / 2
+            if any(lo - tol <= mid <= hi + tol for lo, hi in blines[(kind, float(v))]):
+                seam_iv.setdefault((cell, kind, float(v)), []).append((min(a, b), max(a, b), b > a))
 
 
 def line_parts(geom):
@@ -722,8 +1130,32 @@ def gshhg_fill(gs, lons, lats, want):
 
 # ---------------------------------------------------------------- trace
 
-def block_class(tiles, bx, by, v1_dir, v1_index, stats):
-    """The zoom-15 class raster (BPX x BPX) of block bx/by by rule 1, or None when it can hold no land."""
+EDGE_FILL_PX = 2                         # section 105: see edge_fill
+
+
+def edge_fill(cls, lons, lats, box, px=EDGE_FILL_PX):
+    """Section 105: the bathy tiles mark the pixels on a region's box line 'outside' (both regions of a shared line
+    do), and GSHHG would fill them (a lake or river GSHHG has as land became a sliver of land along the line, a
+    one-way edge kilometres long). In the East regions an 'outside' pixel within `px` px of the region's box lines takes
+    the class of the nearest pixel with data (if that is within px + 1 px); the rest stay 'outside' (GSHHG). -> count."""
+    from scipy import ndimage
+    dlon = abs(float(lons[1] - lons[0]))
+    dlat = np.abs(np.gradient(np.asarray(lats, np.float64)))
+    near_x = (np.abs(lons - box[0]) <= px * dlon) | (np.abs(lons - box[2]) <= px * dlon)
+    near_y = (np.abs(lats - box[1]) <= px * dlat) | (np.abs(lats - box[3]) <= px * dlat)
+    tgt = (cls == OUT) & (near_y[:, None] | near_x[None, :])
+    known = cls != OUT
+    if not tgt.any() or not known.any():
+        return 0
+    d, (iy, ix) = ndimage.distance_transform_edt(~known, return_indices=True)
+    ok = tgt & (d <= px + 1)
+    cls[ok] = cls[iy[ok], ix[ok]]
+    return int(ok.sum())
+
+
+def block_class(tiles, bx, by, v1_dir, v1_index, stats, edge=False):
+    """The zoom-15 class raster (BPX x BPX) of block bx/by by rule 1, or None when it can hold no land. edge: the
+    section 105 edge_fill (East regions only; the other sets' bytes stay as published)."""
     reg = tiles.reg
     X0, Y0 = bx * BPX, by * BPX
     lon_w, lon_e = float(px_lon(X0)), float(px_lon(X0 + BPX))
@@ -768,6 +1200,8 @@ def block_class(tiles, bx, by, v1_dir, v1_index, stats):
     inx = (lons >= b[0]) & (lons <= b[2])
     iny = (lats >= b[1]) & (lats <= b[3])
     inbox = iny[:, None] & inx[None, :]
+    if edge:
+        stats["edge_px"] = stats.get("edge_px", 0) + edge_fill(cls, lons, lats, reg["box"])
     cls[~inbox] = OUT                          # outside the box: GSHHG's, added at the cell stage
     for e in ex_here:                          # an exclusion box (section 104: Puget Sound): GSHHG's, filled below
         cls[((lats >= e[1]) & (lats <= e[3]))[:, None] & ((lons >= e[0]) & (lons <= e[2]))[None, :]] = OUT
@@ -779,7 +1213,7 @@ def block_class(tiles, bx, by, v1_dir, v1_index, stats):
     return cls
 
 
-def trace_region(tiles, v1_dir, v1_index, log=log):
+def trace_region(tiles, v1_dir, v1_index, log=log, edge=False):
     """-> (the region's land as [(shell, [holes])] rings of lon/lat arrays (shell CCW, holes CW), stats).
 
     Every GEOS operation runs on integer zoom-15 pixel coordinates (the union of pixel rectangles, the speck filter, the
@@ -796,7 +1230,7 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
     for bx in range(x0, x1 + 1):
         for by in range(y0, y1 + 1):
             stats["blocks"] += 1
-            cls = block_class(tiles, bx, by, v1_dir, v1_index, stats)
+            cls = block_class(tiles, bx, by, v1_dir, v1_index, stats, edge=edge)
             if cls is None:
                 continue
             land = cls == LAND
@@ -823,6 +1257,139 @@ def trace_region(tiles, v1_dir, v1_index, log=log):
     stats["holes"] = sum(len(h) for _, h in out)
     log("trace %s: %s" % (tiles.name, stats))
     return out, stats
+
+
+def _simplify_px(polys, speck, tol):
+    """union -> specks dropped -> normalised -> Douglas-Peucker (pixel space), as trace_region does."""
+    u = shapely.union_all(polys) if polys else shapely.MultiPolygon()
+    kept, n_land, n_hole = drop_specks(u, speck)
+    simp = shapely.normalize(shapely.MultiPolygon(kept)).simplify(tol, preserve_topology=True) if kept else shapely.MultiPolygon()
+    return simp, n_land, n_hole
+
+
+def trace_fine(tiles, v1_dir, v1_index, blocks, band=None):
+    """Section 105, the fine tier: rule 1 at zoom 15 on the given blocks only, the raster kept to the band grown by one
+    zoom-10 px (so the trace reaches past the band lines and the cut on them is exact) -> lon/lat land (uncut)."""
+    reg = tiles.reg
+    m, x0, y0 = band_raster(tiles.name, band)
+    k = 1 << (Z - BAND_Z)
+    stats = dict(z15=0, ancestor=0, none=0, gshhg_px=0, blocks=len(blocks), blocks_traced=0)
+    polys = []
+    for bx, by in sorted(blocks):
+        cls = block_class(tiles, bx, by, v1_dir, v1_index, stats, edge=True)
+        if cls is None:
+            continue
+        area = np.repeat(np.repeat(band_window(m, x0, y0, bx, by), k, 0), k, 1)
+        land = (cls == LAND) & area
+        if land.any():
+            stats["blocks_traced"] += 1
+            polys.extend(mask_polygons(land, bx * BPX, by * BPX))
+    simp, stats["speck_land"], stats["speck_holes"] = _simplify_px(polys, reg.get("speck", SPECK_PX2),
+                                                                   reg.get("tol", TOL_PX))
+    return to_lonlat(simp), stats
+
+
+def coarse_box(reg):
+    """The lon/lat box the coarse raster covers: the region box + COARSE_PAD_PX zoom-12 px."""
+    b, pad = reg["box"], COARSE_PAD_PX * 360.0 / (T.TILE * 2 ** COARSE_Z)
+    return (b[0] - pad, b[1] - pad, b[2] + pad, b[3] + pad)
+
+
+def coarse_class(tiles, X0, Y0, n):
+    """The zoom-12 class over the n x n px window at X0/Y0 (zoom-12 px): the region's zoom-12 tile, else its nearest
+    ancestor (upsampled), else OUT."""
+    cz = COARSE_Z
+    cls = np.full((n, n), OUT, np.uint8)
+    for gx in range(X0 // T.TILE, (X0 + n - 1) // T.TILE + 1):
+        for gy in range(Y0 // T.TILE, (Y0 + n - 1) // T.TILE + 1):
+            t = None
+            if (gx, gy) in tiles.present.get(cz, ()):
+                t = tiles.cls(cz, gx, gy)
+            else:
+                for za in range(cz - 1, tiles.reg["zmin"] - 1, -1):
+                    sh = cz - za
+                    if (gx >> sh, gy >> sh) in tiles.present.get(za, ()):
+                        a = tiles.cls(za, gx >> sh, gy >> sh)
+                        kk = T.TILE >> sh
+                        ox, oy = (gx - ((gx >> sh) << sh)) * kk, (gy - ((gy >> sh) << sh)) * kk
+                        t = np.repeat(np.repeat(a[oy:oy + kk, ox:ox + kk], 1 << sh, 0), 1 << sh, 1)
+                        break
+            if t is None:
+                continue
+            sx0, sy0 = max(X0, gx * T.TILE), max(Y0, gy * T.TILE)
+            sx1, sy1 = min(X0 + n, gx * T.TILE + T.TILE), min(Y0 + n, gy * T.TILE + T.TILE)
+            cls[sy0 - Y0:sy1 - Y0, sx0 - X0:sx1 - X0] = t[sy0 - gy * T.TILE:sy1 - gy * T.TILE,
+                                                          sx0 - gx * T.TILE:sx1 - gx * T.TILE]
+    return cls
+
+
+def trace_coarse(tiles, v1_dir, v1_index):
+    """Section 105, the coarse tier: the zoom-12 class over the region box (+ COARSE_PAD_PX), 'outside' -> GSHHG,
+    water opened with the 3 x 3 cross, traced in chunks of one zoom-10 tile (+ a halo) -> lon/lat land (uncut)."""
+    from scipy import ndimage
+    reg = tiles.reg
+    cz, wz = COARSE_Z, T.TILE * 2 ** COARSE_Z
+    b = coarse_box(reg)
+    ch = T.TILE * (1 << (cz - BAND_Z))                         # a chunk = one zoom-10 tile = 1024 zoom-12 px
+    X0 = int((b[0] + 180.0) / 360.0 * wz)
+    X1 = int((b[2] + 180.0) / 360.0 * wz)
+    Y0 = int((1 - math.asinh(math.tan(math.radians(b[3]))) / math.pi) / 2 * wz)
+    Y1 = int((1 - math.asinh(math.tan(math.radians(b[1]))) / math.pi) / 2 * wz)
+    polys, stats = [], dict(chunks=0, gshhg_px=0)
+    H = COARSE_HALO
+    for tx in range(X0 // ch, X1 // ch + 1):
+        for ty in range(Y0 // ch, Y1 // ch + 1):
+            x0, y0, n = tx * ch - H, ty * ch - H, ch + 2 * H
+            lons = np.asarray(x0 + np.arange(n) + 0.5, np.float64) / wz * 360.0 - 180.0
+            lats = np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * np.asarray(y0 + np.arange(n) + 0.5, np.float64) / wz))))
+            inbox = ((lats >= b[1]) & (lats <= b[3]))[:, None] & ((lons >= b[0]) & (lons <= b[2]))[None, :]
+            if not inbox.any():
+                continue
+            stats["chunks"] += 1
+            cls = coarse_class(tiles, x0, y0, n)
+            stats["edge_px"] = stats.get("edge_px", 0) + edge_fill(cls, lons, lats, reg["box"])
+            out = (cls == OUT) & inbox
+            g = np.zeros_like(out)
+            if out.any():
+                gs = gshhg_near(v1_dir, v1_index, (float(lons.min()), float(lats.min()), float(lons.max()), float(lats.max())))
+                if gs is not None:
+                    g = gshhg_fill(gs, lons, lats, out)
+                    stats["gshhg_px"] += int(g.sum())
+            water = (cls == WATER) & inbox
+            wo = ndimage.binary_opening(water) & water               # the 3 x 3 cross: 1-2 px channels close
+            land = (inbox & ~wo & ((cls != OUT) | g))[H:-H, H:-H]
+            if land.any():
+                polys.extend(mask_polygons(land, tx * ch, ty * ch))
+    pm = 40075016.686 / wz * math.cos(math.radians((reg["box"][1] + reg["box"][3]) / 2))
+    simp, stats["speck_land"], stats["speck_holes"] = _simplify_px(polys, COARSE_SPECK_M2 / (pm * pm), COARSE_TOL_PX)
+    ll = shapely.transform(simp, lambda a: np.column_stack([a[:, 0] / wz * 360.0 - 180.0,
+                                                            np.degrees(np.arctan(np.sinh(np.pi * (1 - 2 * a[:, 1] / wz))))]))
+    return ll, stats
+
+
+def trace_east(tiles, v1_dir, v1_index, regions, band=None, log=log):
+    """Section 105: an East region's land, cut to its owned box -> (lon/lat geometry, stats). "full": rule 1 over the
+    whole box (trace_region); "two_tier": the fine tier inside the band, the coarse tier in the rest."""
+    t0 = time.time()
+    name, reg = tiles.name, tiles.reg
+    owned = owned_box(name, regions)
+    if reg["mode"] == "full":
+        parts, stats = trace_region(tiles, v1_dir, v1_index, log, edge=True)
+        g = shapely.union_all([Polygon(np.column_stack(sh), [np.column_stack(h) for h in hs]) for sh, hs in parts])
+        geom = g.intersection(owned)
+    else:
+        blocks = fine_blocks(tiles, reg, band)
+        fine, sf = trace_fine(tiles, v1_dir, v1_index, blocks, band)
+        coarse, sc = trace_coarse(tiles, v1_dir, v1_index)
+        bp = band_polygon(name, band)
+        geom = shapely.union_all([fine.intersection(owned.intersection(bp)), coarse.intersection(owned.difference(bp))])
+        stats = {"fine": sf, "coarse": sc, "fine_vertices": int(shapely.get_num_coordinates(fine)),
+                 "coarse_vertices": int(shapely.get_num_coordinates(coarse))}
+    stats["vertices"] = int(shapely.get_num_coordinates(geom))
+    stats["anomaly_px"] = tiles.anomalies
+    stats["t_total_s"] = round(time.time() - t0, 1)
+    log("trace %s (%s): %s" % (name, reg["mode"], stats))
+    return geom, stats
 
 
 # ---------------------------------------------------------------- cells
@@ -900,29 +1467,71 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
     t0 = time.time()
     v1 = load_v1(v1_dir)
     os.makedirs(os.path.join(out_dir, v1["tier1"]["dir"]), exist_ok=True)
-    region_geom, bathy, rstats = {}, {}, {}
+    region_geom, east_geom, bathy, rstats = {}, {}, {}, {}
     for name, reg in sorted(regions.items()):
-        tiles = Tiles(tiles_dir, name, reg)
+        expect = None
+        if reg.get("mode") == "two_tier":           # section 105: zooms <= 12 whole, 13-15 of the band's blocks
+            listed = region_listed(tiles_dir, name, reg)
+            fine_want = two_tier_expect(tiles_dir, name, reg, listed)[1]
+            expect = {z: set() for z in range(reg["zmin"], Z + 1)}
+            for z, x, y in [t for t in listed if t[0] <= COARSE_Z] + fine_want:
+                expect[z].add((x, y))
+        tiles = Tiles(tiles_dir, name, reg, expect=expect)
         sha, n = tiles.digest()
-        region_geom[name], rstats[name] = trace_region(tiles, v1_dir, v1, log)
+        if reg.get("mode"):
+            east_geom[name], rstats[name] = trace_east(tiles, v1_dir, v1, regions, log=log)
+        else:
+            region_geom[name], rstats[name] = trace_region(tiles, v1_dir, v1, log)
         bathy[name] = {"v": reg["v"], "z": Z, "zmin": reg["zmin"], "box": list(reg["box"]),
                        "digest": tiles.index.get("digest"), "tiles": n, "sha256": sha}
-    boxes = shapely.union_all([sbox(*r["box"]) for r in regions.values()])
+        if reg.get("mode"):
+            bathy[name]["mode"] = reg["mode"]
+    # the East regions (section 105) have their own cells; everything else below is section 104's, unchanged
+    west = {n: r for n, r in regions.items() if not r.get("mode")}
+    east_area = shapely.union_all([sbox(*r["box"]) for n, r in regions.items() if r.get("mode")]) if east_geom else None
+    east_cells = sorted({c for n, r in regions.items() if r.get("mode") for c in cells_overlapping(r["box"])})
+    for n, r in west.items():
+        if set(cells_overlapping(r["box"])) & set(east_cells):
+            raise ValueError("region %s shares a cell with the East regions" % n)
+    boxes = shapely.union_all([sbox(*r["box"]) for r in west.values()])
     boxes_line = boxes.boundary
     # where the traced land is used: the boxes less their exclusion boxes (G72 #3: Puget Sound keeps v1's own rings, cut
     # exactly on the exclusion box lines like a seam; the raster there is GSHHG's pixels only so the trace crosses them)
-    excl = [sbox(*e) for r in regions.values() for e in r.get("exclude", ())]
+    excl = [sbox(*e) for r in west.values() for e in r.get("exclude", ())]
     traced_area = boxes.difference(shapely.union_all(excl)) if excl else boxes
     v2_parts = [pt for name in sorted(region_geom) for pt in region_geom[name]]   # the boxes touch at a corner only
-    candidates = sorted({c for r in regions.values() for c in cells_overlapping(r["box"])})
+    candidates = sorted({c for r in west.values() for c in cells_overlapping(r["box"])})
     listing, digests, changed, base_changed, crossing = {}, {}, [], {}, 0
     tot_bytes = tot_verts = 0
     cell_stats, split_cells = {}, []
     deg = v1["tier1"]["cell"]
-    for name in sorted(set(v1["tier1"]["cells"]) | set(candidates)):
+    for name in sorted(set(v1["tier1"]["cells"]) | set(candidates) | set(east_cells)):
         src = os.path.join(v1_dir, v1["tier1"]["dir"], name + ".bin")
         buf = None
-        if name in candidates:
+        if name in east_cells:
+            # section 105: the East regions' land (each cut to its owned box) + GSHHG v1 outside their boxes, one GEOS
+            # union, cut to the cell; a cell whose land comes out as v1's keeps v1's bytes
+            la, lo = (int(v) for v in name.split("_"))
+            cbox = sbox(lo, la, lo + deg, la + deg)
+            raw, g1, _ = v1_cell_geom(v1_dir, v1, name)
+            here = [g.intersection(cbox) for g in east_geom.values() if g.intersects(cbox)]
+            geom = shapely.union_all(here + ([g1.difference(east_area)] if g1 is not None else [])).intersection(cbox)
+            v1c = g1.intersection(cbox) if g1 is not None else shapely.MultiPolygon()
+            if shapely.symmetric_difference(geom, v1c).area > 1e-12:
+                geom, n_cut = split_big(geom, EAST_SPLIT_DEG, EAST_SPLIT_VERTS)
+                if n_cut:
+                    split_cells.append(name)
+                pieces = cell_pieces(geom)
+                changed.append(name)
+                base_changed[name] = hashlib.sha256(raw).hexdigest() if raw is not None else None
+                nh = sum(len(pc) - 1 for pc in pieces)
+                cell_stats[name] = {"pieces": len(pieces), "holes": nh, "v1_rings_crossing_box": None}
+                if pieces:
+                    buf = BC.encode_file(pieces, deg, q=Q2)
+                    log("cell %s: %d pieces, %d holes, %d vertices, %d bytes (v1 %s bytes)" % (
+                        name, len(pieces), nh, sum(len(r[0]) for pc in pieces for r in pc), len(buf),
+                        len(raw) if raw is not None else "-"))
+        elif name in candidates:
             la, lo = (int(v) for v in name.split("_"))
             cbox = sbox(lo, la, lo + deg, la + deg)
             raw, g1, rings = v1_cell_geom(v1_dir, v1, name)
@@ -983,7 +1592,13 @@ def build(v1_dir, tiles_dir, out_dir, regions=None, log=log):
         "built_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "base_v1": {"tier0_sha": v1["tier0"]["sha256"], "tier1_sha": v1["tier1"]["sha256"], "changed_sha": base_changed},
         "bathy": bathy, "changed": changed, "v1_rings_crossing_box": crossing,
-        **({"split": {"deg": SPLIT_DEG, "min_vertices": SPLIT_VERTS, "cells": split_cells,
+        **({"band": {"sha256": BAND["sha256"], "zoom": BAND_Z, "r_km": BAND["r_km"], "n_km": BAND["n_km"],
+                     "force_in": BAND["force_in"], "east_order": EAST_ORDER,
+                     "coarse": {"z": COARSE_Z, "speck_m2": COARSE_SPECK_M2, "tol_px": COARSE_TOL_PX, "pad_px": COARSE_PAD_PX,
+                                "opening": "3x3 cross"}}}
+           if any(r.get("mode") == "two_tier" for r in regions.values()) else {}),
+        **({"split": {"deg": EAST_SPLIT_DEG if east_geom else SPLIT_DEG, "min_vertices": SPLIT_VERTS, "cells": split_cells,
+                      **({"east": {"deg": EAST_SPLIT_DEG, "min_vertices": EAST_SPLIT_VERTS}} if east_geom else {}),
                       "note": "pieces cut on these lines in these cells: edges along them are not coast"}}
            if any(r.get("margin_px") for r in regions.values()) else {}),
         "stats": {"regions": rstats, "cells": cell_stats},
@@ -1124,11 +1739,14 @@ def check(out_dir, log=log, regions=None):
         # the edges along each seam box line, by cell, as (lo, hi, direction) intervals on the line: a split cut (rung
         # a) along a box line runs both ways (land on both sides) and cancels; a step between the two shores does not
         seam_iv = {}
+        blines = band_lines(regions)                      # section 105: the two-tier regions' band lines
         for name in changed:
             d = BC.decode_file(open(os.path.join(out_dir, t1["dir"], name + ".bin"), "rb").read())
             for pc in d["pieces"]:
                 for ix, iy in pc["rings"]:
                     x, y = ix / d["q"], iy / d["q"]
+                    if blines:
+                        band_line_edges(name, x, y, blines, seam_iv, 0.6 / d["q"])
                     for r in tight:
                         b0, b1, b2, b3 = r["box"]
                         inside = (x >= b0 - 5e-5) & (x <= b2 + 5e-5) & (y >= b1 - 5e-5) & (y <= b3 + 5e-5)
@@ -1148,13 +1766,26 @@ def check(out_dir, log=log, regions=None):
                                 a, b = float(here[k]), float(other[k])
                                 if a != b:
                                     seam_iv.setdefault(key, []).append((min(a, b), max(a, b), b > a))
-        seam_steps = seam_step_lengths(seam_iv)
-        if seam_boxes:
+        detail = seam_step_lengths(seam_iv, detail=True)
+        allowed = [st for st in detail if seam_allowed(st, SEAM_ALLOW)]
+        for st in allowed:
+            log("  seam step allowed (set seam_allow): %s %.0f m on %s = %g at %.4f" % (st[0], st[1], st[2], st[3], st[4]))
+        for a in stale_allows(detail, SEAM_ALLOW):        # G73: a stale entry would quietly allow a future step there
+            problems.append("seam_allow %s %s = %g at %g matches no step (remove it)" % (a[0], a[1], a[2], a[3]))
+        seam_steps = [(st[0], st[1]) for st in detail if st not in allowed]
+        if seam_boxes or blines:
             longest = max((m for _, m in seam_steps), default=0.0)
-            log("  seam box lines: %d edges along them, longest %.0f m" % (len(seam_steps), longest))
+            log("  seam box%s lines: %d edges along them, longest %.0f m" % ("/band" if blines else "", len(seam_steps), longest))
             if longest > SEAM_STEP_MAX_M:
                 problems.append("a %.0f m edge lies along a seam box line (more than %d m: the two shores disagree there)"
                                 % (longest, SEAM_STEP_MAX_M))
+        if blines:                                        # G73 #2: steps joined across band staircase corners
+            chains = seam_chains(seam_iv, {(st[0], st[2], st[3], st[4]) for st in allowed})
+            top = chains[0] if chains else (0.0, 0.0, 0.0)
+            log("  seam chains (joined across corners): %d, longest %.0f m at %.4f, %.4f" % (len(chains), *top))
+            if top[0] > SEAM_STEP_MAX_M:
+                problems.append("a %.0f m chain of one-way edges follows the band/box lines near %.4f, %.4f (more than "
+                                "%d m: the two tiers disagree there)" % (top[0], top[1], top[2], SEAM_STEP_MAX_M))
         if near:
             problems.append("%d v2 vertices lie within 5e-5 deg of a region box line (none expected in S1)" % near)
         if index.get("v1_rings_crossing_box") != 0 and not seam_boxes:

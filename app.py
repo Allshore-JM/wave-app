@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.32.3"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.32.4"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
@@ -4120,13 +4120,13 @@ def _swan_health():
 # background every two minutes (alert_sources.AlertService) and drawn on the map along each named zone's coastline
 # (alert_coast.json, tools/alerts/build_alert_coast.py). COASTAL_ALERTS=0 switches the layer off.
 COASTAL_ALERTS = os.environ.get("COASTAL_ALERTS", "1") != "0"
-# COAST_SET=v2|v3|v4 (plan sections 103-104) switches two things together: the overlay's land clip to static/coast/<set>
+# COAST_SET=v2|v3|v4|v5 (plan sections 103-105) switches two things together: the overlay's land clip to static/coast/<set>
 # (the shore = the bathymetry's MHHW edge: v2 Hawaii; v3 + Puerto Rico/USVI, Guam/CNMI, American Samoa; v4 + the US
-# mainland) and the hazard lines to alert_coast_<set>.json, built from it. A set whose hazard file is not in this
+# West Coast; v5 + the East and Gulf coasts) and the hazard lines to alert_coast_<set>.json, built from it. A set whose hazard file is not in this
 # checkout, or any other value, is v1 (logged). COAST_V2=1 is the old name for COAST_SET=v2 (COAST_SET wins). Unset: v1
 # and alert_coast.json, the page byte-identical. Forecast points, the exposure tool, the fill mask and the wind stations
 # stay on v1.
-COAST_SETS = ("v1", "v2", "v3", "v4")
+COAST_SETS = ("v1", "v2", "v3", "v4", "v5")
 
 
 def _coast_set(env=None):

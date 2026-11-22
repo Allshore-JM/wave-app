@@ -789,3 +789,215 @@ def test_exclusion_in_a_seam_region_keeps_v1_rings_exactly(world, tmp_path):
     assert want in shells
     assert land_at(out, *centre(X0 * 256 + 60, Y0 * 256 + 130))                      # the tiles' island stays
     assert V2.check(out, log=lambda m: None, regions=reg) == []
+
+
+# ---------------------------------------------------------------- section 105: the East/Gulf two-tier regions
+
+def _synthetic_band(name, x_lo, x_hi, y_lo, y_hi, pad=4):
+    """A band dict (as load_band returns) whose region `name` has band px [x_lo, x_hi) x [y_lo, y_hi) at zoom 10."""
+    x0, y0 = x_lo - pad, y_lo - pad
+    w, h = x_hi - x_lo + 2 * pad, y_hi - y_lo + 2 * pad
+    runs = [[y, x_lo - x0, x_hi - x0] for y in range(y_lo - y0, y_hi - y0)]
+    return {"format": "coast-band-v1", "zoom": V2.BAND_Z, "r_km": 9.0, "n_km": 0.4, "force_in": [], "sha256": "s" * 64,
+            "_cache": {}, "regions": {name: {"x0": x0, "y0": y0, "w": w, "h": h, "runs": runs}}}
+
+
+def _two_tier_world(tmp_path, channel_rows=False):
+    """One two-tier region on 3 x 3 zoom-15 tiles around X0/Y0, zoom 12 the coarsest. Land: a block across tile X0's
+    middle rows; two water channels 8 zoom-15 px (one zoom-12 px) wide cut through it, at columns 96-103 (inside the
+    band: tile X0's west half) and 200-207 (outside it). channel_rows: one horizontal channel crossing the band line
+    instead (rows 120-127)."""
+    X, Y = X0 * 256, Y0 * 256
+    zx = X0 >> 3
+
+    def cls_at(gx, gy):                          # class of global zoom-15 px arrays
+        c = np.full(gx.shape, WATER, np.uint8)
+        land = (gx >= X) & (gx < X + 256) & (gy >= Y + 64) & (gy < Y + 192)
+        if channel_rows:
+            land &= ~((gy >= Y + 120) & (gy < Y + 128))
+        else:
+            land &= ~((gx >= X + 96) & (gx < X + 104)) & ~((gx >= X + 200) & (gx < X + 208))
+        c[land] = LAND
+        return c
+    tiles = {}
+    for tx in range(X0 - 1, X0 + 2):
+        for ty in range(Y0 - 1, Y0 + 2):
+            gx, gy = np.meshgrid(tx * 256 + np.arange(256), ty * 256 + np.arange(256))
+            tiles[(15, tx, ty)] = cls_at(gx, gy)
+    for gyt in range((Y0 - 1) >> 3, ((Y0 + 1) >> 3) + 1):     # zoom 12: majority of each 8 x 8 zoom-15 block
+        gx, gy = np.meshgrid(zx * 2048 + np.arange(2048), gyt * 2048 + np.arange(2048))
+        c = cls_at(gx, gy).reshape(256, 8, 256, 8)
+        tiles[(12, zx, gyt)] = np.where((c == LAND).sum(axis=(1, 3)) * 2 > 64, LAND, WATER).astype(np.uint8)
+    tdir = str(tmp_path / "tiles")
+    write_region(tdir, "us-test", 1, tiles)
+    v1 = str(tmp_path / "v1")
+    write_v1(v1, far_v1_cells())
+    box = tile_box(X0 - 1, Y0 - 1, X0 + 1, Y0 + 1)
+    reg = {"us-test": dict(v=1, box=box, zmin=12, digest="synthetic", tiles_sha256=None, speck=V2.S2_SPECK_PX2,
+                           tol=V2.S2_TOL_PX, margin_px=V2.SEAM_MARGIN_PX, mode="two_tier")}
+    # the band: tile X0's west half (a zoom-10 px = 32 zoom-15 px), all its rows
+    band = _synthetic_band("us-test", X0 * 8, X0 * 8 + 4, Y0 * 8 - 8, Y0 * 8 + 16)
+    return tdir, v1, reg, band
+
+
+@pytest.fixture
+def east_order(monkeypatch):
+    monkeypatch.setattr(V2, "EAST_ORDER", ["us-test"] + V2.EAST_ORDER)
+
+
+def test_two_tier_keeps_a_creek_in_the_band_and_closes_it_outside(tmp_path, monkeypatch, east_order):
+    pytest.importorskip("scipy")
+    tdir, v1, reg, band = _two_tier_world(tmp_path)
+    monkeypatch.setattr(V2, "BAND", band)
+    out = build(tmp_path, tdir, v1, reg)
+    X, Y = X0 * 256, Y0 * 256
+    assert land_at(out, *centre(X + 60, Y + 128))                  # land, inside the band (fine)
+    assert not land_at(out, *centre(X + 99, Y + 128))              # the creek inside the band stays water (fine tier)
+    assert land_at(out, *centre(X + 160, Y + 128))                 # land, outside the band (coarse)
+    assert land_at(out, *centre(X + 203, Y + 128))                 # the creek outside the band closes (coarse tier)
+    assert not land_at(out, *centre(X + 60, Y + 20))               # the sea, both tiers
+    assert not land_at(out, *centre(X + 200, Y + 230))
+    idx = json.load(open(os.path.join(out, "index.json")))
+    assert idx["bathy"]["us-test"]["mode"] == "two_tier" and idx["band"]["coarse"]["z"] == 12
+    assert V2.check(out, log=lambda m: None, regions=reg) == []
+
+
+def test_two_tier_join_has_no_crack_on_the_band_line(tmp_path, monkeypatch, east_order):
+    pytest.importorskip("scipy")
+    tdir, v1, reg, band = _two_tier_world(tmp_path)
+    monkeypatch.setattr(V2, "BAND", band)
+    out = build(tmp_path, tdir, v1, reg)
+    line = float(V2.band_px_lon(X0 * 8 + 4))
+    lat = centre(0, Y0 * 256 + 100)[1]
+    for dx in (-2e-5, -1e-6, 1e-6, 2e-5):
+        assert winding_at(out, line + dx, lat) == 1, dx           # land both sides of the band line, covered once
+
+
+def test_band_line_steps_are_measured(tmp_path, monkeypatch, east_order):
+    """A creek crossing the band line: water in the fine tier, closed (land) in the coarse one -> an edge along the
+    band line, one way: measured, and over SEAM_STEP_MAX_M it is a problem."""
+    pytest.importorskip("scipy")
+    tdir, v1, reg, band = _two_tier_world(tmp_path, channel_rows=True)
+    monkeypatch.setattr(V2, "BAND", band)
+    out = build(tmp_path, tdir, v1, reg)
+    msgs = []
+    monkeypatch.setattr(V2, "is_real", lambda index, regions=None: True)
+    assert not any("seam box line" in p for p in V2.check(out, log=msgs.append, regions=reg))
+    assert any("seam box/band lines:" in m for m in msgs)
+    monkeypatch.setattr(V2, "SEAM_STEP_MAX_M", 1)
+    assert any("seam box line" in p for p in V2.check(out, log=lambda m: None, regions=reg))
+
+
+def test_two_tier_reads_only_the_tiles_the_band_needs(tmp_path, monkeypatch, east_order):
+    tdir, v1, reg, band = _two_tier_world(tmp_path)
+    monkeypatch.setattr(V2, "BAND", band)
+    name, r = "us-test", reg["us-test"]
+    blocks, want = V2.two_tier_expect(tdir, name, r)
+    assert (X0 >> 3, Y0 >> 3) in blocks
+    expect = {z: set() for z in range(12, 16)}
+    for z, x, y in [t for t in V2.region_listed(tdir, name, r) if t[0] <= 12] + want:
+        expect[z].add((x, y))
+    t = V2.Tiles(tdir, name, r, expect=expect)                    # extra tiles on disk are ignored
+    assert t.present[15] == expect[15]
+    expect[15].add((X0 + 50, Y0))                                 # one the band needs but the disk lacks
+    with pytest.raises(ValueError, match="lacks 1"):
+        V2.Tiles(tdir, name, r, expect=expect)
+
+
+def test_owned_boxes_follow_the_east_order():
+    regs = V2.ALL_REGIONS
+    ga = V2.owned_box("us-gulf-east", regs)
+    sc = V2.owned_box("us-sc-ga", regs)
+    assert sc.equals(sbox(*regs["us-sc-ga"]["box"]))               # us-sc-ga wins its corner
+    assert not ga.intersects(sbox(-81.9, 30.8, -81.7, 31.1))       # the corner both boxes cover
+    assert ga.area == pytest.approx(sbox(*regs["us-gulf-east"]["box"]).area - 0.4 * 0.5, rel=1e-9)
+    for n in V2.EAST_ORDER:
+        assert V2.ALL_REGIONS[n]["mode"] in ("full", "two_tier")
+
+
+def test_band_rule_drops_a_narrow_mouthed_bay():
+    pytest.importorskip("scipy")
+    import make_coast_band as MB
+    water = np.zeros((400, 400), bool)
+    water[:, :200] = True                                         # the open sea, west
+    water[150:250, 260:380] = True                                # a bay inland ...
+    water[195:205, 200:260] = True                                # ... joined by a 10-px mouth
+    band = MB.band_mask(water, px_m=100.0, r_km=2.0, n_km=0.4)    # 20-px disk, 4-px band
+    assert band[200, 199] and band[200, 203]                       # the open coast and 0.4 km inland of it
+    assert not band[200, 320]                                      # the bay: its mouth is narrower than 2 R
+    assert not band[200, 230]                                      # the channel beyond N
+
+
+def test_v5_band_file_is_pinned_and_covers_the_two_tier_regions():
+    st = V2.SETS["v5"]
+    band = V2.load_band(os.path.join(ROOT, "tools", "coast", st["band"]), st["band_sha256"])
+    assert set(band["regions"]) == {n for n in V2.EAST_ORDER if V2.ALL_REGIONS[n]["mode"] == "two_tier"}
+    assert band["order"] == V2.EAST_ORDER and band["r_km"] == 9.0 and band["n_km"] == 0.4
+    assert band["bathy"] == {n: V2.ALL_REGIONS[n]["digest"] for n in V2.EAST_ORDER}
+    assert len(band["force_in"]) == 2
+    with pytest.raises(ValueError, match="pinned"):
+        V2.load_band(os.path.join(ROOT, "tools", "coast", st["band"]), "0" * 64)
+
+
+def test_v5_format_key_records_the_band_and_modes():
+    try:
+        V2.use_set("v5")
+        assert ":mode=two_tier" in V2.FORMAT_KEY and ":mode=full" in V2.FORMAT_KEY
+        assert "|band=%s|" % V2.SETS["v5"]["band_sha256"][:16] in V2.FORMAT_KEY and "coarse=z12" in V2.FORMAT_KEY
+        V2.use_set("v4")
+        assert "mode=" not in V2.FORMAT_KEY and "band=" not in V2.FORMAT_KEY and V2.BAND is None
+    finally:
+        V2.use_set("v2")
+
+
+def test_seam_allow_names_one_stretch_only():
+    step = ("30_-95", 854.0, "y", 30.6, -91.3071)
+    allow = V2.SETS["v5"]["seam_allow"]
+    assert V2.seam_allowed(step, allow)
+    assert not V2.seam_allowed(("30_-95", 950.0, "y", 30.6, -91.3071), allow)        # longer than allowed
+    assert not V2.seam_allowed(("30_-95", 854.0, "y", 30.6, -91.20), allow)          # elsewhere on the line
+    assert not V2.seam_allowed(("30_-90", 854.0, "y", 30.6, -91.3071), allow)        # another cell
+    iv = {("c", "y", 30.6): [(-91.31, -91.30, True)]}
+    (d,) = V2.seam_step_lengths(iv, q=100000, detail=True)
+    assert d[0] == "c" and d[2:4] == ("y", 30.6) and abs(d[4] + 91.305) < 1e-9
+    assert V2.stale_allows([step], allow) == [] and V2.stale_allows([], allow) == list(allow)   # G73: no stale entry
+
+
+def test_seam_chains_join_a_staircase_the_per_line_gate_misses():
+    """G73 #2: a disagreement that follows a diagonal band boundary is many short one-way steps on alternate x and y
+    lines (each well under 600 m), but one chain several km long; matched two-way edges and a named stretch drop out."""
+    d = 0.001                                                   # ~111 m in latitude
+    iv = {}
+    for k in range(10):                                         # a staircase: up d on x = k*d, right d on y = (k+1)*d
+        iv.setdefault(("c", "x", k * d), []).append((k * d, (k + 1) * d, True))
+        iv.setdefault(("c", "y", (k + 1) * d), []).append((k * d, (k + 1) * d, True))
+    steps = V2.seam_step_lengths(iv)
+    assert max(m for _, m in steps) < 120
+    chains = V2.seam_chains(iv)
+    assert len(chains) == 1 and 2000 < chains[0][0] < 2300     # 20 legs of ~111 m (x legs a little shorter: cos lat)
+    two_way = {k: v + [(lo, hi, not up) for lo, hi, up in v] for k, v in iv.items()}
+    assert V2.seam_chains(two_way) == []                       # a split cut (land both sides) cancels
+    allowed = {("c", "x", 0.0, d / 2)}
+    assert len(V2.seam_chains(iv, allowed)) == 1 and V2.seam_chains(iv, allowed)[0][0] < chains[0][0]
+
+
+def test_edge_fill_carries_the_data_across_a_box_line():
+    """G73 #3: the bathy tiles mark the pixels on a region's box line 'outside'; edge_fill gives those within px of the
+    line the nearest data class, so a river stays water and a beach stays land across the line, and pixels farther
+    than px from the line stay 'outside' (GSHHG fills them)."""
+    O, L, W = V2.OUT, V2.LAND, V2.WATER
+    n = 20
+    lons = np.arange(n) * 0.001 - 80.0
+    lats = 30.0 - np.arange(n) * 0.001
+    cls = np.full((n, n), L, np.uint8)
+    cls[8:12, :] = W                                           # a river running east
+    cls[:, 0:3] = W                                            # the sea to the west
+    cls[:, 10:] = O                                            # the box line at column 10; outside beyond it
+    box = (lons[0] - 1.0, lats[-1] - 1.0, lons[10], lats[0] + 1.0)
+    before = cls.copy()
+    k = V2.edge_fill(cls, lons, lats, box)
+    assert k == 3 * n                                          # columns 10-12: the line and 2 px beyond
+    assert (cls[8:12, 10:13] == W).all() and (cls[:8, 10:13] == L).all() and (cls[12:, 10:13] == L).all()
+    assert (cls[:, 13:] == O).all() and (cls[:, :10] == before[:, :10]).all()
+    far = np.full((n, n), O, np.uint8); far[:, :3] = L         # data only far from every box line: nothing filled
+    assert V2.edge_fill(far, lons, lats, box) == 0 and (far[:, 3:] == O).all()

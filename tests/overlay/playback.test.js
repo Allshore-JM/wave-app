@@ -4256,9 +4256,9 @@ test('section 102 B1: an unreadable precip table: the total says so too; a saved
   });
 });
 
-test('coast sets (plan sections 103-104): opts.coastSet v2 / v3 / v4 read static/coast/<set>; anything else is v1', () => {
+test('coast sets (plan sections 103-105): opts.coastSet v2 / v3 / v4 / v5 read static/coast/<set>; anything else is v1', () => {
   const w = world();
-  for (const [set, dir] of [['v2', 'v2'], ['v3', 'v3'], ['v4', 'v4'], [undefined, 'v1'], ['v1', 'v1'], ['v5', 'v1'],
+  for (const [set, dir] of [['v2', 'v2'], ['v3', 'v3'], ['v4', 'v4'], ['v5', 'v5'], [undefined, 'v1'], ['v1', 'v1'], ['v6', 'v1'],
                             ['V3', 'v1'], ['__proto__', 'v1'], ['constructor', 'v1'], ['../v3', 'v1']]) {
     const o = w.create({ coast: true, coastSet: set });
     assert.ok(o.coast.url.endsWith('/static/coast/' + dir), set + ' -> ' + o.coast.url);

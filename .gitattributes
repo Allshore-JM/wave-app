@@ -15,3 +15,5 @@ tests/fixtures/keyed/** -text
 tests/fixtures/gfswinds/** -text
 # The radar fixtures (plan section 85): a real MRMS file, byte for byte.
 tests/fixtures/radar/** -text
+# The coast band (plan section 105): its sha256 is pinned in build_coast_v2.SETS, so its bytes never change
+tools/coast/band_v5.json -text

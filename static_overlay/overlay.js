@@ -777,7 +777,7 @@
   var LAND_ALL = new Uint8Array(0);                        // sentinel: the tile is entirely land
   var LAND_READOUT = 128;                                  // composed alpha below this = "over land" for the readout
   var MAX_LAT = 85.0511287798;                             // Web-Mercator limit; the Antarctic ring closes through the pole
-  var COAST_SETS_OK = { v2: true, v3: true, v4: true };    // the bathymetry-shoreline coast sets (plan sections 103-104); anything else = v1
+  var COAST_SETS_OK = { v2: true, v3: true, v4: true, v5: true };    // the bathymetry-shoreline coast sets (plan sections 103-105); anything else = v1
   var MAX_COAST_BYTES = 8 * 1024 * 1024;                  // one coast file is <= 1.4 MB (v1; v2's largest, 20_-160, 0.32 MB); nothing bigger is decoded
   var MAX_INDEX_BYTES = 1024 * 1024;                      // index.json is 29 KB; every 5-degree cell listed would be ~60 KB
   var MAX_CELLS_PER_TILE = 16;                            // a tile touches <= 4 cells at tier-1 zooms; more = tier 0 for that tile
@@ -7521,7 +7521,7 @@
     this._painting = false; this._paintWaiting = null; this._paintRaf = null; this._paintTask = null; this._paintFallback = null;   // the paint gate
     this.playGen = 0; this.transientFails = 0; this._staleShown = false; this._pendingRestore = null; this._onHide = null;
     // opts.coast: clip wave height / peak period to the coastlines published beside the frames. The coast sets 'v2' (Hawaii),
-    // 'v3' (+ Puerto Rico/USVI, Guam/CNMI, American Samoa) and 'v4' (+ the US mainland) have the shore at the bathymetry's
+    // 'v3' (+ Puerto Rico/USVI, Guam/CNMI, American Samoa) and 'v4' (+ the US West Coast), 'v5' (+ East/Gulf) have the shore at the bathymetry's
     // MHHW edge (the page's COAST_SET, plan sections 103-104: window.__allshoreCoastSet, or opts.coastSet); anything else is v1
     var coastSet = opts.coastSet || (typeof window !== 'undefined' && window.__allshoreCoastSet);
     this.coast = opts.coast ? (COAST_SETS_OK[coastSet] === true ? coastStore(this.root + '/static/coast/' + coastSet, null, this.root + '/static/coast/v1')

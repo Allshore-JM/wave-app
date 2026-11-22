@@ -737,3 +737,34 @@ def test_v4_puget_sound_zones_keep_v3s_coast():
                 q = a + ab * t[:, None]
                 d.append(np.min(np.hypot((p[0] - q[:, 0]) * np.cos(np.radians(p[1])), p[1] - q[:, 1])) * 111320)
         assert np.median(d) <= 1.0, (z, np.median(d))
+
+
+EAST_STATES = ("ME", "NH", "MA", "RI", "CT", "NY", "NJ", "PA", "DE", "MD", "VA", "NC", "SC", "GA", "FL", "AL", "MS",
+               "LA", "TX")
+
+
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "alert_coast_v5.json")), reason="alert_coast_v5.json not built")
+def test_committed_v5_file_passes_its_check_and_differs_only_where_v5_does():
+    """alert_coast_v5.json (served with COAST_SET=v5, plan section 105): its own check; every zone outside the East and
+    Gulf states identical to alert_coast_v4.json (v5 keeps v4's cells byte for byte) and the zone list changed only
+    there."""
+    with open(os.path.join(ROOT, "alert_coast_v5.json"), encoding="utf-8") as f:
+        v5 = json.load(f)
+    with open(os.path.join(ROOT, "alert_coast_v4.json"), encoding="utf-8") as f:
+        v4 = json.load(f)
+    assert v5["zones_file"] == A.ZONES_FILE and v5["rules"] == A.rules_for("v5") and "v5" in v5["coast"]
+    assert A.check(v5, log=lambda *a: None) == []
+    other = {z for z in set(v4["zones"]) | set(v5["zones"]) if not z.startswith(EAST_STATES)}
+    assert all(v5["zones"].get(z) == v4["zones"].get(z) for z in other)
+    assert len(v5["zones"]) >= len(v4["zones"]) - 12               # a few 1-2 km bay pieces may drop; never a coast
+
+
+
+def test_set_only_sheltered_shores_leave_earlier_sets_alone():
+    """Section 105's three sheltered shores apply to coast v5 only: v1-v4 record and use the shared RULES unchanged."""
+    for cs in ("v1", "v2", "v3", "v4"):
+        assert A.rules_for(cs) == A.RULES and A.sheltered_areas(cs) == A.SHELTERED
+    v5 = A.sheltered_areas("v5")
+    assert v5[:len(A.SHELTERED)] == A.SHELTERED and len(v5) == len(A.SHELTERED) + 3
+    lo, la = np.array([-76.259, -75.855, -75.829]), np.array([35.344, 35.586, 37.938])   # Swan Quarter, Stumpy Pt, Deal Is
+    assert A.sheltered(lo, la, v5).all() and not A.sheltered(lo, la).any()

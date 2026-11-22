@@ -1,6 +1,6 @@
 'use strict';
-// The jet stream overlay (plan section 106): the 250 hPa speed drawn only in its cores (from 50 kt), its particles only
-// there, the wind's relief / outline / resolution rules, and the 250 hPa height contours through the isobar layer
+// The jet stream overlay (plan section 106): the 250 hPa speed in its ramp only in its cores (from 50 kt), a pale teal
+// shade under that (the owner's pick S2), its particles only in the cores, the wind's relief / outline / resolution rules, and the 250 hPa height contours through the isobar layer
 // (12 dam, 24 at the whole-world view, 6 from zoom 6; labels and the readout in dam; no H / L marks).
 // node --test tests/overlay/
 const test = require('node:test');
@@ -45,7 +45,8 @@ test('GFS and ECMWF offer the jet stream, RRFS never; the field has a ramp, a fi
   assert.equal(I.FIXED_OPACITY.jet, 1);
   assert.equal(I.CLIP_FIELDS.jet, false, 'drawn over land like the wind'); assert.equal(I.OUTLINE_FIELDS.jet, true);
   assert.equal(I.RELIEF_FIELDS.jet, true); assert.equal(I.RELIEF_FIELDS.wind, true); assert.ok(!I.RELIEF_FIELDS.hs);
-  assert.equal(I.CORE_FLOOR.jet, true); assert.ok(!I.CORE_FLOOR.wind && !I.CORE_FLOOR.hs);
+  assert.deepEqual(I.CORE_FLOOR.jet, { from: [0xe6, 0xf2, 0xf1], to: [0x9c, 0xcd, 0xcf], alpha: 0.8 }, 'S2 pale teal, 80 %');
+  assert.ok(!I.CORE_FLOOR.wind && !I.CORE_FLOOR.hs);
   for (const w of [400, 1200]) for (const z of [2, 3.5, 5, 6.9, 7, 7.4, 7.5, 9]) {
     assert.equal(I.wantHalf(z, w, 'jet'), I.wantHalf(z, w, 'wind'), `half ${z} ${w}`);
     assert.equal(I.wantFull(z, w, 'jet'), I.wantFull(z, w, 'wind'), `full ${z} ${w}`);
@@ -54,14 +55,27 @@ test('GFS and ECMWF offer the jet stream, RRFS never; the field has a ramp, a fi
   assert.deepEqual(I.PARTICLE_LIFE_MS.jet, [1500, 3500]);
 });
 
-test('composeTile: a cores-only field leaves every value under the legend floor transparent; the colours above are the LUT\'s; other fields unchanged', () => {
+test('composeTile: a cores field shades every value under the legend floor (from -> to at alpha; true: transparent); the colours above are the LUT\'s; other fields unchanged', () => {
   const lut = I.buildLut('jet', JET.legend), vals = [0, 20, 49 * KT, 50.5 * KT, 80, 120, 130];
   const codes = Uint8Array.from(vals.map((v) => codeOf(v, JET)));
-  const d = new Uint8ClampedArray(codes.length * 4);
-  I.composeTile(codes, null, lut, JET.lo, JET.hi, JET.legend[0], JET.legend[1], d, null, true);
-  const alpha = (i) => d[i * 4 + 3];
-  assert.equal(alpha(0), 0); assert.equal(alpha(1), 0); assert.equal(alpha(2), 0, '49 kt: under the core floor');
+  const d = new Uint8ClampedArray(codes.length * 4), U = I.CORE_FLOOR.jet;
+  I.composeTile(codes, null, lut, JET.lo, JET.hi, JET.legend[0], JET.legend[1], d, null, U);
+  const alpha = (i) => d[i * 4 + 3], rgb = (i) => [...d.slice(i * 4, i * 4 + 3)];
+  for (const i of [0, 1, 2]) {
+    const v = JET.lo + (codes[i] - 1) / 254 * (JET.hi - JET.lo), f = v / JET.legend[0];
+    assert.equal(alpha(i), Math.round(255 * 0.8), `${vals[i]} m/s: shaded at 80 %`);
+    for (let k = 0; k < 3; k++) assert.ok(Math.abs(rgb(i)[k] - (U.from[k] + f * (U.to[k] - U.from[k]))) <= 0.5, `${vals[i]} m/s channel ${k}`);
+  }
+  assert.deepEqual(rgb(0), U.from, 'calm: the lightest shade');
+  assert.ok(rgb(2).every((c, k) => Math.abs(c - U.to[k]) <= 3), '49 kt: next to the darkest shade');
   for (const i of [3, 4, 5, 6]) assert.equal(alpha(i), 255, `value ${vals[i]} drawn`);
+  const half = new Uint8ClampedArray(codes.length * 4);
+  I.composeTile(codes, Uint8Array.from(vals.map(() => 128)), lut, JET.lo, JET.hi, JET.legend[0], JET.legend[1], half, null, U);
+  assert.equal(half[3], Math.round(127 * 0.8), 'the shade takes the pixel\'s alpha times 80 %');
+  const clear = new Uint8ClampedArray(codes.length * 4);
+  I.composeTile(codes, null, lut, JET.lo, JET.hi, JET.legend[0], JET.legend[1], clear, null, true);
+  for (const i of [0, 1, 2]) assert.equal(clear[i * 4 + 3], 0, 'core true: transparent under the floor');
+  for (const i of [3, 4, 5, 6]) for (let k = 0; k < 4; k++) assert.equal(clear[i * 4 + k], d[i * 4 + k], 'same above the floor either way');
   const plain = new Uint8ClampedArray(codes.length * 4);
   I.composeTile(codes, null, lut, JET.lo, JET.hi, JET.legend[0], JET.legend[1], plain, null);
   for (let i = 0; i < vals.length; i++) assert.equal(plain[i * 4 + 3], 255, 'without the flag every value is drawn (wind, waves: unchanged)');
@@ -69,7 +83,7 @@ test('composeTile: a cores-only field leaves every value under the legend floor 
   assert.deepEqual([...plain.slice(0, 3)], [...lut.slice(0, 3)], 'under the floor the plain compose clamps to the first colour');
 });
 
-test('legend ticks in the site\'s units: 50-200 kt as 58-230 mph / 93-370 km/h, no "<=" (nothing is drawn under the floor)', () => {
+test('legend ticks in the site\'s units: 50-200 kt as 58-230 mph / 93-370 km/h, no "<=" (under the floor is a separate shade, not the first colour)', () => {
   const us = I.legendTicks('jet', JET, 'US'), metric = I.legendTicks('jet', JET, 'Metric');
   assert.deepEqual(us.map((t) => t.label), ['60', '100', '150', '230+ mph']);
   assert.deepEqual(metric.map((t) => t.label), ['100', '150', '200', '250', '300', '370+ km/h']);

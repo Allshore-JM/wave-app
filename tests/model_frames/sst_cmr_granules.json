@@ -1,0 +1,106 @@
+{
+ "_note": "CMR granules.json for MUR-JPL-L4-GLOB-v4.1, fetched 2026-11-22 (plan section 107); trimmed to the fields sst.parse_cmr reads plus the two data links; the last entry is made up (another product's name).",
+ "feed": {
+  "updated": "2026-11-22T17:47:49.317Z",
+  "id": "https://cmr.earthdata.nasa.gov:443/search/granules.json?short_name=MUR-JPL-L4-GLOB-v4.1&sort_key=-start_date&page_size=3",
+  "title": "ECHO granule metadata",
+  "entry": [
+   {
+    "producer_granule_id": "20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1",
+    "time_start": "2026-11-20T21:00:00.000Z",
+    "time_end": "2026-11-21T21:00:00.000Z",
+    "updated": "2026-11-22T09:22:10.925Z",
+    "title": "20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1",
+    "id": "G4422217554-POCLOUD",
+    "granule_size": "693.8863115310669",
+    "collection_concept_id": "C1996881146-POCLOUD",
+    "links": [
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/data#",
+      "title": "Download 20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-protected/MUR-JPL-L4-GLOB-v4.1/20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc"
+     },
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/metadata#",
+      "title": "Download 20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-public/MUR-JPL-L4-GLOB-v4.1/20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5"
+     }
+    ]
+   },
+   {
+    "producer_granule_id": "20261120090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1",
+    "time_start": "2026-11-19T21:00:00.000Z",
+    "time_end": "2026-11-20T21:00:00.000Z",
+    "updated": "2026-11-22T09:22:06.423Z",
+    "title": "20261120090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1",
+    "id": "G4420629260-POCLOUD",
+    "granule_size": "711.6078481674194",
+    "collection_concept_id": "C1996881146-POCLOUD",
+    "links": [
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/data#",
+      "title": "Download 20261120090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-protected/MUR-JPL-L4-GLOB-v4.1/20261120090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc"
+     },
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/metadata#",
+      "title": "Download 20261120090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-public/MUR-JPL-L4-GLOB-v4.1/20261120090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5"
+     }
+    ]
+   },
+   {
+    "producer_granule_id": "20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1",
+    "time_start": "2026-11-18T21:00:00.000Z",
+    "time_end": "2026-11-19T21:00:00.000Z",
+    "updated": "2026-11-22T09:22:22.632Z",
+    "title": "20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1",
+    "id": "G4418925161-POCLOUD",
+    "granule_size": "716.3588151931763",
+    "collection_concept_id": "C1996881146-POCLOUD",
+    "links": [
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/data#",
+      "title": "Download 20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-protected/MUR-JPL-L4-GLOB-v4.1/20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc"
+     },
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/metadata#",
+      "title": "Download 20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-public/MUR-JPL-L4-GLOB-v4.1/20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5"
+     }
+    ]
+   },
+   {
+    "producer_granule_id": "20261118120000-JPL-L4_GHRSST-SSTfnd-MUR25-GLOB-v02.0-fv04.2",
+    "time_start": "2026-11-18T21:00:00.000Z",
+    "time_end": "2026-11-19T21:00:00.000Z",
+    "updated": "2026-11-22T09:22:22.632Z",
+    "title": "20261118120000-JPL-L4_GHRSST-SSTfnd-MUR25-GLOB-v02.0-fv04.2",
+    "id": "G4418925161-POCLOUD",
+    "granule_size": "12.5",
+    "collection_concept_id": "C1996881146-POCLOUD",
+    "links": [
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/data#",
+      "title": "Download 20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-protected/MUR-JPL-L4-GLOB-v4.1/20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc"
+     },
+     {
+      "rel": "http://esipfed.org/ns/fedsearch/1.1/metadata#",
+      "title": "Download 20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5",
+      "hreflang": "en-US",
+      "href": "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-public/MUR-JPL-L4-GLOB-v4.1/20261119090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc.md5"
+     }
+    ]
+   }
+  ]
+ }
+}

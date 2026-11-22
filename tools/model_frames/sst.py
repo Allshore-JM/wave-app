@@ -1,8 +1,10 @@
 """Sea surface temperature tiles job (plan section 44): the newest NASA JPL MUR SST v4.1 day -> R2 under sst/v1/.
 
-Source: MUR v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) through NOAA CoastWatch's ERDDAP mirror (anonymous HTTPS; one
-NetCDF-4 file per day, ~750 MB, nominal 09Z, served ~26 h after it). Free and redistributable; credit "NASA JPL MUR
-SST v4.1 via NOAA CoastWatch ERDDAP". The tiles (sst_tiles.py) and the layout:
+Source: MUR v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04), one NetCDF-4 file per day (~700-750 MB, nominal 09Z, out ~26 h
+after it), from NASA PO.DAAC (section 107): the day list from CMR (public), the file from PO.DAAC's archive behind a
+NASA Earthdata login (EARTHDATA_USERNAME / EARTHDATA_PASSWORD), its public .md5 checked. Fallback: NOAA CoastWatch's
+ERDDAP /files/ mirror (anonymous; switched off for jplMURSST41 since 2026-11-18, kept in case it returns). Free and
+redistributable; credit "NASA JPL MUR SST v4.1 via NASA PO.DAAC". The tiles (sst_tiles.py) and the layout:
   sst/v1/<YYYYMMDD>/<BUILD>/t0.png               the whole globe at 0.25 deg (1440 x 721)        (immutable)
   sst/v1/<YYYYMMDD>/<BUILD>/t1/<lat0>_<lon0>.png 0.05 deg, 20-deg cells (402 x 402)               (immutable)
   sst/v1/<YYYYMMDD>/<BUILD>/t2/<lat0>_<lon0>.png 0.01 deg, 5-deg cells (502 x 502)                (immutable)
@@ -10,11 +12,15 @@ SST v4.1 via NOAA CoastWatch ERDDAP". The tiles (sst_tiles.py) and the layout:
   names it, so a day built again (--force, a code fix, ERDDAP's revision of the day) never reuses a cached key; G31a F2)
   sst/v1/<YYYYMMDD>/stats-<published>.json, manifest-<published>.json                       (immutable)
   sst/v1/latest.json  -> {format, day, run, manifest, published_utc, complete}   (max-age=300, written LAST)
-  sst/v1/failed/<YYYYMMDD>.json, sst/v1/stale-alarm.json
-Exit codes: 0 published / nothing new / a listing outage while the live day is fresh; 1 failure (a download or build
-error, recorded with a back-off; a stale live day, at most once in STALE_ALARM_EVERY_H); 2 bad arguments.
+  sst/v1/failed/<YYYYMMDD>.json, sst/v1/stale-alarm.json, sst/v1/source-alarm.json
+Exit codes: 0 published / nothing new / a passing outage while the live day is fresh; 1 failure (a download or build
+error, recorded with a back-off; a stale live day; a structural PO.DAAC error - 401/403/404, "not accessible", no
+credentials - even when the fallback carried the run; each alarm at most once in STALE_ALARM_EVERY_H); 2 bad arguments.
 """
 import argparse
+import base64
+import hashlib
+import http.cookiejar
 import json
 import math
 import os
@@ -22,6 +28,8 @@ import re
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -36,23 +44,32 @@ import sst_tiles as T    # noqa: E402
 
 PREFIX = "sst/v1"
 FORMAT = "sst-v1"
+COLLECTION = "MUR-JPL-L4-GLOB-v4.1"
+CMR = ("https://cmr.earthdata.nasa.gov/search/granules.json?short_name=" + COLLECTION +
+       "&sort_key=-start_date&page_size=10")
+PODAAC = "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-protected/" + COLLECTION
+PODAAC_MD5 = "https://archive.podaac.earthdata.nasa.gov/podaac-ops-cumulus-public/" + COLLECTION
+URS = "https://urs.earthdata.nasa.gov"   # the only host ever sent the Earthdata login
 ERDDAP = "https://coastwatch.pfeg.noaa.gov/erddap/files/jplMURSST41"
 LISTING = ERDDAP + "/.csv"
 FILE_RE = re.compile(r"^(\d{8})090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02\.0-fv04\.1\.nc$")
 UA = "allshoresurf.com sst tiles (https://allshoresurf.com)"
 SOURCE = {"name": "NASA JPL MUR SST v4.1 (GHRSST L4)", "doi": "10.5067/GHGMR-4FJ04",
           "url": "https://podaac.jpl.nasa.gov/dataset/MUR-JPL-L4-GLOB-v4.1",
-          "via": "NOAA CoastWatch ERDDAP (jplMURSST41)",
-          "credit": "SST: NASA JPL MUR v4.1 (doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled by Allshore Surf"}
+          "via": "NASA PO.DAAC (" + COLLECTION + ")",
+          "credit": "SST: NASA JPL MUR v4.1 (doi:10.5067/GHGMR-4FJ04) via NASA PO.DAAC; tiled by Allshore Surf"}
+SOURCE_ERDDAP = dict(SOURCE, via="NOAA CoastWatch ERDDAP (jplMURSST41)",
+                     credit="SST: NASA JPL MUR v4.1 (doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled by Allshore Surf")
 MAX_FILE_BYTES = 1_500_000_000          # a day is ~750 MB; anything far larger is not a MUR day
 MIN_FILE_BYTES = 300_000_000
+SIZE_SLACK = 0.10                       # CMR's granule_size (MiB, rounded) vs the archive's Content-Length
 DOWNLOAD_TRIES = 4
 DOWNLOAD_DEADLINE_S = 40 * 60           # well inside the workflow's 60 minutes: a slow mirror is a recorded failure (G31a F3)
 CELL_WORKERS = 4
 UPLOAD_WORKERS = 8
 UPLOAD_BACKLOG = 64
 KEEP_DAYS = 3
-STALE_DAYS = 4                          # a newest day older than this is an outage (MUR or the mirror)
+STALE_DAYS = 3                          # a live day older than this is an outage (MUR or its source); section 107: 4 -> 3
 STALE_ALARM_EVERY_H = 12
 FAILED_RETRY_AFTER_S = 3600
 FAILED_MAX_ATTEMPTS = 6
@@ -131,48 +148,189 @@ def parse_listing(text):
 
 
 def listing(get=_get):
+    """ERDDAP's day files (the fallback source)."""
     with get(LISTING, timeout=90) as r:
         return parse_listing(r.read().decode("utf-8", "replace"))
+
+
+class SourceError(Exception):
+    """A source problem; `structural` = it will not pass by itself (a moved or switched-off file, a refused login)."""
+
+    def __init__(self, message, structural=False):
+        super().__init__(message)
+        self.structural = structural
+
+
+def is_structural(exc):
+    """401 / 403 / 404 / 410 from any URL of a source, ERDDAP's "not accessible via /files/", missing credentials or a
+    listing with no MUR day: the source changed (section 107: ERDDAP's /files/ 404 went unnoticed for 4 days)."""
+    if getattr(exc, "structural", False):
+        return True
+    if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403, 404, 410):
+        return True
+    return "not accessible" in str(exc).lower()
+
+
+_QUERY_RE = re.compile(r"\?[^\s'\"<>]*")
+
+
+def clean(exc, secrets=()):
+    """Error text safe to print and store: no query strings (PO.DAAC's S3 links carry signed tokens, URS's carry the
+    OAuth state) and never a credential."""
+    s = _QUERY_RE.sub("?...", f"{exc.__class__.__name__}: {exc}")
+    for v in secrets:
+        if v:
+            s = s.replace(v, "<redacted>")
+    return s
+
+
+def parse_cmr(text):
+    """CMR's granules.json -> [(day YYYYMMDD, file name, approximate bytes)] for MUR day files, oldest first. CMR's
+    granule_size is in MiB and rounded; the exact size is the archive's Content-Length at download time."""
+    try:
+        entries = json.loads(text)["feed"]["entry"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SourceError(f"CMR answer is not a granule list ({exc.__class__.__name__})")
+    out = []
+    for e in entries:
+        name = str(e.get("title") or e.get("producer_granule_id") or "") + ".nc"
+        m = FILE_RE.match(name)
+        if not m:
+            continue
+        try:
+            size = int(float(e["granule_size"]) * 1024 * 1024)
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append((m.group(1), name, size))
+    if not out:
+        raise SourceError(f"CMR lists {len(entries)} granules of {COLLECTION}, none a MUR day file", structural=True)
+    return sorted(set(out))
+
+
+def cmr_listing(get=_get):
+    """PO.DAAC's newest MUR days from CMR (public, no login)."""
+    with get(CMR, timeout=90) as r:
+        return parse_cmr(r.read().decode("utf-8", "replace"))
+
+
+class _UrsLogin(urllib.request.BaseHandler):
+    """Adds the Earthdata login to requests for URS itself (https, exact host) and to nothing else. As an UNREDIRECTED
+    header it is never copied onto the redirect that follows (to the archive, or to S3, which refuses a second
+    authorization next to its signed URL)."""
+    handler_order = 400
+
+    def __init__(self, user, password):
+        self._auth = "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
+
+    def https_request(self, req):
+        u = urllib.parse.urlsplit(req.full_url)
+        if u.scheme == "https" and u.hostname == urllib.parse.urlsplit(URS).hostname and u.port in (None, 443):
+            req.add_unredirected_header("Authorization", self._auth)
+        return req
+
+
+def earthdata_get(user, password, handlers=()):
+    """-> get(url, headers=None, timeout=...) through one urllib opener for PO.DAAC's login chain: archive -> 302 URS
+    (Basic login, app_type=401) -> 302 archive /login (sets the session cookie) -> archive -> 307 S3 (signed URL).
+    The login goes to URS only (_UrsLogin); the cookie jar carries the session; a refused login is URS's 401
+    (structural). `handlers`: tests' fake HTTPS."""
+    if not user or not password:
+        raise SourceError("EARTHDATA_USERNAME / EARTHDATA_PASSWORD not set", structural=True)
+    opener = urllib.request.build_opener(_UrsLogin(user, password),
+                                         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()), *handlers)
+
+    def get(url, headers=None, timeout=120):
+        req = urllib.request.Request(url, headers=dict({"User-Agent": UA}, **(headers or {})))
+        return opener.open(req, timeout=timeout)
+    return get
+
+
+def earthdata_from_env(env=None):
+    env = os.environ if env is None else env
+    return earthdata_get(env.get("EARTHDATA_USERNAME", "").strip(), env.get("EARTHDATA_PASSWORD", ""))
+
+
+def podaac_md5(name, get=_get, log=print):
+    """The day's MD5 from PO.DAAC's public bucket, or None (best effort: Content-Length still checks the transfer)."""
+    try:
+        with get(f"{PODAAC_MD5}/{name}.md5", timeout=60) as r:
+            text = r.read(4096).decode("ascii", "replace")
+    except Exception as exc:                                           # noqa: BLE001
+        log(f"no MD5 for {name}: {clean(exc)}")
+        return None
+    m = re.match(r"\s*([0-9a-fA-F]{32})\b", text)
+    return m.group(1).lower() if m else None
 
 
 class DeadlineExceeded(Exception):
     pass
 
 
-def download(name, size, dest, get=_get, tries=DOWNLOAD_TRIES, log=print, deadline_s=None, clock=time.monotonic):
+def _content_length(r):
+    headers = getattr(r, "headers", None)
+    v = headers.get("Content-Length") if headers is not None else None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def download(name, size, dest, get=_get, tries=DOWNLOAD_TRIES, log=print, deadline_s=None, clock=time.monotonic,
+             url=None, exact=True, md5=None, start=None):
     """Stream the day's file to `dest`, one whole request per try: ERDDAP answers every Range request on /files/ with
     416 ("Don't try to connect to .nc files as if they were local files", G31a F1), so a cut transfer starts again from
-    byte 0 (a day takes ~10 s on GitHub's runner). The result must be exactly the listed size; past `deadline_s` the
-    download is given up (a recorded failure with its back-off, never the workflow's 60-minute kill: G31a F3)."""
+    byte 0 (a day takes ~10 s on GitHub's runner). `exact`: the result must be exactly the listed `size` (ERDDAP);
+    else (PO.DAAC, whose CMR size is approximate) exactly the response's Content-Length, which must be a MUR-day size
+    within SIZE_SLACK of `size`. With `md5` the bytes must hash to it. Past `deadline_s` (counted from `start`, so a
+    fallback shares the first source's time) the download is given up: a recorded failure with its back-off, never
+    the workflow's 60-minute kill (G31a F3). A structural HTTP error (401/403/404) is not retried."""
     if not (MIN_FILE_BYTES <= size <= MAX_FILE_BYTES):
         raise ValueError(f"{name}: listed size {size} is not a MUR day")
     deadline_s = DOWNLOAD_DEADLINE_S if deadline_s is None else deadline_s
-    start, last, have = clock(), None, 0
+    url = url or f"{ERDDAP}/{name}"
+    start = clock() if start is None else start
+    last, have, want = None, 0, size
     for attempt in range(1, tries + 1):
         have = 0
         try:
-            with get(f"{ERDDAP}/{name}", timeout=300) as r, open(dest, "wb") as fh:
+            if clock() - start > deadline_s:
+                raise DeadlineExceeded(f"{name}: not downloaded within {deadline_s} s")
+            with get(url, timeout=300) as r, open(dest, "wb") as fh:
+                if not exact:
+                    want = _content_length(r)
+                    if want is None:
+                        raise IOError("no Content-Length")
+                    if not (MIN_FILE_BYTES <= want <= MAX_FILE_BYTES) or abs(want - size) > SIZE_SLACK * size:
+                        raise ValueError(f"{name}: Content-Length {want} is not a MUR day near the listed {size}")
+                h = hashlib.md5(usedforsecurity=False) if md5 else None
                 while True:
                     if clock() - start > deadline_s:
-                        raise DeadlineExceeded(f"{name}: not downloaded within {deadline_s} s ({have} of {size} bytes)")
+                        raise DeadlineExceeded(f"{name}: not downloaded within {deadline_s} s ({have} of {want} bytes)")
                     chunk = r.read(1 << 22)
                     if not chunk:
                         break
                     fh.write(chunk)
+                    if h is not None:
+                        h.update(chunk)
                     have += len(chunk)
-                    if have > size:
-                        raise ValueError(f"{name}: more bytes than listed")
-            if have == size:
+                    if have > want:
+                        raise ValueError(f"{name}: more bytes than {'listed' if exact else 'its Content-Length'}")
+            if have != want:
+                last = IOError(f"ended at {have} of {want} bytes")
+            elif h is not None and h.hexdigest() != md5:
+                last = IOError(f"MD5 {h.hexdigest()} is not PO.DAAC's {md5}")
+            else:
                 return dest
-            last = IOError(f"ended at {have} of {size} bytes")
         except (DeadlineExceeded, ValueError):
             raise
         except Exception as exc:                                       # noqa: BLE001 - resets, timeouts, HTTP errors
+            if is_structural(exc):
+                raise
             last = exc
-        log(f"download attempt {attempt} stopped at {have} of {size} bytes: {last.__class__.__name__}")
+        log(f"download attempt {attempt} stopped at {have} of {want} bytes: {clean(last)}")
         if attempt < tries:
             time.sleep(min(30, 5 * attempt))
-    raise IOError(f"{name}: {have} of {size} bytes after {tries} tries ({last!r})")
+    raise IOError(f"{name}: {have} of {want} bytes after {tries} tries ({clean(last)})")
 
 
 def read_mur(path, day, geo=None):
@@ -246,7 +404,7 @@ def t0_grid(geo):
             "dlon": res, "dlat": -res, "registration": "center", "lon_periodic": True}
 
 
-def build(day, arrays, uploads, geo=None, file_name=None, log=print, build_id=None):
+def build(day, arrays, uploads, geo=None, file_name=None, log=print, build_id=None, source=None):
     """Tiles of one day from its north-up [sst, mask] -> the manifest (pointer not written). The list is emptied (the
     caller keeps no reference, so the mask's ~650 MB go once the value grid is made: G31a F8) and `sst` is turned into
     the value grid in place. The lattice follows the arrays (MUR: 100 pixels per degree). Tiles go under their own
@@ -322,7 +480,7 @@ def build(day, arrays, uploads, geo=None, file_name=None, log=print, build_id=No
     manifest = {
         "format": FORMAT, "day": iso_day(day), "run": day, "build": build_id, "complete": True, "published_utc": published,
         "build_seconds": round(time.time() - t0, 1), "units": "degC", "range": list(T.RANGE),
-        "source": dict(SOURCE, file=file_name, time_utc=f"{iso_day(day)}T09:00:00Z"),
+        "source": dict(source or SOURCE, file=file_name, time_utc=f"{iso_day(day)}T09:00:00Z"),
         "encoding": "u8: code 0 = no value, else v = lo + (code - 1) / 254 * (hi - lo) deg C",
         "geometry": "cell '<lat0>_<lon0>' covers lat0 <= lat < lat0 + cell, lon0 <= lon < lon0 + cell; its PNG is "
                     "(px + 2) x (px + 2): row r / column c centred at lat = lat0 + cell - r * res, "
@@ -409,7 +567,7 @@ def skip_failed(store, day, now=None):
 def stale_check(store, live_day, now=None, why=""):
     """1 when the LIVE day (what the site shows; None = nothing published yet) is older than STALE_DAYS and no alarm
     went out in STALE_ALARM_EVERY_H (GitHub mails a failed run), else None. Every quiet path ends here: nothing newer on
-    ERDDAP, a listing outage, a day that keeps failing (G31a F4, F6)."""
+    its source, a listing outage, a day that keeps failing (G31a F4, F6)."""
     now = now or datetime.now(timezone.utc)
     age_d = math.inf if not live_day else (now - datetime.strptime(live_day, "%Y%m%d").replace(tzinfo=timezone.utc)).total_seconds() / 86400
     if age_d <= STALE_DAYS:
@@ -424,18 +582,44 @@ def stale_check(store, live_day, now=None, why=""):
     return 1
 
 
+def source_alarm_key():
+    return f"{PREFIX}/source-alarm.json"
+
+
+def source_alarm(store, reason, now=None):
+    """1 when PO.DAAC (the primary source) failed STRUCTURALLY this run and no such alarm went out in
+    STALE_ALARM_EVERY_H, else None. Unlike the stale alarm it does not wait for the live day to age: section 107 found
+    ERDDAP's /files/ switched off for 4 days before the stale alarm mailed. It also mails when the fallback carried
+    the run (the overlay is fresh, but the primary needs a look)."""
+    now = now or datetime.now(timezone.utc)
+    rec = store.get_json(source_alarm_key()) or {}
+    last = rec.get("last_alarm_utc")
+    if last and (now - datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)).total_seconds() < STALE_ALARM_EVERY_H * 3600:
+        print(f"source problem (alarm already sent): {reason}")
+        return None
+    reason = P.redact(reason, store.bucket)
+    store.put(source_alarm_key(), json.dumps({"last_alarm_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "reason": reason}).encode(), JSON, P.POINTER)
+    _summary(f"SOURCE: NASA PO.DAAC failed structurally: {reason}")
+    return 1
+
+
 def _store_from_env():
     env = os.environ
     client = P.r2_client(env["R2_ACCOUNT_ID"], env["R2_ACCESS_KEY_ID"], env["R2_SECRET_ACCESS_KEY"])
     return P.Store(client, env["R2_BUCKET"])
 
 
-def main(argv=None, get=_get, store=None, reader=read_mur):
+PRIMARY, FALLBACK = "PO.DAAC", "ERDDAP"
+
+
+def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
+    """`get`: anonymous HTTPS (CMR, PO.DAAC's public MD5, ERDDAP); `earthdata`: the logged-in get for PO.DAAC's
+    archive (default: earthdata_from_env())."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="build, upload nothing")
     ap.add_argument("--local", default=None, help="also write every object under this folder")
     ap.add_argument("--file", default=None, help="a MUR file already on disk (with --day)")
-    ap.add_argument("--day", default=None, help="YYYYMMDD (default: the newest on ERDDAP)")
+    ap.add_argument("--day", default=None, help="YYYYMMDD (default: the newest MUR day)")
     ap.add_argument("--force", action="store_true", help="publish even if the day is live")
     ap.add_argument("--keep", type=int, default=KEEP_DAYS)
     a = ap.parse_args(argv)
@@ -449,44 +633,87 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
         if store is None:
             store = _store_from_env()
         latest = store.get_json(latest_key()) or {}
+    scheduled = live and not a.day
     # the stale alarm watches the LIVE day on every quiet path, and only on scheduled runs (a manual --day is not a
     # statement about freshness: G31a F5)
-    stale = (lambda why: (stale_check(store, latest.get("run"), why=why) or 0)) if live and not a.day else (lambda why: 0)
+    stale = (lambda why: (stale_check(store, latest.get("run"), why=why) or 0)) if scheduled else (lambda why: 0)
+    secret = os.environ.get("EARTHDATA_PASSWORD", "")
+    problems = []                                                      # (source, text, structural)
 
+    def note(src, what, exc):
+        text, st = f"{what}: {clean(exc, (secret,) if len(secret) >= 4 else ())}", is_structural(exc)
+        problems.append((src, text, st))
+        print(f"{src} {text}{' [structural]' if st else ''}")
+
+    def finish(rc):
+        """Every exit of a scheduled run: a structural PO.DAAC problem mails now (once per STALE_ALARM_EVERY_H)."""
+        bad = [t for s, t, st in problems if s == PRIMARY and st]
+        if scheduled and bad:
+            rc = max(rc, source_alarm(store, "; ".join(bad)) or 0)
+        return rc
+
+    lister = None
     if a.file:
         day, name, size = a.day, os.path.basename(a.file), os.path.getsize(a.file)
     else:
-        try:
-            days = listing(get)
-        except Exception as exc:                                       # noqa: BLE001
-            print(f"ERDDAP listing failed: {exc.__class__.__name__}: {exc}")
-            return stale("the ERDDAP listing fails") if live else 1
-        if a.day:
-            days = [d for d in days if d[0] == a.day]
+        days = None
+        for src, fn in ((PRIMARY, cmr_listing), (FALLBACK, listing)):
+            try:
+                found = fn(get)
+            except Exception as exc:                                   # noqa: BLE001
+                note(src, "listing", exc)
+                continue
+            if a.day:
+                found = [d for d in found if d[0] == a.day]
+            if found:
+                days, lister = found, src
+                break
+            print(f"{src}: no MUR day file in the listing" + (f" for {a.day}" if a.day else ""))
         if not days:
-            print("no MUR day file in the listing" + (f" for {a.day}" if a.day else ""))
-            return stale("no MUR day in the listing") if live and not a.day else 1
+            why = "; ".join(f"{s} {t}" for s, t, _ in problems) or "no MUR day in any listing"
+            return finish(stale(f"no source lists a MUR day ({why})")) if scheduled else 1
         day, name, size = days[-1]
 
     if live:
         if latest.get("run") and latest["run"] >= day and not a.force:
-            print(f"day {latest['run']} is live; nothing newer ({day})")
-            return stale("nothing newer on ERDDAP")
+            print(f"day {latest['run']} is live; nothing newer ({day}, listed by {lister})")
+            return finish(stale(f"nothing newer from {lister}"))
         if not a.force and skip_failed(store, day):
             print(f"day {day} failed recently; waiting before retrying")
-            return stale(f"day {day} keeps failing")
-    print(f"building MUR day {day} ({name}, {size / 1e6:.0f} MB){' [dry-run]' if not live else ''}")
+            return finish(stale(f"day {day} keeps failing"))
+    print(f"building MUR day {day} ({name}, ~{size / 1e6:.0f} MB, listed by {lister or 'a local file'})"
+          f"{' [dry-run]' if not live else ''}")
 
     uploads = Uploads(store if live else None, local=a.local)
-    tmp = None
+    tmp, via = None, None
     try:
         path = a.file
         if not path:
             tmp = tempfile.TemporaryDirectory()
-            t = time.time()
-            path = download(name, size, os.path.join(tmp.name, name), get=get)
-            print(f"downloaded {size / 1e6:.0f} MB in {time.time() - t:.0f} s")
-        manifest, stats = build(day, list(reader(path, day)), uploads, file_name=name)
+            dest = os.path.join(tmp.name, name)
+            started = time.monotonic()
+            for src in (PRIMARY, FALLBACK):                            # the download falls back too, same deadline
+                try:
+                    if src == PRIMARY:
+                        eget = earthdata if earthdata is not None else earthdata_from_env()
+                        path = download(name, size, dest, get=eget, url=f"{PODAAC}/{name}", exact=False,
+                                        md5=podaac_md5(name, get), start=started)
+                    else:
+                        exact = size if lister == FALLBACK else dict((n, b) for _, n, b in listing(get)).get(name)
+                        if exact is None:
+                            raise SourceError(f"ERDDAP does not list {name}")
+                        path = download(name, exact, dest, get=get, start=started)
+                    via = src
+                    break
+                except DeadlineExceeded:
+                    raise
+                except Exception as exc:                               # noqa: BLE001
+                    note(src, "download", exc)
+            if path is None:
+                raise IOError("no source delivered " + name + ": " + "; ".join(f"{s} {t}" for s, t, _ in problems))
+            print(f"downloaded {os.path.getsize(path) / 1e6:.0f} MB from {via} in {time.monotonic() - started:.0f} s")
+        source = SOURCE_ERDDAP if via == FALLBACK else SOURCE
+        manifest, stats = build(day, list(reader(path, day)), uploads, file_name=name, source=source)
         if live:
             mkey, _ = publish_manifest(store, day, manifest, stats)
         elif a.local is not None:
@@ -499,6 +726,7 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
         if live:
             rec = record_failure(store, day, exc)
             print(f"build failed (attempt {rec['attempts']}): {exc!r}")
+            finish(1)                                                  # the run fails (mails) anyway; keeps the reason
         raise
     finally:
         uploads.close()
@@ -508,11 +736,13 @@ def main(argv=None, get=_get, store=None, reader=read_mur):
         # the day is live: a storage error while deleting old days is a warning, the next run prunes again
         print("pruned:", P.safe_prune(lambda: prune(store, keep=a.keep), store.bucket, _summary))
     tt = stats["tiers"]
-    _summary(f"### MUR day {day}: t2 {tt['t2']['cells']} cells, t1 {tt['t1']['cells']} cells, "
+    _summary(f"### MUR day {day} via {via or 'a local file'}: t2 {tt['t2']['cells']} cells, t1 {tt['t1']['cells']} cells, "
              f"{uploads.bytes / 1e6:.1f} MB, {manifest['build_seconds']} s, steps <= {max(tt['t2']['max_step_c'], tt['t1']['max_step_c']):.3f} C")
     _summary(f"pixels: {stats['pixels']}; coastal fill t2 {tt['t2']['filled']}, t1 {tt['t1']['filled']} nodes, t0 {tt['t0']['filled']} nodes; "
              f"t0 {tt['t0']['min_c']}..{tt['t0']['max_c']} C (clamped {tt['t0']['clamped_low']} low / {tt['t0']['clamped_high']} high)")
-    return 0
+    if via == FALLBACK:
+        _summary("published from the ERDDAP fallback: " + "; ".join(f"{s} {t}" for s, t, _ in problems))
+    return finish(0)
 
 
 if __name__ == "__main__":

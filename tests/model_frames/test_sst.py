@@ -26,6 +26,18 @@ import sst_tiles as T      # noqa: E402
 from test_job import FakeClient   # noqa: E402
 
 PXT = 20                    # test lattice: 20 pixels per degree
+REAL_EARTHDATA_FROM_ENV = S.earthdata_from_env
+
+
+@pytest.fixture(autouse=True)
+def _offline_earthdata(monkeypatch):
+    """No test reaches NASA (section 107): without an injected `earthdata` get, PO.DAAC's download fails at once and
+    not structurally, so the tests written for ERDDAP run the fallback path they now are."""
+    def offline(env=None):
+        raise S.SourceError("offline test: no Earthdata login")
+    monkeypatch.setattr(S, "earthdata_from_env", offline)
+    monkeypatch.delenv("EARTHDATA_PASSWORD", raising=False)
+    monkeypatch.delenv("EARTHDATA_USERNAME", raising=False)
 
 
 def field_c(lat, lon):
@@ -766,12 +778,13 @@ def test_coastal_fill_needs_one_valued_neighbour_and_the_pinned_constants():
     v, n = T.coastal_fill(b, passes=1)
     assert n == 1 and v[2, 2] == pytest.approx(20.0)
     assert (T.COAST_PX, T.FILL_PASSES, T.NODE_FILL) == (3, 2, 1)
-    assert (S.STALE_DAYS, S.STALE_ALARM_EVERY_H, S.FAILED_MAX_ATTEMPTS, S.FAILED_RETRY_AFTER_S) == (4, 12, 6, 3600)
+    assert (S.STALE_DAYS, S.STALE_ALARM_EVERY_H, S.FAILED_MAX_ATTEMPTS, S.FAILED_RETRY_AFTER_S) == (3, 12, 6, 3600)
 
 
 def test_the_temporary_dry_run_workflow_is_gone():
     wf = os.path.join(ROOT, ".github", "workflows")
     assert not os.path.exists(os.path.join(wf, "sst-dryrun.yml"))
+    assert not os.path.exists(os.path.join(wf, "sst-podaac-dryrun.yml")), "section 107's runner proof is temporary"
     assert not os.path.exists(os.path.join(ROOT, "tools", "model_frames", "sst_dryrun_check.py"))
 
 
@@ -797,3 +810,390 @@ def test_the_sst_workflow_is_pinned_hourly_separate_and_kept_alive():
     # a daily product: the Worker dispatches it once an hour (GitHub fired its own hourly cron only every 6-9 h);
     # never on every 10-minute tick (owner 2026-11-05: hourly is enough)
     assert "model-sst.yml" not in every_tick and hourly == ["model-sst.yml"]
+
+
+# ------------------------------------------------------------------ section 107: NASA PO.DAAC first, ERDDAP fallback
+import base64            # noqa: E402
+import email.message     # noqa: E402
+import hashlib           # noqa: E402
+import urllib.error      # noqa: E402
+import urllib.parse      # noqa: E402
+import urllib.request    # noqa: E402
+import urllib.response   # noqa: E402
+
+MUR = "090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1"
+ARCH = "https://archive.podaac.earthdata.nasa.gov"
+S3 = "https://podaac-ops-cumulus-protected.s3.us-west-2.amazonaws.com"
+PASSWORD = "pa55-W0rd-not-for-logs"
+
+
+def test_parse_cmr_reads_the_real_granule_list_oldest_first():
+    text = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "sst_cmr_granules.json"), encoding="utf-8").read()
+    days = S.parse_cmr(text)
+    assert [d for d, _, _ in days] == ["20261119", "20261120", "20261121"], "oldest first; the other product skipped"
+    assert all(n == d + MUR + ".nc" and S.FILE_RE.match(n) for d, n, _ in days)
+    assert days[-1][2] == int(693.8863115310669 * 1024 * 1024), "granule_size is MiB"
+    assert all(S.MIN_FILE_BYTES <= b <= S.MAX_FILE_BYTES for _, _, b in days)
+    # the archive link CMR gives is the one download() builds
+    entry = json.loads(text)["feed"]["entry"][0]
+    assert f"{S.PODAAC}/{entry['title']}.nc" in [link["href"] for link in entry["links"]]
+
+
+def test_parse_cmr_tells_a_changed_source_from_a_garbled_answer():
+    with pytest.raises(S.SourceError) as e:
+        S.parse_cmr("<html>busy</html>")
+    assert not S.is_structural(e.value), "an HTML error page is a passing problem"
+    for feed in ({"feed": {"entry": []}},
+                 {"feed": {"entry": [{"title": "20261121090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.2", "granule_size": "700"}]}}):
+        with pytest.raises(S.SourceError) as e:
+            S.parse_cmr(json.dumps(feed))
+        assert S.is_structural(e.value), "no MUR day listed = the collection or its naming changed"
+
+
+def test_is_structural_names_the_errors_that_do_not_pass_by_themselves():
+    def http(code):
+        return urllib.error.HTTPError("https://x/y?sig=1", code, "m", {}, None)
+    assert all(S.is_structural(http(c)) for c in (401, 403, 404, 410))
+    assert not any(S.is_structural(http(c)) for c in (429, 500, 502, 503))
+    assert S.is_structural(IOError('Error {"This dataset is not accessible via /files/."}'))
+    assert not S.is_structural(ConnectionResetError("cut")) and not S.is_structural(TimeoutError())
+    assert S.is_structural(S.SourceError("x", structural=True)) and not S.is_structural(S.SourceError("x"))
+
+
+class FakeNet(urllib.request.HTTPSHandler):
+    """urllib's own redirect, cookie and error machinery over canned HTTPS answers: routes(url, headers) ->
+    (code, headers, body). `seen` keeps every request with its lower-cased headers (unredirected ones included)."""
+
+    def __init__(self, routes):
+        super().__init__()
+        self.routes, self.seen = routes, []
+
+    def https_open(self, req):
+        hdrs = {k.lower(): v for k, v in req.header_items()}
+        self.seen.append((req.full_url, hdrs))
+        code, headers, body = self.routes(req.full_url, hdrs)
+        msg = email.message.Message()
+        for k, v in headers.items():
+            msg[k] = v
+        r = urllib.response.addinfourl(io.BytesIO(body), msg, req.full_url, code)
+        r.msg = {200: "OK", 302: "Found", 307: "Temporary Redirect", 401: "Unauthorized"}.get(code, "")
+        return r
+
+
+def _podaac_chain(name, body, password=PASSWORD):
+    """PO.DAAC as measured 2026-11-22: the protected link 302s to URS (app_type=401), URS takes Basic auth and 302s to
+    the archive's /login, which sets the session cookie and 302s back; with the cookie the archive 307s to a signed S3
+    URL. `session[0]` is the cookie the archive currently accepts (bump it to expire the session)."""
+    file_url = f"{S.PODAAC}/{name}"
+    session = [1]
+    good = "Basic " + base64.b64encode(f"earthdata-user:{password}".encode()).decode()
+
+    def routes(url, h):
+        u = urllib.parse.urlsplit(url)
+        if u.hostname == "archive.podaac.earthdata.nasa.gov":
+            if u.path == "/login":
+                assert "code=abc" in u.query
+                return 302, {"Location": file_url, "Set-Cookie": f"accessToken=tok{session[0]}; Path=/; Secure; HttpOnly"}, b""
+            if url == file_url and h.get("cookie") == f"accessToken=tok{session[0]}":
+                return 307, {"Location": f"{S3}/MUR/{name}?X-Amz-Signature=s3cr3tsig&X-Amz-Credential=AKIA"}, b""
+            return 302, {"Location": f"{S.URS}/oauth/authorize?client_id=c&response_type=code&"
+                                     f"redirect_uri={ARCH}/login&state=st&app_type=401"}, b""
+        if u.hostname == "urs.earthdata.nasa.gov":
+            if h.get("authorization") != good:
+                return 401, {"WWW-Authenticate": 'Basic realm="Please enter your Earthdata Login credentials"'}, b"no"
+            return 302, {"Location": f"{ARCH}/login?code=abc&state=st"}, b""
+        if url.startswith(S3 + "/"):
+            return 200, {"Content-Length": str(len(body))}, body
+        raise AssertionError("unexpected host " + url)
+    return routes, session
+
+
+def test_the_earthdata_login_goes_to_urs_only_and_the_session_cookie_carries_the_rest():
+    name = "20261121" + MUR + ".nc"
+    body = b"mur" * 1000
+    routes, session = _podaac_chain(name, body)
+    net = FakeNet(routes)
+    get = S.earthdata_get("earthdata-user", PASSWORD, handlers=(net,))
+    with get(f"{S.PODAAC}/{name}") as r:
+        assert r.read() == body and S._content_length(r) == len(body)
+    session[0] += 1                                       # the archive's session expired: URS again, login again
+    with get(f"{S.PODAAC}/{name}") as r:
+        assert r.read() == body
+    hosts = [urllib.parse.urlsplit(u).hostname for u, _ in net.seen]
+    assert hosts.count("urs.earthdata.nasa.gov") == 2
+    for url, h in net.seen:
+        host = urllib.parse.urlsplit(url).hostname
+        assert ("authorization" in h) == (host == "urs.earthdata.nasa.gov"), f"the login went to {host}"
+        if url.startswith(S3):
+            assert "cookie" not in h, "S3's signed URL gets neither the login nor the archive's cookie"
+    assert any(h.get("cookie") == "accessToken=tok2" for u, h in net.seen if u == f"{S.PODAAC}/{name}")
+
+    bad = S.earthdata_get("earthdata-user", "wrong", handlers=(FakeNet(_podaac_chain(name, body)[0]),))
+    with pytest.raises(urllib.error.HTTPError) as e:
+        bad(f"{S.PODAAC}/{name}")
+    assert e.value.code == 401 and S.is_structural(e.value), "a refused login is structural (mails at once)"
+
+
+def test_the_login_handler_matches_the_urs_host_exactly():
+    h = S._UrsLogin("u", "p")
+    for url, sent in (("https://urs.earthdata.nasa.gov/oauth/authorize", True),
+                      ("https://urs.earthdata.nasa.gov:443/x", True),
+                      ("https://urs.earthdata.nasa.gov.example.com/x", False),
+                      ("https://example.com/urs.earthdata.nasa.gov", False),
+                      ("https://urs.earthdata.nasa.gov:8443/x", False),
+                      (S.PODAAC + "/f.nc", False)):
+        req = h.https_request(urllib.request.Request(url))
+        assert req.has_header("Authorization") == sent, url
+        if sent:
+            assert not req.headers and req.unredirected_hdrs, "unredirected: never copied onto the next hop"
+    assert not hasattr(h, "http_request"), "never over plain http"
+
+
+def test_earthdata_credentials_come_from_the_environment_and_their_absence_is_structural():
+    for env in ({}, {"EARTHDATA_USERNAME": "u"}, {"EARTHDATA_USERNAME": " ", "EARTHDATA_PASSWORD": "p"}):
+        with pytest.raises(S.SourceError) as e:
+            REAL_EARTHDATA_FROM_ENV(env)
+        assert S.is_structural(e.value) and "p" not in str(e.value).replace("EARTHDATA_PASSWORD", "").replace("USERNAME", "")
+    assert callable(REAL_EARTHDATA_FROM_ENV({"EARTHDATA_USERNAME": "u", "EARTHDATA_PASSWORD": "p"}))
+
+
+class _HResp(_Resp):
+    def __init__(self, body, length="auto", **kw):
+        super().__init__(body, **kw)
+        self.headers = email.message.Message()
+        if length is not None:
+            self.headers["Content-Length"] = str(len(body) if length == "auto" else length)
+
+
+def test_a_podaac_download_is_checked_against_its_content_length_and_md5(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    data = bytes(range(256)) * 400
+    md5 = hashlib.md5(data).hexdigest()
+    dest = str(tmp_path / "f.nc")
+    approx = int(len(data) * 1.04)                              # CMR's rounded size: only roughly right
+    calls = []
+
+    def first_cut(url, headers=None, timeout=None):
+        calls.append(url)
+        return _HResp(data, fail_after=30000) if len(calls) == 1 else _HResp(data)
+    S.download("f.nc", approx, dest, get=first_cut, url=S.PODAAC + "/f.nc", exact=False, md5=md5, log=lambda *a: None)
+    assert open(dest, "rb").read() == data and calls == [S.PODAAC + "/f.nc"] * 2
+
+    def kw(**k):
+        return dict(dict(url=S.PODAAC + "/f.nc", exact=False, tries=2, log=lambda *a: None), **k)
+    with pytest.raises(IOError, match="MD5"):                   # right length, wrong bytes: retried, then given up
+        S.download("f.nc", approx, dest, get=lambda *a, **k: _HResp(data[::-1]), **kw(md5=md5))
+    with pytest.raises(IOError, match="Content-Length"):        # no length to check against
+        S.download("f.nc", approx, dest, get=lambda *a, **k: _HResp(data, length=None), **kw())
+    with pytest.raises(IOError, match="ended at"):              # shorter than announced
+        S.download("f.nc", approx, dest, get=lambda *a, **k: _HResp(data, length=len(data) + 9), **kw())
+    with pytest.raises(ValueError, match="more bytes"):         # longer than announced
+        S.download("f.nc", approx, dest, get=lambda *a, **k: _HResp(data, length=len(data) - 9), **kw())
+    with pytest.raises(ValueError, match="near the listed"):    # far from CMR's size: not this day's file
+        S.download("f.nc", approx * 2, dest, get=lambda *a, **k: _HResp(data), **kw())
+
+    n = []
+
+    def gone(url, headers=None, timeout=None):
+        n.append(1)
+        raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+    with pytest.raises(urllib.error.HTTPError):
+        S.download("f.nc", approx, dest, get=gone, **kw(tries=4))
+    assert n == [1], "a structural error is not retried"
+    with pytest.raises(S.DeadlineExceeded):                     # the fallback shares the first source's deadline
+        S.download("f.nc", len(data), dest, get=first_cut, start=0.0, clock=lambda: S.DOWNLOAD_DEADLINE_S + 1.0)
+
+
+def test_podaac_md5_is_best_effort():
+    def get(url, headers=None, timeout=None):
+        assert url == f"{S.PODAAC_MD5}/x.nc.md5"
+        return _Resp(b"DF496832EE74DEF200BC5E0169573724  x.nc\n")
+    assert S.podaac_md5("x.nc", get=get) == "df496832ee74def200bc5e0169573724"
+    assert S.podaac_md5("x.nc", get=lambda *a, **k: _Resp(b"<html>")) is None
+    assert S.podaac_md5("x.nc", get=lambda *a, **k: (_ for _ in ()).throw(IOError("503")), log=lambda *a: None) is None
+
+
+def _cmr_text(*days, size=1000):
+    return json.dumps({"feed": {"entry": [{"title": d + MUR, "producer_granule_id": d + MUR,
+                                           "granule_size": repr(size / 1048576)} for d in days]}}).encode()
+
+
+def _net(cmr=None, erddap=None, md5=None):
+    """Anonymous HTTPS for main(): CMR, the public MD5, ERDDAP's listing and files. Each argument: bytes to answer,
+    an exception to raise, or None (= the test expects no such request). `asked` lists what was requested."""
+    asked = []
+
+    def answer(what, url):
+        if what is None:
+            raise AssertionError("not expected: " + url)
+        if isinstance(what, BaseException):
+            raise what
+        return _Resp(what)
+
+    def get(url, headers=None, timeout=None):
+        asked.append(url)
+        if url == S.CMR:
+            return answer(cmr, url)
+        if url.startswith(S.PODAAC_MD5 + "/"):
+            return answer(md5, url)
+        if url.startswith(S.ERDDAP + "/"):
+            if url == S.LISTING:
+                return answer(erddap[0] if isinstance(erddap, tuple) else erddap, url)
+            return answer(erddap[1] if isinstance(erddap, tuple) else None, url)
+        raise AssertionError("unknown url " + url)
+    return get, asked
+
+
+def _http(code, url="https://x", msg="m"):
+    return urllib.error.HTTPError(url, code, msg, {}, None)
+
+
+def _store_with_live(day):
+    fc = FakeClient()
+    if day:
+        fc.objects[S.latest_key()] = {"body": json.dumps({"run": day}).encode(), "ct": "", "cc": ""}
+    return fc, P.Store(fc, "b")
+
+
+def _ago(days):
+    return (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+
+
+def _reader_for(body):
+    w = world()
+
+    def reader(path, d):
+        assert open(path, "rb").read() == body
+        return w[0].copy(), w[1].copy()
+    return reader
+
+
+def test_main_publishes_from_podaac_first_and_never_asks_erddap(monkeypatch):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    day, body = _ago(1), b"m" * 1000
+    fc, store = _store_with_live(_ago(2))
+    get, asked = _net(cmr=_cmr_text(_ago(3), day), md5=(hashlib.md5(body).hexdigest() + "  x\n").encode())
+    eurls = []
+
+    def earthdata(url, headers=None, timeout=None):
+        eurls.append(url)
+        return _HResp(body)
+    assert S.main([], get=get, store=store, reader=_reader_for(body), earthdata=earthdata) == 0
+    assert eurls == [f"{S.PODAAC}/{day}{MUR}.nc"]
+    assert not [u for u in asked if u.startswith(S.ERDDAP)], "the fallback is not touched while PO.DAAC works"
+    ptr = json.loads(fc.objects[S.latest_key()]["body"])
+    src = json.loads(fc.objects[ptr["manifest"]]["body"])["source"]
+    assert ptr["run"] == day and src["via"].startswith("NASA PO.DAAC") and "PO.DAAC" in src["credit"]
+    assert src["file"] == f"{day}{MUR}.nc" and "CoastWatch" not in src["credit"]
+    assert S.source_alarm_key() not in fc.objects and S.stale_key() not in fc.objects
+
+
+def test_main_falls_back_to_erddap_for_the_same_day_and_stays_quiet_on_a_passing_podaac_fault(monkeypatch):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    day, body = _ago(1), b"e" * 1000
+    fc, store = _store_with_live(_ago(2))
+    get, asked = _net(cmr=_cmr_text(day, size=1040), md5=IOError("503"),
+                      erddap=(_listing_text(day).replace("400000000", str(len(body))).encode(), body))
+    tries = []
+
+    def earthdata(url, headers=None, timeout=None):
+        tries.append(url)
+        raise ConnectionResetError("cut")
+    assert S.main([], get=get, store=store, reader=_reader_for(body), earthdata=earthdata) == 0
+    assert len(tries) == S.DOWNLOAD_TRIES, "PO.DAAC first, with its retries"
+    assert asked.index(S.LISTING) < asked.index(f"{S.ERDDAP}/{day}{MUR}.nc"), "ERDDAP's exact size, then its file"
+    ptr = json.loads(fc.objects[S.latest_key()]["body"])
+    src = json.loads(fc.objects[ptr["manifest"]]["body"])["source"]
+    assert ptr["run"] == day and "CoastWatch ERDDAP" in src["via"] and "CoastWatch ERDDAP" in src["credit"]
+    assert S.source_alarm_key() not in fc.objects, "a passing PO.DAAC fault the fallback covered: no mail"
+
+
+def test_a_structural_podaac_error_mails_at_once_even_when_the_fallback_publishes(monkeypatch, capsys):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    monkeypatch.setenv("EARTHDATA_PASSWORD", PASSWORD)
+    day, body = _ago(1), b"e" * 1000
+    fc, store = _store_with_live(_ago(2))
+    get, _ = _net(cmr=_cmr_text(day), md5=b"",
+                  erddap=(_listing_text(day).replace("400000000", str(len(body))).encode(), body))
+
+    def refused(url, headers=None, timeout=None):        # an error text carrying a signed URL and (never!) the password
+        raise _http(401, f"{S3}/x.nc?X-Amz-Signature=s3cr3tsig&p={PASSWORD}", f"Unauthorized {PASSWORD}")
+    assert S.main([], get=get, store=store, reader=_reader_for(body), earthdata=refused) == 1, "published, and mailed"
+    assert json.loads(fc.objects[S.latest_key()]["body"])["run"] == day
+    rec = json.loads(fc.objects[S.source_alarm_key()]["body"])
+    assert "401" in rec["reason"] and "download" in rec["reason"]
+    out = capsys.readouterr().out + json.dumps(rec)
+    assert PASSWORD not in out and "s3cr3tsig" not in out, "no credential or signed token in the log or the bucket"
+
+
+def test_listing_alarms_a_structural_podaac_error_now_and_once_but_not_a_passing_one(monkeypatch):
+    fc, store = _store_with_live(_ago(1))                 # the live day is fresh: the stale alarm would stay quiet
+    gone = IOError('HTTP Error 404: Error {"This dataset is not accessible via /files/."}')
+    get, _ = _net(cmr=_http(404, S.CMR), erddap=gone)
+    assert S.main([], get=get, store=store) == 1, "PO.DAAC's listing moved: mail now, not in 3 days"
+    assert "404" in json.loads(fc.objects[S.source_alarm_key()]["body"])["reason"]
+    assert S.main([], get=get, store=store) == 0, "...once in STALE_ALARM_EVERY_H"
+    assert S.stale_key() not in fc.objects
+
+    fc, store = _store_with_live(_ago(1))
+    get, _ = _net(cmr=_http(503, S.CMR), erddap=gone)
+    assert S.main([], get=get, store=store) == 0, "a passing CMR fault (the dead fallback is known): quiet"
+    assert S.source_alarm_key() not in fc.objects
+    get, _ = _net(cmr=json.dumps({"feed": {"entry": []}}).encode(), erddap=gone)
+    assert S.main([], get=get, store=store) == 1, "CMR lists no MUR day: the collection changed"
+    assert S.main(["--day", _ago(1)], get=_net(cmr=_http(404, S.CMR), erddap=gone)[0], store=_store_with_live(None)[1]) == 1
+    fc, store = _store_with_live(None)
+    assert S.main(["--dry-run"], get=_net(cmr=_http(404, S.CMR), erddap=gone)[0], store=store) == 1
+    assert not fc.objects, "a dry run reports, writes nothing"
+
+
+def test_a_live_day_three_days_old_now_raises_the_stale_alarm():
+    fc, store = _store_with_live(_ago(3))
+    get, _ = _net(cmr=_cmr_text(_ago(3)))
+    assert S.main([], get=get, store=store) == 1, "3.x days old > STALE_DAYS (was 4: quiet a day longer)"
+    fc, store = _store_with_live(_ago(2))
+    assert S.main([], get=_net(cmr=_cmr_text(_ago(2)))[0], store=store) == 0
+
+
+def test_missing_credentials_with_a_dead_fallback_fail_the_build_and_record_the_reason(monkeypatch):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    monkeypatch.setattr(S, "earthdata_from_env", REAL_EARTHDATA_FROM_ENV)
+    day = _ago(1)
+    fc, store = _store_with_live(_ago(2))
+    get, asked = _net(cmr=_cmr_text(day), erddap=_http(404, S.LISTING))
+    with pytest.raises(IOError, match="no source delivered"):
+        S.main([], get=get, store=store)
+    assert "EARTHDATA" in json.loads(fc.objects[S.failed_key(day)]["body"])["last_error"]
+    assert "EARTHDATA" in json.loads(fc.objects[S.source_alarm_key()]["body"])["reason"]
+    assert not [u for u in asked if u.startswith(S.PODAAC_MD5)], "nothing fetched for a download that cannot start"
+
+
+def test_a_spent_deadline_is_not_handed_to_the_fallback(monkeypatch):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    fc, store = _store_with_live(_ago(2))
+    get, asked = _net(cmr=_cmr_text(_ago(1)), md5=b"")
+
+    def slow(url, headers=None, timeout=None):
+        raise S.DeadlineExceeded("f.nc: not downloaded within 2400 s")
+    with pytest.raises(S.DeadlineExceeded):
+        S.main([], get=get, store=store, earthdata=slow)
+    assert not [u for u in asked if u.startswith(S.ERDDAP)]
+    assert json.loads(fc.objects[S.failed_key(_ago(1))]["body"])["attempts"] == 1
+
+
+def test_clean_strips_signed_queries_and_the_password():
+    t = S.clean(IOError(f"refused {S3}/a.nc?X-Amz-Signature=abc&X-Amz-Credential=AKIA x"), (PASSWORD,))
+    assert t == f"OSError: refused {S3}/a.nc?... x", "the signed query goes, the rest stays"
+    assert S.clean(IOError(f"x {PASSWORD} y"), (PASSWORD,)) == "OSError: x <redacted> y"
+
+
+def test_the_workflow_hands_the_earthdata_login_to_the_publish_step_only():
+    text = open(os.path.join(ROOT, ".github", "workflows", "model-sst.yml"), encoding="utf-8").read()
+    steps = text.split("\n      - ")
+    with_login = [s for s in steps if "EARTHDATA" in s and "secrets." in s]
+    assert len(with_login) == 1 and with_login[0].startswith("name: Publish SST tiles")
+    assert "EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}" in with_login[0]
+    assert "EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}" in with_login[0]
+    assert "PO.DAAC" in text and "set -x" not in text, "never echo the environment"

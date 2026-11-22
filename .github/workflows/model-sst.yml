@@ -1,9 +1,11 @@
-# Publishes the newest NASA JPL MUR SST v4.1 day (GHRSST L4, 0.01 deg, daily, via NOAA CoastWatch ERDDAP) as sea
-# surface temperature tiles to R2 under sst/v1/ (plan section 44): t0 (0.25 deg globe), t1 (0.05 deg, 20-deg cells),
-# t2 (0.01 deg, 5-deg cells). A day reaches ERDDAP ~26 h after its 09Z time; the job runs hourly and, when the newest day
-# is already live, ends in seconds (a ~750 MB download and a ~2-minute build otherwise).
-# Data: free and redistributable; credit "NASA JPL MUR SST v4.1 (doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP".
-# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+# Publishes the newest NASA JPL MUR SST v4.1 day (GHRSST L4, 0.01 deg, daily) as sea surface temperature tiles to R2
+# under sst/v1/ (plan section 44): t0 (0.25 deg globe), t1 (0.05 deg, 20-deg cells), t2 (0.01 deg, 5-deg cells). Source
+# (section 107): NASA PO.DAAC (day list from CMR, file behind a NASA Earthdata login), NOAA CoastWatch ERDDAP /files/ as
+# the fallback. A day is out ~26 h after its 09Z time; the job runs hourly and, when the newest day is already live,
+# ends in seconds (a ~700 MB download and a ~2-minute build otherwise).
+# Data: free and redistributable; credit "NASA JPL MUR SST v4.1 (doi:10.5067/GHGMR-4FJ04) via NASA PO.DAAC".
+# Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET EARTHDATA_USERNAME EARTHDATA_PASSWORD
+# (a NASA Earthdata login, not a token: tokens expire in 60 days; given to the publish step only).
 name: model-sst
 on:
   schedule:
@@ -11,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       day:
-        description: "YYYYMMDD (blank = the newest MUR day on ERDDAP)"
+        description: "YYYYMMDD (blank = the newest MUR day)"
         default: ""
       dry_run:
         description: "no uploads (true/false)"
@@ -75,6 +77,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}
+          EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}
           DAY: ${{ github.event.inputs.day }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           FORCE: ${{ github.event.inputs.force }}

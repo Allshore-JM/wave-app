@@ -138,31 +138,31 @@ ALL_REGIONS = {
     # (tools/coast/band_v5.json, make_coast_band.py) and the coarse zoom-12 trace (COARSE_*) in the rest of the box,
     # instead of GSHHG. Each is cut to its owned box (its box less the boxes before it in EAST_ORDER).
     "us-me-nh": dict(v=1, box=(-71.2, 42.8, -66.8, 47.5), zmin=8,
-                     digest="aeda1e313b2a51372c9cf18ecd2812d4ccb117f0de7859124c9909fe58bb45f5", tiles_sha256=None,
+                     digest="aeda1e313b2a51372c9cf18ecd2812d4ccb117f0de7859124c9909fe58bb45f5", tiles_sha256="c769be308ea0d688fcdcbf83d6d40890930f81b52438309f49f5c8b1aef97a72",
                      speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="full"),
     "us-sne-ny": dict(v=1, box=(-74.5, 40.4, -69.8, 42.8), zmin=8,
-                      digest="f6abd79a0790976bbbcbf5da1faf9dc19acb2a71a4a9c9089a299b838f48e836", tiles_sha256=None,
+                      digest="f6abd79a0790976bbbcbf5da1faf9dc19acb2a71a4a9c9089a299b838f48e836", tiles_sha256="6c65a015cbfc28dda19dd17965d088592b324ce49df27d539e4bb8a2e0d1d60e",
                       speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-nj-ches": dict(v=1, box=(-77.7, 36.9, -73.5, 40.4), zmin=8,
-                       digest="aab89403f3f3767c6fdf59c170f336f7d7d7c8190a91c29bd4734a614fb91263", tiles_sha256=None,
+                       digest="aab89403f3f3767c6fdf59c170f336f7d7d7c8190a91c29bd4734a614fb91263", tiles_sha256="9dcec443305e028265f909bc0e4ca0df5bc6445bc56c627300618b4a7925cef9",
                        speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-va-nc": dict(v=1, box=(-79.5, 33.7, -75.0, 36.9), zmin=8,
-                     digest="9e03e64a6fce69f5fc83ed336ecb8f50151df740f1f74d0c556681c2cd67a1df", tiles_sha256=None,
+                     digest="9e03e64a6fce69f5fc83ed336ecb8f50151df740f1f74d0c556681c2cd67a1df", tiles_sha256="4f1915789c93cc7fd93e188d4b6b583319bf2b2f6e8c6c85a248b6c1880fedba",
                      speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-sc-ga": dict(v=1, box=(-82.0, 30.7, -77.5, 33.7), zmin=8,
-                     digest="4d118ffd03d8d353c18b5bab113e627a83f5a96c66ce9f8752cb8b74633947d2", tiles_sha256=None,
+                     digest="4d118ffd03d8d353c18b5bab113e627a83f5a96c66ce9f8752cb8b74633947d2", tiles_sha256="c1e167de3ed2d8cff337d88dc72b13f5afbf42a89381b7d13187ff37cf0182f2",
                      speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-fl-east": dict(v=1, box=(-81.6, 26.0, -79.7, 30.7), zmin=8,
-                       digest="d0c56c1a591b16f220f42d730794781219d20a40c764e29f0f4db44ed20ee8c1", tiles_sha256=None,
+                       digest="d0c56c1a591b16f220f42d730794781219d20a40c764e29f0f4db44ed20ee8c1", tiles_sha256="4f6ef9d55edb2336282e08baeb8a3d4ca3ded832e56b2cb05e24334eff2c6aba",
                        speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-fl-south": dict(v=1, box=(-83.2, 24.3, -79.7, 26.0), zmin=8,
-                        digest="0cd1b80cde1d0884f2d8b6be09386ce93254d00070dcbfbbc11f2e406f370383", tiles_sha256=None,
+                        digest="0cd1b80cde1d0884f2d8b6be09386ce93254d00070dcbfbbc11f2e406f370383", tiles_sha256="5eb343a917acc9d21a0d57d364168cd09fb67b4b7213d3537d2c4b3008057d5d",
                         speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-gulf-east": dict(v=1, box=(-88.45, 26.0, -81.6, 31.2), zmin=8,
-                         digest="e801a036456b4db1ca70712ddb4090d27dd8092df1a256b10c4c0c464928ecfd", tiles_sha256=None,
+                         digest="e801a036456b4db1ca70712ddb4090d27dd8092df1a256b10c4c0c464928ecfd", tiles_sha256="6b60dee643e58ae5267198b18c27885e5fba46639cc37139acdb2a536e41329e",
                          speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
     "us-gulf-west": dict(v=1, box=(-97.7, 25.7, -88.45, 30.6), zmin=8,
-                         digest="8049cdf606105f4d7827871ff7a0b67335289667136b3d064cd007585754fae1", tiles_sha256=None,
+                         digest="8049cdf606105f4d7827871ff7a0b67335289667136b3d064cd007585754fae1", tiles_sha256="7d731ddade3adb06e1019f3eef8ba069e78e3abf51dfedda76d2c48eb0d81c3e",
                          speck=S2_SPECK_PX2, tol=S2_TOL_PX, margin_px=SEAM_MARGIN_PX, mode="two_tier"),
 }
 # Section 105: the East/Gulf regions' precedence (the bathy layer's: us-sc-ga wins its corner over us-gulf-east; the
@@ -387,7 +387,10 @@ SETS = {
                                  # the East and Gulf (20_-80 and 25_-80 come out as v1's: copied)
                                  "20_-85", "25_-100", "25_-85", "25_-90", "25_-95", "30_-80", "30_-85", "30_-90", "30_-95",
                                  "35_-75", "35_-80", "40_-70", "40_-75", "40_-80", "45_-70", "45_-75"],
-               pin=None, v1_sqdeg=342.759945,                                               # a real v5 build: 340.20 (-0.75 %)
+               # the runner's build (dry run #761, b9c36c1): the laptop's (9b68e70e) is the same coast, its GEOS-joined
+               # cells (5 West, the East unions) a few bytes apart
+               pin="f356dd68d0d7b14c45ec81ed733c4bb0c2a981673950607cbf27e02ea31dc942",
+               v1_sqdeg=342.759945,                                                      # a real v5 build: 340.20 (-0.75 %)
                probes=HAWAII_PROBES + S2_PROBES + WEST_PROBES + EAST_PROBES, same_cells=V4_CELLS, credit=NOAA_CREDIT_V5,
                band="band_v5.json", band_sha256="3a55267de86907193277e1d143d50336ed86aa7522087567d4a24d7b360babf1",
                # seam steps over SEAM_STEP_MAX_M the owner accepts (plan section 105 step 2): (cell, "x"|"y", line,

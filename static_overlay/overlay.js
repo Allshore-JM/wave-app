@@ -71,13 +71,15 @@
     // (0 2 4 6 8 10 12 14 16 18 21 25 m/s over the 0-30.9 m/s legend), purple then pale mauve at the top
     wind: [[0,'#6271b7'],[0.0648,'#3961a0'],[0.1296,'#4a94a9'],[0.1944,'#4d8d7b'],[0.2592,'#53a553'],[0.324,'#359f35'],
            [0.3888,'#a79d51'],[0.4536,'#9f7f3a'],[0.5184,'#a16c5c'],[0.5832,'#813a4e'],[0.6804,'#af5088'],[0.81,'#754a93'],[1,'#d9c2d9']],
-    // the jet stream (plan section 106): the cores only, over the legend's 50-200 kt (below 50 kt nothing is drawn: CORE_FLOOR):
+    // the jet stream (plan section 106): the cores, over the legend's 50-200 kt (below 50 kt a pale teal shade: CORE_FLOOR):
     // teal at the core's edge, then green, yellow, orange, red, magenta, pale violet at 200 kt and over (look A)
     jet:  [[0,'#2f8f9d'],[0.13,'#3fb27f'],[0.27,'#a8cf45'],[0.4,'#f4d03f'],[0.53,'#f39c32'],[0.67,'#e0503a'],[0.8,'#b5287d'],[0.9,'#7b2fa8'],[1,'#e3c8f2']]
   };
-  // Fields drawn only from their legend's floor up (plan section 106: the jet stream's cores, 50 kt): a pixel whose value is
-  // under the legend's first value is left transparent (the relief shows), and its particles are never born there.
-  var CORE_FLOOR = { jet: true };
+  // Fields whose ramp starts at their legend's floor (plan section 106: the jet stream's cores, 50 kt): a pixel whose value is
+  // under the legend's first value takes a light shade instead, from `from` at the field's lo to `to` just under the floor, at
+  // `alpha` so the relief still shows faintly (true would leave it transparent); its particles are never born there (FLOW_SPEED).
+  // The jet: pale teal running into the ramp's teal at 50 kt, 80 % (the owner's pick S2 from the look sheet, 2026-11-21).
+  var CORE_FLOOR = { jet: { from: [0xe6, 0xf2, 0xf1], to: [0x9c, 0xcd, 0xcf], alpha: 0.8 } };
   // The radar's colours over the legend's 5-65 dBZ (the familiar radar scale) and the tint over the area radar sees, 16 % white
   // (the owner's pick on real frames, plan section 85).
   RAMPS.radar = [[0, '#04e9e7'], [0.083, '#019ff4'], [0.167, '#0300f4'], [0.25, '#02fd02'], [0.333, '#01c501'], [0.417, '#008e00'], [0.5, '#fdf802'],
@@ -683,7 +685,7 @@
     var sc = scaleFor(field, fdef.legend), um = unit === 'Metric' ? 'Metric' : 'US';
     var vals = (sc && sc.ticks && sc.ticks[um]) || TICKS[field + '|' + um] || [fdef.legend[0]];
     var out = vals.map(function (v, i) {
-      var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9 && !CORE_FLOOR[field];   // values under the legend floor exist (Tp; a cores-only field draws none)
+      var below = i === 0 && fdef.lo < fdef.legend[0] - 1e-9 && !CORE_FLOOR[field];   // values under the legend floor exist (Tp; a cores field shades them apart from its ramp)
       return { pos: legendPos(field, fdef.legend, u.inv ? u.inv(v) : v / per), label: (below ? '≤' : '') + fmtTick(v) };
     });
     out.push({ pos: 1, label: u.top ? u.top(hi) : Math.round(hi) + '+ ' + u.label });
@@ -1001,7 +1003,8 @@
   // times the ocean fraction (255 - land). lake (plan section 50): the tile's Great Lakes water coverage (0..255 per
   // pixel, or null): the lakes are land in the coastline set, so a lake pixel's alpha is its lake coverage instead
   // (the larger of the two: one alpha rule, shared with the readout and the particles).
-  // core (plan section 106): a value under L0 is left transparent (CORE_FLOOR fields).
+  // core (plan section 106): a value under L0 takes the CORE_FLOOR shade (lo -> L0 from `from` to `to`, at `alpha`), or is
+  // left transparent when core is true.
   function composeTile(codes, land, lut, lo, hi, L0, L1, d, lake, core) {
     var scale = 255 / (L1 - L0);
     for (var i = 0, k = 0; i < codes.length; i++, k += 4) {
@@ -1009,7 +1012,13 @@
       if (lake && lake[i] > a) a = lake[i];
       if (!code || !a) { d[k + 3] = 0; continue; }
       var val = lo + (code - 1) / 254 * (hi - lo);
-      if (core && val < L0) { d[k + 3] = 0; continue; }
+      if (core && val < L0) {
+        if (core === true) { d[k + 3] = 0; continue; }
+        var uf = (val - lo) / (L0 - lo), c0 = core.from, c1 = core.to;
+        uf = uf < 0 ? 0 : uf;
+        d[k] = c0[0] + uf * (c1[0] - c0[0]); d[k + 1] = c0[1] + uf * (c1[1] - c0[1]); d[k + 2] = c0[2] + uf * (c1[2] - c0[2]);
+        d[k + 3] = a * core.alpha; continue;
+      }
       var t = Math.round((val - L0) * scale);
       t = t < 0 ? 0 : t > 255 ? 255 : t;
       d[k] = lut[t * 3]; d[k + 1] = lut[t * 3 + 1]; d[k + 2] = lut[t * 3 + 2]; d[k + 3] = a;
@@ -3554,7 +3563,7 @@
       var codes = this.tileCodes(coords, this._codes, tier, lake);
       var img = el._ovImg || (el._ovImg = ctx.createImageData(TILE, TILE));     // reused per tile: no 256 KB per frame
       if (this._typed) composeTyped(codes, this._lut, img.data);
-      else composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake, !!CORE_FLOOR[this.field]);
+      else composeTile(codes, this._clip ? land : null, this._lut, this._lo, this._hi, this._legend[0], this._legend[1], img.data, lake, CORE_FLOOR[this.field] || false);
       if (this._regions && !this._typed && this.field === 'wind') fillBlank(img.data, WIND_LOOK.outside);   // outside RRFS: soft grey, before the coastline
       if (this._contour && !this._nearest && CONTOURS[this.field]) this._contours(coords, img.data, false, tier, lake);
       if (!this._clip && land && land !== LAND_ALL) {                          // the coastline under an unclipped field

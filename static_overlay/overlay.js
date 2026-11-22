@@ -172,11 +172,11 @@
   var SST_PREFIX = 'sst/v1';
   // <= 29 visible characters (the GFS rule): "Overlay: NASA MUR SST" (+ " · GSHHG" from the clip); the title has the source.
   var SST_ATTRIBUTION = 'Overlay: <a href="https://podaac.jpl.nasa.gov/dataset/MUR-JPL-L4-GLOB-v4.1" target="_blank" rel="noopener" ' +
-    'title="NASA JPL MUR SST v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) via NOAA CoastWatch ERDDAP; tiled and rendered by Allshore Surf. A daily night-time (foundation) temperature: the afternoon surf zone can be ' +
+    'title="NASA JPL MUR SST v4.1 (GHRSST L4, doi:10.5067/GHGMR-4FJ04) via NASA PO.DAAC; tiled and rendered by Allshore Surf. A daily night-time (foundation) temperature: the afternoon surf zone can be ' +
     'warmer; near the coast it can be about 1 C (2 F) off either way.">NASA MUR SST</a>';
   var SST_HEAD = 'NASA MUR (1 km, daily)';                 // the open panel's head line (the source; the dropdown says what it is)
   var SST_COARSE_BELOW = 7;                                // SST isotherms every 2 C / 4 F below this tile zoom (owner, G31)
-  var SST_STALE_DAYS = 4;                                  // the job's own stale alarm (tools/model_frames/sst.py STALE_DAYS)
+  var SST_STALE_DAYS = 4;                                  // the visitor's old-data note (the job's own alarm: sst.py STALE_DAYS = 3)
   // The analysis day "YYYY-MM-DD" (a calendar day: no time zone applies) as "Thu, Oct. 15"; anything else as given.
   function sstDayText(day) {
     var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day || ''));

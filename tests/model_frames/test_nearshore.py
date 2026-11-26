@@ -325,3 +325,17 @@ def test_the_vertex_cap_drops_whole_lines_the_weakest_first(data, monkeypatch):
     assert step.max() < 3 * np.median(step)                                          # no straight join across a gap
     monkeypatch.setattr(N, "MAX_VERTICES", 100)
     assert N.pack_vertices(lines, table, box) == (b"", 0)                            # no line fits: none, rather than a piece of one
+
+
+def test_a_pointer_of_the_older_layout_is_not_this_run_live(data):
+    """The pointer must name this run's and this table's own index. A pointer left by the layout without the table in its
+    path (same run, same table) is replaced, and its objects are left as they are."""
+    st = store_with()
+    old_index = f"{N.PREFIX}/{RUN}/index.json"
+    st.put(old_index, b'{"old":true}', "application/json", P.IMMUTABLE)
+    st.put(P.latest_key(N.PREFIX), json.dumps({"run": RUN, "table": "test-1", "index": old_index}).encode(), "application/json", P.POINTER)
+    st.client.log.clear()
+    assert N.main(["--data", data], store=st) == 0
+    ptr = json.loads(st.client.objects[P.latest_key(N.PREFIX)]["body"])
+    assert ptr["index"] == N.index_key(RUN, "test-1") and st.client.objects[old_index]["body"] == b'{"old":true}'
+    assert N.prune(st) == [] and old_index in st.client.objects                      # the run is live: its folder is kept whole

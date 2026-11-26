@@ -436,7 +436,7 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
                     return 3
             latest = store.get_json(P.latest_key(PREFIX)) or {}
             if live:
-                if latest.get("run") == run and latest.get("table") == table.version:
+                if latest.get("index") == index_key(run, table.version):          # the pointer names this very index
                     print(f"{run} already live")
                     return 0
                 if latest.get("run", "") > run:

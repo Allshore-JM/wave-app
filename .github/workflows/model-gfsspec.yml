@@ -99,7 +99,7 @@ jobs:
         continue-on-error: true
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
         with:
-          ref: a22cbecb0f97dade81c6767c245559244bdfee67   # data/nearshore: the pilot table, the atlas, the tide predictions
+          ref: 8d16aecc26c1a5ea966376d32c4718f1cf6bd81d   # data/nearshore: the pilot table, the atlas, the tide predictions
           path: nearshore-data
       - name: Publish the nearshore analysis
         if: steps.env.outcome == 'success'

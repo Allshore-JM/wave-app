@@ -53,6 +53,20 @@ def _caps(bulk=False, recent_history=False, directional=False, spectra=False, pa
             "spectra": spectra, "partitions": partitions}
 
 
+class AccessDenied(RuntimeError):
+    """The upstream REFUSED this site (HTTP 401/403, e.g. a firewall rule against servers), as
+    opposed to a hiccup. A provider's _fetch_stations raises it; the base class then treats it like
+    any failed refresh (the last good list is kept for keep_on_failure_sec, then the layer is empty)
+    but retries only once per list TTL instead of every retry_after_sec, and logs the refusal once
+    at WARNING and its unchanged repeats at DEBUG. Never answered by imitating a browser: the
+    owner asks the operator for permission instead (README: live buoys, AusWaves)."""
+
+
+def _is_denied(err):
+    """True for a failure text that came from an AccessDenied (see _build_station_list)."""
+    return bool(err) and str(err).startswith(AccessDenied.__name__ + ":")
+
+
 class BuoyProvider:
     """Base class. Subclasses set the metadata + capabilities and implement the fetches."""
     source = "?"
@@ -244,15 +258,24 @@ class BuoyProvider:
                 ok, err = False, "empty list after %d stations" % len(self._list_cache)
             retry = min(self.retry_after_sec, self.list_ttl_sec)
             if not ok:
+                denied = _is_denied(err)
+                # a refusal is not a hiccup: ask again once per TTL (the normal cadence), and say
+                # so in the log once -- the same refusal again goes to DEBUG (no warning every 5 min)
+                say = _log.debug if (denied and err == self._last_error) else _log.warning
+                if denied:
+                    retry = self.list_ttl_sec
                 self._last_error = err or "refresh failed"
-                if self._list_cache and (now - self._list_ok_ts) < self.keep_on_failure_sec:
+                kept_for = now - self._list_ok_ts
+                if self._list_cache and kept_for < self.keep_on_failure_sec:
+                    if denied:            # come back no later than the kept list's expiry
+                        retry = max(1, min(retry, int(self.keep_on_failure_sec - kept_for) + 1))
                     # Keep the last good list; come back sooner than a full TTL.
                     self._list_ts = now - self.list_ttl_sec + retry
                     self._due_ts = now + retry
-                    _log.warning("buoy provider %s: refresh failed after %.1fs (%s), keeping the "
-                                 "previous list (%d stations, fetched %ds ago); retry in %ds",
-                                 self.source, dur, self._last_error, len(self._list_cache),
-                                 int(now - self._list_ok_ts), retry)
+                    say("buoy provider %s: refresh failed after %.1fs (%s), keeping the "
+                        "previous list (%d stations, fetched %ds ago); retry in %ds",
+                        self.source, dur, self._last_error, len(self._list_cache),
+                        int(kept_for), retry)
                     return self._list_cache, self._list_version, self._list_ts
                 if self._list_cache != out:       # [] : no markers rather than a broken map
                     self._list_cache = out
@@ -260,8 +283,8 @@ class BuoyProvider:
                     self._pub_ts = now
                 self._list_ts = now
                 self._due_ts = now + retry
-                _log.warning("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
-                             "retry in %ds", self.source, dur, self._last_error, retry)
+                say("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
+                    "retry in %ds", self.source, dur, self._last_error, retry)
                 return out, self._list_version, self._list_ts
             self._last_error = None
             self._list_cache = out
@@ -341,10 +364,13 @@ class BuoyProvider:
                         entry[k] = s[k]
                 out.append(entry)
         except Exception as e:
-            _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
             out = []                          # fail soft: no markers rather than a broken map
             ok = False
             err = "%s: %s" % (type(e).__name__, e)
+            with self._lock:
+                repeat = isinstance(e, AccessDenied) and err == self._last_error
+            (_log.debug if repeat else _log.warning)(
+                "buoy provider %s: station-list fetch failed (%s)", self.source, e)
         return out, ok, err
 
     def detail(self, local_id):
@@ -1180,11 +1206,17 @@ class QLDProvider(BuoyProvider):
 
 
 class AusWavesProvider(BuoyProvider):
-    """AusWaves (UWA / IMOS) -- national Sofar Spotter network (Australia). Open
-    WordPress REST, but the endpoints reject non-browser requests, so we send a
-    browser User-Agent + Referer (no token/key needed). The list gives the catalogue
-    + per-buoy recency; the per-buoy feed gives the timeseries (rows are NOT sorted,
-    so we take the newest by unix time; -9999 = missing). Bulk + sea/swell params."""
+    """AusWaves (UWA / IMOS) -- national Sofar Spotter network (Australia). WordPress REST.
+    The list gives the catalogue + per-buoy recency; the per-buoy feed gives the timeseries
+    (rows are NOT sorted, so we take the newest by unix time; -9999 = missing). Bulk + sea/swell
+    params.
+
+    Since 2026-11-26 the site's firewall answers servers 403 {"code":"waf_forbidden"}. We do NOT
+    get around it: the requests name this site honestly (no browser User-Agent or Referer, which
+    an earlier version copied), a 401/403 raises AccessDenied (kept list for 6 h, then no
+    markers; asked again once per TTL = every 30 min; logged once), and the owner has asked the
+    operator to allow it. Most of these buoys are also on AODN, which the
+    merge then shows instead; see the README's live-buoys section for what is lost."""
     source = "AusWaves"
     source_name = "AusWaves (UWA / IMOS)"
     source_url = "https://auswaves.org"
@@ -1199,16 +1231,28 @@ class AusWavesProvider(BuoyProvider):
     BUOY = "https://auswaves.org/wp-json/waves/v1/buoys/%s"
     FRESH_SEC = 24 * 3600                  # skip catalogue entries not updated within this
     HEADERS = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
-        "Referer": "https://auswaves.org/",
+        "User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)",
         "Accept": "application/json",
     }
+
+    @staticmethod
+    def _refusal_code(r):
+        """The WordPress error code of a refusal ('waf_forbidden', 'rest_forbidden'...), or ''."""
+        try:
+            body = r.json()
+        except ValueError:
+            return ""
+        code = body.get("code") if isinstance(body, dict) else None
+        return str(code)[:40] if code else ""
 
     def _fetch_stations(self):
         # A request error or a non-200 answer RAISES: the base class then keeps the last good
         # list (fail-soft used to return [], which emptied the layer for a whole TTL).
         r = self.http.get(self.LIST, headers=self.HEADERS, timeout=self.timeout)
+        if r.status_code in (401, 403):
+            code = self._refusal_code(r)
+            raise AccessDenied("HTTP %s from the AusWaves catalogue%s" % (
+                r.status_code, (" (%s)" % code) if code else ""))
         if r.status_code != 200:
             raise RuntimeError("HTTP %s from the AusWaves catalogue" % r.status_code)
         catalogue = r.json()
@@ -1511,6 +1555,8 @@ def _station_priority(st):
         return 56
     if src == "CDIP":
         return 55
+    if src in ("HILLTOP", "ECAN", "EPA"):  # NZ councils, Environment Canterbury, Puerto Arica: each agency's own buoy
+        return 54                      # with 24 h (plan section 110); they meet no other feed's buoys
     if src == "AODN":                  # bulk only
         return 50
     if src == "GLOS":                  # Great Lakes, 10-min with direction + history (plan section 63); below
@@ -1519,6 +1565,8 @@ def _station_priority(st):
         return 47
     if src == "NDBCW":                 # NDBC stations without a spectral file (bulk report only)
         return 45
+    if src == "SPC":                   # Pacific Community via WIS2 (plan section 110): below CDIP / NDBC / NDBCW, so a
+        return 44                      # US-flag Pacific buoy SPC may relay never replaces the richer marker
     if src == "CMEMS":                 # pan-EU/global aggregator -> fills gaps, national wins
         return 30
     return 40
@@ -4001,3 +4049,837 @@ class KmaBuoyProvider(Wis2BoxBuoyProvider):
     BASE = ("https://wis2box.kma.go.kr/oapi/collections/"
             "urn:wmo:md:kr-kma:core.surface-based-observations.moored-buoys-and-moorings/items")
     LABEL = "KMA buoy"
+
+
+# --- plan section 110: New Zealand councils' Hilltop servers, Environment Canterbury, the Pacific Community (SPC) via
+# --- WMO WIS2's global cache, Puerto Arica (Chile) --------------------------------------------------------------------
+
+def _xml_root(body, what):
+    """A parsed XML answer. An answer with a DOCTYPE or ENTITY declaration is refused before parsing, so no entity can
+    be declared or expanded."""
+    import xml.etree.ElementTree as ET
+    raw = body if isinstance(body, bytes) else str(body).encode("utf-8", "replace")
+    head = raw[:512]
+    # only an ASCII-compatible body is parsed (G75 P2-4): in UTF-16 / UTF-32 a DOCTYPE would not show as ASCII text
+    if b"\x00" in head or head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise ValueError("%s: an XML answer that is not UTF-8" % what)
+    up = raw.upper()
+    if b"<!DOCTYPE" in up or b"<!ENTITY" in up:
+        raise ValueError("%s: an XML answer with a DOCTYPE" % what)
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError:
+        raise ValueError("%s answered something other than XML" % what) from None
+
+
+# Hilltop stamps carry no zone. The New Zealand councils keep their archives in New Zealand STANDARD time, UTC+12 all
+# year (no daylight saving): checked 2026-11-26 (NZDT in force) with windows anchored to the servers' own "now"
+# (`TimeInterval=PT40M/now` returned the 06:06:40 row at 18:25Z on GW and the 05:55 row on Tasman; under UTC+13 those
+# windows are empty).
+HILLTOP_TZ = timezone(timedelta(hours=12))
+
+# reading key -> measurement names in order of preference (whichever the site has); a measurement whose stated
+# units are not among the allowed ones is not used (NRC's plain "Mean Wave Direction" may be magnetic beside its
+# "(True)", which is preferred). GW's "Significant Wave Period (Tsig)" is T1/3, the mean period of the highest third,
+# close to the peak (7.5-8.0 s beside a 6.0-6.3 s zero-crossing period, 2026-11-26): it is neither a peak nor a mean
+# period, so it is not shown (G75 P1-2). GW's "Zero Crossing Wave Period (Tz)" is labelled msecs but holds seconds
+# (6.0-6.3): it is read as the zero-crossing period, a value above 100 taken as milliseconds.
+HILLTOP_FIELDS = (
+    ("hs_m", ("Significant Wave Height (Hsig)", "Spectral Wave Height (Hm0)", "Height3")),
+    ("tp_s", ("Peak Wave Period (TP)",)),
+    ("mean_period_s", ("Average Wave Period (Tav)", "Average Wave Period")),
+    ("tz_s", ("Zero Crossing Wave Period (Tz)",)),
+    ("dir_deg", ("Wave Spectral Peak Direction (TPDir)", "Mean Wave Direction (True)", "Wave Direction",
+                 "Average Wave Direction")),
+    ("hmax_m", ("Maximum Wave Height (Hmax)", "Max Wave Height (Hmax)", "Max Wave Height")),
+    ("sst_c", ("Water Temperature", "Sea Temperature")),
+)
+HILLTOP_UNITS = {
+    "hs_m": ("m", ""), "hmax_m": ("m", ""),
+    "tp_s": ("s", "sec", "secs", "seconds", ""), "mean_period_s": ("s", "sec", "secs", "seconds", ""),
+    "tz_s": ("s", "sec", "secs", "seconds", "msecs", ""),
+    "dir_deg": ("deg", "degrees", "degt", "degrees true", ""),
+    "sst_c": ("°c", "degc", "deg c", "c"),
+}
+
+# The councils read (plan section 110). Their sites are found from each server's site list (a name with "wave" or
+# "buoy", a position, a wave height); a site whose newest height is older than HILLTOP_LIVE_S is not shown and is
+# asked again every HILLTOP_SITES_TTL, so a buoy that comes back returns by itself. Directions are FROM at both checked councils: Baring Head's 184 deg can only come from the
+# open sea to its south, and Tuatea's 3-s wind sea reads 50-57 deg under a 51-57 deg wind.
+HILLTOP_COUNCILS = (
+    {"key": "gw", "url": "https://hilltop.gw.govt.nz/data.hts", "name": "Greater Wellington Regional Council",
+     "page": "https://www.gw.govt.nz/environment/environmental-data/", "licence": " (CC BY 4.0)"},
+    {"key": "tdc", "url": "https://envdata.tasman.govt.nz/data.hts", "name": "Tasman District Council",
+     "page": "https://envdata.tasman.govt.nz/", "licence": ""},
+)
+# Northland Regional Council (https://hilltop.nrc.govt.nz/data.hts: Bay of Islands Wave Buoy, with a true peak period
+# and peak direction) is left out: its buoy has been quiet since 2026-08-22 and its server's chain ends at GoDaddy TLS
+# Root CA - R1, which Python reaches only through chain_tls.py's pinned cross-sign (a host added there needs the
+# owner's word). When the buoy reports again: add {"key": "nrc", ...} here and the host to chain_tls.HOSTS.
+HILLTOP_NAMES = {
+    "Wellington Harbour at Baring Head Wave Buoy (South (B))": "Baring Head South (Wellington)",
+    "Wellington Harbour at Baring Head Wave Buoy (North (A))": "Baring Head North (Wellington)",
+    "Wellington Harbour at Baring Head Wave Buoy": "Baring Head (Wellington)",
+    "Taputeranga Marine Reserve Wave Buoy": "Taputeranga (Wellington south coast)",
+    "HY Tuatea Buoy at Tasman Bay": "Tuatea buoy (Tasman Bay)",
+    "HY Tasman Bay Buoy": "Tasman Bay buoy",
+    "HY Golden Bay Buoy": "Golden Bay buoy",
+    "HY Golden Bay Cawthron Mohua Buoy": "Golden Bay (Mohua) buoy",
+    "Bay of Islands Wave Buoy": "Bay of Islands (Northland)",
+}
+HILLTOP_LIVE_S = 3 * 86400
+HILLTOP_SITES_TTL = 6 * 3600
+_HILLTOP_SITE_RE = re.compile(r"wave|buoy", re.I)
+
+
+def _hilltop_slug(name):
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+
+
+def _hilltop_root(body, what):
+    """The parsed answer; Hilltop answers an error with HTTP 200 and an <Error> element (G75 P1-1): that raises."""
+    root = _xml_root(body, what)
+    err = root.text if root.tag == "Error" else root.findtext("Error")
+    if root.tag == "Error" or err:
+        raise ValueError("%s: %s" % (what, (err or "error").strip()[:120]))
+    return root
+
+
+def parse_hilltop_sites(body):
+    """A Hilltop SiteList (Location=LatLong) -> [(site name, lat, lon)] of the sites that may be wave buoys: the name
+    says wave or buoy, the site has a position, and it is not an "-Offline" copy."""
+    out = []
+    for s in _hilltop_root(body, "Hilltop SiteList").iter("Site"):
+        name = (s.get("Name") or "").strip()
+        lat, lon = _jnum(s.findtext("Latitude")), _jnum(s.findtext("Longitude"))
+        if (not name or not _HILLTOP_SITE_RE.search(name) or name.lower().endswith("-offline")
+                or lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180)
+                or (lat == 0 and lon == 0)):
+            continue
+        out.append((name, lat, lon))
+    return out
+
+
+def parse_hilltop_measurements(body):
+    """A Hilltop MeasurementList -> {reading key: measurement name} for the wave fields this site has (HILLTOP_FIELDS
+    order, units checked); {} when it has no wave height."""
+    have = {}
+    for m in _hilltop_root(body, "Hilltop MeasurementList").iter("Measurement"):
+        name = (m.get("Name") or "").strip()
+        if name:
+            have.setdefault(name, (m.findtext("Units") or "").strip().lower())
+    out = {}
+    for key, names in HILLTOP_FIELDS:
+        for n in names:
+            if n in have and have[n] in HILLTOP_UNITS[key]:
+                out[key] = n
+                break
+    return out if "hs_m" in out else {}
+
+
+def parse_hilltop_data(body):
+    """A Hilltop GetData answer -> [(utc 'Z' time, value)] oldest first; the times are NZST (HILLTOP_TZ)."""
+    root = _hilltop_root(body, "Hilltop GetData")
+    out = []
+    for e in root.iter("E"):
+        t, v = (e.findtext("T") or "").strip(), _jnum(e.findtext("I1"))
+        if not t or v is None:
+            continue
+        try:
+            d = datetime.strptime(t[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=HILLTOP_TZ)
+        except ValueError:
+            continue
+        out.append((d.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), v))
+    out.sort()
+    return out
+
+
+def hilltop_rows(series, now):
+    """{reading key: [(time, value)]} -> readings with a wave height, oldest first (directions FROM)."""
+    by_t = {}
+    for key, pts in series.items():
+        for t, v in pts:
+            by_t.setdefault(t, {})[key] = v
+    rows = []
+    for t in sorted(by_t):
+        vals = by_t[t]
+        if vals.get("hs_m") is None:
+            continue
+        tz = vals.get("tz_s")
+        if tz is not None and tz > 100:
+            tz /= 1000.0                     # a zero-crossing period really in milliseconds
+        o = {"time_utc": t, "hs_m": round(vals["hs_m"], 2),
+             "tp_s": _peak_ok(vals.get("tp_s"), vals.get("mean_period_s")),
+             "mean_period_s": vals.get("mean_period_s"),
+             "tz_s": round(tz, 2) if tz is not None and 0 < tz <= 40 else None,
+             "dir_deg": vals.get("dir_deg"), "dir_kind": "from",
+             "hmax_m": vals.get("hmax_m"), "sst_c": vals.get("sst_c")}
+        o = _sane_reading(o, now)
+        if o:
+            rows.append(o)
+    return rows
+
+
+class HilltopWaveProvider(BuoyProvider):
+    """New Zealand regional councils' wave buoys from their Hilltop servers (open XML): Greater Wellington (Baring
+    Head) and Tasman (Tuatea, Tasman Bay), plus any other buoy site of theirs that reports. 30-minute readings, the last
+    24 hours in the window. Each council is credited by name in its buoys' windows."""
+    source = "HILLTOP"
+    source_name = "New Zealand regional councils (Hilltop)"
+    source_url = "https://www.gw.govt.nz/environment/environmental-data/"
+    license_label = "Council open data (credit required)"
+    attribution_text = "Source: New Zealand regional councils' environmental data (Hilltop servers)."
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    timeout = 40
+    MAX = 4 * 1024 * 1024
+    HEADERS = {"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"}
+    COUNCILS = HILLTOP_COUNCILS
+    _ERRORS = (RuntimeError, ValueError, requests.RequestException, OSError)
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._sites = {}          # council key -> {"at": when read, "sites": [{site, lat, lon, fields}]}
+        self._dead = {}           # (council key, site) -> when it was last found quiet
+        self._obs = {}            # local id -> readings
+        self._meta = {}           # local id -> council
+
+    def _get(self, council, params):
+        url = council["url"] + "?Service=Hilltop&" + "&".join(
+            "%s=%s" % (k, requests.utils.quote(v, safe="/")) for k, v in params)
+        return _size_capped_get(self.http, url, self.timeout, self.MAX, headers=self.HEADERS).content
+
+    def _council_sites(self, council, now):
+        held = self._sites.get(council["key"])
+        if held and now - held["at"] < HILLTOP_SITES_TTL:
+            return held["sites"]
+        held_by = {s["site"]: s for s in (held or {}).get("sites", [])}
+        try:
+            sites = parse_hilltop_sites(self._get(council, [("Request", "SiteList"), ("Location", "LatLong")]))
+            if not sites and held_by:
+                raise ValueError("an empty site list after %d sites" % len(held_by))
+        except self._ERRORS as exc:
+            if not held:
+                raise
+            _log.warning("HILLTOP %s: site list not read (%s); the list in hand stands", council["key"], exc)
+            held["at"] = now - HILLTOP_SITES_TTL + 1800          # asked again in half an hour
+            return held["sites"]
+        found, short = [], False
+        for name, lat, lon in sites:
+            try:
+                fields = parse_hilltop_measurements(self._get(council, [("Request", "MeasurementList"),
+                                                                         ("Site", name)]))
+            except self._ERRORS as exc:                       # this site keeps what it had (G75 P2-3)
+                _log.warning("HILLTOP %s %s: measurement list not read (%s)", council["key"], name, exc)
+                short = True
+                if name in held_by:
+                    found.append(held_by[name])
+                continue
+            if fields:
+                found.append({"site": name, "lat": lat, "lon": lon, "fields": fields})
+        # a new site list: every site of this council is asked again now (a quiet one may have come back)
+        for dkey in [k for k in self._dead if k[0] == council["key"]]:
+            self._dead.pop(dkey)
+        # a list with a site that could not be read is asked again in half an hour
+        self._sites[council["key"]] = {"at": now - HILLTOP_SITES_TTL + 1800 if short else now, "sites": found}
+        return found
+
+    def _data(self, council, site, measurement):
+        return parse_hilltop_data(self._get(council, [("Request", "GetData"), ("Site", site),
+                                                      ("Measurement", measurement), ("TimeInterval", "P1D")]))
+
+    def _site_rows(self, council, st, now):
+        """The site's last day of readings, or [] when its newest height is older than HILLTOP_LIVE_S. P1D counts
+        back from the series' own last row, so a quiet buoy still answers (with old rows)."""
+        hs = self._data(council, st["site"], st["fields"]["hs_m"])
+        if not hs or now - _z_epoch({"time_utc": hs[-1][0]}) > HILLTOP_LIVE_S:
+            return []
+        series = {"hs_m": hs}
+        for key, mname in st["fields"].items():
+            if key == "hs_m":
+                continue
+            try:
+                series[key] = self._data(council, st["site"], mname)
+            except self._ERRORS as exc:                           # the heights still stand
+                _log.warning("HILLTOP %s %s: %s not read (%s)", council["key"], st["site"], mname, exc)
+        return hilltop_rows(series, now)
+
+    def _fetch_stations(self):
+        now = time.time()
+        out, obs, meta, errors, asked = [], {}, {}, 0, 0
+        for council in self.COUNCILS:
+            try:
+                sites = self._council_sites(council, now)
+            except self._ERRORS as exc:
+                _log.warning("HILLTOP %s: no site list (%s)", council["key"], exc)
+                errors += 1
+                asked += 1
+                continue
+            live = []
+            for st in sites:
+                dkey = (council["key"], st["site"])
+                if dkey in self._dead:
+                    continue                          # quiet when last asked: asked again with the next site list
+                lid = "%s:%s" % (council["key"], _hilltop_slug(st["site"]))
+                asked += 1
+                try:
+                    rows = self._site_rows(council, st, now)
+                except self._ERRORS as exc:
+                    _log.warning("HILLTOP %s %s: %s", council["key"], st["site"], exc)
+                    errors += 1
+                    rows = [o for o in (self._obs.get(lid) or [])          # one site failing keeps what it had
+                            if now - _z_epoch(o) <= HILLTOP_LIVE_S]
+                    if rows:
+                        live.append((lid, st, rows))
+                    continue
+                if not rows:
+                    self._dead[dkey] = now
+                    continue
+                live.append((lid, st, rows))
+            # two live sites of one council at the same buoy (a renamed series): the newer one is shown
+            live.sort(key=lambda x: x[2][-1]["time_utc"], reverse=True)
+            kept = []
+            for lid, st, rows in live:
+                if any(haversine_km(st["lat"], st["lon"], k[1]["lat"], k[1]["lon"]) < 1.0 for k in kept):
+                    continue
+                kept.append((lid, st, rows))
+            for lid, st, rows in kept:
+                obs[lid], meta[lid] = rows, council
+                out.append({"local_id": lid, "name": HILLTOP_NAMES.get(st["site"], re.sub(r"^HY ", "", st["site"])),
+                            "lat": st["lat"], "lon": st["lon"], "latest_time": rows[-1]["time_utc"]})
+        if asked and errors >= asked:
+            raise RuntimeError("every Hilltop site failed (%d)" % errors)
+        self._obs, self._meta = obs, meta
+        return out
+
+    def detail(self, local_id):
+        if local_id not in self._obs:
+            self.list_stations()
+        rows = self._obs.get(local_id) or []
+        c = self._meta.get(local_id)
+        out = {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
+        if c:
+            out["attribution_text"] = "Source: %s environmental data%s, %s" % (c["name"], c["licence"], c["page"])
+        return out
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+def parse_ecan_waves(doc, now):
+    """Environment Canterbury's wave page data (series height, heightmax, timings, direction; each point
+    [epoch ms, value, local ISO]) -> readings with a height, oldest first. The height is H1/3, the period ECan's
+    average wave period, the direction FROM (as the page states)."""
+    if not isinstance(doc, dict):
+        raise ValueError("the ECan answer is not an object")
+    keys = {"height": "hs_m", "heightmax": "hmax_m", "timings": "mean_period_s", "direction": "dir_deg"}
+    by_t = {}
+    for name, key in keys.items():
+        block = doc.get(name)
+        pts = block.get("data") if isinstance(block, dict) else None
+        if not isinstance(pts, list):
+            if name == "height":
+                raise ValueError("the ECan answer has no height series")
+            continue
+        for p in pts:
+            if not isinstance(p, list) or len(p) < 2:
+                continue
+            ms, v = _jnum(p[0]), _jnum(p[1])
+            if ms is None or v is None or not (1e12 <= ms <= 4.1e12):      # 2001-2099 (G75 P2-5)
+                continue
+            by_t.setdefault(int(ms // 1000), {})[key] = v
+    rows = []
+    for ep in sorted(by_t):
+        vals = by_t[ep]
+        if vals.get("hs_m") is None:
+            continue
+        o = {"time_utc": datetime.fromtimestamp(ep, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "hs_m": round(vals["hs_m"], 2), "tp_s": None, "mean_period_s": vals.get("mean_period_s"),
+             "dir_deg": vals.get("dir_deg"), "dir_kind": "from",
+             "hmax_m": round(vals["hmax_m"], 2) if vals.get("hmax_m") is not None else None}
+        o = _sane_reading(o, now)
+        if o:
+            rows.append(o)
+    return rows
+
+
+class EcanWaveProvider(BuoyProvider):
+    """Environment Canterbury's wave buoy 17 km east of Le Bons Bay, Banks Peninsula (76 m of water, since 1999): a
+    20-minute record every half hour, sent ashore every three hours. The JSON behind ECan's own wave page (it
+    answers only with the page's X-Requested-With header)."""
+    source = "ECAN"
+    source_name = "Environment Canterbury (NZ)"
+    source_url = "https://www.ecan.govt.nz/data/current-wave-data/"
+    license_label = "Environment Canterbury / Earth Sciences NZ (used with permission)"
+    # the buoy is run by ECan with Earth Sciences New Zealand; reuse confirmed by ECan 2026-11-26 (plan section 110)
+    attribution_text = ("Data: Environment Canterbury and Earth Sciences New Zealand, Canterbury wave buoy off Banks "
+                        "Peninsula (https://www.ecan.govt.nz/data/current-wave-data/). Readings reach shore every 3 "
+                        "hours.")
+    stale_after_sec = 6 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1800
+    timeout = 40
+    MAX = 2 * 1024 * 1024
+    URL = "https://www.ecan.govt.nz/data/current-wave-data/WaveDirectionData/1_Week"
+    HEADERS = {"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)",
+               "X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}
+    LAT, LON = -43.75, 173.3333          # "Latitude 43 deg 45' South, Longitude 173 deg 20' East" (ECan's page)
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._obs = []
+
+    def _fetch_stations(self):
+        now = time.time()
+        r = _size_capped_get(self.http, self.URL, self.timeout, self.MAX, headers=self.HEADERS)
+        try:
+            doc = json.loads(r.content.decode("utf-8"))
+        except ValueError:
+            raise RuntimeError("ECan answered something other than JSON") from None
+        try:
+            rows = parse_ecan_waves(doc, now)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+        if not rows:
+            raise RuntimeError("ECan answered no wave height")
+        self._obs = rows
+        return [{"local_id": "banks", "name": "Banks Peninsula (Canterbury)", "lat": self.LAT, "lon": self.LON,
+                 "latest_time": rows[-1]["time_utc"]}]
+
+    def detail(self, local_id):
+        if local_id != "banks":
+            return {"latest": None, "recent": []}
+        if not self._obs:
+            self.list_stations()
+        rows = self._obs
+        return {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+def _naive_utc_z(ts):
+    """'2026-11-26 18:20:00' (UTC without a zone) -> '2026-11-26T18:20:00Z', or None."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.strptime(ts.strip()[:19], "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+
+
+def parse_arica(heights, directions, now):
+    """Puerto Arica's simar_api answers (wave-height: {data: [{timestamp, value}]}; wave-direction: {data:
+    [{timestamp, direction, spread}]}) -> readings with a height, oldest first. Times are UTC without a zone (the
+    page's own script says so; an 18:20 row was served at 18:26Z); the height is H1/3, the direction FROM
+    ("direccion de procedencia"); no period is published."""
+    def items(doc, what):
+        d = doc.get("data") if isinstance(doc, dict) else None
+        if not isinstance(d, list):
+            raise ValueError("the Arica %s answer has no data list" % what)
+        return d
+    by_t = {}
+    for e in items(heights, "wave-height"):
+        t = _naive_utc_z(e.get("timestamp")) if isinstance(e, dict) else None
+        v = _jnum(e.get("value")) if isinstance(e, dict) else None
+        if t and v is not None:
+            by_t.setdefault(t, {})["hs_m"] = v
+    if directions is not None:
+        for e in items(directions, "wave-direction"):
+            t = _naive_utc_z(e.get("timestamp")) if isinstance(e, dict) else None
+            if t:
+                by_t.setdefault(t, {}).update({"dir_deg": _jnum(e.get("direction")),
+                                               "dir_spread_deg": _jnum(e.get("spread"))})
+    rows = []
+    for t in sorted(by_t):
+        vals = by_t[t]
+        if vals.get("hs_m") is None:
+            continue
+        o = {"time_utc": t, "hs_m": round(vals["hs_m"], 2), "tp_s": None, "dir_deg": vals.get("dir_deg"),
+             "dir_kind": "from", "dir_spread_deg": vals.get("dir_spread_deg")}
+        o = _sane_reading(o, now)
+        if o:
+            rows.append(o)
+    return rows
+
+
+class PuertoAricaProvider(BuoyProvider):
+    """Empresa Portuaria Arica's wave buoy SIMAR-EPA-01, about 1 km off the port of Arica (Chile): significant
+    height and mean direction every 20 minutes (no period). The JSON behind the port's own "Condicion Maritima"
+    page."""
+    source = "EPA"
+    source_name = "Empresa Portuaria Arica (Chile)"
+    source_url = "https://puertoarica.cl/condicion-maritima"
+    license_label = "Empresa Portuaria Arica (credit required)"
+    attribution_text = ("Source: Empresa Portuaria Arica, buoy SIMAR-EPA-01 "
+                        "(https://puertoarica.cl/condicion-maritima). Moored about 1 km off the port, partly "
+                        "sheltered; no wave period is published.")
+    stale_after_sec = 3 * 3600
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 1200
+    timeout = 30
+    MAX = 1024 * 1024
+    URL = "https://puertoarica.cl/simar_api.php?action=%s&range=24h"
+    HEADERS = {"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)", "Accept": "application/json"}
+    LAT, LON = -18.4679, -70.3404        # the buoy's own GPS (action=status), 2026-11-26
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._obs = []
+        self._pos = (self.LAT, self.LON)
+
+    def _json(self, action):
+        r = _size_capped_get(self.http, self.URL % action, self.timeout, self.MAX, headers=self.HEADERS)
+        try:
+            return json.loads(r.content.decode("utf-8"))
+        except ValueError:
+            raise RuntimeError("Puerto Arica answered something other than JSON") from None
+
+    def _fetch_stations(self):
+        now = time.time()
+        heights = self._json("wave-height")              # a failure here raises: keep-last
+        try:
+            directions = self._json("wave-direction")
+        except (RuntimeError, requests.RequestException, OSError) as exc:       # the heights still stand
+            _log.warning("EPA: wave-direction not read (%s)", exc)
+            directions = None
+        try:
+            st = self._json("status")
+            lat, lon = _jnum(st.get("latitude")), _jnum(st.get("longitude"))
+            # the buoy's GPS, used while it stays within 2 km of its mooring (a bad fix never moves the marker far)
+            if lat is not None and lon is not None and haversine_km(lat, lon, self.LAT, self.LON) < 2.0:
+                self._pos = (lat, lon)
+        except (RuntimeError, AttributeError, requests.RequestException, OSError):
+            pass
+        try:
+            rows = parse_arica(heights, directions, now)
+        except ValueError as exc:
+            if directions is None:
+                raise RuntimeError(str(exc)) from None
+            try:                                         # a broken direction answer: the heights alone
+                rows = parse_arica(heights, None, now)
+            except ValueError as exc2:
+                raise RuntimeError(str(exc2)) from None
+        if not rows:
+            raise RuntimeError("Puerto Arica answered no wave height")
+        self._obs = rows
+        return [{"local_id": "arica", "name": "Arica port buoy (SIMAR-EPA-01)", "lat": self._pos[0],
+                 "lon": self._pos[1], "latest_time": rows[-1]["time_utc"]}]
+
+    def detail(self, local_id):
+        if local_id != "arica":
+            return {"latest": None, "recent": []}
+        if not self._obs:
+            self.list_stations()
+        rows = self._obs
+        return {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]
+
+
+# --- BUFR (edition 4, uncompressed) for the WMO moored-buoy wave template 301150 + 308015 ------------------------------
+# The SPC's buoys reach WIS2 as BUFR messages of exactly this template. The site carries no BUFR library (eccodes is a
+# C library), so this reads that template only: descriptors from WMO's own BUFR4 tables (github.com/wmo-im/BUFR4,
+# Table B classes 01-31 and Table D 301xxx / 308015, read 2026-11-26; published Table B entries never change). Any
+# other template, edition, compression or an operator descriptor is refused. The decoder is checked against eccodes
+# on real SPC messages (tests/test_buoys_pacific.py).
+_BUFR_B = {   # FXXYYY -> (scale, reference, width in bits, is text)
+    1125: (0, 0, 4, False), 1126: (0, 0, 16, False), 1127: (0, 0, 16, False), 1128: (0, 0, 128, True),
+    1003: (0, 0, 3, False), 1020: (0, 0, 4, False), 1005: (0, 0, 17, False), 1011: (0, 0, 72, True),
+    1007: (0, 0, 10, False), 1001: (0, 0, 7, False), 1002: (0, 0, 10, False), 2044: (0, 0, 4, False),
+    2045: (0, 0, 4, False), 2046: (0, 0, 4, False),
+    4001: (0, 0, 12, False), 4002: (0, 0, 4, False), 4003: (0, 0, 6, False), 4004: (0, 0, 5, False),
+    4005: (0, 0, 6, False), 5001: (5, -9000000, 25, False), 6001: (5, -18000000, 26, False),
+    8090: (0, -127, 8, False), 22063: (0, 0, 14, False), 22070: (2, 0, 13, False), 22071: (1, 0, 9, False),
+    22073: (2, 0, 13, False), 22074: (1, 0, 9, False), 22076: (0, 0, 9, False), 22077: (0, 0, 9, False),
+    22078: (0, 0, 12, False), 22080: (3, 0, 10, False), 22084: (0, 0, 7, False), 22086: (0, 0, 9, False),
+    22087: (0, 0, 9, False), 22088: (2, 0, 7, False), 22089: (2, 0, 7, False), 22094: (0, 0, 7, False),
+    22102: (0, 0, 14, False), 22104: (0, 0, 14, False), 22106: (0, 0, 14, False), 22108: (0, 0, 7, False),
+    22186: (0, 0, 9, False), 22187: (0, 0, 9, False), 25043: (4, 0, 15, False), 31001: (0, 0, 8, False),
+}
+_BUFR_D = {
+    301150: (1125, 1126, 1127, 1128),
+    301011: (4001, 4002, 4003), 301012: (4004, 4005), 301021: (5001, 6001),
+    308015: (1003, 1020, 1005, 1011, 1007, 1001, 1002, 2044, 2045, 301011, 301012, 301021, 22063, 22076, 22077,
+             22094, 25043, 22078, 105002, 2046, 22070, 22071, 22073, 22074, 127000, 31001, 2046, 8090, 22102, 8090,
+             22084, 120000, 31001, 22080, 22108, 22086, 22087, 22088, 22089, 105000, 31001, 8090, 22104, 8090,
+             22186, 22187, 105000, 31001, 8090, 22106, 8090, 22186, 22187),
+}
+BUFR_WAVE_TEMPLATE = (301150, 308015)
+BUFR_LOWEST_BAND_S = 25.0          # a peak period this long is the lowest spectral band (SPC's buoys: 25.6 s)
+_BUFR_MAX_ITEMS = 20000
+
+
+class _BufrBits:
+    def __init__(self, data):
+        self.data, self.pos, self.end = data, 0, len(data) * 8
+
+    def take(self, width):
+        if self.pos + width > self.end:
+            raise ValueError("BUFR data section too short")
+        v, p = 0, self.pos
+        for _ in range(width):                       # widths here are at most 128 bits: plain bit walking
+            v = (v << 1) | ((self.data[p >> 3] >> (7 - (p & 7))) & 1)
+            p += 1
+        self.pos = p
+        return v
+
+
+def _bufr_element(desc, bits):
+    scale, ref, width, text = _BUFR_B[desc]
+    raw = bits.take(width)
+    if text:
+        b = raw.to_bytes(width // 8, "big")
+        if b == b"\xff" * len(b):
+            return None
+        return b.decode("ascii", "replace").strip(" \x00")
+    if width > 1 and raw == (1 << width) - 1:
+        return None                                  # all ones: missing
+    v = raw + ref
+    return v if scale == 0 else v / (10 ** scale)
+
+
+def _bufr_run(seq, bits, out, depth=0):
+    if depth > 8:
+        raise ValueError("BUFR nesting too deep")
+    i = 0
+    while i < len(seq):
+        d = seq[i]
+        f = d // 100000
+        if f == 0:
+            if d not in _BUFR_B:
+                raise ValueError("BUFR element %06d not in the template's table" % d)
+            out.append((d, _bufr_element(d, bits)))
+            if len(out) > _BUFR_MAX_ITEMS:
+                raise ValueError("BUFR message too long")
+            i += 1
+        elif f == 3:
+            if d not in _BUFR_D:
+                raise ValueError("BUFR sequence %06d not supported" % d)
+            _bufr_run(_BUFR_D[d], bits, out, depth + 1)
+            i += 1
+        elif f == 1:
+            x, y = (d // 1000) % 100, d % 1000
+            if y == 0:                               # delayed: the next descriptor is the factor
+                if i + 1 >= len(seq) or seq[i + 1] != 31001:
+                    raise ValueError("BUFR delayed replication without 031001")
+                n = _bufr_element(31001, bits)
+                if n is None:
+                    raise ValueError("BUFR missing replication factor")
+                out.append((31001, n))
+                body, i = seq[i + 2:i + 2 + x], i + 2 + x
+            else:
+                n, body, i = y, seq[i + 1:i + 1 + x], i + 1 + x
+            if len(body) != x:
+                raise ValueError("BUFR replication runs past its sequence")
+            for _ in range(int(n)):
+                _bufr_run(body, bits, out, depth + 1)
+        else:
+            raise ValueError("BUFR operator descriptors are not supported")
+
+
+def decode_bufr_wave(msg):
+    """One BUFR edition-4 message of template 301150 + 308015 -> [ [(descriptor, value) ...] per subset ].
+    Raises ValueError for anything else."""
+    if not isinstance(msg, (bytes, bytearray)) or len(msg) < 40 or msg[:4] != b"BUFR" or msg[-4:] != b"7777":
+        raise ValueError("not a BUFR message")
+    if int.from_bytes(msg[4:7], "big") != len(msg) or msg[7] != 4:
+        raise ValueError("BUFR length or edition (only edition 4)")
+    n = len(msg)
+
+    def section(p, least):
+        """A section's length at p, checked to lie inside the message (G75 P2-1, P2-2)."""
+        if p + 3 > n:
+            raise ValueError("BUFR section past the end")
+        ln = int.from_bytes(msg[p:p + 3], "big")
+        if ln < least or p + ln > n - 4:
+            raise ValueError("BUFR section length %d at %d" % (ln, p))
+        return ln
+    p = 8
+    l1 = section(p, 22)
+    if msg[p + 3] != 0:                              # master table 0 (meteorology)
+        raise ValueError("BUFR section 1")
+    has2 = bool(msg[p + 9] & 0x80)
+    p += l1
+    if has2:
+        p += section(p, 4)
+    l3 = section(p, 9)
+    if l3 > 7 + 2 * len(BUFR_WAVE_TEMPLATE) + 1:
+        raise ValueError("BUFR section 3 longer than the wave template's")
+    nsub = int.from_bytes(msg[p + 4:p + 6], "big")
+    flags = msg[p + 6]
+    if flags & 0x40:
+        raise ValueError("compressed BUFR not supported")
+    if not 1 <= nsub <= 64:
+        raise ValueError("BUFR subsets: %d" % nsub)
+    descs = []
+    for q in range(p + 7, p + l3 - 1, 2):
+        b = int.from_bytes(msg[q:q + 2], "big")
+        descs.append((b >> 14) * 100000 + ((b >> 8) & 63) * 1000 + (b & 255))
+    if tuple(descs) != BUFR_WAVE_TEMPLATE:
+        raise ValueError("BUFR template %s is not the wave template" % (descs[:4],))
+    p += l3
+    l4 = section(p, 5)
+    if p + l4 + 4 != n:
+        raise ValueError("BUFR section 4 length")
+    bits = _BufrBits(bytes(msg[p + 4:p + l4]))
+    subsets = []
+    for _ in range(nsub):
+        vals = []
+        _bufr_run(list(BUFR_WAVE_TEMPLATE), bits, vals)
+        subsets.append(vals)
+    if bits.end - bits.pos > 15:                     # only padding may remain (SPC's messages: 1 bit)
+        raise ValueError("BUFR data section longer than the template")
+    return subsets
+
+
+def bufr_wave_reading(vals, now):
+    """One decoded subset -> (WIGOS id, lat, lon, reading) or None. The first of the template's two height sets that
+    holds a height gives the height, peak period, highest wave and mean period; the direction is the dominant waves'
+    (FROM)."""
+    def first(code):
+        return next((v for d, v in vals if d == code and v is not None), None)
+    series, issuer, issue, local = first(1125), first(1126), first(1127), first(1128)
+    if None in (series, issuer, issue) or not local:
+        return None
+    wsi = "%d-%d-%d-%s" % (series, issuer, issue, local)
+    try:
+        t = datetime(int(first(4001)), int(first(4002)), int(first(4003)), int(first(4004)), int(first(4005)),
+                     tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    lat, lon = first(5001), first(6001)
+    if lat is None or lon is None or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return None
+    hs = tp = hmax = tm = None
+    k = 0
+    while k < len(vals):                             # the 105002 sets: 002046, 022070, 022071, 022073, 022074
+        if vals[k][0] == 2046 and k + 4 < len(vals) and vals[k + 1][0] == 22070:
+            if vals[k + 1][1] is not None:
+                hs, tp, hmax, tm = vals[k + 1][1], vals[k + 2][1], vals[k + 3][1], vals[k + 4][1]
+                break
+            k += 5
+            continue
+        k += 1
+    if hs is None:
+        return None
+    d = first(22076)
+    if tp is not None and tp >= BUFR_LOWEST_BAND_S:
+        # the peak at the spectrum's lowest band (25.6 s): low-frequency noise, not a swell (G75 P1-3: 20 of 86 of
+        # Honiara's messages on 2026-11-24/26, Hs 0.2-0.56 m, directions all round, many from the land side); the
+        # dominant direction goes with it
+        tp = d = None
+    o = {"time_utc": t, "hs_m": round(hs, 2), "tp_s": _peak_ok(tp, tm), "mean_period_s": tm, "hmax_m": hmax,
+         "dir_deg": d, "dir_kind": "from", "dir_spread_deg": first(22077) if d is not None else None}
+    o = _sane_reading(o, now)
+    return (wsi, round(lat, 5), round(lon, 5), o) if o else None
+
+
+# Names for SPC buoys whose WIGOS id is not in WMO OSCAR (5202533 is not, 2026-11-26); others show "SPC buoy <id>".
+SPC_NAMES = {"0-22000-0-5202533": "Honiara (Solomon Islands)"}
+_SPC_KEY_RE = re.compile(r"WIGOS_(\d+-\d+-\d+-[0-9A-Za-z]+)_(\d{8}T\d{6})\.bufr4$")
+
+
+class SpcWis2Provider(BuoyProvider):
+    """The Pacific Community's (SPC) wave buoys, published on WMO WIS2 as core data (free and unrestricted) and read
+    from the NOAA / Met Office global cache's public S3 bucket: the bucket is listed, and only the files not read
+    before are fetched (144 bytes each, kept ~40 h there). Every buoy SPC adds to WIS2 appears by itself. SPC's own
+    servers refuse automated clients, so the global cache is the route."""
+    source = "SPC"
+    source_name = "Pacific Community (SPC) via WMO WIS2"
+    source_url = "https://www.spc.int/"
+    license_label = "WMO core data (free and unrestricted)"
+    attribution_text = ("Source: Pacific Community (SPC) wave buoys, through the WMO Information System (WIS2) as "
+                        "core data.")
+    stale_after_sec = 4 * 3600                       # 30-min readings published hourly, 45-75 min behind
+    capabilities = _caps(bulk=True, recent_history=True, directional=True)
+    list_ttl_sec = 900
+    timeout = 30
+    BUCKET = "https://wis2globalcache.s3.amazonaws.com/"
+    PREFIX = "data/int-spc/data/core/ocean/surface-based-observations/wave-buoys/"
+    LIST_CAP = 2 * 1024 * 1024
+    FILE_CAP = 64 * 1024
+    MAX_PAGES = 10
+    MAX_NEW = 150                                    # files fetched in one refresh (the newest first)
+    HOURS = 26
+    HEADERS = {"User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)"}
+
+    def __init__(self, http=None):
+        super().__init__(http)
+        self._read = {}           # key -> (wsi, lat, lon, reading) or None (unreadable: not asked again)
+        self._obs = {}
+
+    def _list_keys(self):
+        keys, token = [], None
+        ns = "{http://s3.amazonaws.com/doc/2006-03-01/}"
+        for _ in range(self.MAX_PAGES):
+            url = self.BUCKET + "?list-type=2&max-keys=1000&prefix=" + requests.utils.quote(self.PREFIX, safe="/")
+            if token:
+                url += "&continuation-token=" + requests.utils.quote(token, safe="")
+            r = _size_capped_get(self.http, url, self.timeout, self.LIST_CAP, headers=self.HEADERS)
+            root = _xml_root(r.content, "the WIS2 cache listing")
+            keys += [k.text for k in root.iter(ns + "Key") if k.text]
+            if (root.findtext(ns + "IsTruncated") or "").strip().lower() != "true":
+                return keys
+            token = root.findtext(ns + "NextContinuationToken")
+            if not token:
+                return keys
+        _log.warning("SPC: the cache listing has more than %d pages; the rest are not read", self.MAX_PAGES)
+        return keys
+
+    def _fetch_stations(self):
+        now = time.time()
+        cutoff = datetime.fromtimestamp(now - self.HOURS * 3600, timezone.utc).strftime("%Y%m%dT%H%M%S")
+        want = []
+        for k in self._list_keys():                  # a failed listing raises: keep-last
+            m = _SPC_KEY_RE.search(k)
+            if m and m.group(2) >= cutoff:
+                want.append((m.group(2), k))
+        want.sort(reverse=True)
+        keep = {k for _, k in want}
+        self._read = {k: v for k, v in self._read.items() if k in keep}
+        new = [k for _, k in want if k not in self._read][:self.MAX_NEW]
+        errors = 0
+        for k in new:
+            try:
+                r = _size_capped_get(self.http, self.BUCKET + requests.utils.quote(k, safe="/"), self.timeout,
+                                     self.FILE_CAP, headers=self.HEADERS)
+            except (RuntimeError, requests.RequestException, OSError) as exc:
+                errors += 1
+                _log.warning("SPC: %s not read (%s)", k.rsplit("/", 1)[-1], exc)
+                continue                             # asked again next refresh
+            try:
+                got = [g for g in (bufr_wave_reading(v, now) for v in decode_bufr_wave(r.content)) if g]
+                self._read[k] = got or None
+            except Exception as exc:                 # a malformed file is skipped, never the refresh (G75 P2-1)
+                _log.warning("SPC: %s not decoded (%s: %s)", k.rsplit("/", 1)[-1], type(exc).__name__, exc)
+                self._read[k] = None
+        if new and errors >= len(new) and not any(self._read.values()):
+            raise RuntimeError("every SPC file failed (%d)" % errors)
+        by = {}
+        for got in self._read.values():
+            for v in got or ():
+                by.setdefault(v[0], []).append(v)
+        out, obs = [], {}
+        for wsi, items in sorted(by.items()):
+            items.sort(key=lambda x: x[3]["time_utc"])
+            rows = []
+            for it in items:                         # one reading a time (a file republished under two names)
+                if not rows or rows[-1]["time_utc"] != it[3]["time_utc"]:
+                    rows.append(it[3])
+            obs[wsi] = rows
+            out.append({"local_id": wsi, "name": SPC_NAMES.get(wsi, "SPC buoy %s" % wsi.rsplit("-", 1)[-1]),
+                        "lat": items[-1][1], "lon": items[-1][2], "latest_time": rows[-1]["time_utc"]})
+        self._obs = obs
+        return out
+
+    def detail(self, local_id):
+        if local_id not in self._obs:
+            self.list_stations()
+        rows = self._obs.get(local_id) or []
+        return {"latest": rows[-1] if rows else None, "recent": _recent_window(rows) if rows else []}
+
+    def latest(self, local_id):
+        return self.detail(local_id)["latest"]

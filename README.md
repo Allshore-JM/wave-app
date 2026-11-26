@@ -2316,7 +2316,8 @@ hour-rule shade, no mode buttons).
 The "Live buoys" layer merges the agencies' station lists (ten at the time: NDBC, CDIP, QLD, AODN, AusWaves, Marine
 Institute, CEFAS, SMHI, RWS, Copernicus; thirteen since plan section 63, which added NDBC's bulk report, GLOS and IOOS:
 see "Live buoys: the US widen" below; fifteen since plan section 72, which added SiMCosta and KMA and widened Copernicus:
-see "Live buoys: the data-poor regions"). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
+see "Live buoys: the data-poor regions"; nineteen since plan section 110: "Live buoys: New Zealand, the Pacific,
+Chile"). Until this change the list route asked every agency whose list had expired INSIDE the visitor's
 request and answered only when all of them had: every 30 minutes one visitor waited for a refresh, after a restart every
 visitor waited for every feed, and one slow agency held everyone's markers (the Marine Institute's ERDDAP once timed out
 three times: 124 s). Now nothing a visitor asks for waits for an agency.
@@ -2332,7 +2333,8 @@ The server (`buoy_sources.py`, `app.py`):
   the first seconds after a start), never at import: a gunicorn master that preloads the app forks its workers after the
   import, and a worker would inherit the locks the master's threads held but none of the threads. (Any forked child also
   resets every lock and flag of the service: `os.register_at_fork`.) Its first pass queues every agency, cheapest first
-  (NDBC, NDBCW, CDIP, SMHI, MI-IE, CEFAS, KMA, SIMCOSTA, GLOS, RWS, QLD, AusWaves, AODN, IOOS, CMEMS:
+  (NDBC, NDBCW, CDIP, SMHI, MI-IE, CEFAS, KMA, SIMCOSTA, ECAN, EPA, HILLTOP, SPC, GLOS, RWS, QLD, AusWaves, AODN, IOOS,
+  CMEMS:
   `LIVE_WARM_ORDER`), then it
   loads the time-zone finder; after that it
   runs whenever an agency publishes a new list (it is woken) and at least every 30 s (2 s until every agency has answered
@@ -2515,6 +2517,95 @@ section 71). This adds what is open:
   joins NDBC's marker (as `..._TS_MO_6200NNN` counts as WMO 62NNN).
 - NOAA's WIS2 node was considered for Italy's RON and the French overseas buoys and not used: Copernicus carries them,
   while the node's answer is 50 records a page, mostly US buoys the site already has.
+
+## Live buoys: New Zealand, the Pacific, Chile (plan section 110)
+
+A 2026-11-26 survey of Japan, New Zealand, the South Pacific and Chile (plan section 110) found four open feeds; they
+join the layer as four providers in `buoy_sources.py`. Japan's NOWPHAS and Hiratsuka tower and Chile's SHOA buoys need
+permission first (requested 2026-11-26), so nothing reads them yet.
+- **New Zealand councils' Hilltop servers** (`HilltopWaveProvider`, source `HILLTOP`): Greater Wellington
+  (`hilltop.gw.govt.nz`, Baring Head South, CC BY 4.0) and Tasman (`envdata.tasman.govt.nz`, Tuatea buoy in Tasman Bay).
+  Each server's site list is read every 6 h: a site whose name says wave or buoy, with a position, not an "-Offline"
+  copy, and with a wave height in its measurement list (units checked). Every 30 min each live site's last day
+  (`GetData ... TimeInterval=P1D`) of height, period, direction FROM, Hmax and water / sea temperature is read and joined
+  by time. Periods: Tasman's average period is shown as the mean period; GW's "Zero Crossing Wave Period (Tz)" as the
+  zero-crossing period (labelled msecs but holding seconds, 6.0-6.3 s; a value above 100 is taken as milliseconds).
+  GW's "Significant Wave Period (Tsig)" is T1/3 (7.5-8.0 s, close to the peak), neither a peak nor a mean period: not
+  shown (G75 P1-2). A Hilltop error answer (HTTP 200 with `<Error>`) or an empty site list while one is held is a
+  failure: the held list stands and is asked again in 30 min; one site's measurement list failing keeps that site's
+  held entry. Hilltop times carry no zone:
+  they are New Zealand STANDARD time, UTC+12 all year (`HILLTOP_TZ`, checked with windows anchored to the servers' own
+  "now"). A site whose newest height is older than 3 days is not shown and is asked again only with the next site list,
+  so a buoy that comes back appears by itself (GW's North (A), Taputeranga, Tasman's Golden Bay and Tasman Bay buoys are
+  quiet today). Two live series of one council within 1 km show once (the newer). A series that ended long ago (Tuatea's
+  Max Wave Height, 2025-06) joins no reading. The window credits the council. Northland's Bay of Islands buoy (true peak
+  period and peak direction) is left out: quiet since 2026-08-22, and its server's chain needs `chain_tls.py`'s pinned
+  GoDaddy cross-sign (a host added there needs the owner's word).
+- **Environment Canterbury** (`EcanWaveProvider`, `ECAN`): the Banks Peninsula buoy (76 m of water, 17 km east of Le
+  Bons Bay), from the JSON behind ECan's wave page (`WaveDirectionData/1_Week`, answered only with the page's
+  `X-Requested-With: XMLHttpRequest` header). H1/3, Hmax, ECan's average period (shown as the mean period), direction
+  FROM; 30-min records that reach shore every 3 hours (stale after 6 h). The buoy is run with Earth Sciences New
+  Zealand; ECan confirmed the reuse on 2026-11-26, and the window credits both.
+- **The Pacific Community (SPC) through WMO WIS2** (`SpcWis2Provider`, `SPC`): SPC publishes its wave buoys on WIS2 as
+  core data (free and unrestricted), but its own servers refuse automated clients, so the provider lists the NOAA / Met
+  Office global cache's public S3 bucket (`wis2globalcache.s3.amazonaws.com`, prefix
+  `data/int-spc/data/core/ocean/surface-based-observations/wave-buoys/`) every 15 min and fetches only the files of the
+  last 26 h it has not read (144 bytes each; at most 150 a refresh, newest first; an unreadable file is not asked again,
+  a failed GET is; a file that breaks the decoder in any way is skipped, never the refresh). The files are BUFR
+  edition 4 of the WMO moored-buoy wave template 301150 + 308015: `decode_bufr_wave` reads exactly that template in
+  pure Python (the descriptors from WMO's BUFR4 tables; every section length is checked inside the message; anything
+  else, compression or a data section longer than the template is refused). It matched eccodes on all 87-89 SPC
+  messages in the cache when built (2026-11-26, a one-off check; the committed tests compare 3 messages with eccodes'
+  values, fuzz 3,000 damaged copies and pin the refusals). Read: height, spectral PEAK period and dominant direction FROM
+  (and the highest wave and mean period when sent: Honiara sends neither). A peak at the spectrum's lowest band (25 s or
+  more; Honiara's 25.6 s in 20 of 86 messages, with directions all round) is noise: that reading's peak and direction
+  are dropped (G75 P1-3). Every subset of a message is read. On 2026-11-26 one buoy reported (Honiara, Solomon
+  Islands); any buoy SPC adds appears by itself ("SPC buoy <id>" until named in `SPC_NAMES`).
+- **Puerto Arica** (`PuertoAricaProvider`, `EPA`): Empresa Portuaria Arica's buoy SIMAR-EPA-01, about 1 km off the port,
+  from the JSON behind the port's "Condicion Maritima" page (`simar_api.php?action=wave-height|wave-direction|status`,
+  24 h). H1/3 and mean direction FROM with spread every 20 min; no period is published. Times are UTC without a zone.
+  The marker uses the buoy's own GPS while it stays within 2 km of its mooring.
+- Dedup priority: HILLTOP, ECAN, EPA 54 (they meet no other feed's buoys); SPC 44, below CDIP / NDBC / NDBCW, so a
+  US-flag Pacific buoy SPC might relay never replaces the richer marker.
+- XML answers (Hilltop, the S3 listing) are parsed with the standard library after refusing any DOCTYPE / ENTITY and
+  any body that is not ASCII-compatible (UTF-16 / UTF-32, where those words would not show as text).
+- An adversarial review (G75, record `docs/reviews/buoys-pacific-G75-adversarial.md`) found 0 P0, 3 P1, 5 P2, 6 P3:
+  all fixed or recorded there.
+
+## Live buoys: AusWaves refuses servers (2026-11-26)
+
+Since about 2026-11-26 the AusWaves API (`auswaves.org/wp-json/waves/v1/...`, run by the IMOS Coastal Wave Buoys
+facility at the University of Western Australia) answers our server `403 {"code":"waf_forbidden"}`: a firewall rule
+against non-browser clients. The site does NOT get around it. `AusWavesProvider` names the site honestly
+(`User-Agent: allshoresurf.com live buoys (https://allshoresurf.com)`; an earlier version copied a browser's User-Agent
+and Referer, now removed), and the owner has asked UWA to allow it.
+
+What happens while the refusal lasts:
+- A 401 / 403 from the catalogue raises `buoy_sources.AccessDenied` (the text keeps the API's code:
+  `AccessDenied: HTTP 403 from the AusWaves catalogue (waf_forbidden)`). The base class handles it like any failed
+  refresh: the last good list (if this process had one) is kept for `keep_on_failure_sec` (6 h), then the layer has no
+  AusWaves markers. Unlike a hiccup it is asked again only once per list TTL (30 min, not every 5 min), and a kept list
+  is asked again no later than its expiry, so it never outlives the 6 h.
+- The log says it once (WARNING); the same refusal again is logged at DEBUG, so there is no warning every 5 minutes.
+  A different error, or the refusal after a good refresh, warns again.
+- `/healthz` shows AusWaves with `stations: 0` and that `last_error`; the overall health stays OK (as before).
+- A refused per-buoy request (a window opened from a kept marker) answers "no data" quietly.
+- When UWA allows the site, the next refresh (within 30 min) brings the markers back by itself: nothing to deploy,
+  unless they ask for a key or a different address.
+
+What is really lost (checked 2026-11-26 against the public AusWaves page and the live map): AusWaves showed 56 fixed
+buoys reporting within 24 h. 43 of them are also on AODN, which the merge now shows in their place:
+- 15 AODN buoys with full spectra (Hillarys, Torbay West, Ocean Beach, Cape Bridgewater, Central, Wilsons Prom, North
+  Kangaroo Island, Brighton, Ceduna, Wooli, Collaroy-Narrabeen, Bengello, Maningrida, Mission Beach, Storm Bay): AODN's
+  marker already won there; nothing changes.
+- 28 AODN bulk buoys (WA: Quinns Dog Beach, King George Sound, Coral Bay, Tantabiddi, Exmouth Gulf N / S / E, Cygnet
+  Bay, Jurien Bay Offshore / Inshore, Shark Bay, Cockburn Sound, Bunbury, Augusta Offshore, Woodmans Point FAD05; VIC:
+  Mt Eliza, Indented Head, Werribee, Dutton Way, Inverloch, Port Fairy, Sandringham, Rosebud, Bob, Lakes Entrance,
+  Weeroona Bay; SA: Victor Harbor Offshore; QLD: Karumba): the marker stays (from AODN), but the AusWaves sea / swell
+  split and its swell-over-time table are gone.
+- 13 have no other source and are off the map: WA Yanchep Lagoon, Two Rocks Marina, Dongara Offshore, Dongara Inshore,
+  Busselton Jetty, Middleton Beach, Torbay (the smart mooring, not Torbay West), Dampier FAD 41, Cocos Island North
+  Entrance; SA Robe Guichen Bay, Boston Island, Cape Jervis; VIC Point Addis.
 
 ## Tide stations (plan section 38, UI asset 1.18.6)
 

@@ -7297,8 +7297,8 @@
   // break lines' vertices. A layer of its own with its own few requests: it never takes a slot from the field's frames,
   // and a failure here leaves the wave height as it was. A modelled estimate, not safety guidance.
   var NEAR_PREFIX = 'gfswave/nearshore/v1', NEAR_MIN_Z = 11.5, NEAR_ARROW_Z = 15, NEAR_HIT_PX = 14, NEAR_KEEP = 6, NEAR_ALPHA = 205;
-  var NEAR_BANDS = [['closeout', '#e8312c', 'under 15°'], ['too fast', '#f5a623', '15-30°'], ['ideal', '#2ecc40', '30-50°'],
-                    ['easy', '#2d9cf0', '50-70°'], ['soft shoulder', '#9aa0a6', 'over 70°']];
+  var NEAR_BANDS = [['closeout', '#e8312c', 'under 15°'], ['fast', '#f5a623', '15-30°'], ['ideal', '#2ecc40', '30-50°'],
+                    ['easy', '#2d9cf0', '50-70°'], ['soft', '#9aa0a6', 'over 70°']];
   var NEAR_BREAKERS = ['spilling', 'plunging', 'collapsing'];
   var NEAR_SETS = 1.67 / 1.27;                             // the biggest sets (H1/100) over the set wave drawn (H1/10)
   var NEAR_VB = 10;                                        // bytes per vertex
@@ -7320,7 +7320,7 @@
   function NearshoreLayer(map, root, opts) {
     this.map = map; this.root = root; this.opts = opts || {}; this.canvas = null; this.ctx = null; this.v = null; this._listeners = []; this.pending = null;
     this.doc = null; this.runMs = NaN; this.state = 'loading'; this.frames = new Map(); this.shown = null; this.shownStep = null; this.wantMs = null;
-    this.ctrl = null; this.atlas = null; this.atlasAsked = false; this.lut = null; this.legend = null; this.hawaiian = false; this.onChange = null; this.dead = false;
+    this.ctrl = null; this.lut = null; this.legend = null; this.onChange = null; this.dead = false;
   }
   NearshoreLayer.prototype.raf = FlowAnimator.prototype.raf;
   NearshoreLayer.prototype.caf = FlowAnimator.prototype.caf;
@@ -7483,14 +7483,13 @@
       ctx.closePath(); ctx.fill(); ctx.stroke();
     }
   };
-  // A height (m) as the readout writes it: the site's unit, or the Hawaiian scale (half the face, in feet).
+  // A height (m) as the readout writes it, in the site's unit.
   NearshoreLayer.prototype.heightText = function (m) {
-    if (this.hawaiian) return (Math.round(m * 3.28084 / 2 * 2) / 2).toFixed(m * 3.28084 / 2 < 10 ? 1 : 0).replace(/\.0$/, '') + ' ft Hawaiian';
     var u = unitOf('hs', this.opts.getUnit ? this.opts.getUnit() : 'US'), x = u.f(m);
     return (x < 10 ? x.toFixed(1) : String(Math.round(x))) + ' ' + u.label;
   };
   // The readout's text under (lat, lng): the nearest break-line vertex within NEAR_HIT_PX, else the zone's height under the
-  // cursor, else null (the wave height's own readout shows). The place's best swell follows on a second line.
+  // cursor, else null (the wave height's own readout shows).
   NearshoreLayer.prototype.readoutAt = function (lat, lng) {
     var f = this.shown, doc = this.doc;
     if (!f || !doc || !this.inView()) return null;
@@ -7516,30 +7515,7 @@
         break;
       }
     }
-    if (txt === null) return null;
-    var a = this._atlasText(lat, lng);
-    return a ? txt + '\n' + a : txt;
-  };
-  // The best-swell text of the 30 m cell under (lat, lng), from the table's atlas (asked for once, on the first readout).
-  NearshoreLayer.prototype._atlasText = function (lat, lng) {
-    var self = this, doc = this.doc;
-    if (!this.atlasAsked && doc && typeof doc.atlas === 'string' && /^static\/nearshore\/[A-Za-z0-9._-]+\/atlas\.json$/.test(doc.atlas)) {
-      this.atlasAsked = true;
-      fetch(this.root + '/' + doc.atlas, { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('atlas ' + r.status); return r.json(); }).then(function (a) {
-        if (!a || !a.frame || !Array.isArray(a.cells) || !Array.isArray(a.texts) || !(a.cell_m > 0)) throw new Error('bad atlas');
-        var by = new Map();
-        for (var i = 0; i < a.cells.length; i++) by.set(a.cells[i][0] * 100000 + a.cells[i][1], a.cells[i][2]);
-        a.by = by; self.atlas = a;
-      }).catch(function (err) { if (typeof console !== 'undefined' && console.warn) console.warn('overlay nearshore atlas', err); });
-    }
-    var a = this.atlas;
-    if (!a) return '';
-    var g = a.frame, ky = Math.PI / 180 * 6371008.8, kx = ky * Math.cos(g.lat0 * Math.PI / 180), r = g.alpc * Math.PI / 180;
-    var de = (lng - g.lon0) * kx - g.xpc, dn = (lat - g.lat0) * ky - g.ypc;
-    var x = de * Math.cos(r) + dn * Math.sin(r), y = -de * Math.sin(r) + dn * Math.cos(r);
-    var t = a.by.get(Math.floor(y / a.cell_m) * 100000 + Math.floor(x / a.cell_m));
-    if (t === undefined || typeof a.texts[t] !== 'string') return '';
-    return a.texts[t] + (a.calibrated ? '' : ' (not yet calibrated)');
+    return txt;
   };
   // The note beside the box: what is shown, or why nothing is.
   NearshoreLayer.prototype.noteText = function () {
@@ -7888,7 +7864,7 @@
     this.satGrid = !!(this.grid && s.satGrid === true);
     // opts.nearshore (plan section 109; the page's NEARSHORE_OVERLAY setting): the "Nearshore analysis" box of the GFS wave
     // height panel (per tab, off by default) and its layer while the box is ticked
-    this.nearOn = !!(opts.nearshore && s.nearshore === true); this.nearHawaii = s.nearHawaii === true; this.near = null;
+    this.nearOn = !!(opts.nearshore && s.nearshore === true); this.near = null;
     // opts.radar (plan section 85; the page's RADAR_OVERLAY setting): its own store, layer and player while the Radar entry is shown
     this.radar = opts.radar ? radarStore(this.root) : null; this.radarLayer = null; this.radarPlayer = null;
     // opts.bathy (plan section 93b; the page's BATHY_OVERLAY setting): its store and its own layer while the Bathymetry entry is shown
@@ -7941,7 +7917,6 @@
     if (!this._wantNear()) { if (this.near) { this.near.detach(); this.near = null; this._nearNote(); } return; }
     if (this.near) return;
     var f = this.manifest.fields && this.manifest.fields.hs, near = this.near = new NearshoreLayer(this.map, this.root, this.opts);
-    near.hawaiian = !!this.nearHawaii;
     near.onChange = function () { if (self.near === near) self._nearNote(); };
     near.attach();
     if (f && f.legend) near.setColours(buildLut('hs', f.legend), f.legend);
@@ -7963,13 +7938,9 @@
     if (on === this.nearOn) return;
     this.nearOn = on; save({ nearshore: on });
     this._syncNear(this.frameIndex);
-    if (this.last && this.last.state === 'ready' && this._nearOffered()) this.render(this.last);   // the key and the Hawaiian box come and go
+    if (this.last && this.last.state === 'ready' && this._nearOffered()) this.render(this.last);   // the peel key comes and goes
   };
-  Overlay.prototype.setNearHawaiian = function (on) {
-    this.nearHawaii = !!on; save({ nearHawaii: this.nearHawaii });
-    if (this.near) this.near.hawaiian = this.nearHawaii;
-  };
-  // The panel's rows under the legend: the box with its note, and while it is ticked the Hawaiian-scale box and the peel key.
+  // The panel's rows under the legend: the box with its note, and while it is ticked the peel key.
   Overlay.prototype._nearRows = function (body) {
     var self = this, row = mk('div', 'ov-row ov-satrow ov-near-row'), lab = mk('label', 'ov-sat-label'), box = mk('input', 'ov-near-box'); box.type = 'checkbox'; box.checked = !!this.nearOn;
     lab.appendChild(box); lab.appendChild(mk('span', null, 'Nearshore analysis')); row.appendChild(lab);
@@ -7978,10 +7949,6 @@
     box.addEventListener('change', function () { self.setNearshore(!!box.checked); });
     body.appendChild(row); this.ui.nearBox = box; this.ui.nearNote = note;
     if (!this.nearOn) return;
-    var row2 = mk('div', 'ov-row ov-satrow ov-near-row'), lab2 = mk('label', 'ov-sat-label'), hbox = mk('input', 'ov-near-box'); hbox.type = 'checkbox'; hbox.checked = !!this.nearHawaii;
-    lab2.appendChild(hbox); lab2.appendChild(mk('span', null, 'Hawaiian scale in the readout (half the face height)')); row2.appendChild(lab2);
-    hbox.addEventListener('change', function () { self.setNearHawaiian(!!hbox.checked); });
-    body.appendChild(row2);
     body.appendChild(buildNearLegend());
   };
 
@@ -10262,10 +10229,10 @@
         v = layer.readoutAt(latlng.lat, latlng.lng, z);            // the drawn pixel (its centre, its land mask), not the raw cursor point
       }
       last = { latlng: latlng, pt: pt };
-      el.classList.toggle('ov-readout-multi', false); self._nearRead = false;
+      self._nearRead = false;
       if (self.near && self._wantNear()) {                   // the nearshore analysis under the cursor comes first (plan section 109)
         var nt = self.near.readoutAt(latlng.lat, latlng.lng);
-        if (nt) { el.classList.toggle('ov-readout-multi', nt.indexOf('\n') >= 0); el.textContent = nt; self._nearRead = true; place(pt); return; }
+        if (nt) { el.textContent = nt; self._nearRead = true; place(pt); return; }
       }
       if (self.mode === 'obs' && self.field === 'bathy') {   // the depth drawn under the cursor (plan section 93b)
         var bl = self.bathyLayer, bz = bl ? (typeof bl._tileZoom === 'number' ? bl._tileZoom : Math.round(map.getZoom())) : 0, bt = bl ? self._bathyReadout(bl.readoutAt(latlng.lat, latlng.lng, bz)) : null;

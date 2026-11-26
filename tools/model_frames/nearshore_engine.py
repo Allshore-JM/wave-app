@@ -51,7 +51,7 @@ PARAMS = dict(
     slope_reach_m=50.0,          # the reef slope is measured over this distance seaward along the wave path
     mixed_share=0.4, mixed_deg=20.0,         # a second train this strong and this far off in direction = mixed swell
 )
-BAND_NAMES = ("closeout", "too fast", "ideal", "easy", "soft shoulder")
+BAND_NAMES = ("closeout", "fast", "ideal", "easy", "soft")
 BREAKER_NAMES = ("spilling", "plunging", "collapsing")
 
 

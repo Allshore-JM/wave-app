@@ -58,7 +58,7 @@ function fakeMap(z, c) {
 }
 function layerAt(z, c, unit) {
   const ly = new I.NearshoreLayer(fakeMap(z, c), 'https://frames.example', { getUnit: () => unit || 'US' });
-  ly.doc = DOC; ly.runMs = RUN_MS; ly.state = 'ready'; ly.atlasAsked = true;   // no network in these tests
+  ly.doc = DOC; ly.runMs = RUN_MS; ly.state = 'ready';
   return ly;
 }
 
@@ -83,8 +83,7 @@ test('the readout names the nearest break-line vertex: height, sets, peel, band,
   assert.equal(ly.readoutAt(V1.lat, V1.lon), 'Breaking face 12 ft (sets 16 ft) · Peel 38° ideal, right · Ride 140 m · plunging');
   assert.equal(ly.readoutAt(V2.lat, V2.lon), 'Breaking face 10 ft (sets 14 ft) · Peel 9° closeout · spilling · reform (broke further out) · mixed swell');
   assert.equal(ly.readoutAt(21.63, -158.07), null, 'nothing within reach and no zone under the cursor');
-  ly.hawaiian = true;
-  assert.match(ly.readoutAt(V1.lat, V1.lon), /^Breaking face 6 ft Hawaiian \(sets 8 ft Hawaiian\)/);
+  assert.equal(ly.readoutAt(V1.lat, V1.lon).indexOf('\n'), -1, 'one line: no best-swell text (owner, 2026-11-26)');
   const m = layerAt(15, [21.62, -158.088], 'Metric'), pm = picture([V1]);
   m.shown = I.parseNearFrame(pm.q, pm.cols, pm.rows, DOC);
   assert.match(m.readoutAt(V1.lat, V1.lon), /^Breaking face 3\.7 m \(sets 4\.8 m\)/);
@@ -99,20 +98,6 @@ test('off the line the readout is the breaking zone under the cursor; the top co
   assert.equal(ly.readoutAt(lat(100.5), TILE_W + 51.5 * PX), 'Breaking zone: face 42 ft+ (sets 55 ft)');
   assert.equal(ly.readoutAt(lat(101.5), TILE_W + 50.5 * PX), null);
   assert.ok(Math.abs(lat(0) - TILE_N) < 1e-9);
-});
-
-test('the best swell of the place follows on a second line once the atlas is in, marked while it is not calibrated', () => {
-  const ly = layerAt(15, [21.62, -158.088]), p = picture([V1]);
-  ly.shown = I.parseNearFrame(p.q, p.cols, p.rows, DOC); ly.atlasAsked = true;
-  const g = { lon0: -158.09, lat0: 21.62, xpc: -1070.18, ypc: -2052.18, alpc: 45 };
-  const ky = Math.PI / 180 * 6371008.8, kx = ky * Math.cos(g.lat0 * Math.PI / 180), r = Math.PI / 4;
-  const de = (V1.lon - g.lon0) * kx - g.xpc, dn = (V1.lat - g.lat0) * ky - g.ypc, x = de * Math.cos(r) + dn * Math.sin(r), y = -de * Math.sin(r) + dn * Math.cos(r);
-  ly.atlas = { frame: g, cell_m: 30, calibrated: false, texts: ['Best here: buoy 6-10 ft @ 15 s from 340-010'], by: new Map([[Math.floor(y / 30) * 100000 + Math.floor(x / 30), 0]]) };
-  assert.equal(ly.readoutAt(V1.lat, V1.lon).split('\n')[1], 'Best here: buoy 6-10 ft @ 15 s from 340-010 (not yet calibrated)');
-  ly.atlas.calibrated = true;
-  assert.equal(ly.readoutAt(V1.lat, V1.lon).split('\n')[1], 'Best here: buoy 6-10 ft @ 15 s from 340-010');
-  ly.atlas.by = new Map();
-  assert.equal(ly.readoutAt(V1.lat, V1.lon).indexOf('\n'), -1, 'a place without a best swell keeps one line');
 });
 
 test('the note says the buoy swell and the tide of the step shown, or why nothing is drawn', () => {
@@ -141,5 +126,8 @@ test('out of view nothing is asked for; a time the run does not hold clears the 
   const far = layerAt(8, [21.62, -158.088]); far._fetch = () => { asked++; };
   far.setTime(RUN_MS + 2 * 3.6e6); assert.equal(far.state, 'away'); assert.equal(asked, 1, 'zoomed out: no request');
   assert.equal(changes, 2, 'shown, then no step: the note is told twice');
-  assert.equal(I.NEAR_PREFIX, 'gfswave/nearshore/v1'); assert.equal(I.NEAR_BANDS.length, 5);
+  assert.equal(I.NEAR_PREFIX, 'gfswave/nearshore/v1');
+  assert.deepEqual(I.NEAR_BANDS.map((b) => b[0]), ['closeout', 'fast', 'ideal', 'easy', 'soft'], 'the five words of the key (owner, 2026-11-26)');
+  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
+  assert.ok(!/Hawaiian/.test(src) && !/Best here/.test(src) && !/atlas\.json/.test(src), 'no Hawaiian box, no best-swell line');
 });

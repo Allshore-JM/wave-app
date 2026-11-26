@@ -41,6 +41,7 @@ def _on(monkeypatch, base="https://frames.example/gfswave/0p25/v1/"):
     monkeypatch.delenv("GLWU_OVERLAY", raising=False)
     monkeypatch.delenv("RADAR_OVERLAY", raising=False)
     monkeypatch.delenv("BATHY_OVERLAY", raising=False)
+    monkeypatch.delenv("NEARSHORE_OVERLAY", raising=False)
     monkeypatch.delenv("JET_OVERLAY", raising=False)
     monkeypatch.delenv("RRFS_PRECIP", raising=False)
     monkeypatch.delenv("RRFS_PRECIP_TOTAL", raising=False)
@@ -297,6 +298,7 @@ def test_bootstrap_node_test_runs_the_rendered_script(monkeypatch):
                    .replace("{{ overlay_rrfs_precip|tojson }}", json.dumps(False))
                    .replace("{{ overlay_rrfs_precip_total|tojson }}", json.dumps(False))
                    .replace("{{ overlay_bathy|tojson }}", json.dumps(False))
+                   .replace("{{ overlay_nearshore|tojson }}", json.dumps(False))
                    .replace("{{ overlay_sat|tojson }}", json.dumps(False))
                    .replace("{{ overlay_swell|tojson }}", json.dumps(False))
                    .replace("{{ overlay_grid|tojson }}", json.dumps(False))
@@ -617,3 +619,19 @@ def test_coast_set_reads_the_environment():
     assert f({"COAST_SET": " v2 "}) == "v2"                                  # surrounding blanks are stripped
     assert f({"COAST_SET": "v4"}) == ("v4" if os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v4.json")) else "v1")
     assert f({"COAST_SET": "v5"}) == ("v5" if os.path.exists(os.path.join(ROOT_DIR, "alert_coast_v5.json")) else "v1")
+
+
+def test_nearshore_flag_reaches_the_page_and_is_off_by_default(monkeypatch):
+    """NEARSHORE_OVERLAY (plan section 109): "1" hands the module `nearshore: true` (the "Nearshore analysis" box of the GFS
+    wave-height panel); anything else does not."""
+    monkeypatch.setenv("MODEL_OVERLAYS", "1")
+    monkeypatch.setenv("MODEL_FRAMES_BASE", "https://frames.example/gfswave/0p25/v1")
+    for env, want in (("1", "true"), ("0", "false"), ("yes", "false"), (None, "false")):
+        if env is None:
+            monkeypatch.delenv("NEARSHORE_OVERLAY", raising=False)
+        else:
+            monkeypatch.setenv("NEARSHORE_OVERLAY", env)
+        body = A.app.test_client().get("/").get_data(as_text=True)
+        assert f"var NEARSHORE = {want};" in body and "nearshore: NEARSHORE" in body
+    js = open(os.path.join(STATIC, "overlay.js"), encoding="utf-8").read()
+    assert "gfswave/nearshore/v1" in js and "Nearshore analysis" in js and "Not safety guidance" in js

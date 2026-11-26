@@ -5045,6 +5045,7 @@
       var MODELS = {{ overlay_models|tojson }};                 // the models the panel offers (MODEL_OVERLAY_MODELS); the first is the default
       var SST = {{ overlay_sst|tojson }};                       // "Sea surface temperature" offered (SST_OVERLAY; plan section 44)
       var RADAR = {{ overlay_radar|tojson }};                   // "Radar" offered (RADAR_OVERLAY; plan section 85)
+      var NEARSHORE = {{ overlay_nearshore|tojson }};           // the "Nearshore analysis" box of GFS wave height (NEARSHORE_OVERLAY; plan section 109)
       var BATHY = {{ overlay_bathy|tojson }};                   // "Bathymetry" offered (BATHY_OVERLAY; plan section 93b)
       var PRECIP = {{ overlay_rrfs_precip|tojson }} && MODELS.indexOf('rrfs') >= 0;   // "Precipitation" (RRFS_PRECIP + RRFS offered; plan section 102)
       var PTOT = PRECIP && {{ overlay_rrfs_precip_total|tojson }};   // "Precipitation total" from now (RRFS_PRECIP_TOTAL; plan section 102 B1)
@@ -5164,7 +5165,7 @@
           if (sel.value !== field) return;
           if (!overlay) overlay = window.AllshoreOverlay.create(map, {
             base: BASE, panel: panel, tz: lastTz, getUnit: getSelectedUnit,
-            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, radar: RADAR, bathy: BATHY, sat: SAT, swell: SWELL, grid: GRID, glwu: GLWU,
+            fmtTime: fmtTimeInTz, tzAbbr: tzAbbr, pageCycle: pageCycle, coast: true, baseLayer: imageryLayer(), version: VERSION, models: MODELS, sst: SST, radar: RADAR, bathy: BATHY, nearshore: NEARSHORE, sat: SAT, swell: SWELL, grid: GRID, glwu: GLWU,
             isobars: ISOBARS, particles: PARTICLES / 100, jet: JET, heights: HEIGHTS
           });
           overlay.mount(field, restore);

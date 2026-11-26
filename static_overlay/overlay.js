@@ -7291,6 +7291,282 @@
   // wind overlay and hands it the pressure frame of the step on the map (setData) or clears it (clearData: at once, so no
   // old lines stay under a new time). It redraws on a new frame and on every view change, in one animation frame after
   // the event (never on the stack of a frame landing); it is hidden while the map zooms.
+  // ---- Nearshore analysis (plan section 109): the breaking zone and the break lines of the pilot stretch (Himalayas
+  // to Chun's, Oahu) for the step on the map, over the GFS wave height. One small picture per step from the nearshore
+  // job (tools/model_frames/nearshore.py): a header row, one 256x256 plane of set-wave heights per z14 tile, then the
+  // break lines' vertices. A layer of its own with its own few requests: it never takes a slot from the field's frames,
+  // and a failure here leaves the wave height as it was. A modelled estimate, not safety guidance.
+  var NEAR_PREFIX = 'gfswave/nearshore/v1', NEAR_MIN_Z = 11.5, NEAR_ARROW_Z = 15, NEAR_HIT_PX = 14, NEAR_KEEP = 6, NEAR_ALPHA = 205;
+  var NEAR_BANDS = [['closeout', '#e8312c', 'under 15°'], ['too fast', '#f5a623', '15-30°'], ['ideal', '#2ecc40', '30-50°'],
+                    ['easy', '#2d9cf0', '50-70°'], ['soft shoulder', '#9aa0a6', 'over 70°']];
+  var NEAR_BREAKERS = ['spilling', 'plunging', 'collapsing'];
+  var NEAR_SETS = 1.67 / 1.27;                             // the biggest sets (H1/100) over the set wave drawn (H1/10)
+  var NEAR_VB = 10;                                        // bytes per vertex
+  // The decoded picture -> header, planes, vertices (world positions at zoom 0 are worked out once per frame).
+  function parseNearFrame(q, cols, rows, doc) {
+    if (cols !== 256 || rows < 1 || q[0] !== 78 || q[1] !== 83 || q[2] !== 72 || q[3] !== 49) throw new Error('not a nearshore frame');   // "NSH1"
+    var nt = q[5], nv = q[6] | q[7] << 8, tide = q[8] | q[9] << 8, at = 256 * (1 + nt * 256);
+    if (tide > 32767) tide -= 65536;
+    if (nt !== doc.tiles.length || rows * 256 < at + nv * NEAR_VB) throw new Error('bad nearshore frame');
+    var v = q.subarray(at, at + nv * NEAR_VB), wx = new Float64Array(nv), wy = new Float64Array(nv), b = doc.box;
+    for (var i = 0; i < nv; i++) {
+      var o = i * NEAR_VB, lon = b[0] + (v[o] | v[o + 1] << 8) / 65535 * (b[2] - b[0]), lat = b[1] + (v[o + 2] | v[o + 3] << 8) / 65535 * (b[3] - b[1]);
+      var s = Math.sin(lat * Math.PI / 180);
+      wx[i] = (lon + 180) / 360; wy[i] = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+    }
+    return { planes: q.subarray(256, at), n: nv, v: v, wx: wx, wy: wy, tide: tide / 100,
+      buoy: { hs: (q[10] | q[11] << 8) / 100, tp: (q[12] | q[13] << 8) / 10, dir: q[14] | q[15] << 8 }, tiles: null };
+  }
+  function NearshoreLayer(map, root, opts) {
+    this.map = map; this.root = root; this.opts = opts || {}; this.canvas = null; this.ctx = null; this.v = null; this._listeners = []; this.pending = null;
+    this.doc = null; this.runMs = NaN; this.state = 'loading'; this.frames = new Map(); this.shown = null; this.shownStep = null; this.wantMs = null;
+    this.ctrl = null; this.atlas = null; this.atlasAsked = false; this.lut = null; this.legend = null; this.hawaiian = false; this.onChange = null; this.dead = false;
+  }
+  NearshoreLayer.prototype.raf = FlowAnimator.prototype.raf;
+  NearshoreLayer.prototype.caf = FlowAnimator.prototype.caf;
+  NearshoreLayer.prototype._on = FlowAnimator.prototype._on;
+  NearshoreLayer.prototype.attach = function () {
+    if (this.canvas) return;
+    var self = this, map = this.map, pane = map.getPane('ovNearPane');
+    if (!pane) { pane = map.createPane('ovNearPane'); pane.style.zIndex = 270; pane.style.pointerEvents = 'none'; }
+    var cv = document.createElement('canvas'); cv.className = 'ov-near leaflet-zoom-hide';
+    pane.appendChild(cv); this.canvas = cv; this.ctx = cv.getContext('2d');
+    this._on('zoomstart', function () { if (self.canvas) self.canvas.style.visibility = 'hidden'; });
+    this._on('zoomend', function () { if (self.canvas) self.canvas.style.visibility = ''; self._moved(); });
+    this._on('moveend', function () { self._moved(); });
+    this._on('viewreset', function () { self._schedule(); });
+    this._on('resize', function () { self._schedule(); });
+  };
+  NearshoreLayer.prototype.detach = function () {
+    var self = this; this.dead = true;
+    if (this.pending !== null) { this.caf(this.pending); this.pending = null; }
+    if (this.ctrl) { this.ctrl.abort(); this.ctrl = null; }
+    this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
+    if (this.canvas) { if (this.canvas.remove) this.canvas.remove(); this.canvas = null; this.ctx = null; }
+    this.frames.clear(); this.shown = null; this.shownStep = null;
+  };
+  NearshoreLayer.prototype._set = function (state) { if (this.state !== state) { this.state = state; if (this.onChange) this.onChange(); } };
+  // The pointer, then the run's index. Asked once per layer; a failure is the "unavailable" note, never an error panel.
+  NearshoreLayer.prototype.load = function () {
+    var self = this, url = this.root + '/' + NEAR_PREFIX;
+    return fetch(url + '/latest.json', { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('nearshore ' + r.status); return r.json(); })
+      .then(function (p) {
+        if (!p || typeof p.index !== 'string' || !/^gfswave\/nearshore\/v1\/\d{10}\/index\.json$/.test(p.index)) throw new Error('bad nearshore pointer');
+        return fetch(self.root + '/' + p.index, { mode: 'cors' });
+      }).then(function (r) { if (!r.ok) throw new Error('nearshore ' + r.status); return r.json(); })
+      .then(function (d) {
+        var ok = d && d.format === 'nearshore-v1' && /^\d{10}$/.test(d.run) && Array.isArray(d.steps) && Array.isArray(d.tiles) && d.tiles.length > 0 && d.tiles.length < 64 &&
+          Array.isArray(d.box) && d.box.length === 4 && d.z === 14 && d.vertex_bytes === NEAR_VB && d.height_step_m > 0;
+        if (!ok) throw new Error('bad nearshore index');
+        if (self.dead) return;
+        self.doc = d; self.runMs = Date.UTC(+d.run.slice(0, 4), +d.run.slice(4, 6) - 1, +d.run.slice(6, 8), +d.run.slice(8, 10));
+        self.state = 'ready';
+        if (self.wantMs !== null) self.setTime(self.wantMs); else if (self.onChange) self.onChange();
+      }).catch(function (err) {
+        if (self.dead) return;
+        if (typeof console !== 'undefined' && console.warn) console.warn('overlay nearshore', err);
+        self._set('error');
+      });
+  };
+  NearshoreLayer.prototype.setColours = function (lut, legend) { this.lut = lut; this.legend = legend; if (this.shown) this.shown.tiles = null; this._schedule(); };
+  NearshoreLayer.prototype.inView = function () {
+    if (!this.doc || this.map.getZoom() < NEAR_MIN_Z) return false;
+    var b = this.map.getBounds(), x = this.doc.box;
+    return b.getWest() < x[2] && b.getEast() > x[0] && b.getSouth() < x[3] && b.getNorth() > x[1];
+  };
+  NearshoreLayer.prototype._moved = function () { if (this.wantMs !== null && this.doc) this.setTime(this.wantMs); else this._schedule(); };
+  // The step whose valid time is ms. Out of view nothing is fetched; a time the run does not hold clears the picture.
+  NearshoreLayer.prototype.setTime = function (ms) {
+    this.wantMs = ms;
+    if (!this.doc) return;
+    var step = (ms - this.runMs) / 3.6e6;
+    if (step !== Math.round(step) || this.doc.steps.indexOf(step) < 0) { this.shown = null; this.shownStep = null; this._set('nostep'); this._schedule(); return; }
+    if (!this.inView()) { this.shown = null; this.shownStep = null; this._set('away'); this._schedule(); return; }
+    var hit = this.frames.get(step);
+    if (hit) { this._show(step, hit); return; }
+    if (this.shownStep !== step) { this.shown = null; this.shownStep = null; this._schedule(); }   // never another time's lines under this time
+    this._fetch(step);
+  };
+  NearshoreLayer.prototype._show = function (step, frame) {
+    this.frames.delete(step); this.frames.set(step, frame);            // newest last
+    while (this.frames.size > NEAR_KEEP) { var old = this.frames.keys().next().value; var f = this.frames.get(old); if (f) f.tiles = null; this.frames.delete(old); }
+    this.shown = frame; this.shownStep = step; this.state = 'shown';
+    if (this.onChange) this.onChange();
+    this._schedule();
+  };
+  NearshoreLayer.prototype._fetch = function (step) {
+    var self = this, doc = this.doc;
+    if (this.ctrl) this.ctrl.abort();
+    var ctrl = this.ctrl = typeof AbortController === 'function' ? new AbortController() : { signal: undefined, abort: function () {} };
+    this._set('fetching');
+    decodeFrame(this.root + '/' + NEAR_PREFIX + '/' + doc.run + '/f' + pad3(step) + '.png', ctrl.signal, null, null, true).then(function (res) {
+      if (self.dead || self.doc !== doc) return;
+      var frame = parseNearFrame(res.q, res.cols, res.rows, doc);
+      if (self.ctrl === ctrl) self.ctrl = null;
+      var want = (self.wantMs - self.runMs) / 3.6e6;
+      if (want === step && self.inView()) self._show(step, frame); else self.frames.set(step, frame);
+    }).catch(function (err) {
+      if (self.dead || (err && err.name === 'AbortError')) return;
+      if (self.ctrl === ctrl) self.ctrl = null;
+      if (typeof console !== 'undefined' && console.warn) console.warn('overlay nearshore', err);
+      self._set('error');
+    });
+  };
+  NearshoreLayer.prototype._schedule = function () {
+    var self = this;
+    if (this.pending !== null || !this.canvas) return;
+    this.pending = this.raf(function () { self.pending = null; self._draw(); });
+  };
+  // One tile's plane as a small canvas in the wave height's colours (0 = clear).
+  NearshoreLayer.prototype._tile = function (frame, k) {
+    if (!frame.tiles) frame.tiles = [];
+    if (frame.tiles[k]) return frame.tiles[k];
+    var cv = document.createElement('canvas'); cv.width = 256; cv.height = 256;
+    var ctx = cv.getContext('2d'), im = ctx.createImageData(256, 256), d = im.data, p = frame.planes, o = k * 65536, lut = this.lut, lg = this.legend;
+    var step = this.doc.height_step_m, lo = lg ? lg[0] : 0, span = lg ? lg[1] - lg[0] : 14;
+    for (var i = 0; i < 65536; i++) {
+      var c = p[o + i];
+      if (!c) continue;
+      var t = Math.max(0, Math.min(255, Math.round((c * step - lo) / span * 255))) * 3, j = i * 4;
+      if (lut) { d[j] = lut[t]; d[j + 1] = lut[t + 1]; d[j + 2] = lut[t + 2]; } else { d[j] = 40; d[j + 1] = 150; d[j + 2] = 220; }
+      d[j + 3] = NEAR_ALPHA;
+    }
+    ctx.putImageData(im, 0, 0); frame.tiles[k] = cv;
+    return cv;
+  };
+  NearshoreLayer.prototype._draw = function () {
+    if (!this.canvas || !this.ctx) return;
+    var v = viewOf(this.map, null), ctx = this.ctx;
+    this.v = v; placeCanvas(this.canvas, ctx, this.map, v);
+    ctx.clearRect(0, 0, v.w, v.h);
+    var f = this.shown, doc = this.doc;
+    if (!f || !doc || !this.inView()) return;
+    var world = TILE * Math.pow(2, v.z), tpx = world / Math.pow(2, doc.z), k, i;
+    ctx.imageSmoothingEnabled = true;
+    for (k = 0; k < doc.tiles.length; k++) {
+      var x0 = doc.tiles[k][0] * tpx - v.ox, y0 = doc.tiles[k][1] * tpx - v.oy;
+      if (x0 > v.w || y0 > v.h || x0 + tpx < 0 || y0 + tpx < 0) continue;
+      ctx.drawImage(this._tile(f, k), Math.floor(x0), Math.floor(y0), Math.ceil(tpx) + 1, Math.ceil(tpx) + 1);
+    }
+    if (!f.n) return;
+    var X = new Float32Array(f.n), Y = new Float32Array(f.n), vb = f.v;
+    for (i = 0; i < f.n; i++) { X[i] = f.wx[i] * world - v.ox; Y[i] = f.wy[i] * world - v.oy; }
+    var wide = v.z >= 14 ? 3.2 : 2.2;
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();                                            // the dark halo under every line
+    for (i = 0; i < f.n; i++) { if (vb[i * NEAR_VB + 5] & 128) ctx.moveTo(X[i], Y[i]); else ctx.lineTo(X[i], Y[i]); }
+    ctx.strokeStyle = 'rgba(12,18,30,0.9)'; ctx.lineWidth = wide + 2.4; ctx.stroke();
+    for (var b = 0; b < NEAR_BANDS.length; b++) {               // each piece in its own band's colour
+      ctx.beginPath();
+      for (i = 0; i + 1 < f.n; i++) {
+        if ((vb[i * NEAR_VB + 5] >> 4 & 7) !== b || (vb[(i + 1) * NEAR_VB + 5] & 128)) continue;
+        ctx.moveTo(X[i], Y[i]); ctx.lineTo(X[i + 1], Y[i + 1]);
+      }
+      ctx.strokeStyle = NEAR_BANDS[b][1]; ctx.lineWidth = wide; ctx.stroke();
+    }
+    if (v.z < NEAR_ARROW_Z) return;
+    var gap = 0;                                               // small arrows along the rides: the way the wave peels
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = 'rgba(12,18,30,0.9)'; ctx.lineWidth = 1;
+    for (i = 1; i + 1 < f.n; i++) {
+      var fl = vb[i * NEAR_VB + 5], band = fl >> 4 & 7;
+      if (fl & 128) { gap = 40; continue; }
+      gap += Math.hypot(X[i] - X[i - 1], Y[i] - Y[i - 1]);
+      if (gap < 120 || band === 0 || !vb[i * NEAR_VB + 6] || (vb[(i + 1) * NEAR_VB + 5] & 128)) continue;
+      gap = 0;
+      var dx = X[i + 1] - X[i - 1], dy = Y[i + 1] - Y[i - 1], n = Math.hypot(dx, dy);
+      if (n < 1e-6) continue;
+      var sgn = vb[i * NEAR_VB + 4] & 128 ? 1 : -1, ux = sgn * dx / n, uy = sgn * dy / n, r = 3.6;
+      ctx.beginPath();
+      ctx.moveTo(X[i] + ux * r * 1.5, Y[i] + uy * r * 1.5);
+      ctx.lineTo(X[i] - ux * r - uy * r, Y[i] - uy * r + ux * r);
+      ctx.lineTo(X[i] - ux * r + uy * r, Y[i] - uy * r - ux * r);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+  };
+  // A height (m) as the readout writes it: the site's unit, or the Hawaiian scale (half the face, in feet).
+  NearshoreLayer.prototype.heightText = function (m) {
+    if (this.hawaiian) return (Math.round(m * 3.28084 / 2 * 2) / 2).toFixed(m * 3.28084 / 2 < 10 ? 1 : 0).replace(/\.0$/, '') + ' ft Hawaiian';
+    var u = unitOf('hs', this.opts.getUnit ? this.opts.getUnit() : 'US'), x = u.f(m);
+    return (x < 10 ? x.toFixed(1) : String(Math.round(x))) + ' ' + u.label;
+  };
+  // The readout's text under (lat, lng): the nearest break-line vertex within NEAR_HIT_PX, else the zone's height under the
+  // cursor, else null (the wave height's own readout shows). The place's best swell follows on a second line.
+  NearshoreLayer.prototype.readoutAt = function (lat, lng) {
+    var f = this.shown, doc = this.doc;
+    if (!f || !doc || !this.inView()) return null;
+    var z = this.map.getZoom(), world = TILE * Math.pow(2, z), s = Math.sin(lat * Math.PI / 180);
+    var px = (lng + 180) / 360 * world, py = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * world, best = -1, bd = NEAR_HIT_PX * NEAR_HIT_PX, i;
+    for (i = 0; i < f.n; i++) {
+      var dx = f.wx[i] * world - px, dy = f.wy[i] * world - py, d2 = dx * dx + dy * dy;
+      if (d2 < bd) { bd = d2; best = i; }
+    }
+    var txt = null, step = doc.height_step_m;
+    if (best >= 0) {
+      var o = best * NEAR_VB, vb = f.v, fl = vb[o + 5], band = fl >> 4 & 7, hb = vb[o + 7] * step, ride = vb[o + 6] * 5;
+      txt = 'Breaking face ' + this.heightText(hb) + ' (sets ' + this.heightText(hb * NEAR_SETS) + ') · Peel ' + (vb[o + 4] & 127) + '° ' +
+        (NEAR_BANDS[band] ? NEAR_BANDS[band][0] : '') + (band > 0 ? ', ' + (fl & 1 ? 'right' : 'left') : '') +
+        (ride >= 10 && band > 0 ? ' · Ride ' + (ride >= 1275 ? '1,275+' : ride) + ' m' : '') + ' · ' + NEAR_BREAKERS[fl >> 2 & 3] +
+        (vb[o + 9] < 70 ? ' · reform (broke further out)' : '') + (fl & 2 ? ' · mixed swell' : '');
+    } else {
+      var tpx = world / Math.pow(2, doc.z), tx = Math.floor(px / tpx), ty = Math.floor(py / tpx);
+      for (var k = 0; k < doc.tiles.length; k++) {
+        if (doc.tiles[k][0] !== tx || doc.tiles[k][1] !== ty) continue;
+        var cx = Math.min(255, Math.floor((px / tpx - tx) * 256)), cy = Math.min(255, Math.floor((py / tpx - ty) * 256)), c = f.planes[k * 65536 + cy * 256 + cx];
+        if (c) txt = 'Breaking zone: face ' + this.heightText(c * step) + (c === 255 ? '+' : '') + ' (sets ' + this.heightText(c * step * NEAR_SETS) + ')';
+        break;
+      }
+    }
+    if (txt === null) return null;
+    var a = this._atlasText(lat, lng);
+    return a ? txt + '\n' + a : txt;
+  };
+  // The best-swell text of the 30 m cell under (lat, lng), from the table's atlas (asked for once, on the first readout).
+  NearshoreLayer.prototype._atlasText = function (lat, lng) {
+    var self = this, doc = this.doc;
+    if (!this.atlasAsked && doc && typeof doc.atlas === 'string' && /^static\/nearshore\/[A-Za-z0-9._-]+\/atlas\.json$/.test(doc.atlas)) {
+      this.atlasAsked = true;
+      fetch(this.root + '/' + doc.atlas, { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('atlas ' + r.status); return r.json(); }).then(function (a) {
+        if (!a || !a.frame || !Array.isArray(a.cells) || !Array.isArray(a.texts) || !(a.cell_m > 0)) throw new Error('bad atlas');
+        var by = new Map();
+        for (var i = 0; i < a.cells.length; i++) by.set(a.cells[i][0] * 100000 + a.cells[i][1], a.cells[i][2]);
+        a.by = by; self.atlas = a;
+      }).catch(function (err) { if (typeof console !== 'undefined' && console.warn) console.warn('overlay nearshore atlas', err); });
+    }
+    var a = this.atlas;
+    if (!a) return '';
+    var g = a.frame, ky = Math.PI / 180 * 6371008.8, kx = ky * Math.cos(g.lat0 * Math.PI / 180), r = g.alpc * Math.PI / 180;
+    var de = (lng - g.lon0) * kx - g.xpc, dn = (lat - g.lat0) * ky - g.ypc;
+    var x = de * Math.cos(r) + dn * Math.sin(r), y = -de * Math.sin(r) + dn * Math.cos(r);
+    var t = a.by.get(Math.floor(y / a.cell_m) * 100000 + Math.floor(x / a.cell_m));
+    if (t === undefined || typeof a.texts[t] !== 'string') return '';
+    return a.texts[t] + (a.calibrated ? '' : ' (not yet calibrated)');
+  };
+  // The note beside the box: what is shown, or why nothing is.
+  NearshoreLayer.prototype.noteText = function () {
+    if (this.state === 'error') return 'Nearshore data is unavailable';
+    if (this.state === 'loading' || this.state === 'fetching') return 'Loading …';
+    if (this.state === 'away' || (this.doc && !this.inView())) return 'Zoom in on Oahu’s North Shore (Laniakea)';
+    if (this.state === 'nostep') return 'No nearshore step for this time';
+    var f = this.shown;
+    if (!f) return '';
+    var u = unitOf('hs', this.opts.getUnit ? this.opts.getUnit() : 'US'), tide = u.f(f.tide);
+    return 'Buoy swell ' + u.f(f.buoy.hs).toFixed(1) + ' ' + u.label + ' @ ' + Math.round(f.buoy.tp) + ' s from ' + pad3(f.buoy.dir) + '° · tide ' +
+      (tide >= 0 ? '+' : '−') + Math.abs(tide).toFixed(1) + ' ' + u.label;
+  };
+  // The peel key under the legend: five chips and the note that the colours are the scale above.
+  function buildNearLegend() {
+    var box = mk('div', 'ov-near-key');
+    box.appendChild(mk('div', 'ov-meta', 'Breaking zone: set-wave face height, on the scale above. Line: how the wave peels.'));
+    var row = mk('div', 'ov-near-chips');
+    NEAR_BANDS.forEach(function (b) {
+      var c = mk('span', 'ov-near-chip'), dot = mk('i'); dot.style.background = b[1];
+      c.appendChild(dot); c.appendChild(document.createTextNode(b[0])); c.title = 'peel angle ' + b[2]; row.appendChild(c);
+    });
+    box.appendChild(row);
+    box.appendChild(mk('div', 'ov-meta ov-near-warn', 'Modelled estimate. Not safety guidance.'));
+    return box;
+  }
+
   function IsobarLayer(map) {
     this.map = map; this.canvas = null; this.ctx = null; this.dpr = 1; this.v = null;
     this.frame = null; this.grid = null; this.entry = null; this.fdef = null; this.S = null; this.P = {}; this.terrain = null;
@@ -7610,6 +7886,9 @@
     // in the entry's field layer, under the dots / arrows
     this.grid = opts.sat && opts.grid ? gridStore(this.root) : null;
     this.satGrid = !!(this.grid && s.satGrid === true);
+    // opts.nearshore (plan section 109; the page's NEARSHORE_OVERLAY setting): the "Nearshore analysis" box of the GFS wave
+    // height panel (per tab, off by default) and its layer while the box is ticked
+    this.nearOn = !!(opts.nearshore && s.nearshore === true); this.nearHawaii = s.nearHawaii === true; this.near = null;
     // opts.radar (plan section 85; the page's RADAR_OVERLAY setting): its own store, layer and player while the Radar entry is shown
     this.radar = opts.radar ? radarStore(this.root) : null; this.radarLayer = null; this.radarPlayer = null;
     // opts.bathy (plan section 93b; the page's BATHY_OVERLAY setting): its store and its own layer while the Bathymetry entry is shown
@@ -7652,7 +7931,62 @@
   Overlay.prototype._modelBase = function () { return this.model === DEFAULT_MODEL ? this.base : this.root + '/' + this._def().prefix; };
   // Everything of the run in hand goes: manifest, pointer, banner, caches, the frame on the map and its particles, the
   // credit. Never one model's picture (or its time, its warnings) under another's name.
+  // ---- Nearshore analysis (plan section 109): the box in the GFS wave-height panel, its layer, its note ----
+  // Offered where the page allows it (opts.nearshore: the NEARSHORE_OVERLAY setting), under GFS wave height only: the
+  // analysis is made from the GFS-Wave spectrum, and its colours are the wave height's own scale.
+  Overlay.prototype._nearOffered = function () { return !!(this.opts.nearshore && this.mode === 'model' && this.field === 'hs' && this.model === DEFAULT_MODEL); };
+  Overlay.prototype._wantNear = function () { return !!(this.nearOn && this._nearOffered() && this.layer && this.manifest); };
+  Overlay.prototype._ensureNear = function () {
+    var self = this;
+    if (!this._wantNear()) { if (this.near) { this.near.detach(); this.near = null; this._nearNote(); } return; }
+    if (this.near) return;
+    var f = this.manifest.fields && this.manifest.fields.hs, near = this.near = new NearshoreLayer(this.map, this.root, this.opts);
+    near.hawaiian = !!this.nearHawaii;
+    near.onChange = function () { if (self.near === near) self._nearNote(); };
+    near.attach();
+    if (f && f.legend) near.setColours(buildLut('hs', f.legend), f.legend);
+    near.load();
+  };
+  // The frame idx is on the map: the nearshore layer shows that valid time (or clears: never another time's lines).
+  Overlay.prototype._syncNear = function (idx) {
+    this._ensureNear();
+    if (!this.near || !this.manifest || idx === null || idx === undefined || !this.manifest.frames[idx]) return;
+    this.near.setTime(Date.parse(this.manifest.frames[idx].valid_utc));
+  };
+  Overlay.prototype._nearNote = function () {
+    var ui = this.ui;
+    if (ui && ui.nearNote) ui.nearNote.textContent = this.near ? this.near.noteText() : '';
+    if (this._nearRead && this.readout) { this.readout.hidden = true; this._nearRead = false; }   // its text was of the step before
+  };
+  Overlay.prototype.setNearshore = function (on) {
+    on = !!(on && this.opts.nearshore);
+    if (on === this.nearOn) return;
+    this.nearOn = on; save({ nearshore: on });
+    this._syncNear(this.frameIndex);
+    if (this.last && this.last.state === 'ready' && this._nearOffered()) this.render(this.last);   // the key and the Hawaiian box come and go
+  };
+  Overlay.prototype.setNearHawaiian = function (on) {
+    this.nearHawaii = !!on; save({ nearHawaii: this.nearHawaii });
+    if (this.near) this.near.hawaiian = this.nearHawaii;
+  };
+  // The panel's rows under the legend: the box with its note, and while it is ticked the Hawaiian-scale box and the peel key.
+  Overlay.prototype._nearRows = function (body) {
+    var self = this, row = mk('div', 'ov-row ov-satrow ov-near-row'), lab = mk('label', 'ov-sat-label'), box = mk('input', 'ov-near-box'); box.type = 'checkbox'; box.checked = !!this.nearOn;
+    lab.appendChild(box); lab.appendChild(mk('span', null, 'Nearshore analysis')); row.appendChild(lab);
+    var note = mk('span', 'ov-sat-note', this.near ? this.near.noteText() : ''); note.id = 'ovNearNote'; row.appendChild(note);
+    box.setAttribute('aria-describedby', 'ovNearNote');
+    box.addEventListener('change', function () { self.setNearshore(!!box.checked); });
+    body.appendChild(row); this.ui.nearBox = box; this.ui.nearNote = note;
+    if (!this.nearOn) return;
+    var row2 = mk('div', 'ov-row ov-satrow ov-near-row'), lab2 = mk('label', 'ov-sat-label'), hbox = mk('input', 'ov-near-box'); hbox.type = 'checkbox'; hbox.checked = !!this.nearHawaii;
+    lab2.appendChild(hbox); lab2.appendChild(mk('span', null, 'Hawaiian scale in the readout (half the face height)')); row2.appendChild(lab2);
+    hbox.addEventListener('change', function () { self.setNearHawaiian(!!hbox.checked); });
+    body.appendChild(row2);
+    body.appendChild(buildNearLegend());
+  };
+
   Overlay.prototype._dropRun = function () {
+    if (this.near) { this.near.detach(); this.near = null; }
     this.manifest = null; this.pointer = null; this.pointerAt = 0; this.newerRun = null; this.n = 0;
     this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.frameIndex = null; this.target = null;
     this.rcache.clear(); this._regionNames = null;
@@ -7811,6 +8145,7 @@
       if (store !== undefined && self.layer._coast !== (store || null)) self.layer.setCoast(store);
       self._ensureFlow();
       self._ensureIso();
+      self._ensureNear();
       self._loadLakes(m);
       if (!self.runTimer) self.runTimer = setInterval(function () { self._checkRun(); }, RUN_CHECK_MS);
       // "Next Update: about …" turns into "expected shortly" on an idle panel too (G26 A-P3-7): once a minute, in place
@@ -7879,6 +8214,7 @@
     else if (this.satLayer) this.satLayer.setWindow(null);  // ... and its window goes with the picture (its own follows the load)
     this._ensureFlow();                                      // no direction field: the particles go
     this._ensureIso(); this.pcache.clear();                  // no pressure under an observation: the isobars and their frames go (G32 A-P1-1)
+    this._ensureNear();                                      // nor a nearshore analysis (plan section 109)
     this._syncLakeOutlines();                                // no lake outlines under an observation: the set and its masks go (V7-5)
     if (this.readout) this.readout.hidden = true;
     this._unattribute();
@@ -8992,6 +9328,7 @@
       self._syncLake(idx);                                                       // before the particles: the lake direction rides in the step's one rebuild
       self._syncFlow(idx);
       self._syncIsobars(idx);
+      self._syncNear(idx);
       self._prefetch();
       self._retryLakes();
     });
@@ -9508,6 +9845,7 @@
     this._unattribute();
     this._unbindReadout();
     this._listeners.forEach(function (l) { self.map.off(l[0], l[1]); }); this._listeners = [];
+    if (this.near) { this.near.detach(); this.near = null; }
     this._unbindSize();
     this._removeSheet();
     this.cache.clear(); this.dcache.clear(); this.pcache.clear(); this.lcache.clear(); this.ldcache.clear(); this.unavailable = {}; this.target = null; this.wasPlaying = false; this.ui = null; this._lakeNear = null; this._lakeGateNear = null; this._dropLakeHs();
@@ -9924,6 +10262,11 @@
         v = layer.readoutAt(latlng.lat, latlng.lng, z);            // the drawn pixel (its centre, its land mask), not the raw cursor point
       }
       last = { latlng: latlng, pt: pt };
+      el.classList.toggle('ov-readout-multi', false); self._nearRead = false;
+      if (self.near && self._wantNear()) {                   // the nearshore analysis under the cursor comes first (plan section 109)
+        var nt = self.near.readoutAt(latlng.lat, latlng.lng);
+        if (nt) { el.classList.toggle('ov-readout-multi', nt.indexOf('\n') >= 0); el.textContent = nt; self._nearRead = true; place(pt); return; }
+      }
       if (self.mode === 'obs' && self.field === 'bathy') {   // the depth drawn under the cursor (plan section 93b)
         var bl = self.bathyLayer, bz = bl ? (typeof bl._tileZoom === 'number' ? bl._tileZoom : Math.round(map.getZoom())) : 0, bt = bl ? self._bathyReadout(bl.readoutAt(latlng.lat, latlng.lng, bz)) : null;
         if (!bt) { el.hidden = true; return; }
@@ -10528,6 +10871,7 @@
     var body = mk('div', 'ov-details'); body.style.maxHeight = cap + 'px'; wrap.appendChild(body);
     body.appendChild(field === 'precip' ? buildPrecipLegend(unit) : field === 'ptot' ? buildTotalLegend(unit, this._totalStartText()) : buildLegend(field, f, unit));
     if (field === 'ptot') { ui.ptotNote = mk('div', 'ov-meta'); ui.ptotNote.hidden = true; body.appendChild(ui.ptotNote); this._totalProgress(); }
+    if (this._nearOffered()) this._nearRows(body);            // the "Nearshore analysis" box (plan section 109)
     // Run (UTC, with the forecast table's run when it differs), Updated and Next Update (the computer's own zone)
     var line = function (cls, name) { var d = mk('div', 'ov-meta ' + cls); d.appendChild(mk('b', null, name)); body.appendChild(d); return d; };
     var runLine = line('ov-run', 'Run: '); ui.runText = runLine.appendChild(document.createTextNode(''));
@@ -10804,7 +11148,7 @@
     sel.addEventListener('change', function () { var v = sel.value; if (v !== self.model) self.setModel(v); else sel.value = self.model; });
     return sel;
   };
-  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-radar-loop', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-sat-box', 'ov-details'];
+  var FOCUS_PARTS = ['ov-toggle', 'ov-model-sel', 'ov-radar-loop', 'ov-ribbon', 'ov-speed-btn', 'ov-speed-opt', 'ov-speed-menu', 'ov-timeline', 'ov-play', 'ov-retry', 'ov-update', 'ov-seg-btn', 'ov-sat-box', 'ov-near-box', 'ov-details'];
   Overlay.prototype._focusedPart = function () {
     var a = typeof document !== 'undefined' ? document.activeElement : null, hosts = [this.opts.panel, this.sheet];
     if (!a || !a.classList) return null;
@@ -10911,6 +11255,7 @@
       LakeStore: LakeStore, lakeStore: lakeStore, validLakeManifest: validLakeManifest, validLakePointer: validLakePointer, validLakeGridDef: validLakeGridDef, validateLakeGrid: validateLakeGrid,
       lakeFieldOk: lakeFieldOk, lakeFieldMatches: lakeFieldMatches, sampleLake: sampleLake, lakeBoxOf: lakeBoxOf, lakeBoxHits: lakeBoxHits, lakeNearView: lakeNearView, LAKE_NEAR_SCREENS: LAKE_NEAR_SCREENS, lakeVec: lakeVec,
       COAST_TIER0: COAST_TIER0, LAKES_TIER0: LAKES_TIER0, LAKEOUT_TIER0: LAKEOUT_TIER0, LAKEOUT_PREFIX: LAKEOUT_PREFIX, LAKE_OUTLINE_MIN_ZOOM: LAKE_OUTLINE_MIN_ZOOM, LAKE_PREFIX: LAKE_PREFIX, LAKE_ATTRIBUTION: LAKE_ATTRIBUTION, LAKE_UNDER: LAKE_UNDER, LAKE_DIR_FIELD: LAKE_DIR_FIELD, LAKE_CALM_M: LAKE_CALM_M, LAKE_BOX: LAKE_BOX, lakeFull: lakeFull,
+      NearshoreLayer: NearshoreLayer, parseNearFrame: parseNearFrame, NEAR_BANDS: NEAR_BANDS, NEAR_PREFIX: NEAR_PREFIX, buildNearLegend: buildNearLegend,
       IsobarLayer: IsobarLayer, isoBlur: isoBlur, PRES_WAIT_MS: PRES_WAIT_MS, capWait: capWait, PRES_FIELD: PRES_FIELD, PRES_UNDER: PRES_UNDER, CONTOUR_SPECS: CONTOUR_SPECS, contourSpecOf: contourSpecOf, contourInterval: contourInterval, CORE_FLOOR: CORE_FLOOR, RELIEF_FIELDS: RELIEF_FIELDS, presFieldOk: presFieldOk, isoInterval: isoInterval, isoStride: isoStride, isoValues: isoValues, traceIsolines: traceIsolines,
       projectIsolines: projectIsolines, placeLabels: placeLabels, drawIsobars: drawIsobars, findCentres: findCentres, projectCentres: projectCentres, ISO_PATCH_MAX: ISO_PATCH_MAX, ISO_INTERVAL: ISO_INTERVAL, ISO_STYLE: ISO_STYLE,
       ISO_WORLD_DEG: ISO_WORLD_DEG, ISO_NODE_PX: ISO_NODE_PX, ISO_BLUR: ISO_BLUR, ISO_HL_PX: ISO_HL_PX, ISO_HL_EDGE_PX: ISO_HL_EDGE_PX, prominenceMap: prominenceMap, blockExtremes: blockExtremes, ISO_HL_PROM_CODES: ISO_HL_PROM_CODES, ISO_HL_PROM_CAP: ISO_HL_PROM_CAP, ISO_CLAMP_PATCH_MAX: ISO_CLAMP_PATCH_MAX, ISO_CLAMP_LAT: ISO_CLAMP_LAT, ISO_TERRAIN_M: ISO_TERRAIN_M, TERRAIN_M_PER_CODE: TERRAIN_M_PER_CODE, ISO_STRONG_LOW_HPA: ISO_STRONG_LOW_HPA, ISO_TERRAIN_CAP_M: ISO_TERRAIN_CAP_M, ISO_STRONG_NODES_MAX: ISO_STRONG_NODES_MAX, strongLowSearch: strongLowSearch, ISO_PROM_NODES_MAX: ISO_PROM_NODES_MAX, ISO_HL_CLEAR_PX: ISO_HL_CLEAR_PX, loadTerrain: loadTerrain, markBox: markBox, ISO_LABEL_GAP_PX: ISO_LABEL_GAP_PX, ISO_LABEL_MIN_Z: ISO_LABEL_MIN_Z,

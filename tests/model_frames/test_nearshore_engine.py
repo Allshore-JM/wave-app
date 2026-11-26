@@ -157,3 +157,22 @@ def test_two_trains_the_bigger_sets_the_direction_and_a_crossed_second_is_flagge
 def test_the_engine_needs_numpy_only():
     src = open(os.path.join(ROOT, "tools", "model_frames", "nearshore_engine.py"), encoding="utf-8").read()
     assert "scipy" not in src.replace("no scipy", "")
+
+
+def test_the_packed_table_keeps_heights_within_two_percent_and_directions_within_a_degree(tmp_path):
+    rng = np.random.default_rng(3); k2 = rng.uniform(0.0, 9.0, (2, 6, 5)).astype(np.float32); k2[0, 0, 0] = 0.0
+    dr = rng.uniform(0.0, 360.0, (2, 6, 5)).astype(np.float32); dep = rng.uniform(-3.0, 30.0, (6, 5))
+    code = E.Table.encode_k(k2); back = E.Table.decode_k2(code)
+    assert back[0, 0, 0] == 0.0 and code.dtype == np.uint8
+    m = k2 > 0.01; assert np.max(np.abs(np.sqrt(back[m] / k2[m]) - 1.0)) < 0.02
+    p = tmp_path / "t.npz"
+    np.savez_compressed(p, F=np.array([0.07]), D=np.array([330.0, 0.0]), dx=10.0, alpc=45.0, xpc=-100.0, ypc=50.0, lon0=-158.09, lat0=21.62,
+                        version="t1", dep_cm=np.rint(dep * 100).astype(np.int16), K=code, DIR=(np.rint(dr * 256 / 360).astype(int) % 256).astype(np.uint8))
+    t = E.Table.from_npz(str(p))
+    assert t.version == "t1" and t.K2.shape == (2, 30) and np.allclose(t.dep, dep, atol=0.006)
+    got = (np.degrees(np.arctan2(t.KS, t.KC)) % 360.0)[m.reshape(2, -1)]
+    assert np.max(np.abs(((got - dr[m] + 180.0) % 360.0) - 180.0)) < 0.8
+    lon, lat = t.lonlat(0.0, 0.0)
+    assert lat == pytest.approx(21.62 + 50.0 / (math.pi / 180 * 6371008.8)) and lon < -158.09
+    lon2, lat2 = t.lonlat(1000.0, 0.0)                      # x points north-east at alpc 45
+    assert lon2 > lon and lat2 > lat and (lat2 - lat) * 111195 == pytest.approx(707.1, rel=0.01)

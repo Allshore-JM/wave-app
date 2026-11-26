@@ -87,6 +87,34 @@ class Table:
                 K2[a * len(D) + b] = hs * hs; DIR[a * len(D) + b] = dr
         return cls(F, D, K2, DIR, dep, dx, info["alpc"])
 
+    # ---- the packed table (nearshore_table.pack): K = sqrt(K2) on a log scale in one byte, the direction in one byte
+    K_MIN, K_MAX = 0.02, 6.0
+
+    @classmethod
+    def encode_k(cls, K2):
+        k = np.sqrt(np.maximum(np.nan_to_num(np.asarray(K2, np.float32)), 0.0))
+        c = 1.0 + 254.0 * np.log(np.clip(k, cls.K_MIN, cls.K_MAX) / cls.K_MIN) / math.log(cls.K_MAX / cls.K_MIN)
+        return np.where(k < cls.K_MIN / 2, 0, np.rint(c)).astype(np.uint8)
+
+    @classmethod
+    def decode_k2(cls, code):
+        k = cls.K_MIN * (cls.K_MAX / cls.K_MIN) ** ((code.astype(np.float32) - 1.0) / 254.0)
+        return np.where(code == 0, 0.0, k * k).astype(np.float32)
+
+    @classmethod
+    def from_npz(cls, path):
+        z = np.load(path)
+        t = cls(z["F"], z["D"], cls.decode_k2(z["K"]), z["DIR"].astype(np.float32) * (360.0 / 256.0), z["dep_cm"].astype(np.float32) / 100.0,
+                float(z["dx"]), float(z["alpc"]))
+        t.geo = dict(lon0=float(z["lon0"]), lat0=float(z["lat0"]), xpc=float(z["xpc"]), ypc=float(z["ypc"])); t.version = str(z["version"])
+        return t
+
+    def lonlat(self, x, y):
+        """Grid metres (x alongshore, y offshore) -> lon, lat, on the local flat-earth frame the grid was built in."""
+        g = self.geo; e = g["xpc"] + np.asarray(x) * self.ux[0] + np.asarray(y) * self.uy[0]; n = g["ypc"] + np.asarray(x) * self.ux[1] + np.asarray(y) * self.uy[1]
+        ky = math.pi / 180.0 * 6371008.8; kx = ky * math.cos(math.radians(g["lat0"]))
+        return g["lon0"] + e / kx, g["lat0"] + n / ky
+
     def apply(self, W):
         """W[nf, nd] energy (m2) per bin -> Hs[ny, nx] (m) and the mean direction FROM (deg)."""
         w = np.asarray(W, np.float32).reshape(-1)
@@ -120,8 +148,11 @@ def weights(freqs, dirs, E, F, D, mask=None, half_width=7.5):
     rel = np.abs(((d[:, None] - D[None, :] + 180.0) % 360.0) - 180.0)      # [nd, nD]
     near = rel.argmin(1); ok = rel.min(1) <= half_width + dth / 2 + 1e-9
     W = np.zeros((F.size, D.size)); total = e.sum(); kept = 0.0
-    hi = np.clip(np.searchsorted(F, f), 1, F.size - 1); lo = hi - 1
-    wf = np.clip((f - F[lo]) / (F[hi] - F[lo]), 0.0, 1.0)
+    if F.size == 1:
+        hi = lo = np.zeros(f.size, int); wf = np.zeros(f.size)
+    else:
+        hi = np.clip(np.searchsorted(F, f), 1, F.size - 1); lo = hi - 1
+        wf = np.clip((f - F[lo]) / (F[hi] - F[lo]), 0.0, 1.0)
     for k in range(d.size):
         if not ok[k]: continue
         np.add.at(W[:, near[k]], lo, (1 - wf) * e[:, k]); np.add.at(W[:, near[k]], hi, wf * e[:, k]); kept += e[:, k].sum()

@@ -171,8 +171,51 @@ FakeCMEMS.rows = FakeCMEMS.rows + [{"local_id": "GL_TS_MO_2200101", "name": "220
                                     "latest_time": FRESH}]
 
 
+class FakeHILLTOP(_Fake):
+    source = "HILLTOP"; source_name = "New Zealand regional councils (Hilltop)"
+    source_url = "https://www.gw.govt.nz/environment/environmental-data/"
+    license_label = "Council open data (credit required)"; attribution_text = "Source: NZ regional councils"
+    stale_after_sec = 6 * 3600; list_ttl_sec = 1800
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "gw:wellington-harbour-at-baring-head-wave-buoy-south-b", "name": "Baring Head South (Wellington)",
+             "lat": -41.4116, "lon": 174.8484, "latest_time": FRESH},
+            {"local_id": "tdc:hy-tuatea-buoy-at-tasman-bay", "name": "Tuatea buoy (Tasman Bay)", "lat": -40.9157,
+             "lon": 173.1287, "latest_time": FRESH}]
+
+
+class FakeECAN(_Fake):
+    source = "ECAN"; source_name = "Environment Canterbury (NZ)"
+    source_url = "https://www.ecan.govt.nz/data/current-wave-data/"
+    license_label = "Environment Canterbury data (credit required)"; attribution_text = "Source: ECan"
+    stale_after_sec = 6 * 3600; list_ttl_sec = 1800
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "banks", "name": "Banks Peninsula (Canterbury)", "lat": -43.75, "lon": 173.3333,
+             "latest_time": FRESH}]
+
+
+class FakeEPA(_Fake):
+    source = "EPA"; source_name = "Empresa Portuaria Arica (Chile)"; source_url = "https://puertoarica.cl/condicion-maritima"
+    license_label = "Empresa Portuaria Arica (credit required)"; attribution_text = "Source: Empresa Portuaria Arica"
+    stale_after_sec = 3 * 3600; list_ttl_sec = 1200
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "arica", "name": "Arica port buoy (SIMAR-EPA-01)", "lat": -18.4679, "lon": -70.3404,
+             "latest_time": OLD}]                     # a stale marker
+
+
+class FakeSPC(_Fake):
+    source = "SPC"; source_name = "Pacific Community (SPC) via WMO WIS2"; source_url = "https://www.spc.int/"
+    license_label = "WMO core data (free and unrestricted)"; attribution_text = "Source: SPC"
+    stale_after_sec = 4 * 3600; list_ttl_sec = 900
+    capabilities = buoy_sources._caps(bulk=True, recent_history=True, directional=True)
+    rows = [{"local_id": "0-22000-0-5202533", "name": "Honiara (Solomon Islands)", "lat": -9.4223, "lon": 159.9474,
+             "latest_time": FRESH},
+            # an SPC relay of CDIP 106 (<1 km): CDIP's marker is kept (plan section 110: SPC ranks below CDIP)
+            {"local_id": "0-22000-0-9990106", "name": "SPC buoy 9990106", "lat": 21.6725, "lon": -158.1185,
+             "latest_time": FRESH}]
+
+
 FAKE_CLASSES = [FakeNDBC, FakeCDIP, FakeQLD, FakeAODN, FakeAusWaves, FakeMIIE, FakeCEFAS, FakeSMHI, FakeRWS, FakeCMEMS,
-                FakeGLOS, FakeIOOS, FakeNDBCW, FakeSIMCOSTA, FakeKMA]
+                FakeGLOS, FakeIOOS, FakeNDBCW, FakeSIMCOSTA, FakeKMA, FakeHILLTOP, FakeECAN, FakeEPA, FakeSPC]
 
 
 def make_providers():

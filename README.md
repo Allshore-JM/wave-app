@@ -477,7 +477,8 @@ permission first (requested 2026-11-26), so nothing reads them yet.
 - **Environment Canterbury** (`EcanWaveProvider`, `ECAN`): the Banks Peninsula buoy (76 m of water, 17 km east of Le
   Bons Bay), from the JSON behind ECan's wave page (`WaveDirectionData/1_Week`, answered only with the page's
   `X-Requested-With: XMLHttpRequest` header). H1/3, Hmax, ECan's average period (shown as the mean period), direction
-  FROM; 30-min records that reach shore every 3 hours (stale after 6 h).
+  FROM; 30-min records that reach shore every 3 hours (stale after 6 h). The buoy is run with Earth Sciences New
+  Zealand; ECan confirmed the reuse on 2026-11-26, and the window credits both.
 - **The Pacific Community (SPC) through WMO WIS2** (`SpcWis2Provider`, `SPC`): SPC publishes its wave buoys on WIS2 as
   core data (free and unrestricted), but its own servers refuse automated clients, so the provider lists the NOAA / Met
   Office global cache's public S3 bucket (`wis2globalcache.s3.amazonaws.com`, prefix

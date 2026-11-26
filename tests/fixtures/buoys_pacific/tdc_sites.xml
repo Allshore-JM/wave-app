@@ -1,0 +1,25 @@
+<?xml version="1.0" ?>
+<HilltopServer>
+<Agency>Tasman District Council</Agency>
+<Version>2609.0.2.103</Version>
+<Site Name="128001">
+</Site>
+<Site Name="13310402">
+</Site>
+<Site Name="HY Golden Bay Buoy">
+<Latitude>-40.68506269</Latitude>
+<Longitude>172.92087628</Longitude>
+</Site>
+<Site Name="HY Golden Bay Cawthron Mohua Buoy">
+<Latitude>-40.75005403</Latitude>
+<Longitude>172.87339260</Longitude>
+</Site>
+<Site Name="HY Tasman Bay Buoy">
+<Latitude>-41.05785899</Latitude>
+<Longitude>173.09123155</Longitude>
+</Site>
+<Site Name="HY Tuatea Buoy at Tasman Bay">
+<Latitude>-40.91569993</Latitude>
+<Longitude>173.12873981</Longitude>
+</Site>
+</HilltopServer>

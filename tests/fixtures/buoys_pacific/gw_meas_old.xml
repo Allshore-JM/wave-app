@@ -1,0 +1,204 @@
+<?xml version="1.0" ?>
+<HilltopServer>
+<Agency>GWRC</Agency>
+<DataSource Name="Maximum Wave Height (Hmax)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+<Measurement Name="Maximum Wave Height (Hmax)">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Maximum Wave Height (Hmax)</RequestAs>
+<Units>m</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Significant Wave Height (Hsig)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+<Measurement Name="Significant Wave Height (Hsig)">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Significant Wave Height (Hsig)</RequestAs>
+<Units>m</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Significant Wave Period (Tsig)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+<Measurement Name="Significant Wave Period (Tsig)">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Significant Wave Period (Tsig)</RequestAs>
+<Units>secs</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Average Wave Height (Havg)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+<Measurement Name="Average Wave Height (Havg)">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Average Wave Height (Havg)</RequestAs>
+<Units>m</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Zero Crossing Wave Period (Tz)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+<Measurement Name="Zero Crossing Wave Period (Tz)">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Zero Crossing Wave Period (Tz)</RequestAs>
+<Units>msecs</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Wave Direction" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:20:00</From>
+<To>2020-07-07T10:48:58</To>
+<Measurement Name="Wave Direction">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Wave Direction</RequestAs>
+<Units>Deg</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Wave Direction Spread" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:20:00</From>
+<To>2020-07-07T10:48:58</To>
+<Measurement Name="Wave Direction Spread">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Wave Direction Spread</RequestAs>
+<Units>Deg</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Average Wave Height (H10)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+<Measurement Name="Average Wave Height (H10)">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Average Wave Height (H10)</RequestAs>
+<Units>m</Units>
+<Format>#.###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Maximum Wave Height (Hmax)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+</DataSource>
+<DataSource Name="Significant Wave Height (Hsig)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+</DataSource>
+<DataSource Name="Significant Wave Period (Tsig)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+</DataSource>
+<DataSource Name="Average Wave Height (Havg)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+</DataSource>
+<DataSource Name="Zero Crossing Wave Period (Tz)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+</DataSource>
+<DataSource Name="Wave Direction" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:20:00</From>
+<To>2020-07-07T10:48:58</To>
+</DataSource>
+<DataSource Name="Wave Direction Spread" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:20:00</From>
+<To>2020-07-07T10:48:58</To>
+</DataSource>
+<DataSource Name="Average Wave Height (H10)" Site="Wellington Harbour at Baring Head Wave Buoy" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2020-04-01T00:00:01</From>
+<To>2020-07-07T11:00:00</To>
+</DataSource>
+</HilltopServer>

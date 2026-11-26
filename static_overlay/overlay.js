@@ -7532,7 +7532,7 @@
   // The peel key under the legend: five chips and the note that the colours are the scale above.
   function buildNearLegend() {
     var box = mk('div', 'ov-near-key');
-    box.appendChild(mk('div', 'ov-meta', 'Breaking zone: set-wave face height, on the scale above. Line: how the wave peels.'));
+    box.appendChild(mk('div', 'ov-meta', 'Breaking zone: set-wave face height, on the scale above.'));
     var row = mk('div', 'ov-near-chips');
     NEAR_BANDS.forEach(function (b) {
       var c = mk('span', 'ov-near-chip'), dot = mk('i'); dot.style.background = b[1];

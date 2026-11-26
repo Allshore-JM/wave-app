@@ -95,8 +95,9 @@ jobs:
           [ "${SMOKE:-0}" -gt 0 ] && ARGS+=(--only "$SMOKE")
           rc=0
           /usr/bin/time -v -o time.txt python tools/model_frames/nearshore_build.py "${ARGS[@]}" | tee build.log || rc=$?
+          set +eo pipefail                 # from here on nothing may fail the step but the build's own exit code: in a login
           { echo '```'; grep -vE "^  [a-z-]+ f 0" build.log | tail -8; grep -E "^  [a-z-]+ f 0" build.log | tail -4; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          exit "$rc"
+          exit "$rc"                       # shell `exit` runs the runner's logout script, and with -e its clear_console failed the step
       - name: Upload the chunk to R2
         if: ${{ !cancelled() && env.UPLOAD == 'true' }}   # also after failed bins: the chunk records each bin's error
         shell: bash -l {0}

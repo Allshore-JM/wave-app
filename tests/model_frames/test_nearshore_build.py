@@ -167,4 +167,6 @@ def test_the_workflow_is_manual_pinned_and_publishes_only_when_asked():
     assert len(uses) >= 5 and all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", u) for u in uses)
     assert "if: ${{ !cancelled() && env.UPLOAD == 'true' }}" in text and "github.event.inputs.upload == 'true'" in text.split("  assemble:", 1)[1]
     assert "put-manifest" in text.split("  assemble:", 1)[1] and "fail-fast: false" in text and "timeout-minutes: 345" in text
+    step = text.split("- name: Run the chunk's SWAN bins", 1)[1].split("      - name:", 1)[0]
+    assert step.index("set +eo pipefail") < step.index('exit "$rc"'), "a login shell's logout script must not fail the step (smoke test, 2026-11-26)"
     assert "contents: read" in text and "secrets.R2_BUCKET" in text and "secrets." not in text.split("  build:", 1)[0]

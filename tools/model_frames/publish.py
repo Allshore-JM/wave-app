@@ -26,6 +26,7 @@ NWPS_PREFIX = "nwps/v1"                 # the NWPS forecast tables (plan section
 GFSSPEC_PREFIX = "gfswave/spectral/v1"  # the GFS stations' own swell split from the spectra (plan section 77)
 RADAR_PREFIX = "radar/v1"               # the radar frames (plan section 85)
 RRFS_PREFIX = "rrfs/v1"                 # NOAA RRFS station winds + cell series (plan section 99)
+NEARSHORE_PREFIX = "gfswave/nearshore/v1"   # the Nearshore Analysis frames of the pilot stretch (plan section 109)
 LATEST_KEY = f"{PREFIX}/latest.json"
 
 

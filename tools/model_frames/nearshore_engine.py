@@ -116,6 +116,12 @@ class Table:
         ky = math.pi / 180.0 * 6371008.8; kx = ky * math.cos(math.radians(g["lat0"]))
         return g["lon0"] + e / kx, g["lat0"] + n / ky
 
+    def xy(self, lon, lat):
+        """The inverse of lonlat(): lon, lat -> grid metres (x alongshore, y offshore)."""
+        g = self.geo; ky = math.pi / 180.0 * 6371008.8; kx = ky * math.cos(math.radians(g["lat0"]))
+        de = (np.asarray(lon) - g["lon0"]) * kx - g["xpc"]; dn = (np.asarray(lat) - g["lat0"]) * ky - g["ypc"]
+        return de * self.ux[0] + dn * self.ux[1], de * self.uy[0] + dn * self.uy[1]
+
     def apply(self, W):
         """W[nf, nd] energy (m2) per bin -> Hs[ny, nx] (m) and the mean direction FROM (deg)."""
         w = np.asarray(W, np.float32).reshape(-1)

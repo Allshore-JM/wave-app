@@ -1,0 +1,12 @@
+{
+ "version": "pilot-dev64",
+ "bins": "pilot64",
+ "rows": 200,
+ "dx": 10.0,
+ "sha256": {
+  "table.npz": "fedb1df061c018fae081ef75b9dee8369d6df8e103b7bde8c22cf1315512d3c1",
+  "atlas.json": "14952ba86652ac8c1f798e8289a12edf56eb5c46019e445a601b3c489ffee6b9",
+  "tides.json": "67356a8e112b8186b5627e58a10fa973310c5a7ae301fd3df8aade91689fc9e6"
+ },
+ "built_utc": "2026-11-26T19:13:53Z"
+}

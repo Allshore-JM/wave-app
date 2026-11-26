@@ -53,6 +53,20 @@ def _caps(bulk=False, recent_history=False, directional=False, spectra=False, pa
             "spectra": spectra, "partitions": partitions}
 
 
+class AccessDenied(RuntimeError):
+    """The upstream REFUSED this site (HTTP 401/403, e.g. a firewall rule against servers), as
+    opposed to a hiccup. A provider's _fetch_stations raises it; the base class then treats it like
+    any failed refresh (the last good list is kept for keep_on_failure_sec, then the layer is empty)
+    but retries only once per list TTL instead of every retry_after_sec, and logs the refusal once
+    at WARNING and its unchanged repeats at DEBUG. Never answered by imitating a browser: the
+    owner asks the operator for permission instead (README: live buoys, AusWaves)."""
+
+
+def _is_denied(err):
+    """True for a failure text that came from an AccessDenied (see _build_station_list)."""
+    return bool(err) and str(err).startswith(AccessDenied.__name__ + ":")
+
+
 class BuoyProvider:
     """Base class. Subclasses set the metadata + capabilities and implement the fetches."""
     source = "?"
@@ -244,15 +258,24 @@ class BuoyProvider:
                 ok, err = False, "empty list after %d stations" % len(self._list_cache)
             retry = min(self.retry_after_sec, self.list_ttl_sec)
             if not ok:
+                denied = _is_denied(err)
+                # a refusal is not a hiccup: ask again once per TTL (the normal cadence), and say
+                # so in the log once -- the same refusal again goes to DEBUG (no warning every 5 min)
+                say = _log.debug if (denied and err == self._last_error) else _log.warning
+                if denied:
+                    retry = self.list_ttl_sec
                 self._last_error = err or "refresh failed"
-                if self._list_cache and (now - self._list_ok_ts) < self.keep_on_failure_sec:
+                kept_for = now - self._list_ok_ts
+                if self._list_cache and kept_for < self.keep_on_failure_sec:
+                    if denied:            # come back no later than the kept list's expiry
+                        retry = max(1, min(retry, int(self.keep_on_failure_sec - kept_for) + 1))
                     # Keep the last good list; come back sooner than a full TTL.
                     self._list_ts = now - self.list_ttl_sec + retry
                     self._due_ts = now + retry
-                    _log.warning("buoy provider %s: refresh failed after %.1fs (%s), keeping the "
-                                 "previous list (%d stations, fetched %ds ago); retry in %ds",
-                                 self.source, dur, self._last_error, len(self._list_cache),
-                                 int(now - self._list_ok_ts), retry)
+                    say("buoy provider %s: refresh failed after %.1fs (%s), keeping the "
+                        "previous list (%d stations, fetched %ds ago); retry in %ds",
+                        self.source, dur, self._last_error, len(self._list_cache),
+                        int(kept_for), retry)
                     return self._list_cache, self._list_version, self._list_ts
                 if self._list_cache != out:       # [] : no markers rather than a broken map
                     self._list_cache = out
@@ -260,8 +283,8 @@ class BuoyProvider:
                     self._pub_ts = now
                 self._list_ts = now
                 self._due_ts = now + retry
-                _log.warning("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
-                             "retry in %ds", self.source, dur, self._last_error, retry)
+                say("buoy provider %s: refresh failed after %.1fs (%s), no list kept; "
+                    "retry in %ds", self.source, dur, self._last_error, retry)
                 return out, self._list_version, self._list_ts
             self._last_error = None
             self._list_cache = out
@@ -341,10 +364,13 @@ class BuoyProvider:
                         entry[k] = s[k]
                 out.append(entry)
         except Exception as e:
-            _log.warning("buoy provider %s: station-list fetch failed (%s)", self.source, e)
             out = []                          # fail soft: no markers rather than a broken map
             ok = False
             err = "%s: %s" % (type(e).__name__, e)
+            with self._lock:
+                repeat = isinstance(e, AccessDenied) and err == self._last_error
+            (_log.debug if repeat else _log.warning)(
+                "buoy provider %s: station-list fetch failed (%s)", self.source, e)
         return out, ok, err
 
     def detail(self, local_id):
@@ -1180,11 +1206,17 @@ class QLDProvider(BuoyProvider):
 
 
 class AusWavesProvider(BuoyProvider):
-    """AusWaves (UWA / IMOS) -- national Sofar Spotter network (Australia). Open
-    WordPress REST, but the endpoints reject non-browser requests, so we send a
-    browser User-Agent + Referer (no token/key needed). The list gives the catalogue
-    + per-buoy recency; the per-buoy feed gives the timeseries (rows are NOT sorted,
-    so we take the newest by unix time; -9999 = missing). Bulk + sea/swell params."""
+    """AusWaves (UWA / IMOS) -- national Sofar Spotter network (Australia). WordPress REST.
+    The list gives the catalogue + per-buoy recency; the per-buoy feed gives the timeseries
+    (rows are NOT sorted, so we take the newest by unix time; -9999 = missing). Bulk + sea/swell
+    params.
+
+    Since 2026-11-26 the site's firewall answers servers 403 {"code":"waf_forbidden"}. We do NOT
+    get around it: the requests name this site honestly (no browser User-Agent or Referer, which
+    an earlier version copied), a 401/403 raises AccessDenied (kept list for 6 h, then no
+    markers; asked again once per TTL = every 30 min; logged once), and the owner has asked the
+    operator to allow it. Most of these buoys are also on AODN, which the
+    merge then shows instead; see the README's live-buoys section for what is lost."""
     source = "AusWaves"
     source_name = "AusWaves (UWA / IMOS)"
     source_url = "https://auswaves.org"
@@ -1199,16 +1231,28 @@ class AusWavesProvider(BuoyProvider):
     BUOY = "https://auswaves.org/wp-json/waves/v1/buoys/%s"
     FRESH_SEC = 24 * 3600                  # skip catalogue entries not updated within this
     HEADERS = {
-        "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
-        "Referer": "https://auswaves.org/",
+        "User-Agent": "allshoresurf.com live buoys (https://allshoresurf.com)",
         "Accept": "application/json",
     }
+
+    @staticmethod
+    def _refusal_code(r):
+        """The WordPress error code of a refusal ('waf_forbidden', 'rest_forbidden'...), or ''."""
+        try:
+            body = r.json()
+        except ValueError:
+            return ""
+        code = body.get("code") if isinstance(body, dict) else None
+        return str(code)[:40] if code else ""
 
     def _fetch_stations(self):
         # A request error or a non-200 answer RAISES: the base class then keeps the last good
         # list (fail-soft used to return [], which emptied the layer for a whole TTL).
         r = self.http.get(self.LIST, headers=self.HEADERS, timeout=self.timeout)
+        if r.status_code in (401, 403):
+            code = self._refusal_code(r)
+            raise AccessDenied("HTTP %s from the AusWaves catalogue%s" % (
+                r.status_code, (" (%s)" % code) if code else ""))
         if r.status_code != 200:
             raise RuntimeError("HTTP %s from the AusWaves catalogue" % r.status_code)
         catalogue = r.json()

@@ -170,7 +170,7 @@ def trains_of(freqs, dirs, Es, wind, table):
 
 def pack_vertices(lines, table, box):
     """The break lines as VERTEX_BYTES per vertex: x, y (uint16 shares of the box, west-east and south-north), peel
-    (deg), flags (bit 0 right, bit 1 mixed swell, bits 2-3 breaker, bits 4-6 band, bit 7 first vertex of a line),
+    (deg in bits 0-6; bit 7 = the break runs along the line in the order of its vertices), flags (bit 0 right, bit 1 mixed swell, bits 2-3 breaker, bits 4-6 band, bit 7 first vertex of a line),
     ride length (5 m units), breaking height (HEIGHT_STEP_M units), score (0-100), energy share (percent)."""
     n = int(lines["x"].size)
     if n == 0:
@@ -186,7 +186,7 @@ def pack_vertices(lines, table, box):
              + (lines["band"].astype(int) & 7) * 16 + first * 128).astype(np.uint8)
     rec = np.zeros(n, dtype=[("x", "<u2"), ("y", "<u2"), ("peel", "u1"), ("flags", "u1"), ("ride", "u1"), ("hb", "u1"), ("score", "u1"), ("share", "u1")])
     rec["x"], rec["y"], rec["flags"] = qx, qy, flags
-    rec["peel"] = np.clip(np.rint(lines["peel"]), 0, 90)
+    rec["peel"] = np.clip(np.rint(lines["peel"]), 0, 90).astype(np.uint8) | (np.asarray(lines["fwd"], bool) * 128).astype(np.uint8)
     rec["ride"] = np.clip(np.rint(lines["ride_m"] / 5.0), 0, 255)
     rec["hb"] = np.clip(np.rint(lines["hb"] / HEIGHT_STEP_M), 0, 255)
     rec["score"] = np.clip(np.rint(lines["score"]), 0, 100)

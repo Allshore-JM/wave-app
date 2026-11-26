@@ -305,7 +305,7 @@ def smooth_line(xy, sigma_pts, closed=False):
 
 # ---------------------------------------------------------------------------------------------------------------------
 # break lines, peel, rides
-LINE_FIELDS = ("x", "y", "hb", "depth", "peel", "side", "speed", "xi", "breaker", "band", "ride", "ride_m", "score", "mixed", "line", "share")
+LINE_FIELDS = ("x", "y", "hb", "depth", "peel", "side", "speed", "xi", "breaker", "band", "ride", "ride_m", "score", "mixed", "line", "share", "fwd")
 
 
 def interp1(pairs, v):
@@ -359,7 +359,7 @@ def break_lines(M, Z, hset, h, tx, ty, dx, tp, p=PARAMS, mixed=None, T=None):
             rid, rlen, score = rides(peel, side, hb, speed, breaker, step, p, share)
             for key, val in (("x", x), ("y", y), ("hb", hb), ("depth", dep), ("peel", peel), ("side", side), ("speed", speed), ("xi", xi),
                              ("breaker", breaker), ("band", band), ("ride", np.where(rid >= 0, rid + nride, -1)), ("ride_m", rlen), ("score", score),
-                             ("mixed", sample(mixed, x, y, dx) > 0.5 if mixed is not None else np.zeros(n, bool)), ("line", np.full(n, nline)), ("share", share)):
+                             ("mixed", sample(mixed, x, y, dx) > 0.5 if mixed is not None else np.zeros(n, bool)), ("line", np.full(n, nline)), ("share", share), ("fwd", along >= 0)):
                 out[key].append(val)
             nline += 1; nride += int(rid.max()) + 1 if rid.size and rid.max() >= 0 else 0
     return {k: (np.concatenate(v) if v else np.zeros(0)) for k, v in out.items()}

@@ -63,6 +63,10 @@ def test_oblique_swell_peels_at_its_angle_to_the_beach(direction, peel, side):
     L = E.analyse(beach(direction), swell(1.5))["lines"]
     assert L["x"].size > 20
     assert np.allclose(L["peel"], peel, atol=1.0) and np.all(L["side"] == side)
+    step = np.diff(L["x"])                                      # the break runs the way the wave sweeps along the beach
+    sweep = -math.sin(math.radians(direction))                  # the travel vector's alongshore part (x east)
+    assert np.all((step > 0) == (L["fwd"][:-1] == (sweep > 0))) or np.all((step < 0) == (L["fwd"][:-1] == (sweep > 0)))
+    assert np.all(np.where(L["fwd"][:-1], step, -step) * sweep > 0)
     assert np.all(L["band"] == np.digitize(peel, E.PARAMS["bands"]))
     assert L["ride_m"].max() >= 700 and np.all(L["ride"] == 0)   # one ride, the length of the beach
     c = math.sqrt(E.G * E.H10 * 1.5 / E.PARAMS["gamma"])

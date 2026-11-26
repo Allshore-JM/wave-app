@@ -127,7 +127,7 @@ def test_a_frame_round_trips_heights_lines_and_the_header(data):
     assert 1.5 < stats["hmax_m"] < 3.5                                # 1.27 x 2 m at the line, less inside
     v = fr["vertices"]; assert len(v) == stats["vertices"] > 100
     assert np.all((v["flags"] & 1) == 1) and int(v["flags"][0]) & 128 and np.all(((v["flags"] >> 4) & 7) == 2)   # rights, in the ideal band
-    assert np.allclose(v["peel"], 40, atol=2) and v["ride"].max() == 255 and np.allclose(v["hb"] * N.HEIGHT_STEP_M, 1.27 * 2.0, atol=0.15)
+    assert np.allclose(v["peel"] & 127, 40, atol=2) and len(set((v["peel"] >> 7).tolist())) == 1 and v["ride"].max() == 255 and np.allclose(v["hb"] * N.HEIGHT_STEP_M, 1.27 * 2.0, atol=0.15)
     assert np.all(v["share"] >= 98) and v["score"].max() == 70        # open-water waves on a gentle (spilling) beach
     lon = box[0] + v["x"] / 65535.0 * (box[2] - box[0]); lat = box[1] + v["y"] / 65535.0 * (box[3] - box[1])
     gx, gy = table.xy(lon, lat)

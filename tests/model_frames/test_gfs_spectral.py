@@ -386,7 +386,8 @@ def test_main_publishes_the_objects_then_the_pointer_last():
     fake = FakeNoaa({RUN: three()})
     assert _main(fake, st) == 0
     puts = [k for op, k in st.client.log if op == "put"]
-    assert puts == [G.bin_key(RUN), G.index_key(RUN), P.latest_key(G.PREFIX)]
+    assert puts == [G.spec2d_key(RUN, "51201"), G.bin_key(RUN), G.index_key(RUN), P.latest_key(G.PREFIX)]
+    assert st.client.objects[G.spec2d_key(RUN, "51201")]["cc"] == P.IMMUTABLE
     objs = st.client.objects
     assert objs[G.bin_key(RUN)]["cc"] == P.IMMUTABLE and objs[G.index_key(RUN)]["cc"] == P.IMMUTABLE
     assert objs[P.latest_key(G.PREFIX)]["cc"] == P.POINTER
@@ -422,11 +423,11 @@ def test_a_run_asked_for_by_name_is_never_rewritten_and_a_newer_one_moves_the_po
     assert _main(fake, st, "--run", RUN) == 0 and len(st.client.log) == n
     assert "already published" in capsys.readouterr().out
     assert _main(fake, st, "--run", later, hours=7) == 0
-    assert [k for op, k in st.client.log[n:] if op == "put"] == [G.bin_key(later), G.index_key(later),
-                                                               P.latest_key(G.PREFIX)]
+    assert [k for op, k in st.client.log[n:] if op == "put"] == [G.spec2d_key(later, "51201"), G.bin_key(later),
+                                                               G.index_key(later), P.latest_key(G.PREFIX)]
     assert json.loads(st.client.objects[P.latest_key(G.PREFIX)]["body"])["run"] == later
     assert _main(fake, st, "--run", RUN) == 2                     # older than the live run: refused, nothing written
-    assert len([k for op, k in st.client.log if op == "put"]) == 6
+    assert len([k for op, k in st.client.log if op == "put"]) == 8
 
 
 def test_the_stale_alarm_also_fires_on_the_not_now_paths():
@@ -561,3 +562,39 @@ def test_the_listed_stations_come_from_the_station_list():
     assert "51201" in ids and "46026" in ids and len(ids) > 700
     with pytest.raises(ValueError):
         G.listed_stations(os.path.join(ROOT, "nwps_stations.json"))
+
+
+def test_the_whole_spectrum_of_51201_is_kept_beside_the_tables(tmp_path):
+    """Plan section 109: the nearshore job reads the 2-D spectrum; the tables' own objects do not change."""
+    import ww3spec
+    kept = {}
+    body, doc = G.build(io.BytesIO(three()), RUN_DT, LISTED, pool_factory=threads, keep2d=kept)
+    plain, plain_doc = G.build(io.BytesIO(three()), RUN_DT, LISTED, pool_factory=threads)
+    assert body == plain and doc["stations"] == plain_doc["stations"] and set(kept) == {"51201"}
+    z = np.load(io.BytesIO(G.encode_spec2d(kept["51201"], RUN_DT)))
+    assert str(z["format"]) == "gfsspec2d-v1" and str(z["run"]) == RUN
+    assert z["E"].shape == (385, NF, ND) and list(z["hours"][:3]) == [0, 1, 2] and z["E"].dtype == np.float32
+    sp = ww3spec.read(kept["51201"])                                      # the reader's own values, step 5
+    assert np.allclose(z["freqs"], sp.freqs, rtol=1e-6) and np.allclose(z["dirs"], sp.dirs)
+    assert np.allclose(z["E"][5], sp.steps[5][1], rtol=1e-6) and z["u10"][5] == pytest.approx(6.0)
+    assert ww3spec.hs_of(z["freqs"], z["dirs"], z["E"][5]) == pytest.approx(ww3spec.hs_of(sp.freqs, sp.dirs, sp.steps[5][1]), rel=1e-4)
+    unlisted = {}                                                         # kept even when the tables do not list it
+    G.build(io.BytesIO(three()), RUN_DT, LISTED - {"51201"}, pool_factory=threads, keep2d=unlisted)
+    assert set(unlisted) == {"51201"}
+    short = G.encode_spec2d(spec_text("51201", steps=[0, 3, 400]).encode(), RUN_DT)
+    assert list(np.load(io.BytesIO(short))["hours"]) == [0, 3]
+    lines = []
+    assert G.spec2d_objects({"51201": b"not a spectra file"}, RUN_DT, log=lines.append) == {} and "left out" in lines[0]
+    assert G.main(["--dry-run", "--out", str(tmp_path)], opener=FakeNoaa({RUN: three()}), store=store(),
+                  now=RUN_DT + timedelta(hours=1), listed=LISTED, pool_factory=threads) == 0
+    assert np.load(tmp_path / "spec2d_51201.npz")["E"].shape == (385, NF, ND)
+
+
+def test_prune_takes_a_runs_extras_with_it():
+    st = store()
+    for run in ["2026103100", "2026103106", "2026103112", "2026103118", "2026110100"]:
+        st.put(G.spec2d_key(run, "51201"), b"x", "application/octet-stream", P.IMMUTABLE)
+        st.put(G.index_key(run), b"{}", "application/json", P.IMMUTABLE)
+    st.put(P.latest_key(G.PREFIX), json.dumps({"run": "2026110100"}).encode(), "application/json", P.POINTER)
+    assert G.prune(st) == ["2026103100"]
+    assert G.spec2d_key("2026103100", "51201") not in st.client.objects and G.spec2d_key("2026103106", "51201") in st.client.objects

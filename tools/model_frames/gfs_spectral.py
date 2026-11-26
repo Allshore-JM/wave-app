@@ -58,6 +58,8 @@ MAX_LEFT_OUT_SHARE = 0.05                    # more listed members unreadable th
 MAX_SHIFTED_SHARE = 0.10                     # members not starting at the run's hour = another run's archive (G36a P3-3)
 TASK_MAX_S = 300                             # a member's split takes seconds; no answer in this long = the worker is gone
 STATIONS_PATH = os.path.join(os.path.dirname(os.path.dirname(HERE)), "station_list.json")
+SPEC2D_STATIONS = frozenset({"51201"})       # the whole 2-D spectrum is kept for these (the nearshore job, plan section 109)
+SPEC2D_FORMAT = "gfsspec2d-v1"
 S3 = W.S3
 NotReady, TransportError, BudgetExceeded = W.NotReady, W.TransportError, W.BudgetExceeded
 
@@ -78,6 +80,48 @@ def index_key(run):
 
 def bin_key(run):
     return f"{PREFIX}/{run}/spectral.bin"
+
+
+def spec2d_key(run, sid):
+    return f"{PREFIX}/{run}/spec2d/{sid}.npz"
+
+
+def encode_spec2d(data, run_dt):
+    """One station's member -> the bytes of an npz: freqs (Hz), dirs (deg FROM), hours (since the run), E[n, nf, nd]
+    (m2/Hz/degr, float32), u10 (m/s), udir (deg FROM). Steps outside the run or off the hour are left out."""
+    import io
+
+    import numpy as np
+    import ww3spec
+    sp = ww3spec.read(data)
+    base = run_dt.replace(tzinfo=None)
+    rows = {}
+    for when, E, u, ud in sp.steps:
+        h = (when - base).total_seconds() / 3600.0
+        if h == int(h) and 0 <= h < STEPS:
+            rows[int(h)] = (E, u, ud)
+    if not rows:
+        raise ValueError("no steps of the run")
+    hours = sorted(rows)
+    buf = io.BytesIO()
+    np.savez_compressed(buf, format=np.array(SPEC2D_FORMAT), run=np.array(W.run_name(run_dt)),
+                        freqs=np.asarray(sp.freqs, np.float32), dirs=np.asarray(sp.dirs, np.float32),
+                        hours=np.asarray(hours, np.int16), E=np.stack([rows[h][0] for h in hours]).astype(np.float32),
+                        u10=np.asarray([rows[h][1] for h in hours], np.float32),
+                        udir=np.asarray([rows[h][2] for h in hours], np.float32))
+    return buf.getvalue()
+
+
+def spec2d_objects(kept, run_dt, log=print):
+    """{key: bytes} for the kept members. A member that cannot be encoded is reported and left out: the tables'
+    product never waits on this extra."""
+    out = {}
+    for sid in sorted(kept):
+        try:
+            out[spec2d_key(W.run_name(run_dt), sid)] = encode_spec2d(kept[sid], run_dt)
+        except Exception as exc:             # noqa: BLE001
+            log(f"spec2d {sid}: left out ({exc.__class__.__name__}: {exc})"[:300])
+    return out
 
 
 def listed_stations(path=STATIONS_PATH):
@@ -207,9 +251,10 @@ def default_pool(workers):
     return multiprocessing.Pool(workers)
 
 
-def build(stream, run_dt, listed, deadline=None, workers=None, pool_factory=default_pool, log=print):
+def build(stream, run_dt, listed, deadline=None, workers=None, pool_factory=default_pool, log=print, keep2d=None):
     """(spectral.bin bytes, index document without sha256). Members of unlisted stations are skipped unread;
-    listed ones go through the pool; a station the worker could not read is left out (recorded)."""
+    listed ones go through the pool; a station the worker could not read is left out (recorded).
+    keep2d: a dict that receives the raw member of every SPEC2D_STATIONS station seen (listed or not)."""
     t0 = time.monotonic()
     workers = workers or os.cpu_count() or 1
     pool = pool_factory(workers)
@@ -219,6 +264,8 @@ def build(stream, run_dt, listed, deadline=None, workers=None, pool_factory=defa
     try:
         for sid, data in W.members(stream, deadline):
             count += 1
+            if keep2d is not None and sid in SPEC2D_STATIONS:
+                keep2d[sid] = data
             if sid not in listed:
                 continue
             seen.append(sid)
@@ -270,8 +317,10 @@ def build(stream, run_dt, listed, deadline=None, workers=None, pool_factory=defa
 
 # ---------------------------------------------------------------- publishing
 
-def publish(store, run, body, doc):
+def publish(store, run, body, doc, extra=None):
     doc = dict(doc, sha256=hashlib.sha256(body).hexdigest())
+    for key in sorted(extra or {}):                  # before the index: a run with an index has its extras
+        store.put(key, extra[key], "application/octet-stream", P.IMMUTABLE)
     store.put(bin_key(run), body, "application/octet-stream", P.IMMUTABLE)
     store.put(index_key(run), json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
     pointer = {"run": run, "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -327,10 +376,13 @@ def _not_now(store, latest, live, situation):
     return (_stale(store, latest, situation) or 3) if live else 3
 
 
-def _write_out(out, body, doc):
+def _write_out(out, body, doc, extra=None):
     if not out:
         return
     os.makedirs(out, exist_ok=True)
+    for key, data in (extra or {}).items():
+        with open(os.path.join(out, "spec2d_" + key.rsplit("/", 1)[-1]), "wb") as f:
+            f.write(data)
     with open(os.path.join(out, "spectral.bin"), "wb") as f:
         f.write(body)
     with open(os.path.join(out, "index.json"), "w", encoding="utf-8") as f:
@@ -357,9 +409,10 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
             print("--local needs --run")
             return 2
         run_dt = datetime.strptime(a.run, "%Y%m%d%H").replace(tzinfo=timezone.utc)
+        kept = {}
         with open(os.path.join(a.local, os.path.basename(W.archive_key(run_dt))), "rb") as f:
-            body, doc = build(f, run_dt, listed, workers=a.workers, pool_factory=pool_factory)
-        _write_out(a.out, body, doc)
+            body, doc = build(f, run_dt, listed, workers=a.workers, pool_factory=pool_factory, keep2d=kept)
+        _write_out(a.out, body, doc, spec2d_objects(kept, run_dt))
         print(f"local build: {doc['count']} stations, {len(body)} B, {doc['build_s']} s (nothing published)")
         return 0
     live = not a.dry_run
@@ -403,12 +456,13 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
             print(f"{run} failed recently: waiting before another try")
             return _not_now(store, latest, live, f"the newest GFS spectral run {run} keeps failing")
     print(f"{run}: building from {S3}/{W.archive_key(run_dt)} ({size} B), {os.cpu_count()} cpus")
+    kept = {}
     try:
         raw = W.open_archive(f"{S3}/{W.archive_key(run_dt)}", opener)
         with raw:
             src = W._Counting(raw)
             body, doc = build(src, run_dt, listed, deadline=t0 + BUILD_BUDGET_S, workers=a.workers,
-                              pool_factory=pool_factory)
+                              pool_factory=pool_factory, keep2d=kept)
     except NotReady as exc:
         print(f"{run}: not served yet ({exc})")
         if live:
@@ -430,11 +484,12 @@ def main(argv=None, opener=urllib.request.urlopen, head=None, store=None, now=No
             f"archive {src.bytes_read} B read, {doc['workers']} workers of {doc['nproc']} cpus, {secs:.0f} s")
     print(line)
     W._summary(line)
+    extra = spec2d_objects(kept, run_dt)
     if not live:
-        _write_out(a.out, body, doc)
+        _write_out(a.out, body, doc, extra)
         print("dry run: nothing published")
         return 0
-    publish(store, run, body, doc)
+    publish(store, run, body, doc, extra)
     deleted = P.safe_prune(lambda: prune(store), store.bucket, W._summary)    # live already: a warning at most
     print(f"published {run}; pruned {deleted or 'nothing'}")
     return 0

@@ -114,21 +114,86 @@ test('the note says the buoy swell and the tide of the step shown, or why nothin
 });
 
 test('out of view nothing is asked for; a time the run does not hold clears the picture; a held step is shown at once', () => {
-  let asked = 0, changes = 0;
+  let changes = 0; const asked = [];
   const ly = layerAt(15, [21.62, -158.088]), p = picture([V1]);
-  ly._fetch = () => { asked++; }; ly.onChange = () => { changes++; };
-  ly.setTime(RUN_MS + 2 * 3.6e6); assert.equal(asked, 1, 'a step of the run, in view: one request');
-  ly.frames.set(3, I.parseNearFrame(p.q, p.cols, p.rows, DOC));
-  ly.setTime(RUN_MS + 3 * 3.6e6); assert.equal(asked, 1); assert.equal(ly.shownStep, 3); assert.equal(ly.state, 'shown');
+  ly._download = (step) => { asked.push(step); return new Promise(() => {}); }; ly.onChange = () => { changes++; };
+  ly.setTime(RUN_MS + 2 * 3.6e6); assert.deepEqual(asked, [2], 'a step of the run, in view: one request');
+  assert.equal(ly.state, 'fetching');
+  ly.setTime(RUN_MS + 2 * 3.6e6); assert.deepEqual(asked, [2], 'the same step again: the request on its way is the one');
+  ly.frames.set(6, I.parseNearFrame(p.q, p.cols, p.rows, DOC));
+  ly.setTime(RUN_MS + 6 * 3.6e6); assert.deepEqual(asked, [2]); assert.equal(ly.shownStep, 6); assert.equal(ly.state, 'shown');
   ly.setTime(RUN_MS + 4 * 3.6e6); assert.equal(ly.state, 'nostep'); assert.equal(ly.shown, null, 'hour 4 is not a step of this run');
   ly.setTime(RUN_MS + 2.5 * 3.6e6); assert.equal(ly.state, 'nostep');
   ly.setTime(RUN_MS - 6 * 3.6e6); assert.equal(ly.state, 'nostep');
-  const far = layerAt(8, [21.62, -158.088]); far._fetch = () => { asked++; };
-  far.setTime(RUN_MS + 2 * 3.6e6); assert.equal(far.state, 'away'); assert.equal(asked, 1, 'zoomed out: no request');
-  assert.equal(changes, 2, 'shown, then no step: the note is told twice');
+  const far = layerAt(8, [21.62, -158.088]); far._download = (step) => { asked.push(step); return new Promise(() => {}); };
+  far.setTime(RUN_MS + 2 * 3.6e6); assert.equal(far.state, 'away'); assert.deepEqual(asked, [2], 'zoomed out: no request');
+  assert.ok(changes >= 3);
   assert.equal(I.NEAR_PREFIX, 'gfswave/nearshore/v1');
   assert.deepEqual(I.NEAR_BANDS.map((b) => b[0]), ['closeout', 'fast', 'ideal', 'easy', 'soft'], 'the five words of the key (owner, 2026-11-26)');
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
   assert.ok(!/Hawaiian/.test(src) && !/Best here/.test(src) && !/atlas\.json/.test(src), 'no Hawaiian box, no best-swell line');
   assert.ok(/'Breaking zone: set-wave face height, on the scale above\.'/.test(src) && !/how the wave peels/.test(src), 'the key: one sentence, then the coloured words');
+});
+
+// review round 1, F2: playback
+const tick = () => new Promise((r) => setImmediate(r));
+test('playback: the step on its way is never dropped for the next one, the steps ahead are asked for, three requests at most', async () => {
+  const DOC8 = Object.assign({}, DOC, { steps: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] });
+  const ly = layerAt(15, [21.62, -158.088]); ly.doc = DOC8;
+  const p = picture([V1]), open = new Map(), aborted = [], asked = [];
+  ly._download = (step, signal) => new Promise((res, rej) => {
+    asked.push(step); open.set(step, res);
+    if (signal) signal.addEventListener('abort', () => { aborted.push(step); open.delete(step); const e = new Error('aborted'); e.name = 'AbortError'; rej(e); });
+  });
+  const land = async (step) => { open.get(step)({ q: p.q, cols: p.cols, rows: p.rows }); open.delete(step); await tick(); };
+  ly.setTime(RUN_MS); assert.deepEqual(asked, [0], 'the first step alone: nothing says the map is playing');
+  ly.setTime(RUN_MS + 3.6e6); assert.deepEqual(asked, [0, 1, 2], 'one step on: its picture and the next ones, three requests at most');
+  assert.deepEqual(aborted, [], 'the step before stays on its way');
+  await land(1); assert.equal(ly.shownStep, 1); assert.equal(ly.state, 'shown');
+  ly.setTime(RUN_MS + 2 * 3.6e6); assert.equal(ly.shown, null, 'step 2 is not in hand yet: nothing of step 1 under its time');
+  assert.deepEqual(asked, [0, 1, 2, 3], 'step 2 is on its way already; step 3 takes the free place');
+  await land(2); assert.equal(ly.shownStep, 2, 'it lands and is shown');
+  await land(3); assert.equal(ly.shownStep, 2); assert.ok(ly.frames.has(3), 'a picture ahead of the map is kept, not shown');
+  ly.setTime(RUN_MS + 3 * 3.6e6); assert.equal(ly.shownStep, 3, 'in hand when its turn comes: shown at once');
+  ly.setTime(RUN_MS + 9 * 3.6e6);                                   // a jump with every place taken: the oldest other request gives way
+  assert.equal(ly.flights.size, 3); assert.ok(ly.flights.has(9)); assert.equal(aborted.length, 1);
+  await land(9); assert.equal(ly.shownStep, 9);
+  ly.detach(); assert.equal(ly.flights.size, 0, 'detached: every request is dropped');
+});
+
+test('a step that cannot be had: the note says so; ahead of the map it is simply asked again at its turn', async () => {
+  const ly = layerAt(15, [21.62, -158.088]); let loads = 0;
+  ly.load = () => { loads++; }; ly.loadedAt = Date.now();
+  const fail = new Map(); ly._download = (step) => new Promise((res, rej) => fail.set(step, rej));
+  ly.setTime(RUN_MS); ly.setTime(RUN_MS + 3.6e6);                   // step 1 wanted, 2 and 3 ahead
+  fail.get(2)(new Error('frame 404')); await tick(); assert.equal(ly.state, 'fetching', 'a miss ahead of the map says nothing');
+  fail.get(1)(new Error('frame 404')); await tick(); assert.equal(ly.state, 'error'); assert.equal(loads, 0, 'the pointer was read under a minute ago');
+  ly.loadedAt = Date.now() - 61000; ly.setTime(RUN_MS + 2 * 3.6e6);
+  fail.get(2)(new Error('frame 404')); await tick(); assert.equal(loads, 1, 'a minute on, the pointer is read again: the run may have been replaced');
+});
+
+// review round 1, F3: the map's copies of the world
+test('on another copy of the world (the view came round from the west) the stretch is in view, read and placed', () => {
+  const ly = layerAt(15, [21.62, -158.088]), p = picture([V1]);
+  const m = fakeMap(15, [21.62, -158.088 + 360]); m.getCenter = () => ({ lat: 21.62, lng: -158.088 + 360 });
+  ly.map = m; ly.shown = I.parseNearFrame(p.q, p.cols, p.rows, DOC);
+  assert.equal(ly._wrapDeg(), 360); assert.equal(ly.inView(), true);
+  assert.match(ly.readoutAt(V1.lat, V1.lon + 360), /^Breaking face 12 ft/);
+  const home = layerAt(15, [21.62, -158.088]); home.map.getCenter = () => ({ lat: 21.62, lng: -158.088 });
+  assert.equal(home._wrapDeg(), 0);
+  const west = layerAt(15, [21.62, -158.088]); west.map = fakeMap(15, [21.62, -158.088 - 720]); west.map.getCenter = () => ({ lat: 21.62, lng: -158.088 - 720 });
+  assert.equal(west._wrapDeg(), -720); assert.equal(west.inView(), true);
+});
+
+// review round 1, F6: the index is checked field by field
+test('an index the layer cannot use is refused whole', () => {
+  assert.equal(I.validNearDoc(DOC), true);
+  const bad = (patch) => I.validNearDoc(Object.assign({}, DOC, patch));
+  assert.equal(bad({ tiles: [null] }), false); assert.equal(bad({ tiles: [[997]] }), false); assert.equal(bad({ tiles: [[997, 7183.5]] }), false);
+  assert.equal(bad({ tiles: [] }), false); assert.equal(bad({ tiles: new Array(64).fill([1, 1]) }), false);
+  assert.equal(bad({ steps: [0, '1'] }), false); assert.equal(bad({ steps: [] }), false); assert.equal(bad({ steps: [-1] }), false);
+  assert.equal(bad({ box: [1, 2, 3] }), false); assert.equal(bad({ box: [-158.06, 21.6, -158.12, 21.65] }), false); assert.equal(bad({ box: [NaN, 21.6, -158.06, 21.65] }), false);
+  assert.equal(bad({ run: '20261126' }), false); assert.equal(bad({ z: 15 }), false); assert.equal(bad({ vertex_bytes: 8 }), false);
+  assert.equal(bad({ height_step_m: 0 }), false); assert.equal(bad({ format: 'nearshore-v2' }), false);
+  assert.equal(I.validNearDoc(null), false); assert.equal(I.validNearDoc('x'), false);
 });

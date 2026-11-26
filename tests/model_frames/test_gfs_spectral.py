@@ -598,3 +598,21 @@ def test_prune_takes_a_runs_extras_with_it():
     st.put(P.latest_key(G.PREFIX), json.dumps({"run": "2026110100"}).encode(), "application/json", P.POINTER)
     assert G.prune(st) == ["2026103100"]
     assert G.spec2d_key("2026103100", "51201") not in st.client.objects and G.spec2d_key("2026103106", "51201") in st.client.objects
+
+
+def test_a_spectrum_that_cannot_be_stored_never_holds_up_the_tables(capsys):
+    """Review round 1, B2: the extra is put first, inside its own guard; the tables' objects and the pointer follow."""
+    st = store()
+    plain = st.client.put_object
+
+    def put_object(Bucket, Key, Body, ContentType, CacheControl):
+        if "/spec2d/" in Key:
+            raise RuntimeError("An error occurred (ServiceUnavailable) when calling the PutObject operation")
+        return plain(Bucket=Bucket, Key=Key, Body=Body, ContentType=ContentType, CacheControl=CacheControl)
+
+    st.client.put_object = put_object
+    assert _main(FakeNoaa({RUN: three()}), st) == 0
+    puts = [k for op, k in st.client.log if op == "put"]
+    assert puts == [G.bin_key(RUN), G.index_key(RUN), P.latest_key(G.PREFIX)]
+    out = capsys.readouterr().out
+    assert "spec2d/51201.npz: not stored (RuntimeError); the tables go on" in out

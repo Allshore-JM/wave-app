@@ -7320,7 +7320,7 @@
   function NearshoreLayer(map, root, opts) {
     this.map = map; this.root = root; this.opts = opts || {}; this.canvas = null; this.ctx = null; this.v = null; this._listeners = []; this.pending = null;
     this.doc = null; this.runMs = NaN; this.state = 'loading'; this.frames = new Map(); this.shown = null; this.shownStep = null; this.wantMs = null;
-    this.flights = new Map(); this.lastStep = null; this.loadedAt = 0; this.lut = null; this.legend = null; this.onChange = null; this.dead = false;
+    this.flights = new Map(); this.lastStep = null; this.loadedAt = 0; this.base = null; this.lut = null; this.legend = null; this.onChange = null; this.dead = false;
   }
   NearshoreLayer.prototype.raf = FlowAnimator.prototype.raf;
   NearshoreLayer.prototype.caf = FlowAnimator.prototype.caf;
@@ -7358,18 +7358,20 @@
   // The pointer, then the run's index. A failure is the "unavailable" note, never an error panel. Asked again (at most
   // once a minute) when a step of the run in hand cannot be had: the publisher keeps four runs, so an old one goes.
   NearshoreLayer.prototype.load = function () {
-    var self = this, url = this.root + '/' + NEAR_PREFIX;
+    var self = this, url = this.root + '/' + NEAR_PREFIX, base = null;
     this.loadedAt = Date.now();
     return fetch(url + '/latest.json', { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('nearshore ' + r.status); return r.json(); })
       .then(function (p) {
-        if (!p || typeof p.index !== 'string' || !/^gfswave\/nearshore\/v1\/\d{10}\/index\.json$/.test(p.index)) throw new Error('bad nearshore pointer');
+        // <run>/<table version>/index.json: the frames sit beside the index (a run built from another table is another folder)
+        if (!p || typeof p.index !== 'string' || !/^gfswave\/nearshore\/v1\/\d{10}\/[A-Za-z0-9._-]{1,40}\/index\.json$/.test(p.index)) throw new Error('bad nearshore pointer');
+        base = self.root + '/' + p.index.slice(0, -'index.json'.length);
         return fetch(self.root + '/' + p.index, { mode: 'cors' });
       }).then(function (r) { if (!r.ok) throw new Error('nearshore ' + r.status); return r.json(); })
       .then(function (d) {
         if (!validNearDoc(d)) throw new Error('bad nearshore index');
         if (self.dead) return;
-        if (self.doc && self.doc.run !== d.run) self._forget();          // another run: none of the old run's pictures
-        self.doc = d; self.runMs = Date.UTC(+d.run.slice(0, 4), +d.run.slice(4, 6) - 1, +d.run.slice(6, 8), +d.run.slice(8, 10));
+        if (self.doc && (self.doc.run !== d.run || self.base !== base)) self._forget();   // another run or table: none of the old pictures
+        self.doc = d; self.base = base; self.runMs = Date.UTC(+d.run.slice(0, 4), +d.run.slice(4, 6) - 1, +d.run.slice(6, 8), +d.run.slice(8, 10));
         self.state = 'ready';
         if (self.wantMs !== null) self.setTime(self.wantMs); else if (self.onChange) self.onChange();
       }).catch(function (err) {
@@ -7430,7 +7432,7 @@
   NearshoreLayer.prototype._wantStep = function () { return this.wantMs === null ? null : (this.wantMs - this.runMs) / 3.6e6; };
   // One step's picture, decoded (the tests put their own in its place).
   NearshoreLayer.prototype._download = function (step, signal) {
-    return decodeFrame(this.root + '/' + NEAR_PREFIX + '/' + this.doc.run + '/f' + pad3(step) + '.png', signal, null, null, true);
+    return decodeFrame(this.base + 'f' + pad3(step) + '.png', signal, null, null, true);
   };
   // Asks for a step unless it is in hand or on its way. At most NEAR_FLIGHT requests at once: a new one for the step on
   // the map takes the place of the oldest other request; a request ahead of the map just waits its turn.

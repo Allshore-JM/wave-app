@@ -104,6 +104,7 @@ jobs:
       - name: Publish the nearshore analysis
         if: steps.env.outcome == 'success'
         continue-on-error: true
+        timeout-minutes: 12                # a build takes about a minute; the archive fallback gives up after six
         shell: bash -l {0}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

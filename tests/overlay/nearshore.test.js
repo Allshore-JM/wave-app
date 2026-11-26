@@ -197,3 +197,30 @@ test('an index the layer cannot use is refused whole', () => {
   assert.equal(bad({ height_step_m: 0 }), false); assert.equal(bad({ format: 'nearshore-v2' }), false);
   assert.equal(I.validNearDoc(null), false); assert.equal(I.validNearDoc('x'), false);
 });
+
+// back-end review round 1, B1: the pointer names <run>/<table version>/index.json and the frames sit beside it
+test('the layer follows the pointer: the frames are read from the folder of the index; a pointer of another shape is refused', async () => {
+  const calls = [], real = global.fetch;
+  const answer = (body) => Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+  try {
+    global.fetch = (url) => { calls.push(url); return /latest\.json$/.test(url) ? answer({ run: DOC.run, table: 'pilot-1', index: 'gfswave/nearshore/v1/2026112612/pilot-1/index.json' }) : answer(DOC); };
+    const ly = new I.NearshoreLayer(fakeMap(15, [21.62, -158.088]), 'https://frames.example', { getUnit: () => 'US' });
+    await ly.load();
+    assert.deepEqual(calls, ['https://frames.example/gfswave/nearshore/v1/latest.json', 'https://frames.example/gfswave/nearshore/v1/2026112612/pilot-1/index.json']);
+    assert.equal(ly.base, 'https://frames.example/gfswave/nearshore/v1/2026112612/pilot-1/'); assert.equal(ly.state, 'ready');
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
+    assert.ok(src.includes("decodeFrame(this.base + 'f' + pad3(step) + '.png'"), 'a frame is read from beside its index');
+    for (const index of ['gfswave/nearshore/v1/2026112612/index.json', 'gfswave/nearshore/v1/2026112612/../../x/index.json', 'https://evil.example/index.json', 'gfswave/nearshore/v1/20261126/pilot-1/index.json']) {
+      const bad = new I.NearshoreLayer(fakeMap(15, [21.62, -158.088]), 'https://frames.example', {});
+      global.fetch = (url) => (/latest\.json$/.test(url) ? answer({ run: DOC.run, index }) : answer(DOC));
+      const warn = console.warn; console.warn = () => {};
+      try { await bad.load(); } finally { console.warn = warn; }
+      assert.equal(bad.state, 'error', index); assert.equal(bad.doc, null);
+    }
+    // the same run from another table: the old pictures go with the old folder
+    ly.frames.set(2, {}); ly.shownStep = 2;
+    global.fetch = (url) => (/latest\.json$/.test(url) ? answer({ run: DOC.run, index: 'gfswave/nearshore/v1/2026112612/pilot-2/index.json' }) : answer(DOC));
+    await ly.load();
+    assert.equal(ly.base, 'https://frames.example/gfswave/nearshore/v1/2026112612/pilot-2/'); assert.equal(ly.frames.size, 0); assert.equal(ly.shownStep, null);
+  } finally { global.fetch = real; }
+});

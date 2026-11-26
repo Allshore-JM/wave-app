@@ -319,8 +319,11 @@ def build(stream, run_dt, listed, deadline=None, workers=None, pool_factory=defa
 
 def publish(store, run, body, doc, extra=None):
     doc = dict(doc, sha256=hashlib.sha256(body).hexdigest())
-    for key in sorted(extra or {}):                  # before the index: a run with an index has its extras
-        store.put(key, extra[key], "application/octet-stream", P.IMMUTABLE)
+    for key in sorted(extra or {}):                  # before the tables' own objects, and never in their way: an extra
+        try:                                         # that cannot be stored is reported and left out (its reader has a fallback)
+            store.put(key, extra[key], "application/octet-stream", P.IMMUTABLE)
+        except Exception as exc:                     # noqa: BLE001
+            print(f"{key.rsplit('/', 2)[-2]}/{key.rsplit('/', 1)[-1]}: not stored ({exc.__class__.__name__}); the tables go on")
     store.put(bin_key(run), body, "application/octet-stream", P.IMMUTABLE)
     store.put(index_key(run), json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
     pointer = {"run": run, "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

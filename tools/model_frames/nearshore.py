@@ -8,11 +8,13 @@ Inputs
 - the data folder (--data): table.npz (nearshore_table.pack), atlas.json (the best-swell texts), tides.json (predicted
   highs and lows at Haleiwa) and manifest.json with their sha256. It is a checkout of the data branch at a pinned commit.
 
-Layout (immutable but for the pointer)
-  gfswave/nearshore/v1/<RUN>/f<HHH>.png   one 8-bit grey PNG per step, 256 wide: a header row, one 256x256 height plane
-                                          per z14 tile (the index lists them), then the break lines' vertex table
-  gfswave/nearshore/v1/<RUN>/index.json   steps, tiles, box, units, versions
-  gfswave/nearshore/v1/latest.json        -> {run, index}, written last
+Layout (immutable but for the pointer). The table's version is part of the path: the same run built from another table
+is another set of objects, never the same keys with other bytes.
+  gfswave/nearshore/v1/<RUN>/<TABLE>/f<HHH>.png   one 8-bit grey PNG per step, 256 wide: a header row, one 256x256 height
+                                                  plane per z14 tile (the index lists them), then the lines' vertex table
+  gfswave/nearshore/v1/<RUN>/<TABLE>/index.json   steps, tiles, box, units, versions
+  gfswave/nearshore/v1/latest.json                -> {run, table, index}, written last
+  gfswave/nearshore/v1/failed/<RUN>.<TABLE>.json  the attempts of a build that failed (tried again after an hour, six times)
   static/nearshore/<table version>/atlas.json   the best-swell texts (written once per table version)
 
 Usage
@@ -59,12 +61,16 @@ MSL_MINUS_MLLW_M = 0.2835            # Haleiwa 1612668 (bigwave's datum note)
 MAX_VERTICES = 6000
 
 
-def frame_key(run, step):
-    return f"{PREFIX}/{run}/f{step:03d}.png"
+def frame_key(run, table, step):
+    return f"{PREFIX}/{run}/{table}/f{step:03d}.png"
 
 
-def index_key(run):
-    return f"{PREFIX}/{run}/index.json"
+def index_key(run, table):
+    return f"{PREFIX}/{run}/{table}/index.json"
+
+
+def failed_label(run, table):
+    return f"{run}.{table}"
 
 
 def spec2d_key(run, sid=STATION):
@@ -108,6 +114,22 @@ def tide_msl(tides, when):
     (t0, h0), (t1, h1) = hl[lo], hl[hi]
     f = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
     return h0 + (h1 - h0) * (1 - math.cos(math.pi * f)) / 2 - tides.get("msl_minus_mllw", MSL_MINUS_MLLW_M)
+
+
+def tides_end(tides):
+    return datetime.fromtimestamp(tides["hilo"][-1][0], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if tides.get("hilo") else None
+
+
+def tide_warning(tides, run_dt, horizon_h=STEPS[-1], margin_days=60):
+    """A line for the summary when the tide file ends within margin_days of the run's last step, else None."""
+    if not tides.get("hilo"):
+        return "WARNING: nearshore: the tide file is empty; mean sea level is used"
+    left = (tides["hilo"][-1][0] - (run_dt + timedelta(hours=horizon_h)).timestamp()) / 86400.0
+    if left < 0:
+        return f"WARNING: nearshore: the tide file ended {tides_end(tides)}; steps past it use mean sea level. Rebuild the data folder."
+    if left < margin_days:
+        return f"WARNING: nearshore: the tide file ends {tides_end(tides)} ({left:.0f} days of forecasts left). Rebuild the data folder."
+    return None
 
 
 # ---------------------------------------------------------------- map tiles
@@ -175,9 +197,17 @@ def pack_vertices(lines, table, box):
     n = int(lines["x"].size)
     if n == 0:
         return b"", 0
-    if n > MAX_VERTICES:                                   # never in the pilot; keep the frame bounded
-        keep = np.zeros(n, bool); keep[np.argsort(-lines["score"], kind="stable")[:MAX_VERTICES]] = True
-        lines = {k: v[keep] for k, v in lines.items()}; n = MAX_VERTICES
+    if n > MAX_VERTICES:                                   # never in the pilot; keep the frame bounded: whole lines go, the
+        ids, start, count = np.unique(lines["line"], return_index=True, return_counts=True)   # ones with the best rides stay
+        best = np.array([lines["score"][s:s + c].max() for s, c in zip(start, count)])
+        keep_ids, total = set(), 0
+        for k in np.argsort(-best, kind="stable"):
+            if total + count[k] <= MAX_VERTICES:
+                keep_ids.add(ids[k]); total += int(count[k])
+        keep = np.isin(lines["line"], list(keep_ids))
+        lines = {k: v[keep] for k, v in lines.items()}; n = int(keep.sum())
+        if n == 0:
+            return b"", 0
     lon, lat = table.lonlat(lines["x"], lines["y"])
     qx = np.clip(np.rint((lon - box[0]) / (box[2] - box[0]) * 65535), 0, 65535).astype("<u2")
     qy = np.clip(np.rint((lat - box[1]) / (box[3] - box[1]) * 65535), 0, 65535).astype("<u2")
@@ -251,20 +281,25 @@ def build_run(table, tides, spec, run_dt, steps=STEPS, log=print):
         raise ValueError("no map tile holds water")
     freqs = np.asarray(spec["freqs"], float); dirs = np.asarray(spec["dirs"], float)
     hours = {int(h): n for n, h in enumerate(np.asarray(spec["hours"]))}
-    frames, stats, t0 = {}, {}, time.monotonic()
+    frames, stats, t0, no_tide = {}, {}, time.monotonic(), 0
     for step in steps:
         n = hours.get(step)
         if n is None:
             continue
         when = run_dt + timedelta(hours=step)
+        try:
+            tide = tide_msl(tides, when)
+        except ValueError:                               # past the end of the tide file: mean sea level, and said so
+            tide, no_tide = 0.0, no_tide + 1
         frames[step], stats[step] = build_frame(table, maps, box, freqs, dirs, np.asarray(spec["E"][n], float),
-                                                (float(spec["u10"][n]), float(spec["udir"][n])), tide_msl(tides, when))
+                                                (float(spec["u10"][n]), float(spec["udir"][n])), tide)
     if len(frames) < 0.9 * len(steps):
         raise ValueError(f"{len(frames)} of {len(steps)} steps in the spectrum")
     doc = {"format": FORMAT, "run": W.run_name(run_dt), "station": STATION, "steps": sorted(frames), "z": Z,
            "tiles": [[x, y] for x, y, _ in maps], "box": [round(v, 6) for v in box], "height_step_m": HEIGHT_STEP_M,
            "vertex_bytes": VERTEX_BYTES, "bands": list(E.PARAMS["bands"]), "band_names": list(E.BAND_NAMES),
            "table": table.version, "params": E.PARAMS["version"], "atlas": atlas_key(table.version),
+           "steps_without_tide": no_tide, "tides_end_utc": tides_end(tides),
            "bytes": sum(len(b) for b in frames.values()), "vertices_max": max(s["vertices"] for s in stats.values()),
            "hmax_m": max(s["hmax_m"] for s in stats.values()), "build_s": round(time.monotonic() - t0, 1),
            "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -286,12 +321,16 @@ def get_bytes(store, key):
     return r["Body"].read()
 
 
-def spec_from_archive(run_dt, opener=urllib.request.urlopen):
-    """The station's member straight from NOAA's archive (stops reading at the member) -> spec2d npz bytes."""
+ARCHIVE_BUDGET_S = 6 * 60            # the archive fallback gives up after this long (the next try is an hour on)
+
+
+def spec_from_archive(run_dt, opener=urllib.request.urlopen, budget_s=ARCHIVE_BUDGET_S):
+    """The station's member straight from NOAA's archive (stops reading at the member) -> spec2d npz bytes.
+    Raises BudgetExceeded past the budget: a slow stream must not hold the tables' workflow."""
     import gfs_spectral as G
     raw = W.open_archive(f"{W.S3}/{W.archive_key(run_dt)}", opener)
     with raw:
-        for sid, data in W.members(raw):
+        for sid, data in W.members(raw, time.monotonic() + budget_s):
             if sid == STATION:
                 return G.encode_spec2d(data, run_dt)
     raise ValueError(f"{STATION} is not in the archive")
@@ -303,9 +342,9 @@ def publish(store, run, frames, doc, atlas=None):
     if atlas is not None and not store.list_keys(atlas_key(doc["table"])):
         store.put(atlas_key(doc["table"]), atlas, "application/json", P.IMMUTABLE)
     for step in sorted(frames):
-        store.put(frame_key(run, step), frames[step], "image/png", P.IMMUTABLE)
-    store.put(index_key(run), json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
-    pointer = {"run": run, "index": index_key(run), "steps": len(frames), "table": doc["table"],
+        store.put(frame_key(run, doc["table"], step), frames[step], "image/png", P.IMMUTABLE)
+    store.put(index_key(run, doc["table"]), json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
+    pointer = {"run": run, "index": index_key(run, doc["table"]), "steps": len(frames), "table": doc["table"],
                "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     store.put(P.latest_key(PREFIX), json.dumps(pointer, sort_keys=True).encode(), "application/json", P.POINTER)
     return pointer
@@ -320,7 +359,7 @@ def prune(store, keep=KEEP):
         name, _, rest = k[len(PREFIX) + 1:].partition("/")
         if name.isdigit() and len(name) == 10 and rest:
             runs.setdefault(name, False)
-            if rest == "index.json":
+            if rest.endswith("/index.json"):
                 runs[name] = True
     whole = sorted(r for r, ok in runs.items() if ok)
     protect = set(whole[-keep:]) | ({latest["run"]} if latest.get("run") else set())
@@ -331,7 +370,23 @@ def prune(store, keep=KEEP):
             continue
         store.delete_prefix(f"{PREFIX}/{run}/")
         deleted.append(run)
+    oldest = min(protect) if protect else None
+    if oldest:                                           # failure records of runs older than every kept run
+        old = [k for k in store.list_keys(f"{PREFIX}/failed/") if k.rsplit("/", 1)[-1][:10].isdigit() and k.rsplit("/", 1)[-1][:10] < oldest]
+        if old:
+            store.delete_keys(old, "old records")
     return deleted
+
+
+def _skip_failed(store, run, table):
+    """True while a failed build of this run and table waits for its next try (an hour), or has had its six."""
+    rec = store.get_json(P.failed_key(failed_label(run, table), PREFIX))
+    if not rec:
+        return False
+    if rec.get("attempts", 0) >= W.FAILED_MAX_ATTEMPTS:
+        return True
+    last = datetime.strptime(rec["last_attempt_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - last).total_seconds() < W.FAILED_RETRY_AFTER_S
 
 
 def _write_out(out, frames, doc, stats):
@@ -387,6 +442,12 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
                 if latest.get("run", "") > run:
                     print(f"{run} is older than the live run {latest['run']}: nothing to do")
                     return 0
+                if store.get_json(index_key(run, table.version)) is not None:     # built before (the pointer moved on and back)
+                    print(f"{run} / {table.version} is already published: its objects are immutable, nothing rewritten")
+                    return 0
+                if _skip_failed(store, run, table.version):
+                    print(f"{run} failed recently: waiting before another try")
+                    return 3
             raw = get_bytes(store, spec2d_key(run))
             if raw is None and a.from_archive:
                 print(f"{run}: no spectrum in the bucket, reading NOAA's archive")
@@ -413,7 +474,16 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
         line = f"FAILED: nearshore {run}: {exc.__class__.__name__}: {P.redact(str(exc), getattr(store, 'bucket', None))}"
         print(line)
         W._summary(line)
+        if live and run:                                 # counted: tried again after an hour, six times at most (as the tables' job)
+            try:
+                P.record_failure(store, failed_label(run, table.version), f"{exc.__class__.__name__}: {exc}", PREFIX)
+            except Exception as exc2:                    # noqa: BLE001
+                print(f"the failure could not be recorded ({exc2.__class__.__name__})")
         return 1
+    warn = tide_warning(tides, run_dt)
+    if warn:
+        print(warn)
+        W._summary(warn)
     deleted = P.safe_prune(lambda: prune(store), store.bucket, W._summary)
     line = f"nearshore {run}: {len(frames)} steps, {doc['bytes']} B, {doc['build_s']} s; pruned {deleted or 'nothing'}"
     print(line)

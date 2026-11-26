@@ -32,14 +32,14 @@ def grid():
     return conds, np.zeros(shape, np.uint8), np.zeros(shape, np.uint8)
 
 
-def summ(Q, FL, conds):
-    return A.summarise(Q.reshape(len(conds), 2, 3), FL.reshape(len(conds), 2, 3), conds, SIZES, PERIODS, DIRS, TIDES, tide_names=("low", "high"))
+def summ(Q, FL, conds, smooth=False):
+    return A.summarise(Q.reshape(len(conds), 2, 3), FL.reshape(len(conds), 2, 3), conds, SIZES, PERIODS, DIRS, TIDES, tide_names=("low", "high"), smooth=smooth)
 
 
 def test_summary_finds_the_best_case_its_window_and_the_closeout_directions():
     conds, Q, FL = grid()
     Q[1:3, 1, 1:3, :, 0, 1] = 60; Q[2, 1, 2, 0, 0, 1] = 80          # 4-6 ft @ 15 s from 330-000 works; 6 ft from 000 is best
-    Q[2:4, 0, 2, :, 0, 1] = 55                                      # at 10 s it takes 6-8 ft
+    Q[2:4, 0, 2, :, 0, 1] = 65; Q[0, 1, 2, :, 0, 1] = 0             # at 10 s it takes 6-8 ft
     FL[1:, :, :, :, 0, 1] = 1; FL[1:, 1, 0, :, 0, 1] = 2            # a line passes from 4 ft up; from 300 it closes out
     Q[0, 0, 0, 0, 1, 2] = 10                                        # a cell where nothing reaches the floor
     cells = summ(Q, FL, conds)
@@ -69,3 +69,12 @@ def test_build_runs_the_matrix_through_the_engine():
     rows = [np.nonzero(q.max(1))[0].mean() for q in Q]
     assert rows[2] > rows[0] and rows[1] < rows[0]                 # bigger breaks further out, high tide further in
     assert (FL == 2).sum() == 0 and (FL == 1).sum() > 0
+
+
+def test_smoothing_prefers_a_plateau_to_a_lone_spike():
+    conds, Q, FL = grid()
+    Q[0, 0, 0, :, 0, 0] = 90                                        # one lucky case
+    Q[1:4, 1, 1:3, :, 0, 0] = 70                                    # a block of good cases
+    raw = summ(Q, FL, conds)[0]; got = summ(Q, FL, conds, smooth=True)[0]
+    assert raw["best"][:3] == (2, 10, 300) and got["best"][1] == 15 and got["best"][0] in (4, 6, 8) and got["best"][2] in (330, 0)
+    assert got["size_ft"][0] <= 4 and got["size_ft"][1] >= 6

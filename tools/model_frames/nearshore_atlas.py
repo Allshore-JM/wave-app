@@ -19,7 +19,7 @@ DIRS_DEG = tuple(range(270, 360, 10)) + (0, 10, 20, 30)
 TIDES_M = (-0.2, 0.1, 0.4)               # low, mid, high against mean sea level (Haleiwa's range is about 0.6 m)
 TIDE_NAMES = ("low", "mid", "high")
 CELL_M = 30.0
-SHARE = 0.6                              # the window = cases scoring at least this share of the cell's best
+SHARE = 0.75                             # the window = the cases around the best one that keep this share of its score
 MIN_BEST = 20.0                          # cells whose best score is under this are left blank (nothing surfable passes)
 
 
@@ -61,42 +61,52 @@ def build(table, conds=None, p=E.PARAMS, cell=CELL_M, progress=None):
     return Q, FL, conds
 
 
-def _span(values, ok):
-    """Smallest and largest of `values` where ok, or None."""
-    v = [x for x, k in zip(values, ok) if k]
-    return (min(v), max(v)) if v else None
+def _run(ok, at):
+    """The unbroken run of True in `ok` that holds index `at` -> (first, last)."""
+    lo = hi = at
+    while lo > 0 and ok[lo - 1]: lo -= 1
+    while hi < len(ok) - 1 and ok[hi + 1]: hi += 1
+    return lo, hi
 
 
-def _dir_span(dirs, ok):
-    """Directions FROM where ok, as the arc (start, end) going clockwise through the listed order, or None."""
-    k = [i for i, o in enumerate(ok) if o]
-    return (dirs[k[0]], dirs[k[-1]]) if k else None
+def _blur(a, axis):
+    """1-2-1 blur along one axis with the ends repeated."""
+    lo = np.take(a, [0], axis); hi = np.take(a, [-1], axis); p = np.concatenate((lo, a, hi), axis)
+    n = a.shape[axis]; return 0.25 * np.take(p, range(0, n), axis) + 0.5 * a + 0.25 * np.take(p, range(2, n + 2), axis)
 
 
-def summarise(Q, FL, conds, sizes=SIZES_FT, periods=PERIODS_S, dirs=DIRS_DEG, tides=TIDES_M, share=SHARE, min_best=MIN_BEST, tide_names=TIDE_NAMES):
-    """Per cell: the best case and its window. -> list of dicts (only cells whose best score reaches min_best), keyed
-    cy, cx: best (ft, s, deg, tide index, score), size_ft (lo, hi) at the best period, dir_deg (from, to),
-    by_period {s: (lo, hi)}, closes_deg (from, to) or None, starts_ft, and tide: 'any' or the best tide's name."""
+def summarise(Q, FL, conds, sizes=SIZES_FT, periods=PERIODS_S, dirs=DIRS_DEG, tides=TIDES_M, share=SHARE, min_best=MIN_BEST, tide_names=TIDE_NAMES,
+              smooth=True):
+    """Per cell: the best case and the window around it. -> list of dicts (only cells whose best score reaches min_best):
+    (with smooth, scores are first blurred 1-2-1 across sizes, periods and directions)
+    cy, cx; best (ft, s, deg, tide index, score); size_ft (lo, hi) = the unbroken run of sizes around the best one that
+    keep `share` of its score, at the best period, direction and tide; dir_deg (from, to) likewise across directions;
+    by_period {s: (lo, hi)} the same size run at each other period that reaches the share; closes_deg (from, to) or
+    None; starts_ft; tide: 'any' or the best tide's name."""
     ns, nt, nd, nz = len(sizes), len(periods), len(dirs), len(tides)
-    A = Q.reshape(ns, nt, nd, nz, *Q.shape[1:]).astype(np.int16); Fg = FL.reshape(ns, nt, nd, nz, *FL.shape[1:])
+    A = Q.reshape(ns, nt, nd, nz, *Q.shape[1:]).astype(np.float32); Fg = FL.reshape(ns, nt, nd, nz, *FL.shape[1:])
+    if smooth:                                           # one case's score jumps as rides split and join: a sweet spot is a
+        for ax in (0, 1, 2): A = _blur(A, ax)            # plateau across neighbouring sizes, periods and directions, not a spike
     out = []
     best = A.reshape(-1, *Q.shape[1:]).max(0)
     for cy, cx in zip(*np.nonzero(best >= min_best)):
-        a = A[..., cy, cx]; fl = Fg[..., cy, cx]; top = int(a.max())
+        a = A[..., cy, cx]; fl = Fg[..., cy, cx]; top = int(round(float(a.max()))); need = share * float(a.max())
         i, j, k, z = np.unravel_index(int(a.argmax()), a.shape)
-        win = a >= share * top
-        at_tide = win[:, :, :, z]
-        size = _span(sizes, at_tide[:, j, :].any(1)); dr = _dir_span(dirs, at_tide[:, j, :].any(0))
-        byp = {int(periods[q]): _span(sizes, at_tide[:, q, :].any(1)) for q in range(nt) if at_tide[:, q, :].any()}
+        lo, hi = _run(a[:, j, k, z] >= need, i); k0, k1 = _run(a[i, j, :, z] >= need, k)
+        byp = {}
+        for q in range(nt):
+            col = a[:, q, k, z]
+            if col.max() >= need:
+                q0, q1 = _run(col >= need, int(col.argmax())); byp[int(periods[q])] = (sizes[q0], sizes[q1])
         # closes out: directions where a line passes this cell at the working sizes and is a closeout more often than not
-        lo, hi = sizes.index(size[0]), sizes.index(size[1])
         seen = (fl[lo:hi + 1, j, :, z] > 0).sum(0); shut = (fl[lo:hi + 1, j, :, z] == 2).sum(0)
         weak = a[lo:hi + 1, j, :, z].max(0) < 0.3 * top
-        closes = _dir_span(dirs, (seen > 0) & (shut * 2 > seen) & weak)
-        any_line = (fl[:, j, :, z] > 0).any(1); starts = sizes[int(np.argmax(any_line))] if any_line.any() else None
-        tide_free = all(a[i, j, k, q] >= share * top for q in range(nz))
-        out.append(dict(cy=int(cy), cx=int(cx), best=(int(sizes[i]), int(periods[j]), int(dirs[k]), int(z), top), size_ft=size, dir_deg=dr,
-                        by_period=byp, closes_deg=closes, starts_ft=starts, tide="any" if tide_free else tide_names[z]))
+        cl = [n for n in range(nd) if seen[n] > 0 and shut[n] * 2 > seen[n] and weak[n]]
+        any_line = (fl[:, j, k, z] > 0); starts = sizes[int(np.argmax(any_line))] if any_line.any() else None
+        tide_free = all(a[i, j, k, q] >= need for q in range(nz))
+        out.append(dict(cy=int(cy), cx=int(cx), best=(int(sizes[i]), int(periods[j]), int(dirs[k]), int(z), top), size_ft=(sizes[lo], sizes[hi]),
+                        dir_deg=(dirs[k0], dirs[k1]), by_period=byp, closes_deg=(dirs[cl[0]], dirs[cl[-1]]) if cl else None, starts_ft=starts,
+                        tide="any" if tide_free else tide_names[z]))
     return out
 
 

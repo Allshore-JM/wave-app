@@ -165,6 +165,6 @@ def test_the_workflow_is_manual_pinned_and_publishes_only_when_asked():
     assert "swan=41.51" in text and "micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64" in text
     uses = re.findall(r"uses:[ ]*([^ \n]+)", text)
     assert len(uses) >= 5 and all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", u) for u in uses)
-    assert "if: env.UPLOAD == 'true'" in text and "github.event.inputs.upload == 'true'" in text.split("  assemble:", 1)[1]
+    assert "if: ${{ !cancelled() && env.UPLOAD == 'true' }}" in text and "github.event.inputs.upload == 'true'" in text.split("  assemble:", 1)[1]
     assert "put-manifest" in text.split("  assemble:", 1)[1] and "fail-fast: false" in text and "timeout-minutes: 345" in text
     assert "contents: read" in text and "secrets.R2_BUCKET" in text and "secrets." not in text.split("  build:", 1)[0]

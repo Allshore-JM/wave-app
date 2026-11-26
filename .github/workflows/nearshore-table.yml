@@ -98,7 +98,7 @@ jobs:
           { echo '```'; grep -vE "^  [a-z-]+ f 0" build.log | tail -8; grep -E "^  [a-z-]+ f 0" build.log | tail -4; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
       - name: Upload the chunk to R2
-        if: env.UPLOAD == 'true'
+        if: ${{ !cancelled() && env.UPLOAD == 'true' }}   # also after failed bins: the chunk records each bin's error
         shell: bash -l {0}
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}

@@ -1,0 +1,18 @@
+{
+ "set": "ns-1",
+ "note": "Nearshore analysis regions, Oahu's North Shore from Kaena Point to Kahuku Point (plan section 109). Each region is a rotated rectangle: ref = lon, lat near the coast; alpha = degrees anticlockwise from east of the alongshore x axis; x = the grid's alongshore span about ref (m); y0 = where the grid starts (m offshore of ref, negative = inland); core = the alongshore span this region owns in the product; rows = the rows of the surf band kept in the table. Where cores overlap the earlier region in this list owns the water.",
+ "dx": 10.0,
+ "olen": 7500.0,
+ "bathy": [["hawaii", 2, 15], ["hawaii-lidar", 1, 16]],
+ "freqs": [0.04, 0.0455, 0.05, 0.0556, 0.0625, 0.0667, 0.0714, 0.0833, 0.1, 0.125, 0.15, 0.2],
+ "dirs": [240, 255, 270, 285, 300, 315, 330, 345, 0, 15, 30, 45, 60],
+ "chunks": 6,
+ "regions": [
+  {"id": "laniakea", "ref": [-158.08804, 21.61935], "alpha": 45.0, "x": [-2300, 3300], "core": [-2100, 2700], "y0": -500,  "rows": 200},
+  {"id": "sunset",   "ref": [-158.0650, 21.6405],   "alpha": 58.5, "x": [-1200, 6900], "core": [-600, 6300],  "y0": -500,  "rows": 250},
+  {"id": "haleiwa",  "ref": [-158.1300, 21.5900],   "alpha": 14.0, "x": [-4000, 3700], "core": [-3300, 3100], "y0": -1600, "rows": 460},
+  {"id": "mokuleia", "ref": [-158.1900, 21.5805],   "alpha": 8.0,  "x": [-4100, 3900], "core": [-3400, 3300], "y0": -800,  "rows": 290},
+  {"id": "kaena",    "ref": [-158.2500, 21.5775],   "alpha": 4.0,  "x": [-4200, 3500], "core": [-3600, 2800], "y0": -800,  "rows": 250},
+  {"id": "kahuku",   "ref": [-158.0120, 21.6990],   "alpha": 25.0, "x": [-4100, 4600], "core": [-3500, 4000], "y0": -1200, "rows": 270}
+ ]
+}

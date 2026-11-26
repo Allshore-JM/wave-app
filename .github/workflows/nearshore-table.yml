@@ -1,0 +1,139 @@
+# Nearshore Analysis transfer tables (plan section 109; tools/model_frames/nearshore_build.py, nearshore_regions.json).
+# Manual only. For every region of Oahu's North Shore (Kaena Point to Kahuku Point) a 10 m grid is built from the published
+# bathymetry tiles and one linear SWAN 41.51 run is made per offshore swell bin (156 bins). The runs are split into chunks,
+# one job each, side by side; a last job puts each region's chunks together, checks them (every bin present, the offshore
+# height within 2 %) and, only when `upload` is true, publishes static/nearshore/<set>/<region>/table.npz and the set's
+# manifest.json (written last). A set that has a manifest is never rewritten: change "set" in nearshore_regions.json.
+# `smoke` > 0 runs that many bins of one chunk of one region and stops (the chunk goes under .../smoke/ when uploaded).
+# About 36 jobs of 2-3 hours for the whole set; the publisher (model-gfsspec's second step) reads the tables by the manifest.
+# Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
+name: nearshore-table
+on:
+  workflow_dispatch:
+    inputs:
+      upload:
+        description: "publish the chunks, the tables and the manifest to R2 (true/false)"
+        default: "false"
+      smoke:
+        description: "smoke test: this many bins of chunk 0 of one region (0 = the whole set)"
+        default: "0"
+      region:
+        description: "the smoke test's region"
+        default: "laniakea"
+permissions:
+  contents: read
+concurrency:
+  group: nearshore-table
+  cancel-in-progress: false
+env:
+  UPLOAD: ${{ github.event.inputs.upload }}
+  SMOKE: ${{ github.event.inputs.smoke }}
+  SMOKE_REGION: ${{ github.event.inputs.region }}
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+      regions: ${{ steps.list.outputs.regions }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.2.6 pillow==11.2.1
+      - name: List the jobs
+        id: list
+        shell: bash
+        run: |
+          set -eo pipefail
+          [[ "${SMOKE:-0}" =~ ^[0-9]{1,3}$ ]] || { echo "smoke must be a number"; exit 2; }
+          [[ "${SMOKE_REGION:-laniakea}" =~ ^[a-z][a-z0-9-]{1,20}$ ]] || { echo "bad region"; exit 2; }
+          if [ "${SMOKE:-0}" -gt 0 ]; then
+            echo "matrix=[{\"region\":\"${SMOKE_REGION:-laniakea}\",\"chunk\":0}]" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=$(python tools/model_frames/nearshore_build.py plan)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "regions=$(python -c "import json; print(json.dumps([r['id'] for r in json.load(open('tools/model_frames/nearshore_regions.json'))['regions']]))")" >> "$GITHUB_OUTPUT"
+          { echo "set: $(python -c "import json; print(json.load(open('tools/model_frames/nearshore_regions.json'))['set'])")"; echo "smoke: ${SMOKE:-0}, upload: ${UPLOAD:-false}"; } >> "$GITHUB_STEP_SUMMARY"
+  build:
+    needs: plan
+    name: ${{ matrix.region }} chunk ${{ matrix.chunk }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39   # v3.2.1
+        with:
+          environment-name: nearshore
+          create-args: >-
+            python=3.11.16
+            numpy=2.4.6
+            pillow=12.3.0
+            boto3=1.43.98
+            certifi=2026.10.23
+            ca-certificates=2026.10.23
+            swan=41.51
+          cache-environment: true
+          micromamba-url: https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64
+      - name: Run the chunk's SWAN bins
+        shell: bash -l {0}
+        env:
+          REGION: ${{ matrix.region }}
+          CHUNK: ${{ matrix.chunk }}
+          OMPI_MCA_rmaps_base_oversubscribe: "true"      # four single-process runs at once on four cores
+        run: |
+          set -eo pipefail
+          [[ "$REGION" =~ ^[a-z][a-z0-9-]{1,20}$ ]] && [[ "$CHUNK" =~ ^[0-9]{1,2}$ ]] || { echo "bad matrix entry"; exit 2; }
+          nproc; which swan.exe
+          ARGS=(chunk --region "$REGION" --chunk "$CHUNK" --out build/nearshore --parallel 4)
+          [ "${SMOKE:-0}" -gt 0 ] && ARGS+=(--only "$SMOKE")
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/model_frames/nearshore_build.py "${ARGS[@]}" | tee build.log || rc=$?
+          { echo '```'; grep -vE "^  [a-z-]+ f 0" build.log | tail -8; grep -E "^  [a-z-]+ f 0" build.log | tail -4; grep -E "Maximum resident|Elapsed" time.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: Upload the chunk to R2
+        if: env.UPLOAD == 'true'
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REGION: ${{ matrix.region }}
+          CHUNK: ${{ matrix.chunk }}
+        run: python tools/model_frames/nearshore_build.py put-chunk --region "$REGION" --chunk "$CHUNK" --dir build/nearshore | tee -a "$GITHUB_STEP_SUMMARY"
+  assemble:
+    needs: [plan, build]
+    if: github.event.inputs.upload == 'true' && (github.event.inputs.smoke == '0' || github.event.inputs.smoke == '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.2.6 pillow==11.2.1 boto3==1.43.98 certifi==2026.10.23
+      - name: Put the regions' tables together and publish them
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REGIONS: ${{ needs.plan.outputs.regions }}
+        run: |
+          set -eo pipefail
+          for REGION in $(python -c "import json, os; print(' '.join(json.loads(os.environ['REGIONS'])))"); do
+            [[ "$REGION" =~ ^[a-z][a-z0-9-]{1,20}$ ]] || { echo "bad region"; exit 2; }
+            python tools/model_frames/nearshore_build.py get-chunks --region "$REGION" --dir chunks
+            python tools/model_frames/nearshore_build.py assemble --region "$REGION" --in chunks --out tables | tee -a "$GITHUB_STEP_SUMMARY"
+            python tools/model_frames/nearshore_build.py put-table --region "$REGION" --dir tables | tee -a "$GITHUB_STEP_SUMMARY"
+            rm -f chunks/"$REGION"_c*.npz
+          done
+          python tools/model_frames/nearshore_build.py put-manifest --dir tables | tee -a "$GITHUB_STEP_SUMMARY"

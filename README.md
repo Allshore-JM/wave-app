@@ -450,3 +450,44 @@ nothing over land. If the coast data cannot be loaded the field is drawn unclipp
 See tools/coast/README.md for the builder, the publish workflow and the LGPL notice. Review records: `docs/reviews/overlays-G*-adversarial.md`. Attribution on the map: "Overlay: NOAA GFS-Wave/GFS"; the panel carries the full
 sentence ("Source: NOAA/NCEP GFS-Wave (WAVEWATCH III) and GFS via NOAA Open Data Dissemination; rendered by
 Allshore Surf. Not an official NWS product.").
+
+## Live buoys: New Zealand, the Pacific, Chile (plan section 110)
+
+A 2026-11-26 survey of Japan, New Zealand, the South Pacific and Chile (plan section 110) found four open feeds; they
+join the layer as four providers in `buoy_sources.py`. Japan's NOWPHAS and Hiratsuka tower and Chile's SHOA buoys need
+permission first (requested 2026-11-26), so nothing reads them yet.
+- **New Zealand councils' Hilltop servers** (`HilltopWaveProvider`, source `HILLTOP`): Greater Wellington
+  (`hilltop.gw.govt.nz`, Baring Head South, CC BY 4.0) and Tasman (`envdata.tasman.govt.nz`, Tuatea buoy in Tasman Bay).
+  Each server's site list is read every 6 h: a site whose name says wave or buoy, with a position, not an "-Offline"
+  copy, and with a wave height in its measurement list (units checked: GW's msecs zero-crossing period is never used).
+  Every 30 min each live site's last day (`GetData ... TimeInterval=P1D`) of height, mean period (GW's Tsig, Tasman's
+  average period), direction FROM, Hmax and water temperature is read and joined by time. Hilltop times carry no zone:
+  they are New Zealand STANDARD time, UTC+12 all year (`HILLTOP_TZ`, checked with windows anchored to the servers' own
+  "now"). A site whose newest height is older than 3 days is not shown and is asked again only with the next site list,
+  so a buoy that comes back appears by itself (GW's North (A), Taputeranga, Tasman's Golden Bay and Tasman Bay buoys are
+  quiet today). Two live series of one council within 1 km show once (the newer). A series that ended long ago (Tuatea's
+  Max Wave Height, 2025-06) joins no reading. The window credits the council. Northland's Bay of Islands buoy (true peak
+  period and peak direction) is left out: quiet since 2026-08-22, and its server's chain needs `chain_tls.py`'s pinned
+  GoDaddy cross-sign (a host added there needs the owner's word).
+- **Environment Canterbury** (`EcanWaveProvider`, `ECAN`): the Banks Peninsula buoy (76 m of water, 17 km east of Le
+  Bons Bay), from the JSON behind ECan's wave page (`WaveDirectionData/1_Week`, answered only with the page's
+  `X-Requested-With: XMLHttpRequest` header). H1/3, Hmax, ECan's average period (shown as the mean period), direction
+  FROM; 30-min records that reach shore every 3 hours (stale after 6 h).
+- **The Pacific Community (SPC) through WMO WIS2** (`SpcWis2Provider`, `SPC`): SPC publishes its wave buoys on WIS2 as
+  core data (free and unrestricted), but its own servers refuse automated clients, so the provider lists the NOAA / Met
+  Office global cache's public S3 bucket (`wis2globalcache.s3.amazonaws.com`, prefix
+  `data/int-spc/data/core/ocean/surface-based-observations/wave-buoys/`) every 15 min and fetches only the files of the
+  last 26 h it has not read (144 bytes each; at most 150 a refresh, newest first; an unreadable file is not asked again,
+  a failed GET is). The files are BUFR edition 4 of the WMO moored-buoy wave template 301150 + 308015: `decode_bufr_wave`
+  reads exactly that template in pure Python (the descriptors from WMO's BUFR4 tables; anything else, compression or a
+  data section longer than the template is refused), checked against eccodes on 87 real messages. Height, spectral
+  PEAK period, highest wave, mean period, dominant direction FROM. On 2026-11-26 one buoy reported (Honiara, Solomon
+  Islands); any buoy SPC adds appears by itself ("SPC buoy <id>" until named in `SPC_NAMES`).
+- **Puerto Arica** (`PuertoAricaProvider`, `EPA`): Empresa Portuaria Arica's buoy SIMAR-EPA-01, about 1 km off the port,
+  from the JSON behind the port's "Condicion Maritima" page (`simar_api.php?action=wave-height|wave-direction|status`,
+  24 h). H1/3 and mean direction FROM with spread every 20 min; no period is published. Times are UTC without a zone.
+  The marker uses the buoy's own GPS while it stays within 2 km of its mooring.
+- Dedup priority: HILLTOP, ECAN, EPA 54 (they meet no other feed's buoys); SPC 44, below CDIP / NDBC / NDBCW, so a
+  US-flag Pacific buoy SPC might relay never replaces the richer marker.
+- XML answers (Hilltop, the S3 listing) are parsed with the standard library after refusing any DOCTYPE / ENTITY.
+

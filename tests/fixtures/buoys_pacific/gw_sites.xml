@@ -1,0 +1,35 @@
+<?xml version="1.0" ?>
+<HilltopServer>
+<Agency>GWRC</Agency>
+<Version>2609.0.2.103</Version>
+<Site Name="292611">
+</Site>
+<Site Name="Abbots Creek at D/S Donalds Crk Conf">
+<Latitude>-41.15061315</Latitude>
+<Longitude>175.30648754</Longitude>
+</Site>
+<Site Name="Taputeranga Marine Reserve Wave Buoy">
+<Latitude>-41.36700512</Latitude>
+<Longitude>174.74416298</Longitude>
+</Site>
+<Site Name="Wellington Harbour at Baring Head South Wave Buoy">
+</Site>
+<Site Name="Wellington Harbour at Baring Head Wave Buoy">
+<Latitude>-41.40690842</Latitude>
+<Longitude>174.84787706</Longitude>
+</Site>
+<Site Name="Wellington Harbour at Baring Head Wave Buoy (North (A))">
+<Latitude>-41.41365845</Latitude>
+<Longitude>174.84876237</Longitude>
+</Site>
+<Site Name="Wellington Harbour at Baring Head Wave Buoy (North (A))-Offline">
+</Site>
+<Site Name="Wellington Harbour at Baring Head Wave Buoy (South (B))">
+<Latitude>-41.41164661</Latitude>
+<Longitude>174.84840620</Longitude>
+</Site>
+<Site Name="Wellington Harbour at Baring Head Wave Buoy (South (B))-Offline">
+</Site>
+<Site Name="Wellington Harbour at Baring Head Wave Buoy 2">
+</Site>
+</HilltopServer>

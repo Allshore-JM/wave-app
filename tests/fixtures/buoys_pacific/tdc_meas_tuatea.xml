@@ -1,0 +1,228 @@
+<?xml version="1.0" ?>
+<HilltopServer>
+<Agency>Tasman District Council</Agency>
+<DataSource Name="Voltage" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:55:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Voltage">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Voltage</RequestAs>
+<Units>Volts</Units>
+<Format>##.##</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Barometric Pressure" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:55:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Barometric Pressure">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Barometric Pressure</RequestAs>
+<Units>hPa</Units>
+<Format>####.#</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Wind Speed" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Wind Speed">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Wind Speed</RequestAs>
+<Units>km/hr</Units>
+<Format>###.#</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Wind Direction" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>WindDirection</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Wind Direction">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Wind Direction</RequestAs>
+<Format>###</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Sea Temperature" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:55:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Sea Temperature">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Sea Temperature</RequestAs>
+<Units>Deg C</Units>
+<Format>##.##</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Max Wave Height" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2025-06-06T09:55:00</To>
+<Measurement Name="Max Wave Height">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Max Wave Height</RequestAs>
+<Units>m</Units>
+<Format>#.#</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Height3" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Height3">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Height3</RequestAs>
+<Units>m</Units>
+<Format>#.#</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Average Wave Period" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Average Wave Period">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Average Wave Period</RequestAs>
+<Units>secs</Units>
+<Format>####</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Average Wave Direction" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Instant</Interpolation>
+<ItemFormat>1</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+<Measurement Name="Average Wave Direction">
+<Item>1</Item>
+<DefaultMeasurement />
+<RequestAs>Average Wave Direction</RequestAs>
+<Units>degrees</Units>
+<Format>#.#</Format>
+</Measurement>
+</DataSource>
+<DataSource Name="Voltage" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:55:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Barometric Pressure" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:55:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Wind Speed" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Wind Direction" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>WindDirection</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Sea Temperature" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:55:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Max Wave Height" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2025-06-06T09:55:00</To>
+</DataSource>
+<DataSource Name="Height3" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Average Wave Period" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+<DataSource Name="Average Wave Direction" Site="HY Tuatea Buoy at Tasman Bay" >
+<NumItems>1</NumItems>
+<TSType>StdQualSeries</TSType>
+<DataType>SimpleTimeSeries</DataType>
+<Interpolation>Event</Interpolation>
+<ItemFormat>0</ItemFormat>
+<From>2025-06-05T10:25:00</From>
+<To>2026-11-27T05:55:00</To>
+</DataSource>
+</HilltopServer>

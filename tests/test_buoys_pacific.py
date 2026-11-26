@@ -68,7 +68,7 @@ def _clock(monkeypatch):
 
 GW_DATA = {"Significant Wave Height (Hsig)": "gw_hs.xml", "Significant Wave Period (Tsig)": "gw_tsig.xml",
            "Wave Direction": "gw_dir.xml", "Maximum Wave Height (Hmax)": "gw_hmax.xml",
-           "Water Temperature": "gw_sst.xml"}
+           "Water Temperature": "gw_sst.xml", "Zero Crossing Wave Period (Tz)": "gw_tz.xml"}
 TDC_DATA = {"Height3": "tdc_hs.xml", "Average Wave Period": "tdc_period.xml",
             "Average Wave Direction": "tdc_dir.xml", "Max Wave Height": "tdc_hmax.xml"}
 
@@ -109,9 +109,10 @@ def test_hilltop_offline_copy_with_a_position_is_left_out():
 
 def test_hilltop_measurements_and_units():
     f = B.parse_hilltop_measurements(fx("gw_meas_southb.xml"))
-    assert f == {"hs_m": "Significant Wave Height (Hsig)", "mean_period_s": "Significant Wave Period (Tsig)",
+    assert f == {"hs_m": "Significant Wave Height (Hsig)", "tz_s": "Zero Crossing Wave Period (Tz)",
                  "dir_deg": "Wave Direction", "hmax_m": "Maximum Wave Height (Hmax)", "sst_c": "Water Temperature"}
-    assert "tp_s" not in f                     # Tsig is not a peak period; Tz (msecs) is never used
+    # Tsig (T1/3, near the peak) is neither a peak nor a mean period: not shown (G75 P1-2)
+    assert "tp_s" not in f and "mean_period_s" not in f
     body = fx("gw_meas_southb.xml").replace(b"<Units>m</Units>", b"<Units>cm</Units>")
     assert B.parse_hilltop_measurements(body) == {}                             # a height in cm: not this site
     t = B.parse_hilltop_measurements(fx("tdc_meas_tuatea.xml"))
@@ -145,7 +146,9 @@ def test_hilltop_provider_on_real_answers():
     d = p.detail(st[0]["local_id"])
     o = d["latest"]
     assert o["time_utc"] == st[0]["latest_time"] and o["dir_kind"] == "from" and o["tp_s"] is None
-    assert o["hs_m"] > 0 and o["mean_period_s"] > 0 and 0 <= o["dir_deg"] <= 360 and o["hmax_m"] >= o["hs_m"]
+    assert o["hs_m"] > 0 and o["mean_period_s"] is None and 0 <= o["dir_deg"] <= 360 and o["hmax_m"] >= o["hs_m"]
+    # GW's Tz is labelled msecs but holds seconds (G75 P1-2): shown as the zero-crossing period, 3-12 s
+    assert 3 < o["tz_s"] < 12
     assert 5 < o["sst_c"] < 25
     assert "Greater Wellington" in d["attribution_text"] and "CC BY 4.0" in d["attribution_text"]
     assert len(d["recent"]) >= 24 and d["recent"][0] == o      # newest first; a day thinned to <= 48 rows (_recent_window)
@@ -233,8 +236,8 @@ def test_ecan_parse_matches_the_pages_latest():
     o = rows[-1]
     want = datetime.fromisoformat(meta["lastSample"]).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     assert o["time_utc"] == want
-    assert (o["hs_m"], o["hmax_m"], o["mean_period_s"], o["dir_deg"]) == (
-        round(meta["height"], 2), meta["heightMax"], meta["timings"], o["dir_deg"])
+    assert (o["hs_m"], o["hmax_m"], o["mean_period_s"]) == (
+        round(meta["height"], 2), round(meta["heightMax"], 2), meta["timings"])
     assert abs(o["dir_deg"] - meta["direction"]) < 1                        # SiteMeta rounds the direction
     assert o["tp_s"] is None and o["dir_kind"] == "from"
     assert rows == sorted(rows, key=lambda r: r["time_utc"])
@@ -446,3 +449,116 @@ def test_an_spc_relay_of_a_cdip_buoy_merges_under_cdip():
     out = B.merge_stations([[spc], [cdip]])
     kept = [s for s in out if not s.get("dup_of")]
     assert [s["id"] for s in kept] == ["cdip:197"]
+
+
+
+# ------------------------------------------------------------------ G75 findings
+
+def test_g75_hilltop_error_answers_never_empty_a_council(_clock):
+    p = B.HilltopWaveProvider(http=FileHTTP(hilltop_route))
+    good = p._fetch_stations()
+    err = b'<?xml version="1.0" ?><HilltopServer><Error>No sites</Error></HilltopServer>'
+    with pytest.raises(ValueError):
+        B.parse_hilltop_sites(err)
+    with pytest.raises(ValueError):
+        B.parse_hilltop_measurements(err)
+    with pytest.raises(ValueError):
+        B.parse_hilltop_data(b"<Error>Bad request</Error>")
+    # the site list due again answers an error, then an empty list: the held list stands, asked again in 30 min
+    for answer in (err, b'<?xml version="1.0" ?><HilltopServer><Agency>GWRC</Agency></HilltopServer>'):
+        p.http = FileHTTP(lambda u, a=answer: a if ("SiteList" in u and "gw.govt" in u) else hilltop_route(u))
+        _clock.now += B.HILLTOP_SITES_TTL + 1
+        assert [s["local_id"] for s in p._fetch_stations()] == [s["local_id"] for s in good]
+        assert p._sites["gw"]["at"] < _clock.now - B.HILLTOP_SITES_TTL + 1801
+    cold = B.HilltopWaveProvider(http=FileHTTP(lambda u: err if ("SiteList" in u and "gw.govt" in u)
+                                               else hilltop_route(u)))
+    assert [s["local_id"].split(":")[0] for s in cold._fetch_stations()] == ["tdc"]    # the other council stands
+
+
+def test_g75_one_measurement_list_failing_keeps_that_site(_clock):
+    p = B.HilltopWaveProvider(http=FileHTTP(hilltop_route))
+    good = p._fetch_stations()
+    p.http = FileHTTP(lambda u: RuntimeError("timeout") if ("MeasurementList" in u and "South%20%28B%29" in u)
+                      else hilltop_route(u))
+    _clock.now += B.HILLTOP_SITES_TTL + 1
+    assert [s["local_id"] for s in p._fetch_stations()] == [s["local_id"] for s in good]
+    assert p._sites["gw"]["at"] < _clock.now - B.HILLTOP_SITES_TTL + 1801         # asked again in half an hour
+    cold = B.HilltopWaveProvider(http=p.http)                                       # nothing held: only that site
+    ids = [s["local_id"] for s in cold._fetch_stations()]
+    assert ids == ["tdc:hy-tuatea-buoy-at-tasman-bay"] and cold._sites["gw"]["at"] < _clock.now
+
+
+def test_g75_xml_guard_refuses_utf16():
+    body = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE x [<!ENTITY a "b">]><Hilltop/>'.encode("utf-16")
+    with pytest.raises(ValueError):
+        B.parse_hilltop_data(body)
+    with pytest.raises(ValueError):
+        B.parse_hilltop_data('<Hilltop/>'.encode("utf-16-le"))
+
+
+def test_g75_ecan_absurd_epoch_skipped():
+    doc = {"height": {"data": [[1e20, 1.0, "x"], [-5, 1.0, "x"], [1795706400000, 1.2, "x"]]}}
+    rows = B.parse_ecan_waves(doc, NOW)
+    assert [r["hs_m"] for r in rows] == [1.2]
+
+
+def test_g75_spc_lowest_band_peak_dropped_with_its_direction():
+    name = next(n for n in os.listdir(FIX) if n.startswith("lowband_"))
+    vals = B.decode_bufr_wave(fx(name))[0]
+    assert {d: v for d, v in reversed(vals)}[22071] == 25.6                    # what the buoy sent
+    wsi, lat, lon, o = B.bufr_wave_reading(vals, NOW)
+    assert o["hs_m"] == 0.25 and o["tp_s"] is None and o["dir_deg"] is None
+
+
+def test_g75_spc_direction_zero_is_north():
+    vals = [(d, (0 if d == 22076 else v)) for d, v in B.decode_bufr_wave(fx(SPC_FILES[-1]))[0]]
+    assert B.bufr_wave_reading(vals, NOW)[3]["dir_deg"] == 0
+
+
+def test_g75_bufr_fuzz_raises_only_value_errors():
+    import random
+    rnd = random.Random(75)
+    base = [fx(n) for n in SPC_FILES]
+    for i in range(3000):
+        m = bytearray(rnd.choice(base))
+        for _ in range(rnd.randint(1, 4)):
+            m[rnd.randrange(len(m))] = rnd.randrange(256)
+        if i % 3 == 0:
+            m = m[:rnd.randrange(8, len(m))] + (b"7777" if i % 2 else b"")
+        try:
+            B.decode_bufr_wave(bytes(m))
+        except ValueError:
+            pass
+    big = bytearray(base[0])
+    p = 8 + int.from_bytes(big[8:11], "big")
+    big[p:p + 3] = (0xFFFFFF).to_bytes(3, "big")                              # a huge section 3 (G75 P2-2)
+    with pytest.raises(ValueError):
+        B.decode_bufr_wave(bytes(big))
+
+
+def test_g75_spc_a_file_that_breaks_the_decoder_is_skipped_once(_clock, monkeypatch):
+    def boom(msg):
+        raise IndexError("x")
+    monkeypatch.setattr(B, "decode_bufr_wave", boom)
+    http = FileHTTP(spc_route)
+    p = B.SpcWis2Provider(http=http)
+    assert p._fetch_stations() == []                                          # no reading, no failed refresh
+    n = len([u for u in http.calls if "list-type" not in u])
+    http.calls.clear()
+    with pytest.raises(RuntimeError):            # only 404s left to ask and nothing readable: a failed refresh (keep-last)
+        p._fetch_stations()
+    assert len([u for u in http.calls if "list-type" not in u]) == n - 3       # the 3 files are not asked again
+
+
+def test_g75_section_length_past_the_end_is_refused():
+    m = bytearray(fx(SPC_FILES[0]))
+    m[8:11] = (len(m) - 10).to_bytes(3, "big")             # section 1 claims to run past the message's end
+    with pytest.raises(ValueError):
+        B.decode_bufr_wave(bytes(m))
+
+
+def test_g75_tz_in_milliseconds_read_as_seconds():
+    rows = B.hilltop_rows({"hs_m": [("2026-11-26T18:00:00Z", 1.0)], "tz_s": [("2026-11-26T18:00:00Z", 6200.0)]}, NOW)
+    assert rows[0]["tz_s"] == 6.2
+    rows = B.hilltop_rows({"hs_m": [("2026-11-26T18:00:00Z", 1.0)], "tz_s": [("2026-11-26T18:00:00Z", 60.0)]}, NOW)
+    assert rows[0]["tz_s"] is None                          # 60 s: impossible, blanked

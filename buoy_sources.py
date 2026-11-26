@@ -4015,6 +4015,10 @@ def _xml_root(body, what):
     be declared or expanded."""
     import xml.etree.ElementTree as ET
     raw = body if isinstance(body, bytes) else str(body).encode("utf-8", "replace")
+    head = raw[:512]
+    # only an ASCII-compatible body is parsed (G75 P2-4): in UTF-16 / UTF-32 a DOCTYPE would not show as ASCII text
+    if b"\x00" in head or head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        raise ValueError("%s: an XML answer that is not UTF-8" % what)
     up = raw.upper()
     if b"<!DOCTYPE" in up or b"<!ENTITY" in up:
         raise ValueError("%s: an XML answer with a DOCTYPE" % what)
@@ -4031,20 +4035,25 @@ def _xml_root(body, what):
 HILLTOP_TZ = timezone(timedelta(hours=12))
 
 # reading key -> measurement names in order of preference (whichever the site has); a measurement whose stated
-# units are not among the allowed ones is not used (GW's zero-crossing period is in msecs; NRC's plain "Mean Wave
-# Direction" may be magnetic beside its "(True)", which is preferred).
+# units are not among the allowed ones is not used (NRC's plain "Mean Wave Direction" may be magnetic beside its
+# "(True)", which is preferred). GW's "Significant Wave Period (Tsig)" is T1/3, the mean period of the highest third,
+# close to the peak (7.5-8.0 s beside a 6.0-6.3 s zero-crossing period, 2026-11-26): it is neither a peak nor a mean
+# period, so it is not shown (G75 P1-2). GW's "Zero Crossing Wave Period (Tz)" is labelled msecs but holds seconds
+# (6.0-6.3): it is read as the zero-crossing period, a value above 100 taken as milliseconds.
 HILLTOP_FIELDS = (
     ("hs_m", ("Significant Wave Height (Hsig)", "Spectral Wave Height (Hm0)", "Height3")),
     ("tp_s", ("Peak Wave Period (TP)",)),
-    ("mean_period_s", ("Significant Wave Period (Tsig)", "Average Wave Period (Tav)", "Average Wave Period")),
+    ("mean_period_s", ("Average Wave Period (Tav)", "Average Wave Period")),
+    ("tz_s", ("Zero Crossing Wave Period (Tz)",)),
     ("dir_deg", ("Wave Spectral Peak Direction (TPDir)", "Mean Wave Direction (True)", "Wave Direction",
                  "Average Wave Direction")),
     ("hmax_m", ("Maximum Wave Height (Hmax)", "Max Wave Height (Hmax)", "Max Wave Height")),
-    ("sst_c", ("Water Temperature",)),
+    ("sst_c", ("Water Temperature", "Sea Temperature")),
 )
 HILLTOP_UNITS = {
     "hs_m": ("m", ""), "hmax_m": ("m", ""),
     "tp_s": ("s", "sec", "secs", "seconds", ""), "mean_period_s": ("s", "sec", "secs", "seconds", ""),
+    "tz_s": ("s", "sec", "secs", "seconds", "msecs", ""),
     "dir_deg": ("deg", "degrees", "degt", "degrees true", ""),
     "sst_c": ("°c", "degc", "deg c", "c"),
 }
@@ -4083,11 +4092,20 @@ def _hilltop_slug(name):
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
 
 
+def _hilltop_root(body, what):
+    """The parsed answer; Hilltop answers an error with HTTP 200 and an <Error> element (G75 P1-1): that raises."""
+    root = _xml_root(body, what)
+    err = root.text if root.tag == "Error" else root.findtext("Error")
+    if root.tag == "Error" or err:
+        raise ValueError("%s: %s" % (what, (err or "error").strip()[:120]))
+    return root
+
+
 def parse_hilltop_sites(body):
     """A Hilltop SiteList (Location=LatLong) -> [(site name, lat, lon)] of the sites that may be wave buoys: the name
     says wave or buoy, the site has a position, and it is not an "-Offline" copy."""
     out = []
-    for s in _xml_root(body, "Hilltop SiteList").iter("Site"):
+    for s in _hilltop_root(body, "Hilltop SiteList").iter("Site"):
         name = (s.get("Name") or "").strip()
         lat, lon = _jnum(s.findtext("Latitude")), _jnum(s.findtext("Longitude"))
         if (not name or not _HILLTOP_SITE_RE.search(name) or name.lower().endswith("-offline")
@@ -4102,7 +4120,7 @@ def parse_hilltop_measurements(body):
     """A Hilltop MeasurementList -> {reading key: measurement name} for the wave fields this site has (HILLTOP_FIELDS
     order, units checked); {} when it has no wave height."""
     have = {}
-    for m in _xml_root(body, "Hilltop MeasurementList").iter("Measurement"):
+    for m in _hilltop_root(body, "Hilltop MeasurementList").iter("Measurement"):
         name = (m.get("Name") or "").strip()
         if name:
             have.setdefault(name, (m.findtext("Units") or "").strip().lower())
@@ -4117,10 +4135,7 @@ def parse_hilltop_measurements(body):
 
 def parse_hilltop_data(body):
     """A Hilltop GetData answer -> [(utc 'Z' time, value)] oldest first; the times are NZST (HILLTOP_TZ)."""
-    root = _xml_root(body, "Hilltop GetData")
-    err = root.findtext("Error")
-    if err:
-        raise ValueError("Hilltop: %s" % err.strip()[:120])
+    root = _hilltop_root(body, "Hilltop GetData")
     out = []
     for e in root.iter("E"):
         t, v = (e.findtext("T") or "").strip(), _jnum(e.findtext("I1"))
@@ -4146,9 +4161,14 @@ def hilltop_rows(series, now):
         vals = by_t[t]
         if vals.get("hs_m") is None:
             continue
+        tz = vals.get("tz_s")
+        if tz is not None and tz > 100:
+            tz /= 1000.0                     # a zero-crossing period really in milliseconds
         o = {"time_utc": t, "hs_m": round(vals["hs_m"], 2),
              "tp_s": _peak_ok(vals.get("tp_s"), vals.get("mean_period_s")),
-             "mean_period_s": vals.get("mean_period_s"), "dir_deg": vals.get("dir_deg"), "dir_kind": "from",
+             "mean_period_s": vals.get("mean_period_s"),
+             "tz_s": round(tz, 2) if tz is not None and 0 < tz <= 40 else None,
+             "dir_deg": vals.get("dir_deg"), "dir_kind": "from",
              "hmax_m": vals.get("hmax_m"), "sst_c": vals.get("sst_c")}
         o = _sane_reading(o, now)
         if o:
@@ -4190,24 +4210,35 @@ class HilltopWaveProvider(BuoyProvider):
         held = self._sites.get(council["key"])
         if held and now - held["at"] < HILLTOP_SITES_TTL:
             return held["sites"]
+        held_by = {s["site"]: s for s in (held or {}).get("sites", [])}
         try:
-            found = []
-            for name, lat, lon in parse_hilltop_sites(self._get(council, [("Request", "SiteList"),
-                                                                           ("Location", "LatLong")])):
-                fields = parse_hilltop_measurements(self._get(council, [("Request", "MeasurementList"),
-                                                                         ("Site", name)]))
-                if fields:
-                    found.append({"site": name, "lat": lat, "lon": lon, "fields": fields})
+            sites = parse_hilltop_sites(self._get(council, [("Request", "SiteList"), ("Location", "LatLong")]))
+            if not sites and held_by:
+                raise ValueError("an empty site list after %d sites" % len(held_by))
         except self._ERRORS as exc:
             if not held:
                 raise
             _log.warning("HILLTOP %s: site list not read (%s); the list in hand stands", council["key"], exc)
             held["at"] = now - HILLTOP_SITES_TTL + 1800          # asked again in half an hour
             return held["sites"]
+        found, short = [], False
+        for name, lat, lon in sites:
+            try:
+                fields = parse_hilltop_measurements(self._get(council, [("Request", "MeasurementList"),
+                                                                         ("Site", name)]))
+            except self._ERRORS as exc:                       # this site keeps what it had (G75 P2-3)
+                _log.warning("HILLTOP %s %s: measurement list not read (%s)", council["key"], name, exc)
+                short = True
+                if name in held_by:
+                    found.append(held_by[name])
+                continue
+            if fields:
+                found.append({"site": name, "lat": lat, "lon": lon, "fields": fields})
         # a new site list: every site of this council is asked again now (a quiet one may have come back)
         for dkey in [k for k in self._dead if k[0] == council["key"]]:
             self._dead.pop(dkey)
-        self._sites[council["key"]] = {"at": now, "sites": found}
+        # a list with a site that could not be read is asked again in half an hour
+        self._sites[council["key"]] = {"at": now - HILLTOP_SITES_TTL + 1800 if short else now, "sites": found}
         return found
 
     def _data(self, council, site, measurement):
@@ -4311,7 +4342,7 @@ def parse_ecan_waves(doc, now):
             if not isinstance(p, list) or len(p) < 2:
                 continue
             ms, v = _jnum(p[0]), _jnum(p[1])
-            if ms is None or v is None:
+            if ms is None or v is None or not (1e12 <= ms <= 4.1e12):      # 2001-2099 (G75 P2-5)
                 continue
             by_t.setdefault(int(ms // 1000), {})[key] = v
     rows = []
@@ -4321,7 +4352,8 @@ def parse_ecan_waves(doc, now):
             continue
         o = {"time_utc": datetime.fromtimestamp(ep, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
              "hs_m": round(vals["hs_m"], 2), "tp_s": None, "mean_period_s": vals.get("mean_period_s"),
-             "dir_deg": vals.get("dir_deg"), "dir_kind": "from", "hmax_m": vals.get("hmax_m")}
+             "dir_deg": vals.get("dir_deg"), "dir_kind": "from",
+             "hmax_m": round(vals["hmax_m"], 2) if vals.get("hmax_m") is not None else None}
         o = _sane_reading(o, now)
         if o:
             rows.append(o)
@@ -4530,6 +4562,7 @@ _BUFR_D = {
              22186, 22187, 105000, 31001, 8090, 22106, 8090, 22186, 22187),
 }
 BUFR_WAVE_TEMPLATE = (301150, 308015)
+BUFR_LOWEST_BAND_S = 25.0          # a peak period this long is the lowest spectral band (SPC's buoys: 25.6 s)
 _BUFR_MAX_ITEMS = 20000
 
 
@@ -4608,19 +4641,33 @@ def decode_bufr_wave(msg):
         raise ValueError("not a BUFR message")
     if int.from_bytes(msg[4:7], "big") != len(msg) or msg[7] != 4:
         raise ValueError("BUFR length or edition (only edition 4)")
+    n = len(msg)
+
+    def section(p, least):
+        """A section's length at p, checked to lie inside the message (G75 P2-1, P2-2)."""
+        if p + 3 > n:
+            raise ValueError("BUFR section past the end")
+        ln = int.from_bytes(msg[p:p + 3], "big")
+        if ln < least or p + ln > n - 4:
+            raise ValueError("BUFR section length %d at %d" % (ln, p))
+        return ln
     p = 8
-    l1 = int.from_bytes(msg[p:p + 3], "big")
-    if l1 < 22 or msg[p + 3] != 0:                   # master table 0 (meteorology)
+    l1 = section(p, 22)
+    if msg[p + 3] != 0:                              # master table 0 (meteorology)
         raise ValueError("BUFR section 1")
     has2 = bool(msg[p + 9] & 0x80)
     p += l1
     if has2:
-        p += int.from_bytes(msg[p:p + 3], "big")
-    l3 = int.from_bytes(msg[p:p + 3], "big")
+        p += section(p, 4)
+    l3 = section(p, 9)
+    if l3 > 7 + 2 * len(BUFR_WAVE_TEMPLATE) + 1:
+        raise ValueError("BUFR section 3 longer than the wave template's")
     nsub = int.from_bytes(msg[p + 4:p + 6], "big")
     flags = msg[p + 6]
     if flags & 0x40:
         raise ValueError("compressed BUFR not supported")
+    if not 1 <= nsub <= 64:
+        raise ValueError("BUFR subsets: %d" % nsub)
     descs = []
     for q in range(p + 7, p + l3 - 1, 2):
         b = int.from_bytes(msg[q:q + 2], "big")
@@ -4628,12 +4675,12 @@ def decode_bufr_wave(msg):
     if tuple(descs) != BUFR_WAVE_TEMPLATE:
         raise ValueError("BUFR template %s is not the wave template" % (descs[:4],))
     p += l3
-    l4 = int.from_bytes(msg[p:p + 3], "big")
-    if p + l4 + 4 != len(msg):
+    l4 = section(p, 5)
+    if p + l4 + 4 != n:
         raise ValueError("BUFR section 4 length")
     bits = _BufrBits(bytes(msg[p + 4:p + l4]))
     subsets = []
-    for _ in range(max(nsub, 0)):
+    for _ in range(nsub):
         vals = []
         _bufr_run(list(BUFR_WAVE_TEMPLATE), bits, vals)
         subsets.append(vals)
@@ -4673,8 +4720,13 @@ def bufr_wave_reading(vals, now):
     if hs is None:
         return None
     d = first(22076)
+    if tp is not None and tp >= BUFR_LOWEST_BAND_S:
+        # the peak at the spectrum's lowest band (25.6 s): low-frequency noise, not a swell (G75 P1-3: 20 of 86 of
+        # Honiara's messages on 2026-11-24/26, Hs 0.2-0.56 m, directions all round, many from the land side); the
+        # dominant direction goes with it
+        tp = d = None
     o = {"time_utc": t, "hs_m": round(hs, 2), "tp_s": _peak_ok(tp, tm), "mean_period_s": tm, "hmax_m": hmax,
-         "dir_deg": d if d else None, "dir_kind": "from", "dir_spread_deg": first(22077)}
+         "dir_deg": d, "dir_kind": "from", "dir_spread_deg": first(22077) if d is not None else None}
     o = _sane_reading(o, now)
     return (wsi, round(lat, 5), round(lon, 5), o) if o else None
 
@@ -4753,16 +4805,16 @@ class SpcWis2Provider(BuoyProvider):
                 _log.warning("SPC: %s not read (%s)", k.rsplit("/", 1)[-1], exc)
                 continue                             # asked again next refresh
             try:
-                got = [bufr_wave_reading(v, now) for v in decode_bufr_wave(r.content)]
-                self._read[k] = next((g for g in got if g), None)
-            except ValueError as exc:
-                _log.warning("SPC: %s not decoded (%s)", k.rsplit("/", 1)[-1], exc)
+                got = [g for g in (bufr_wave_reading(v, now) for v in decode_bufr_wave(r.content)) if g]
+                self._read[k] = got or None
+            except Exception as exc:                 # a malformed file is skipped, never the refresh (G75 P2-1)
+                _log.warning("SPC: %s not decoded (%s: %s)", k.rsplit("/", 1)[-1], type(exc).__name__, exc)
                 self._read[k] = None
         if new and errors >= len(new) and not any(self._read.values()):
             raise RuntimeError("every SPC file failed (%d)" % errors)
         by = {}
-        for v in self._read.values():
-            if v:
+        for got in self._read.values():
+            for v in got or ():
                 by.setdefault(v[0], []).append(v)
         out, obs = [], {}
         for wsi, items in sorted(by.items()):

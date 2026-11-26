@@ -4,7 +4,7 @@ Writes tests/fixtures/buoys_pacific/:
   gw_sites.xml              Greater Wellington's Hilltop SiteList, cut to its wave / buoy sites and two others
   gw_meas_southb.xml        MeasurementList of "Wellington Harbour at Baring Head Wave Buoy (South (B))"
   gw_meas_old.xml           MeasurementList of "Wellington Harbour at Baring Head Wave Buoy" (quiet since 2020)
-  gw_<field>.xml            South (B)'s last day: Hsig, Tsig, Wave Direction, Hmax, water temperature (P1D)
+  gw_<field>.xml            South (B)'s last day: Hsig, Tsig, Wave Direction, Hmax, water temperature, Tz (P1D)
   gw_old_hs.xml             the 2020 series' last day (a quiet site)
   tdc_sites.xml             Tasman's SiteList cut the same way
   tdc_meas_tuatea.xml       Tuatea's MeasurementList; tdc_<field>.xml its last day (Height3, period, direction, max)
@@ -12,6 +12,7 @@ Writes tests/fixtures/buoys_pacific/:
   epa_wave-height.json, epa_wave-direction.json, epa_status.json   Puerto Arica's buoy (24 h)
   spc_list.xml              the WIS2 global cache's listing of SPC's wave-buoy files
   spc_<name>.bufr4          the three newest SPC files; spc_expected.json their eccodes decoding (when eccodes is here)
+  lowband_<name>.bufr4      (copied by hand, G75 P1-3) a Honiara message whose peak is the lowest band, 25.6 s
 """
 import json
 import os
@@ -71,7 +72,8 @@ def main():
     w("gw_meas_southb.xml", hilltop(GW, Request="MeasurementList", Site=SOUTHB))
     w("gw_meas_old.xml", hilltop(GW, Request="MeasurementList", Site=OLD))
     for f, m in (("hs", "Significant Wave Height (Hsig)"), ("tsig", "Significant Wave Period (Tsig)"),
-                 ("dir", "Wave Direction"), ("hmax", "Maximum Wave Height (Hmax)"), ("sst", "Water Temperature")):
+                 ("dir", "Wave Direction"), ("hmax", "Maximum Wave Height (Hmax)"), ("sst", "Water Temperature"),
+                 ("tz", "Zero Crossing Wave Period (Tz)")):
         w("gw_%s.xml" % f, hilltop(GW, Request="GetData", Site=SOUTHB, Measurement=m, TimeInterval="P1D"))
         time.sleep(0.5)
     w("gw_old_hs.xml", hilltop(GW, Request="GetData", Site=OLD, Measurement="Significant Wave Height (Hsig)",

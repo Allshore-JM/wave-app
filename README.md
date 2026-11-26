@@ -2526,9 +2526,14 @@ permission first (requested 2026-11-26), so nothing reads them yet.
 - **New Zealand councils' Hilltop servers** (`HilltopWaveProvider`, source `HILLTOP`): Greater Wellington
   (`hilltop.gw.govt.nz`, Baring Head South, CC BY 4.0) and Tasman (`envdata.tasman.govt.nz`, Tuatea buoy in Tasman Bay).
   Each server's site list is read every 6 h: a site whose name says wave or buoy, with a position, not an "-Offline"
-  copy, and with a wave height in its measurement list (units checked: GW's msecs zero-crossing period is never used).
-  Every 30 min each live site's last day (`GetData ... TimeInterval=P1D`) of height, mean period (GW's Tsig, Tasman's
-  average period), direction FROM, Hmax and water temperature is read and joined by time. Hilltop times carry no zone:
+  copy, and with a wave height in its measurement list (units checked). Every 30 min each live site's last day
+  (`GetData ... TimeInterval=P1D`) of height, period, direction FROM, Hmax and water / sea temperature is read and joined
+  by time. Periods: Tasman's average period is shown as the mean period; GW's "Zero Crossing Wave Period (Tz)" as the
+  zero-crossing period (labelled msecs but holding seconds, 6.0-6.3 s; a value above 100 is taken as milliseconds).
+  GW's "Significant Wave Period (Tsig)" is T1/3 (7.5-8.0 s, close to the peak), neither a peak nor a mean period: not
+  shown (G75 P1-2). A Hilltop error answer (HTTP 200 with `<Error>`) or an empty site list while one is held is a
+  failure: the held list stands and is asked again in 30 min; one site's measurement list failing keeps that site's
+  held entry. Hilltop times carry no zone:
   they are New Zealand STANDARD time, UTC+12 all year (`HILLTOP_TZ`, checked with windows anchored to the servers' own
   "now"). A site whose newest height is older than 3 days is not shown and is asked again only with the next site list,
   so a buoy that comes back appears by itself (GW's North (A), Taputeranga, Tasman's Golden Bay and Tasman Bay buoys are
@@ -2545,10 +2550,15 @@ permission first (requested 2026-11-26), so nothing reads them yet.
   Office global cache's public S3 bucket (`wis2globalcache.s3.amazonaws.com`, prefix
   `data/int-spc/data/core/ocean/surface-based-observations/wave-buoys/`) every 15 min and fetches only the files of the
   last 26 h it has not read (144 bytes each; at most 150 a refresh, newest first; an unreadable file is not asked again,
-  a failed GET is). The files are BUFR edition 4 of the WMO moored-buoy wave template 301150 + 308015: `decode_bufr_wave`
-  reads exactly that template in pure Python (the descriptors from WMO's BUFR4 tables; anything else, compression or a
-  data section longer than the template is refused), checked against eccodes on 87 real messages. Height, spectral
-  PEAK period, highest wave, mean period, dominant direction FROM. On 2026-11-26 one buoy reported (Honiara, Solomon
+  a failed GET is; a file that breaks the decoder in any way is skipped, never the refresh). The files are BUFR
+  edition 4 of the WMO moored-buoy wave template 301150 + 308015: `decode_bufr_wave` reads exactly that template in
+  pure Python (the descriptors from WMO's BUFR4 tables; every section length is checked inside the message; anything
+  else, compression or a data section longer than the template is refused). It matched eccodes on all 87-89 SPC
+  messages in the cache when built (2026-11-26, a one-off check; the committed tests compare 3 messages with eccodes'
+  values, fuzz 3,000 damaged copies and pin the refusals). Read: height, spectral PEAK period and dominant direction FROM
+  (and the highest wave and mean period when sent: Honiara sends neither). A peak at the spectrum's lowest band (25 s or
+  more; Honiara's 25.6 s in 20 of 86 messages, with directions all round) is noise: that reading's peak and direction
+  are dropped (G75 P1-3). Every subset of a message is read. On 2026-11-26 one buoy reported (Honiara, Solomon
   Islands); any buoy SPC adds appears by itself ("SPC buoy <id>" until named in `SPC_NAMES`).
 - **Puerto Arica** (`PuertoAricaProvider`, `EPA`): Empresa Portuaria Arica's buoy SIMAR-EPA-01, about 1 km off the port,
   from the JSON behind the port's "Condicion Maritima" page (`simar_api.php?action=wave-height|wave-direction|status`,
@@ -2556,7 +2566,10 @@ permission first (requested 2026-11-26), so nothing reads them yet.
   The marker uses the buoy's own GPS while it stays within 2 km of its mooring.
 - Dedup priority: HILLTOP, ECAN, EPA 54 (they meet no other feed's buoys); SPC 44, below CDIP / NDBC / NDBCW, so a
   US-flag Pacific buoy SPC might relay never replaces the richer marker.
-- XML answers (Hilltop, the S3 listing) are parsed with the standard library after refusing any DOCTYPE / ENTITY.
+- XML answers (Hilltop, the S3 listing) are parsed with the standard library after refusing any DOCTYPE / ENTITY and
+  any body that is not ASCII-compatible (UTF-16 / UTF-32, where those words would not show as text).
+- An adversarial review (G75, record `docs/reviews/buoys-pacific-G75-adversarial.md`) found 0 P0, 3 P1, 5 P2, 6 P3:
+  all fixed or recorded there.
 
 ## Tide stations (plan section 38, UI asset 1.18.6)
 

@@ -4367,9 +4367,11 @@ class EcanWaveProvider(BuoyProvider):
     source = "ECAN"
     source_name = "Environment Canterbury (NZ)"
     source_url = "https://www.ecan.govt.nz/data/current-wave-data/"
-    license_label = "Environment Canterbury data (credit required)"
-    attribution_text = ("Source: Environment Canterbury, Canterbury wave buoy off Banks Peninsula "
-                        "(https://www.ecan.govt.nz/data/current-wave-data/). Readings reach shore every 3 hours.")
+    license_label = "Environment Canterbury / Earth Sciences NZ (used with permission)"
+    # the buoy is run by ECan with Earth Sciences New Zealand; reuse confirmed by ECan 2026-11-26 (plan section 110)
+    attribution_text = ("Data: Environment Canterbury and Earth Sciences New Zealand, Canterbury wave buoy off Banks "
+                        "Peninsula (https://www.ecan.govt.nz/data/current-wave-data/). Readings reach shore every 3 "
+                        "hours.")
     stale_after_sec = 6 * 3600
     capabilities = _caps(bulk=True, recent_history=True, directional=True)
     list_ttl_sec = 1800

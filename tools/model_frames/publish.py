@@ -243,15 +243,30 @@ def notready_key(run, prefix=PREFIX):
     return f"{prefix}/notready/{run}.json"
 
 
-STORAGE_BUSY_CODES = ("ServiceUnavailable", "SlowDown", "TooManyRequests", "RequestLimitExceeded")
+STORAGE_BUSY_CODES = ("ServiceUnavailable", "SlowDown", "TooManyRequests", "RequestLimitExceeded", "InternalError")
+_ERROR_CODE_RE = re.compile(r"An error occurred \((\w+)\) when calling")
+
+
+def _error_code(exc):
+    response = getattr(exc, "response", None)
+    return response.get("Error", {}).get("Code") if isinstance(response, dict) else None
 
 
 def is_storage_busy(exc):
     """A storage 'slow down' that outlasted botocore's own retries: R2's ServiceUnavailable 'Reduce your concurrent
-    request rate for the same object' (model-frames 2026-10-28 and 2026-11-10), S3's SlowDown. Temporary: the next
-    tick tries again, so it is not a failed run (no failure record, no three-hour back-off, no failure mail)."""
-    response = getattr(exc, "response", None)
-    code = response.get("Error", {}).get("Code") if isinstance(response, dict) else None
+    request rate for the same object' (model-frames 2026-10-28 and 2026-11-10), S3's SlowDown, and R2's InternalError
+    'We encountered an internal error. Please try again.' (model-rrfs 2026-11-26, an UploadPart). Temporary: the next
+    tick tries again, so it is not a failed run (no failure record, no three-hour back-off, no failure mail); a store
+    that stays down is the stale alarm's.
+    boto3's multipart upload wraps the ClientError in an S3UploadFailedError that has no .response: its code is read
+    from the error it was raised from, else from its message. Only that wrapper is unwrapped: any other exception
+    raised while handling a busy error is a real failure."""
+    code = _error_code(exc)
+    if code is None and type(exc).__name__ == "S3UploadFailedError":
+        code = _error_code(exc.__cause__) or _error_code(exc.__context__)
+        if code is None:
+            m = _ERROR_CODE_RE.search(str(exc))
+            code = m.group(1) if m else None
     return code in STORAGE_BUSY_CODES
 
 

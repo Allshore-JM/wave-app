@@ -2,6 +2,9 @@
 # every listed station's GFS-Wave spectra, from NOAA's spectra archive on AWS (the file the winds job streams, ~1.7 GB,
 # streamed once more per run, split in a process pool). Between cycles the job short-circuits in a few seconds; a build
 # takes minutes (the step summary records the cpus, the workers and the time). The same pinned environment (one cached env).
+# A second step publishes the Nearshore Analysis of the pilot stretch under gfswave/nearshore/v1/ (plan section 109) from
+# the 51201 spectrum the first step keeps and the data branch (data/nearshore) at the commit pinned below. It never fails
+# the tables' job: a failure is a warning in the summary, and the next tick tries again.
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: model-gfsspec
 on:
@@ -14,6 +17,9 @@ on:
         default: ""
       dry_run:
         description: "no uploads (true/false)"
+        default: "false"
+      nearshore_only:
+        description: "skip the spectral split, run only the nearshore analysis (true/false)"
         default: "false"
 concurrency:
   group: model-gfsspec
@@ -74,7 +80,9 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           RUN: ${{ github.event.inputs.run }}
           DRY_RUN: ${{ github.event.inputs.dry_run }}
+          NEARSHORE_ONLY: ${{ github.event.inputs.nearshore_only }}
         run: |
+          if [ "$NEARSHORE_ONLY" = "true" ]; then echo "spectral split skipped (nearshore only)" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
           if [ -n "$RUN" ] && ! [[ "$RUN" =~ ^[0-9]{10}$ ]]; then echo "bad run input"; exit 2; fi
           ARGS=()
           [ -n "$RUN" ] && ARGS+=(--run "$RUN")
@@ -85,3 +93,34 @@ jobs:
           grep -E "Maximum resident|Elapsed" time.txt | tee -a "$GITHUB_STEP_SUMMARY" || true
           if [ "$rc" -eq 3 ]; then echo "no complete run yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
           exit "$rc"
+      - name: Nearshore data
+        if: steps.env.outcome == 'success'
+        id: nsdata
+        continue-on-error: true
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+        with:
+          ref: a22cbecb0f97dade81c6767c245559244bdfee67   # data/nearshore: the pilot table, the atlas, the tide predictions
+          path: nearshore-data
+      - name: Publish the nearshore analysis
+        if: steps.env.outcome == 'success'
+        continue-on-error: true
+        shell: bash -l {0}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          NSDATA: ${{ steps.nsdata.outcome }}
+        run: |
+          if [ "$NSDATA" != "success" ]; then echo "::warning::the nearshore data could not be checked out; this tick is skipped"; exit 0; fi
+          ARGS=(--data nearshore-data/pilot --from-archive)
+          [ "$DRY_RUN" = "true" ] && ARGS+=(--dry-run)
+          rc=0
+          python tools/model_frames/nearshore.py "${ARGS[@]}" || rc=$?
+          if [ "$rc" -eq 3 ]; then echo "nearshore: nothing to do yet" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::the nearshore analysis failed (exit $rc); the tables are not affected"
+            echo "nearshore: FAILED (exit $rc)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 0

@@ -218,3 +218,17 @@ def test_the_spectrum_can_come_straight_from_noaas_archive(data):
     with pytest.raises(ValueError):
         N.spec_from_archive(run_dt, opener=FakeNoaa({"2026110112": archive({"41113": spec_text("41113", steps=range(3))})}))
     assert W.STEPS == 385
+
+
+def test_the_workflow_runs_the_nearshore_step_after_the_tables_and_never_fails_them():
+    text = open(os.path.join(ROOT, ".github", "workflows", "model-gfsspec.yml"), encoding="utf-8").read()
+    spectral = text.index("python tools/model_frames/gfs_spectral.py"); near = text.index("python tools/model_frames/nearshore.py")
+    assert spectral < near and "--data nearshore-data/pilot --from-archive" in text
+    step = text[text.index("- name: Nearshore data"):]
+    assert step.count("continue-on-error: true") == 2 and step.rstrip().endswith("exit 0")
+    assert re.search(r"ref: [0-9a-f]{40} ", step) and "path: nearshore-data" in step            # the data at a pinned commit
+    assert 'NSDATA: ${{ steps.nsdata.outcome }}' in step and 'if [ "$NSDATA" != "success" ]' in step
+    assert step.count("        if: steps.env.outcome == 'success'\n") == 2                    # the repo's rule for every step
+    assert 'NEARSHORE_ONLY: ${{ github.event.inputs.nearshore_only }}' in text and 'if [ "$NEARSHORE_ONLY" = "true" ]' in text
+    uses = re.findall(r"uses:[ ]*([^ \n]+)", text)
+    assert uses and all(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}", u) for u in uses)

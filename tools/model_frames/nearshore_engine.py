@@ -32,6 +32,8 @@ PARAMS = dict(
     stable=0.55,                 # set-wave height / depth the broken wave decays toward (Hs / depth about 0.43 on a reef flat)
     zone_off=0.60,               # the zone ends where set-wave height / depth falls under this (the waves have reformed)
     dally_k=0.15,                # Dally's decay constant
+    zone_close_m=30.0,           # gaps in the zone narrower than this along the crest are closed (drawing and break lines)
+    zone_min_m=50.0,             # zone strips narrower than this along the crest are dropped (drawing and break lines)
     crest_smooth_m=20.0,         # the breaking trigger is smoothed alongshore by this Gaussian sigma (a crest breaks as one)
     lateral_mix=0.25,            # sideways mixing of the flux share per row (0 = none; 0.25 = a 1-2-1 blur)
     wet=0.3,                     # water under this depth (m) is treated as dry
@@ -182,10 +184,14 @@ def jonswap(hs, tp, th0, s=30.0, gam=5.0):
 def shelter(hset_lin, h, dx, ty=None, p=PARAMS):
     """March every column shoreward. hset_lin = unbroken set-wave height, h = depth + tide, ty = offshore component of
     the unit travel vector (negative = shoreward; None = straight in).
-    -> T[ny, nx] the share of the linear energy flux that arrives at each cell, and Z[ny, nx] the breaking zone.
+    -> T[ny, nx] the share of the linear energy flux in the wave at each cell, Z[ny, nx] the breaking zone, and
+    M[ny, nx] the breaking margin of the wave as it ARRIVES at the cell (set height - gamma h, before the cell's own
+    depth limit): its zero line on the zone's seaward side is the break line.
     A column starts breaking where hset_lin sqrt(T) >= gamma h; while breaking, the flux relaxes toward the stable
-    height (stable x h) over the distance h / dally_k; breaking stops under zone_off x h."""
-    ny, nx = hset_lin.shape; T = np.ones((ny, nx), np.float32); Z = np.zeros((ny, nx), bool)
+    height (stable x h) over the distance h / dally_k; breaking stops under zone_off x h. A breaking wave is never
+    higher than gamma h: over a step or a rock the linear table's height runs away as the depth goes to nothing, and
+    the decay alone cannot follow it in one cell."""
+    ny, nx = hset_lin.shape; T = np.ones((ny, nx), np.float32); Z = np.zeros((ny, nx), bool); M = np.full((ny, nx), -p["gamma"], np.float32)
     cur = np.ones(nx); on = np.zeros(nx, bool); xs = np.arange(nx); mix = p["lateral_mix"]
     ds = dx / (np.clip(-ty, 0.5, 1.0) if ty is not None else np.ones((ny, nx)))
     sg = p["crest_smooth_m"] / dx; kc = None
@@ -204,12 +210,32 @@ def shelter(hset_lin, h, dx, ty=None, p=PARAMS):
             rr = np.pad(np.where(wet, ratio, 0.0), len(kc) // 2, mode="edge"); ww = np.pad(wet.astype(float), len(kc) // 2, mode="edge")
             ratio = np.where(wet, np.convolve(rr, kc, mode="valid") / np.maximum(np.convolve(ww, kc, mode="valid"), 1e-6), ratio)
         on = wet & ((ratio >= p["gamma"]) | (on & (ratio >= p["zone_off"])))
+        M[j] = np.where(wet, hset_lin[j] * np.sqrt(cur) - p["gamma"] * hh, -p["gamma"])
+        cur = np.where(on, np.minimum(cur, (p["gamma"] * hh / np.maximum(hset_lin[j], 1e-6)) ** 2), cur)   # the depth limit
         T[j] = np.where(wet, cur, 0.0); Z[j] = on
         tst = np.minimum((p["stable"] * hh / np.maximum(hset_lin[j], 1e-6)) ** 2, 1.0)
         dec = tst + (cur - tst) * np.exp(-p["dally_k"] * ds[j] / hh)
         cur = np.where(on & (cur > tst), dec, cur)
         cur = np.where(wet, cur, np.nan)
-    return T, Z
+    n = int(round(p["zone_close_m"] / dx))
+    if n > 0:                                            # a crest breaks as one: gaps narrower than zone_close_m along it are closed
+        pad = np.pad(Z, ((0, 0), (n, n)))
+        grown = np.zeros_like(Z)
+        for k in range(2 * n + 1): grown |= pad[:, k:k + nx]
+        pad = np.pad(grown, ((0, 0), (n, n)), constant_values=True)
+        closed = np.ones_like(Z)
+        for k in range(2 * n + 1): closed &= pad[:, k:k + nx]
+        Z = Z | (closed & (h > p["wet"]))
+    n = int(round(p["zone_min_m"] / dx / 2.0))
+    if n > 0:                                            # ... and a strip narrower than zone_min_m along it is not a break worth drawing
+        pad = np.pad(Z, ((0, 0), (n, n)))
+        core = np.ones_like(Z)
+        for k in range(2 * n + 1): core &= pad[:, k:k + nx]
+        pad = np.pad(core, ((0, 0), (n, n)))
+        kept = np.zeros_like(Z)
+        for k in range(2 * n + 1): kept |= pad[:, k:k + nx]
+        Z = Z & kept
+    return T, Z, M
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -315,7 +341,7 @@ def interp1(pairs, v):
 
 def break_lines(M, Z, hset, h, tx, ty, dx, tp, p=PARAMS, mixed=None, T=None):
     """Seaward edges of the breaking zone as smoothed polylines with per-vertex values.
-    M = breaking margin (set height - gamma x depth), Z = zone mask, tx/ty = unit travel vector of the dominant train,
+    M = breaking margin of the arriving wave (shelter()), Z = zone mask, tx/ty = unit travel vector of the dominant train,
     tp = that train's peak period (s). -> dict of arrays (LINE_FIELDS), one entry per vertex, `line` numbering the pieces."""
     step = p["line_step_m"]; out = {k: [] for k in LINE_FIELDS}; nline = 0; nride = 0
     # The field that is contoured: the breaking margin outside the zone (negative) and at its first cells (positive),
@@ -403,9 +429,9 @@ def analyse(table, trains, tide=0.0, p=PARAMS, lines=True):
     dom = e.argmax(0); mdir = np.choose(dom, [q[1] for q in per]) if len(per) > 1 else per[0][1]
     tx, ty = table.travel(mdir)
     w = np.array([float(np.sum(t["W"])) for t in trains])
-    T, Z = shelter(H10 * hs_lin, h, table.dx, ty, p)
+    T, Z, M = shelter(H10 * hs_lin, h, table.dx, ty, p)
     hs = hs_lin * np.sqrt(T); hset = H10 * hs
-    res = dict(hs=hs, hs_lin=hs_lin, hset=hset, T=T, zone=Z, h=h, mdir=mdir, dom=dom)
+    res = dict(hs=hs, hs_lin=hs_lin, hset=hset, T=T, zone=Z, h=h, mdir=mdir, dom=dom, margin=M)
     if lines:
         mixed = None
         if len(per) > 1:
@@ -413,5 +439,5 @@ def analyse(table, trains, tide=0.0, p=PARAMS, lines=True):
             d2 = np.choose(np.argsort(e, axis=0)[-2], [q[1] for q in per])
             mixed = ((second >= p["mixed_share"]) & (np.abs(((d2 - mdir + 180) % 360) - 180) >= p["mixed_deg"])).astype(np.float32)
         tp = float(trains[int(np.argmax(w))]["tp"])
-        res["lines"] = break_lines(hset - p["gamma"] * h, Z, hset, h, tx, ty, table.dx, tp, p, mixed, T)
+        res["lines"] = break_lines(M, Z, hset, h, tx, ty, table.dx, tp, p, mixed, T)
     return res

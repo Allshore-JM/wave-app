@@ -87,7 +87,7 @@ def bar_depth(ny=160):
 def test_an_outer_reef_shelters_the_water_behind_it():
     tab = beach(0.0, ny=160, depth=bar_depth())
     r = E.analyse(tab, swell(2.0)); T, Z = r["T"][:, 5], r["zone"][:, 5]
-    assert T[120] == 1.0 and Z[95] and not Z[120]                     # breaks on the reef, not before it
+    assert T[120] == 1.0 and Z[98] and not Z[120]                     # breaks on the reef, not before it
     assert 0.05 < T[60] < 0.6 and not Z[60]                           # reformed and smaller in the lagoon
     assert r["hset"][60, 5] <= E.PARAMS["zone_off"] * 2.0 * 1.05      # left the reef at about the stable height for 2 m
     assert Z[:40].any()                                               # and breaks again on the beach
@@ -192,3 +192,45 @@ def test_a_reform_behind_an_outer_reef_scores_lower_than_the_same_ride_in_open_w
     L = E.analyse(tab, swell(2.0))["lines"]; reef = L["y"] > 800; shore = L["y"] < 400
     assert reef.any() and shore.any() and np.allclose(L["share"][reef], 1.0, atol=0.02) and L["share"][shore].max() < 0.6
     assert L["score"][reef].max() == pytest.approx(40.0) and L["score"][shore].max() < 15   # the step reef is a collapsing wave (0.4)
+
+
+def test_a_breaking_wave_is_never_higher_than_the_criterion_allows_for_its_depth():
+    """A rock or a step: the linear table's height runs away as the depth goes to nothing. In the zone the set height is
+    held to gamma x depth, and the break line still sits where the ARRIVING wave meets the criterion."""
+    d = bar_depth(); d[95] = 0.35                                     # a nearly dry cell on the reef
+    k2 = np.ones((1, 160, 80)); k2[0, 95] = 30.0                      # ... where the table says 5.5 x the offshore height
+    tab = E.Table([0.07], [0.0], k2, np.zeros((1, 160, 80)), np.repeat(d[:, None], 80, axis=1), DX, 0.0)
+    r = E.analyse(tab, swell(2.0)); h = r["h"]; Z = r["zone"]
+    assert Z[95].all() and r["hset"][95].max() <= E.PARAMS["gamma"] * 0.35 + 1e-6
+    assert np.all(r["hset"][Z] <= E.PARAMS["gamma"] * h[Z] + 1e-5)
+    assert r["hs_lin"][95, 5] > 10.0 and r["margin"][99, 5] > 0 and r["margin"][100, 5] < 0   # the reef's edge is the break line
+    L = r["lines"]; reef = L["y"] > 800
+    assert reef.any() and np.allclose(L["y"][reef], 990.0 + 10.0 * (2.54 - 0.9 * 2) / ((2.54 - 0.9 * 2) + (0.9 * 12 - 2.54)), atol=0.2)   # where the margin crosses zero
+
+
+def test_narrow_gaps_in_the_zone_are_closed_along_the_crest():
+    ny, nx = 120, 80
+    dep = np.repeat((0.02 * (np.arange(ny) - 10) * 10.0)[:, None], nx, axis=1)
+    dep[:, 40:42] += 1.5                                              # a 20 m wide channel: its breaking starts further in
+    dep[:, 60:70] += 1.5                                              # a 100 m wide one
+    tab = E.Table([0.07], [0.0], np.ones((1, ny, nx)), np.zeros((1, ny, nx)), dep, DX, 0.0)
+    open_ = E.analyse(tab, swell(1.5), p=dict(E.PARAMS, zone_close_m=0.0, crest_smooth_m=0.0), lines=False)["zone"]
+    shut = E.analyse(tab, swell(1.5), p=dict(E.PARAMS, crest_smooth_m=0.0), lines=False)["zone"]
+    row = int(np.nonzero(open_[:, 10])[0].max())                      # the seaward-most breaking row of the plain beach
+    assert open_[row, 39] and not open_[row, 40] and not open_[row, 41] and not open_[row, 65]
+    assert shut[row, 40] and shut[row, 41] and not shut[row, 65], "the narrow gap is closed, the wide channel stays open"
+    assert np.all(shut[open_]) and not shut[dep <= E.PARAMS["wet"]].any()
+
+
+def test_a_strip_of_zone_narrower_than_the_minimum_is_dropped():
+    ny, nx = 120, 80
+    dep = np.repeat((0.02 * (np.arange(ny) - 10) * 10.0)[:, None], nx, axis=1)
+    dep[60:100, 30:33] = 1.0                                          # a 30 m wide finger of reef reaching far offshore
+    dep[60:100, 50:60] = 1.0                                          # a 100 m wide one
+    tab = E.Table([0.07], [0.0], np.ones((1, ny, nx)), np.zeros((1, ny, nx)), dep, DX, 0.0)
+    p0 = dict(E.PARAMS, crest_smooth_m=0.0, zone_close_m=0.0, lateral_mix=0.0)
+    raw = E.analyse(tab, swell(1.5), p=dict(p0, zone_min_m=0.0), lines=False)["zone"]
+    cut = E.analyse(tab, swell(1.5), p=p0, lines=False)["zone"]
+    assert raw[98, 31] and raw[98, 55] and not raw[98, 40]            # the waves break on each finger's seaward end
+    assert not cut[98, 31] and cut[98, 55], "the narrow finger is dropped, the wide one kept"
+    assert np.all(raw[cut]) and cut[20].sum() == raw[20].sum() > 60   # nothing is added; the beach's own zone is untouched

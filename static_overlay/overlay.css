@@ -40,6 +40,7 @@
 .ov-readout { position: absolute; z-index: 700; pointer-events: none; background: rgba(0,0,0,0.75); color: #fff;
   font: 12px system-ui, sans-serif; padding: 2px 6px; border-radius: 4px; transform: translate(12px, -28px); white-space: nowrap; }
 .ov-readout.ov-readout-left { transform: translate(calc(-100% - 12px), -28px); }
+.ov-readout.ov-readout-multi { white-space: pre-line; width: max-content; max-width: min(340px, 80vw); line-height: 1.35; }
 .ov-toggle, .ov-btn { font-size: 12px; border: 1px solid #0f8f8c; background: #fff; color: #0f8f8c; border-radius: 8px; line-height: 1.2;
   padding: 1px 6px; cursor: pointer; }
 .ov-btn { min-width: 26px; min-height: 22px; }
@@ -159,6 +160,12 @@
 .ov-sat-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; margin: 0; }
 .ov-satrow input { margin: 0; accent-color: #0f8f8c; }
 .ov-sat-note { color: #3f4d6e; font-size: 11px; }
+/* the Nearshore analysis rows of the wave-height panel (plan section 109) */
+.ov-near-key { margin-top: 4px; }
+.ov-near-chips { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 3px; font-size: 11.5px; color: #1d2b4f; }
+.ov-near-chip { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ov-near-chip i { display: inline-block; width: 16px; height: 5px; border-radius: 2px; box-shadow: 0 0 0 1px rgba(12,18,30,0.75); }
+.ov-near-warn { font-style: italic; }
 @media (pointer: coarse) { .ov-satrow input { width: 20px; height: 20px; } .ov-seg-btn { min-height: 28px; } }
 /* The radar's panel (plan section 85): play, slider and speed stay on the smallest sheets; the time and the loop length above the scale. */
 .ov-radar-row { width: 324px; max-width: 100%; align-items: center; }

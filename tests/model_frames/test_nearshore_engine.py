@@ -176,3 +176,15 @@ def test_the_packed_table_keeps_heights_within_two_percent_and_directions_within
     assert lat == pytest.approx(21.62 + 50.0 / (math.pi / 180 * 6371008.8)) and lon < -158.09
     lon2, lat2 = t.lonlat(1000.0, 0.0)                      # x points north-east at alpc 45
     assert lon2 > lon and lat2 > lat and (lat2 - lat) * 111195 == pytest.approx(707.1, rel=0.01)
+
+
+def test_a_reform_behind_an_outer_reef_scores_lower_than_the_same_ride_in_open_water():
+    n = 30; one = np.ones(n); hb = np.full(n, 2.0); peel = np.full(n, 40.0); slow = np.full(n, 6.0); plunging = np.ones(n, int)
+    full = E.rides(peel, one, hb, slow, plunging, 10.0, share=np.full(n, 0.95))[2][0]
+    half = E.rides(peel, one, hb, slow, plunging, 10.0, share=np.full(n, 0.7))[2][0]
+    none = E.rides(peel, one, hb, slow, plunging, 10.0, share=np.full(n, 0.4))[2][0]
+    assert full == pytest.approx(100.0) and half == pytest.approx(50.0) and none == 0.0
+    d = bar_depth(); tab = E.Table([0.07], [0.0], np.ones((1, 160, 80)), np.full((1, 160, 80), 40.0), np.repeat(d[:, None], 80, axis=1), DX, 0.0)
+    L = E.analyse(tab, swell(2.0))["lines"]; reef = L["y"] > 800; shore = L["y"] < 400
+    assert reef.any() and shore.any() and np.allclose(L["share"][reef], 1.0, atol=0.02) and L["share"][shore].max() < 0.6
+    assert L["score"][reef].max() == pytest.approx(40.0) and L["score"][shore].max() < 15   # the step reef is a collapsing wave (0.4)

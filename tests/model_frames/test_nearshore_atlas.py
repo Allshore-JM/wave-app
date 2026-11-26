@@ -15,7 +15,7 @@ SIZES, PERIODS, DIRS, TIDES = (2, 4, 6, 8), (10, 15), (300, 330, 0), (0.0, 0.3)
 def lines(x, y, score, band):
     n = len(x); z = np.zeros(n)
     return dict(x=np.array(x, float), y=np.array(y, float), score=np.array(score, float), band=np.array(band), hb=z, depth=z, peel=z,
-                side=z, speed=z, xi=z, breaker=z, ride=z, ride_m=z, mixed=z, line=z)
+                side=z, speed=z, xi=z, breaker=z, ride=z, ride_m=z, mixed=z, line=z, share=z + 1)
 
 
 def test_a_ride_marks_its_cell_and_the_eight_around_it():

@@ -47,6 +47,7 @@ PARAMS = dict(
     ride_full_m=150.0,           # ride length at which the length term reaches 1
     speed_base=8.0, speed_per_sqrt_h=3.0,    # makeable surfer speed (m/s) = base + k sqrt(breaking height, m)
     breaker_score=(0.7, 1.0, 0.4),           # spilling, plunging, collapsing
+    reform_zero=0.5, reform_full=0.9,        # a wave that kept under / over this share of its energy flux scores 0 / in full
     slope_reach_m=50.0,          # the reef slope is measured over this distance seaward along the wave path
     mixed_share=0.4, mixed_deg=20.0,         # a second train this strong and this far off in direction = mixed swell
 )
@@ -298,7 +299,7 @@ def smooth_line(xy, sigma_pts, closed=False):
 
 # ---------------------------------------------------------------------------------------------------------------------
 # break lines, peel, rides
-LINE_FIELDS = ("x", "y", "hb", "depth", "peel", "side", "speed", "xi", "breaker", "band", "ride", "ride_m", "score", "mixed", "line")
+LINE_FIELDS = ("x", "y", "hb", "depth", "peel", "side", "speed", "xi", "breaker", "band", "ride", "ride_m", "score", "mixed", "line", "share")
 
 
 def interp1(pairs, v):
@@ -306,7 +307,7 @@ def interp1(pairs, v):
     return np.interp(v, xs, ys)
 
 
-def break_lines(M, Z, hset, h, tx, ty, dx, tp, p=PARAMS, mixed=None):
+def break_lines(M, Z, hset, h, tx, ty, dx, tp, p=PARAMS, mixed=None, T=None):
     """Seaward edges of the breaking zone as smoothed polylines with per-vertex values.
     M = breaking margin (set height - gamma x depth), Z = zone mask, tx/ty = unit travel vector of the dominant train,
     tp = that train's peak period (s). -> dict of arrays (LINE_FIELDS), one entry per vertex, `line` numbering the pieces."""
@@ -346,22 +347,26 @@ def break_lines(M, Z, hset, h, tx, ty, dx, tp, p=PARAMS, mixed=None):
             reach = p["slope_reach_m"]; slope = (sample(h, x - reach * ux, y - reach * uy, dx) - dep) / reach
             xi = np.maximum(slope, 0.0) / np.sqrt(np.maximum(hb, 0.05) / (G * tp * tp / (2 * math.pi)))
             breaker = np.digitize(xi, (0.4, 2.0)); band = np.digitize(peel, p["bands"])
-            rid, rlen, score = rides(peel, side, hb, speed, breaker, step, p)
+            # share = the part of the open-sea energy flux still in the wave as it reaches the line (1 = it has not
+            # broken further out; low = a reform behind an outer reef)
+            share = sample(T, x - 1.5 * dx * ux, y - 1.5 * dx * uy, dx) if T is not None else np.ones(n)
+            rid, rlen, score = rides(peel, side, hb, speed, breaker, step, p, share)
             for key, val in (("x", x), ("y", y), ("hb", hb), ("depth", dep), ("peel", peel), ("side", side), ("speed", speed), ("xi", xi),
                              ("breaker", breaker), ("band", band), ("ride", np.where(rid >= 0, rid + nride, -1)), ("ride_m", rlen), ("score", score),
-                             ("mixed", sample(mixed, x, y, dx) > 0.5 if mixed is not None else np.zeros(n, bool)), ("line", np.full(n, nline))):
+                             ("mixed", sample(mixed, x, y, dx) > 0.5 if mixed is not None else np.zeros(n, bool)), ("line", np.full(n, nline)), ("share", share)):
                 out[key].append(val)
             nline += 1; nride += int(rid.max()) + 1 if rid.size and rid.max() >= 0 else 0
     return {k: (np.concatenate(v) if v else np.zeros(0)) for k, v in out.items()}
 
 
-def rides(peel, side, hb, speed, breaker, step, p=PARAMS):
+def rides(peel, side, hb, speed, breaker, step, p=PARAMS, share=None):
     """Split one break line into rides: runs of one side, ended by a closeout section longer than closeout_gap_m or a
     change of side. -> ride index per vertex (-1 = none), the ride's length (m) and its 0-100 score."""
     n = len(peel); rid = np.full(n, -1); rlen = np.zeros(n); score = np.zeros(n)
     close = peel < p["bands"][0]; gap = max(1, int(round(p["closeout_gap_m"] / step)))
     vmax = p["speed_base"] + p["speed_per_sqrt_h"] * np.sqrt(np.maximum(hb, 0.0))
     term = interp1(p["peel_score"], peel) * np.clip((1.5 * vmax - speed) / (0.5 * vmax), 0.0, 1.0) * np.asarray(p["breaker_score"])[breaker]
+    if share is not None: term = term * np.clip((share - p["reform_zero"]) / (p["reform_full"] - p["reform_zero"]), 0.0, 1.0)
     k = 0; i = 0
     while i < n:
         if close[i] or side[i] == 0: i += 1; continue
@@ -402,5 +407,5 @@ def analyse(table, trains, tide=0.0, p=PARAMS, lines=True):
             d2 = np.choose(np.argsort(e, axis=0)[-2], [q[1] for q in per])
             mixed = ((second >= p["mixed_share"]) & (np.abs(((d2 - mdir + 180) % 360) - 180) >= p["mixed_deg"])).astype(np.float32)
         tp = float(trains[int(np.argmax(w))]["tp"])
-        res["lines"] = break_lines(hset - p["gamma"] * h, Z, hset, h, tx, ty, table.dx, tp, p, mixed)
+        res["lines"] = break_lines(hset - p["gamma"] * h, Z, hset, h, tx, ty, table.dx, tp, p, mixed, T)
     return res

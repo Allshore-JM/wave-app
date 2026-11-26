@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.33.1"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.33.2"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")

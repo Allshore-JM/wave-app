@@ -130,4 +130,5 @@ test('out of view nothing is asked for; a time the run does not hold clears the 
   assert.deepEqual(I.NEAR_BANDS.map((b) => b[0]), ['closeout', 'fast', 'ideal', 'easy', 'soft'], 'the five words of the key (owner, 2026-11-26)');
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'static_overlay', 'overlay.js'), 'utf8');
   assert.ok(!/Hawaiian/.test(src) && !/Best here/.test(src) && !/atlas\.json/.test(src), 'no Hawaiian box, no best-swell line');
+  assert.ok(/'Breaking zone: set-wave face height, on the scale above\.'/.test(src) && !/how the wave peels/.test(src), 'the key: one sentence, then the coloured words');
 });

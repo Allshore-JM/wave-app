@@ -505,3 +505,38 @@ permission first (requested 2026-11-26), so nothing reads them yet.
 - An adversarial review (G75, record `docs/reviews/buoys-pacific-G75-adversarial.md`) found 0 P0, 3 P1, 5 P2, 6 P3:
   all fixed or recorded there.
 
+## Live buoys: AusWaves refuses servers (2026-11-26)
+
+Since about 2026-11-26 the AusWaves API (`auswaves.org/wp-json/waves/v1/...`, run by the IMOS Coastal Wave Buoys
+facility at the University of Western Australia) answers our server `403 {"code":"waf_forbidden"}`: a firewall rule
+against non-browser clients. The site does NOT get around it. `AusWavesProvider` names the site honestly
+(`User-Agent: allshoresurf.com live buoys (https://allshoresurf.com)`; an earlier version copied a browser's User-Agent
+and Referer, now removed), and the owner has asked UWA to allow it.
+
+What happens while the refusal lasts:
+- A 401 / 403 from the catalogue raises `buoy_sources.AccessDenied` (the text keeps the API's code:
+  `AccessDenied: HTTP 403 from the AusWaves catalogue (waf_forbidden)`). The base class handles it like any failed
+  refresh: the last good list (if this process had one) is kept for `keep_on_failure_sec` (6 h), then the layer has no
+  AusWaves markers. Unlike a hiccup it is asked again only once per list TTL (30 min, not every 5 min), and a kept list
+  is asked again no later than its expiry, so it never outlives the 6 h.
+- The log says it once (WARNING); the same refusal again is logged at DEBUG, so there is no warning every 5 minutes.
+  A different error, or the refusal after a good refresh, warns again.
+- `/healthz` shows AusWaves with `stations: 0` and that `last_error`; the overall health stays OK (as before).
+- A refused per-buoy request (a window opened from a kept marker) answers "no data" quietly.
+- When UWA allows the site, the next refresh (within 30 min) brings the markers back by itself: nothing to deploy,
+  unless they ask for a key or a different address.
+
+What is really lost (checked 2026-11-26 against the public AusWaves page and the live map): AusWaves showed 56 fixed
+buoys reporting within 24 h. 43 of them are also on AODN, which the merge now shows in their place:
+- 15 AODN buoys with full spectra (Hillarys, Torbay West, Ocean Beach, Cape Bridgewater, Central, Wilsons Prom, North
+  Kangaroo Island, Brighton, Ceduna, Wooli, Collaroy-Narrabeen, Bengello, Maningrida, Mission Beach, Storm Bay): AODN's
+  marker already won there; nothing changes.
+- 28 AODN bulk buoys (WA: Quinns Dog Beach, King George Sound, Coral Bay, Tantabiddi, Exmouth Gulf N / S / E, Cygnet
+  Bay, Jurien Bay Offshore / Inshore, Shark Bay, Cockburn Sound, Bunbury, Augusta Offshore, Woodmans Point FAD05; VIC:
+  Mt Eliza, Indented Head, Werribee, Dutton Way, Inverloch, Port Fairy, Sandringham, Rosebud, Bob, Lakes Entrance,
+  Weeroona Bay; SA: Victor Harbor Offshore; QLD: Karumba): the marker stays (from AODN), but the AusWaves sea / swell
+  split and its swell-over-time table are gone.
+- 13 have no other source and are off the map: WA Yanchep Lagoon, Two Rocks Marina, Dongara Offshore, Dongara Inshore,
+  Busselton Jetty, Middleton Beach, Torbay (the smart mooring, not Torbay West), Dampier FAD 41, Cocos Island North
+  Entrance; SA Robe Guichen Bay, Boston Island, Cape Jervis; VIC Point Addis.
+

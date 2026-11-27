@@ -38,8 +38,11 @@ ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld|model):[a-z0-9][a-z0-9._-
 MODEL_PREFIX = "tides/fes/v1"
 MODEL_LIST_TTL_S = 3600               # the model points' list is asked again at most this often
 MODEL_RETRY_S = 300                   # ... and this soon after a failed read (G76 P2-6)
-MODEL_CREDIT = ("Tide model FES2022b (NOVELTIS, LEGOS, CLS Space Oceanography Division and CNES; distributed by "
-                "AVISO+ with support from CNES)")
+# AVISO licence (Issue 20, section 3.1): producer, CNES as licensor, the DOI, the licence's address, and that the material
+# was modified (these are predictions computed from the model's constants, not the model's grids)
+MODEL_CREDIT = ("Tide predictions computed by this site from the FES2022 Tide product (FES2022b, doi:10.24400/527896/A01-2024.004), "
+                "funded by CNES, produced by LEGOS, NOVELTIS and CLS and made freely available by AVISO; licensed by CNES "
+                "under the AVISO licence, https://www.aviso.altimetry.fr/fileadmin/documents/data/License_Aviso.pdf")
 OFFICIAL_KM = 3.0                     # G76 P2-1: same-name TICON / agency pairs sat 2-3 km apart (Rosslyn Bay, Kushiro)
 ERROR_TTL_S = 60                      # a failed agency fetch is answered "retry" for this long without asking again
 WAIT_S = 2.0                          # a second visitor of a station being fetched waits this long, then "busy"

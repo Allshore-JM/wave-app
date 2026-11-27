@@ -807,10 +807,12 @@
       return out;
     }
     // The screen's widest view: the map's minimum zoom (the page sets it to one world across, or the band between the
-    // poles on a tall screen); one world across where the map has none.
+    // poles on a tall screen); one world across where the map has none. Rounded down to the map's 0.1 zoom step, so each
+    // group starts on a zoom the map can land on (a phone's 1.82 -> 1.8: the islands from 3.3, not 3.32 = 3.4).
     function worldZoom() {
       var mz = typeof map.getMinZoom === 'function' ? map.getMinZoom() : NaN;
-      return mz > 0 ? mz : Math.max(1, Math.log(map.getSize().x / TILE) / Math.LN2);
+      if (!(mz > 0)) mz = Math.max(1, Math.log(map.getSize().x / TILE) / Math.LN2);
+      return Math.floor(mz * 10 + 1e-6) / 10;
     }
     function update() {
       var cities = !!(store && store.ok('p')), countryNames = countries.status === 'ok';

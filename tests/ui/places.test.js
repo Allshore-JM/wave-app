@@ -1325,6 +1325,11 @@ test('section 114 create(): the widest view is the map\'s minimum zoom (one worl
   const phone = await run(1.85, 390, 720, 1.85);
   assert.ok(phone.length > 0 && phone.every((n) => !['SPAIN', 'FRANCE', 'FIJI'].includes(n)), phone.join());
   assert.ok((await run(3.9, 1908, 906, 2.9)).includes('SPAIN'), 'Spain 1.0 closer');
+  // the widest view rounded down to the 0.1 step: a phone at 1.82 has its island nations from 3.3 (not 3.32)
+  const isl = async (z) => { const m = fakeMap(z, -16, -172, 390, 720); m.getMinZoom = () => 1.82;
+    const p2 = M.create(m, { base: BASE, countriesUrl: CURL, L: fakeL(m), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: countryFetch(), whenReady: (go) => go() });
+    await settle(); flush(); return p2.labels.children.filter((s) => !s.hidden).map((s) => s.textContent); };
+  assert.ok((await isl(3.3)).includes('FIJI') && !(await isl(3.2)).includes('FIJI'));
 });
 
 test('section 114 create(): the countries file failing keeps the city names; Places is credited with only the country names; Place names off asks for nothing and hides both', async () => {

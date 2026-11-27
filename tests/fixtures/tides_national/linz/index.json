@@ -1,0 +1,6 @@
+{
+ "https://static.charts.linz.govt.nz/tide-tables/maj-ports/csv/Auckland%202026.csv": "auckland_2026.csv",
+ "https://static.charts.linz.govt.nz/tide-tables/maj-ports/csv/Auckland%202027.csv": "auckland_2027.csv",
+ "https://static.charts.linz.govt.nz/tide-tables/maj-ports/csv/Castlepoint%202026.csv": "castlepoint_2026.csv",
+ "https://www.linz.govt.nz/api/v1/tp": "tp.json"
+}

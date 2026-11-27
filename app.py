@@ -1219,7 +1219,7 @@ _TIDES = {"svc": None, "list": None, "global": None}
 _TIDES_LOCK = threading.Lock()
 # The agencies' official predictions (plan section 112): fetched in the visitor's request (a station at most once a UTC
 # day), far hosts included (Japan, Hong Kong, New Zealand: the far feeds' limits), at most TIDE_AGENCY_MAX_BYTES an
-# answer (Queensland's year of 10-minute heights is the largest, ~1.5 MB), each agency within its own request budget.
+# answer (Kartverket's 34 days of 10-minute heights, ~340 KB, is the largest), each agency within its own request budget.
 TIDE_AGENCY_MAX_BYTES = 4 << 20
 TIDE_AGENCY_PER_MIN = 30
 TIDE_AGENCY_BURST = 15

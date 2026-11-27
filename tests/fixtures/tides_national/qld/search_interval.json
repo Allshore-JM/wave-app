@@ -1,0 +1,232 @@
+{
+"help": "https://www.data.qld.gov.au/api/3/action/help_show?name=package_search",
+"success": true,
+"result": {
+"count": 4,
+"results": [
+{
+"name": "karumba-tide-gauge-predicted-interval-data",
+"title": "Karumba tide gauge—predicted interval data",
+"resources": [
+{
+"id": "1ed0b490-7505-4faf-892a-00c5cee8747e",
+"name": "Description—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "4f8f5503-8643-4266-8cad-0062cadf15e9",
+"name": "2027 — Karumba tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "17938bc2-a7e5-4cc2-bf39-4a7a68954082",
+"name": "2026—Karumba tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "61666638-2bf8-4a7c-af93-5a2c19657d32",
+"name": "2025—Karumba tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "dc758006-e8eb-4a21-a149-33e75c7165e0",
+"name": "2024—Karumba tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": false
+},
+{
+"id": "15975535-0954-4785-aa4c-733ffda279fa",
+"name": "2023—Karumba tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": false
+},
+{
+"id": "3f36f458-51e8-4ffb-8cc7-7d270351b976",
+"name": "2022—Karumba tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": false
+},
+{
+"id": "61e63b7c-d574-406a-bd3c-df9949dc1ccf",
+"name": "2021—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "eb3f1987-89e2-4e1b-bf5c-cf6c41915181",
+"name": "2020—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "4e22de49-a154-4a84-a3b4-e3c193c80954",
+"name": "2019—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "b7edd16e-37bd-4edb-8974-e33be15f714f",
+"name": "2018—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "298daec7-9b90-4001-8c28-3781324f836b",
+"name": "2017—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "b5be5cd2-59d3-4449-88e1-3291e2991b85",
+"name": "2011-2016—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+},
+{
+"id": "cc660393-6cdb-4e85-b38e-3b1d92a63324",
+"name": "2001-2011—Karumba tide gauge predicted interval data",
+"format": "TXT",
+"datastore_active": false
+}
+]
+},
+{
+"name": "abbot-point-tide-gauge-predicted-interval-data",
+"title": "Abbot Point tide gauge—predicted interval data",
+"resources": [
+{
+"id": "3c364f05-c44b-402d-a14c-61cf409b9a18",
+"name": "2027 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "54791c1c-3710-4ac1-8703-a474151dff39",
+"name": "2026 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "b1144491-80a8-49b1-a347-376eb5490e11",
+"name": "2025 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "de26369c-0ce0-440c-9a1c-9a7156b9015b",
+"name": "2024 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "bd54b18d-948b-4625-8435-9556ae0086d1",
+"name": "2023 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "a7015447-4467-46b8-a5ca-fb564170acd5",
+"name": "2022 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "6184c845-74f6-41d1-870d-82c8c06d8f42",
+"name": "2021 — Abbot Point tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+}
+]
+},
+{
+"name": "half-tide-tug-harbour-tide-gauge-predicted-interval-data",
+"title": "Half Tide Tug Harbour tide gauge—predicted interval data",
+"resources": [
+{
+"id": "d293aef4-63b2-460e-a858-2ff1dc2a676f",
+"name": "2027 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "d508ea2e-a773-45a1-a276-06798c84e5cc",
+"name": "2026 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "a755d8d4-6de9-4f8c-96f5-7c4273a87352",
+"name": "2025 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "75954be6-2550-452c-b24a-e926947f82f1",
+"name": "2024 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "7d1bd81f-8edf-4633-a09b-a60ef843de36",
+"name": "2023 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "25be737c-6683-4ac5-ab6e-eadc462f5fd7",
+"name": "2022 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "c0dec052-5113-41c6-8ce2-7620c3cf20f4",
+"name": "2021 — Half Tide Tug Harbour tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+}
+]
+},
+{
+"name": "military-jetty-pumicestone-passage-tide-gauge-predicted-interval-data",
+"title": "Military Jetty Pumicestone Passage tide gauge—predicted interval data",
+"resources": [
+{
+"id": "16ba408b-33ea-4544-8c03-0516e9c49f94",
+"name": "2025 - Military Jetty Pumicestone Passage tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "6f355457-92ae-4567-b108-f949bf610355",
+"name": "2024 - Military Jetty Pumicestone Passage tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "942e3072-9ce4-44d5-ae2b-7d9ba4608fe3",
+"name": "2023 - Military Jetty Pumicestone Passage tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "ceab1777-ff21-4a63-a739-92239387a492",
+"name": "2022 - Military Jetty Pumicestone Passage tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "01b02fe1-50e4-41e0-bcf8-b865c8a676e8",
+"name": "2021 - Military Jetty Pumicestone Passage tide gauge predicted interval data",
+"format": "CSV",
+"datastore_active": true
+}
+]
+}
+],
+"sort": "score desc, metadata_modified desc"
+}
+}

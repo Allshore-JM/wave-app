@@ -1,0 +1,50 @@
+[
+{
+"name": "Ahipara Bay",
+"field_location": "-35.17517,173.11712",
+"field_tide_type": "Offset",
+"field_tide_offset_file": "port-taranaki.pdf",
+"field_tide_reference_port": "Port Taranaki",
+"field_tide_prediction_file": "Ahipara Bay"
+},
+{
+"name": "Akaroa",
+"field_location": "-43.80873,172.95897",
+"field_tide_type": "Daily Predictions",
+"field_tide_offset_file": "",
+"field_tide_reference_port": "",
+"field_tide_prediction_file": "Akaroa"
+},
+{
+"name": "Anita Bay",
+"field_location": "-44.58026,167.78922",
+"field_tide_type": "Offset",
+"field_tide_offset_file": "westport.pdf",
+"field_tide_reference_port": "Westport",
+"field_tide_prediction_file": "Anita Bay"
+},
+{
+"name": "Auckland",
+"field_location": "-36.84307,174.76946",
+"field_tide_type": "Daily Predictions",
+"field_tide_offset_file": "",
+"field_tide_reference_port": "",
+"field_tide_prediction_file": "Auckland"
+},
+{
+"name": "Castlepoint",
+"field_location": "-40.89914,176.23169",
+"field_tide_type": "Daily Predictions",
+"field_tide_offset_file": "",
+"field_tide_reference_port": "",
+"field_tide_prediction_file": "Castlepoint"
+},
+{
+"name": "Scott Base",
+"field_location": "-77.8501,166.769",
+"field_tide_type": "Daily Predictions",
+"field_tide_offset_file": "",
+"field_tide_reference_port": "",
+"field_tide_prediction_file": "Scott Base"
+}
+]

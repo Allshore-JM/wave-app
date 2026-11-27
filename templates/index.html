@@ -3701,7 +3701,8 @@
       tideTargets();
     }
     const TIDE_CREDIT = 'Tides: <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">NOAA CO-OPS</a>, national agencies, '
-      + '<a href="https://www.seanoe.org/data/00980/109129/" target="_blank" rel="noopener">TICON-4 (DGFI-TUM)</a>';
+      + '<a href="https://www.seanoe.org/data/00980/109129/" target="_blank" rel="noopener">TICON-4 (DGFI-TUM)</a>, '
+      + '<a href="https://www.aviso.altimetry.fr/" target="_blank" rel="noopener">FES2022 (CNES / AVISO+)</a>, GeoNames';
     // the zone the tide window shows: the site's Time Zone when one is chosen, else the station's own (the forecast
     // window's rule; the live-buoy panel keeps its own-zone rule)
     function tideZone(station) { const sel = document.getElementById('tz'); return (sel && sel.value) || (station && station.tz) || 'UTC'; }

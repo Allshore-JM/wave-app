@@ -48,6 +48,13 @@ MIN_AMP_CM = 0.5
 LAT_START = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
 LAT_YEARS = 18.61
 QUALITY_OK = ("No obvious issues", "Possible datum issues")
+# G76 P0-2 / P2-2: TICON-3 calls some lake and above-weir river gauges "Coastal" (Toronto, Georgian Bay, the Elbe above
+# Geesthacht): a gauge whose five main constituents (M2 S2 N2 K1 O1) add up to less than MIN_TIDE_CM has no tide to
+# show; TICON's US gauges (marsh monitors, river gauges) are left to NOAA's network; the clock check (qc_ticon.py,
+# against GOT5.5) lists gauges with a whole-hour clock error.
+MIN_TIDE_CM = 5.0
+MAIN = ("M2", "S2", "N2", "K1", "O1")
+QC = os.path.join(HERE, "ticon_qc.json")
 SMALL = {"of", "de", "la", "le", "du", "des", "del", "da", "do", "das", "dos", "di", "el", "en", "y", "and", "on", "am",
          "an", "der", "den", "van", "aan", "sur", "et"}
 UPPER = {"bc", "nb", "ns", "pe", "nl", "qc", "on", "uk", "usa", "pr", "nz"}
@@ -150,8 +157,14 @@ def read_ticon3(path):
     return list(gauges.values())
 
 
+def tidal(g):
+    amp = {n.upper(): a for n, a, _ in g["consts"]}
+    return sum(amp.get(m, 0.0) for m in MAIN) >= MIN_TIDE_CM
+
+
 def choose(t4, t3, noaa_pts, log):
-    coastal = [g for g in t4 if g["type"] == "Coastal" and g["quality"] in QUALITY_OK]
+    coastal = [g for g in t4 if g["type"] == "Coastal" and g["quality"] in QUALITY_OK and g["country"] != "USA"
+               and tidal(g)]
     log["t4_gauges"], log["t4_coastal_ok"] = len(t4), len(coastal)
     coastal.sort(key=lambda g: (g["quality"] != "No obvious issues", -g["years"]))
     kept = []
@@ -166,7 +179,10 @@ def choose(t4, t3, noaa_pts, log):
     # judgement (river, lake, quality flag) stands
     all4 = Grid([(g["lat"], g["lon"]) for g in t4])
     extra = 0
-    for g in sorted([g for g in t3 if g["type"] == "Coastal"], key=lambda g: -g["years"]):
+    # TICON-3's gauges TICON-4 lacks are no longer added (G76 re-check): TICON-3 names no country (US marsh / river
+    # gauges such as Charenton LA, New Castle DE slipped past the US rule), calls lakes "Coastal" and carries no names;
+    # the 22 it added were not worth that risk. The file is still read so TICON-4 gauges it covers stay deduped.
+    for g in []:
         if all4.near(g["lat"], g["lon"], DEDUP_KM) or grid.near(g["lat"], g["lon"], DEDUP_KM):
             continue
         kept.append(g)
@@ -236,6 +252,10 @@ def main():
         s["name"] = name
         s["tz"] = A._nearest_civil_tz(s["lat"], s["lon"])
     stations = [s for s in stations if s["consts_m"]]
+    flagged = set(json.load(open(QC, encoding="utf-8"))["flagged"]) if os.path.exists(QC) else set()
+    slug = lambda s: "ticon:" + re.sub(r"[^a-z0-9]+", "-", s["key"].lower()).strip("-")[:60]
+    log["clock_flagged_dropped"] = sum(1 for s in stations if slug(s) in flagged)
+    stations = [s for s in stations if slug(s) not in flagged]
     lat0 = lat_offsets(stations, tab)
     names = sorted({H._norm(n) for s in stations for n, _, _ in s["consts_m"]})
     ni = {n: i for i, n in enumerate(names)}

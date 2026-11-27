@@ -656,5 +656,5 @@ test('section 112: the worldwide rows keep their type; importance R / O, then G,
   assert.match(lone.opts.icon.divIcon.className, /tide-icon-model/);
   const agency = b.tideLayer.items.find((m) => /Agency table/.test(m.opts.title));
   assert.ok(!agency.opts.icon.divIcon || !/tide-icon-model/.test(agency.opts.icon.divIcon.className));
-  assert.match(b.api.TIDE_CREDIT, /NOAA CO-OPS<\/a>, national agencies, <a href="https:\/\/www\.seanoe\.org\/data\/00980\/109129\/"[^>]*>TICON-4 \(DGFI-TUM\)<\/a>/);
+  assert.match(b.api.TIDE_CREDIT, /NOAA CO-OPS<\/a>, national agencies, <a href="https:\/\/www\.seanoe\.org\/data\/00980\/109129\/"[^>]*>TICON-4 \(DGFI-TUM\)<\/a>, <a href="https:\/\/www\.aviso\.altimetry\.fr\/"[^>]*>FES2022 \(CNES \/ AVISO\+\)<\/a>, GeoNames/);
 });

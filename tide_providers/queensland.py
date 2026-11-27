@@ -47,7 +47,10 @@ CREDIT = ("Tide predictions © State of Queensland (Department of Transport and 
           "Queensland), licensed under CC BY 4.0. Based on Bureau of Meteorology information that has subsequently "
           "been modified.")
 DATUM = "LAT"
-MAX_REQUESTS = 4                       # per calendar year the window touches (at most 2): the curve + the highs/lows
+MAX_REQUESTS = 6                       # per calendar year the window touches (at most 2): the curve + the highs/lows;
+                                       # + 2 package_show when a new year is not in the snapshot yet (G76 P2-5)
+_YEARS_CACHE = {}                      # dataset name -> (looked up at, {year: resource id}): a new year found at runtime
+YEARS_TTL_S = 86400
 
 API = "https://www.data.qld.gov.au/api/3/action/"
 DATASET_PAGE = "https://www.data.qld.gov.au/dataset/"
@@ -252,6 +255,19 @@ def extremes(curve):
     return [tuple(e) for e in ext]
 
 
+def _runtime_years(get, dataset):
+    """{year: resource id} of a dataset as the portal lists it now (package_show), kept a day: a year the committed
+    snapshot does not know yet (the station list is built once; MSQ adds each new year's file during the year)."""
+    import time
+    held = _YEARS_CACHE.get(dataset)
+    if held and time.time() - held[0] < YEARS_TTL_S:
+        return held[1]
+    res = _result(_get(get, API + "package_show?" + urlencode({"id": dataset})))
+    years = _years(res if isinstance(res, dict) else {})
+    _YEARS_CACHE[dataset] = (time.time(), years)
+    return years
+
+
 def fetch(st, begin, end, get):
     """MSQ's 10-minute curve and its published highs and lows covering [begin, end]: per AEST calendar year the window
     touches, one DataStore request for the curve and one for the highs and lows (derived from the curve when that
@@ -266,6 +282,10 @@ def fetch(st, begin, end, get):
         days.setdefault(str(d.year), []).append(d.strftime("%d/%m/%Y"))
         d += timedelta(days=1)
     curve, hilo, unpublished = [], [], set()
+    dataset = str(loc.get("dataset") or "")
+    if any(y not in curves for y in days) and dataset.endswith(INTERVAL_SUFFIX):
+        curves = dict(curves, **_runtime_years(get, dataset))
+        hilos = dict(hilos, **_runtime_years(get, dataset[:-len(INTERVAL_SUFFIX)] + HILO_SUFFIX))
     for year, dates in sorted(days.items()):
         rid = curves.get(year)
         if not rid:

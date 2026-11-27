@@ -37,16 +37,20 @@ PROVIDERS = {"chs": "chs", "kv": "kartverket", "jma": "jma", "hko": "hko", "linz
 ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld|model):[a-z0-9][a-z0-9._-]{0,79}")
 MODEL_PREFIX = "tides/fes/v1"
 MODEL_LIST_TTL_S = 3600               # the model points' list is asked again at most this often
+MODEL_RETRY_S = 300                   # ... and this soon after a failed read (G76 P2-6)
 MODEL_CREDIT = ("Tide model FES2022b (NOVELTIS, LEGOS, CLS Space Oceanography Division and CNES; distributed by "
                 "AVISO+ with support from CNES)")
-OFFICIAL_KM = 2.0
+OFFICIAL_KM = 3.0                     # G76 P2-1: same-name TICON / agency pairs sat 2-3 km apart (Rosslyn Bay, Kushiro)
 ERROR_TTL_S = 60                      # a failed agency fetch is answered "retry" for this long without asking again
 WAIT_S = 2.0                          # a second visitor of a station being fetched waits this long, then "busy"
 MAX_CURVE_GAP_S = 3 * 3600            # no curve drawn across a gap in an agency's series longer than this
 EX_STEP_S = 360                       # the highs and lows are found on a 6-minute series
-TICON_CREDIT = ("Predicted from tide-gauge harmonic constants: TICON-4 (Hart-Davis, Dettmering & Seitz, DGFI-TUM), "
-                "CC BY 4.0, from GESLA records")
-DATUM_LAT = "LAT"
+TICON_CREDIT = ("Predicted from tide-gauge harmonic constants: TICON-4 (Hart-Davis, Dettmering & Seitz, DGFI-TUM, "
+                "SEANOE 2025), CC BY 4.0, from GESLA records")
+TICON3_CREDIT = ("Predicted from tide-gauge harmonic constants: TICON-3 (Hart-Davis, Dettmering & Seitz, DGFI-TUM, "
+                 "PANGAEA 2022), CC BY 4.0, from GESLA records")
+GEONAMES_NOTE = "; the place name from GeoNames (CC BY 4.0)"
+DATUM_LAT = "LAT (computed)"           # the lowest astronomical tide computed here (an agency's own LAT is "LAT")
 
 
 def valid_id(sid):
@@ -296,6 +300,8 @@ class GlobalTideService:
         try:
             doc = json.loads(self._get(self._model_base + "/points.json"))
             f = doc["fields"]
+            if not isinstance(doc["points"], list):
+                raise ValueError("no point list")
             found = {}
             for row in doc["points"]:
                 s = dict(zip(f, row))
@@ -304,6 +310,8 @@ class GlobalTideService:
                 found[s["id"]] = {"id": s["id"], "name": str(s["name"]), "lat": float(s["lat"]), "lon": float(s["lon"]),
                                   "tz": s.get("tz") or "UTC", "type": "M", "obs": False}
         except Exception:
+            with self._lock:
+                self._models_at = now - MODEL_LIST_TTL_S + MODEL_RETRY_S
             return False
         if set(found) == set(self.models) and all(found[k] == self.models[k] for k in found):
             return False
@@ -328,8 +336,11 @@ class GlobalTideService:
                 self._cache.move_to_end(key)
                 return "ok", hit
         if st["type"] == "G":
+            credit = TICON3_CREDIT if st.get("ticon") == 3 else TICON_CREDIT
+            if "(tide gauge)" in st["name"]:
+                credit += GEONAMES_NOTE
             try:
-                payload = harmonic_payload(st, begin, TICON_CREDIT, "ticon")
+                payload = harmonic_payload(st, begin, credit, "ticon")
             except ValueError as exc:                   # outside the nodal table (after 2050) or a broken station
                 return "final", {"id": sid, "error": "No tide prediction for this station (%s)" % exc}
             self._put(key, payload)
@@ -357,10 +368,12 @@ class GlobalTideService:
             if self._get is None:
                 return "error", {"id": sid, "error": "The agency's tide predictions are not available here"}
             mod = None if model else provider(prefix)
+            if self._cap is not None and not self._cap.acquire(timeout=WAIT_S):
+                return "busy", {"id": sid, "error": "Busy"}
             bucket = self._buckets.get(prefix)
             if bucket is not None and not bucket.take(1 if model else mod.MAX_REQUESTS):
-                return "busy", {"id": sid, "error": "Busy"}
-            if self._cap is not None and not self._cap.acquire(timeout=WAIT_S):
+                if self._cap is not None:
+                    self._cap.release()
                 return "busy", {"id": sid, "error": "Busy"}
             try:
                 if model:
@@ -372,19 +385,22 @@ class GlobalTideService:
             finally:
                 if self._cap is not None:
                     self._cap.release()
+            self._put(key, payload)                     # cached before the waiting visitor is woken (G76 P3)
+            with self._lock:
+                self._errors.pop(key, None)
+            return "ok", payload
         except Exception as exc:                        # an agency's failure of any kind: "retry", asked again in a minute
             with self._lock:
-                self._errors[key] = self._now() + ERROR_TTL_S
+                now = self._now()
+                for k in [k for k, until in self._errors.items() if until <= now]:
+                    del self._errors[k]                 # expired failures go (G76 P3)
+                self._errors[key] = now + ERROR_TTL_S
             return "error", {"id": sid, "error": "The agency's tide predictions could not be read (%s)"
                              % type(exc).__name__}
         finally:
             with self._lock:
                 self._building.pop(key, None)
             ev.set()
-        self._put(key, payload)
-        with self._lock:
-            self._errors.pop(key, None)
-        return "ok", payload
 
     def observed(self, sid, fresh_s=None):
         return "final", {"id": sid, "t": [], "v": [], "note": "This station does not report its water level"}

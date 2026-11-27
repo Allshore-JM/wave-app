@@ -200,4 +200,4 @@ def test_page_url_and_constants():
     assert jma.PREFIX == "jma" and jma.MAX_REQUESTS == 2
     assert "気象庁ホームページ" in jma.CREDIT and "Japan Meteorological Agency website" in jma.CREDIT
     assert "加工" in jma.CREDIT and "edited" in jma.CREDIT
-    assert "LAT" in jma.DATUM
+    assert jma.DATUM.startswith("tide-table datum") and "LAT" not in jma.DATUM   # G76: heights reach -0.34 m, not LAT

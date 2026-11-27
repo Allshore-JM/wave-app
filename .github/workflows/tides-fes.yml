@@ -30,7 +30,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
         with:
           python-version: "3.11"
-      - run: pip install numpy==2.2.6 h5py==3.14.0 boto3==1.43.98 certifi==2026.10.23 pytest==9.1.1
+      - run: pip install -r requirements.txt h5py==3.14.0 boto3==1.43.98 certifi==2026.10.23 pytest==9.1.1   # the site's own (tests import app: G76 P1-1)
       - run: python -m pytest -q tests/test_tides_model.py tests/test_tide_harmonic.py
       - name: Restore the encrypted constants
         id: cache
@@ -39,12 +39,21 @@ jobs:
           path: consts.json.enc
           key: fes-consts-v1-${{ hashFiles('station_coords.json', 'tide_stations.json', 'tide_global.json', 'tide_national.json', 'tide_constituents.json', 'tools/tides/fes_points.py') }}
       - name: Decrypt the constants
+        id: decrypt
         if: steps.cache.outputs.cache-hit == 'true'
         env:
           AVISO_PASS: ${{ secrets.AVISO_PASS }}
-        run: openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AVISO_PASS -in consts.json.enc -out tools/tides/.fes_consts.json
-      - name: Download FES2022b (only when the constants must be made)
-        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          # a cache made under an older AVISO_PASS cannot be read: the constants are made again (G76 P2-7)
+          if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AVISO_PASS -in consts.json.enc -out tools/tides/.fes_consts.json 2>/dev/null; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            rm -f tools/tides/.fes_consts.json consts.json.enc
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download FES2022b one file at a time (only when the constants must be made)
+        if: steps.cache.outputs.cache-hit != 'true' || steps.decrypt.outputs.ok != 'true'
         env:
           AVISO_USER: ${{ secrets.AVISO_USER }}
           AVISO_PASS: ${{ secrets.AVISO_PASS }}
@@ -57,13 +66,15 @@ jobs:
           NOCAPATH="$(mktemp -d)"     # an empty CA folder: --cacert alone leaves Ubuntu curl's /etc/ssl/certs in use
           mkdir -p fes
           # FTP over TLS (--ssl-reqd): the AVISO+ login never travels in clear
+          # one global grid on disk at a time: download, add to the partial constants, delete (G76 P2-9)
           for c in 2n2 eps2 j1 k1 k2 l2 lambda2 m2 m3 m4 m6 m8 mf mks2 mm mn4 ms4 msf msqm mtm mu2 n2 n4 nu2 o1 p1 q1 r2 s1 s2 s4 sa ssa t2; do
             f="${c}_fes2022.nc"
             curl -sSf --retry 3 --ssl-reqd --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f.xz" \
               && xz -d "fes/$f.xz" \
               || curl -sSf --retry 3 --ssl-reqd --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f"
+            python tools/tides/fes_points.py --add-file "fes/$f"
+            rm -f "fes/$f" "fes/$f.xz"
           done
-          ls -la fes | head -40
       - name: Predict (and publish)
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -75,13 +86,12 @@ jobs:
         run: |
           set -eo pipefail
           ARGS=(--out build/tides-fes --consts tools/tides/.fes_consts.json)
-          [ -d fes ] && ARGS+=(--fes-dir fes)
           [ "$UPLOAD" = "true" ] && ARGS+=(--upload)
           python tools/tides/fes_points.py "${ARGS[@]}"
           rm -rf fes                          # the model's files never leave this job
           if [ -f consts.json.enc ]; then rm -f tools/tides/.fes_consts.json; fi   # a cache hit: the plain copy goes
       - name: Encrypt the constants for the cache
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache.outputs.cache-hit != 'true' || steps.decrypt.outputs.ok != 'true'
         env:
           AVISO_PASS: ${{ secrets.AVISO_PASS }}
         run: |

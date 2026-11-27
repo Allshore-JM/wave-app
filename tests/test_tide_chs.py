@@ -137,19 +137,18 @@ def test_fetch_asks_the_documented_urls(day_chunks):
     assert "from=2026-11-27T00%3A00%3A00Z&to=2026-11-28T00%3A00%3A00Z" in urls[2]
 
 
-# ---------------------------------------------------------------------------------------------- the 7-day split
+# ---------------------------------------------------------------------------------------------- the 31-day split
 
-def test_chunks_cover_the_range_in_seven_day_pieces():
-    assert chs.CURVE_CHUNK_S == 7 * DAY
+def test_chunks_cover_the_range_in_31_day_pieces():
+    assert chs.CURVE_CHUNK_S == 31 * DAY
     b = BEGIN - DAY
     e = b + 34 * DAY                                                 # what the site asks
-    got = chs.chunks(b, e)
-    assert got == [(b, b + 7 * DAY), (b + 7 * DAY, b + 14 * DAY), (b + 14 * DAY, b + 21 * DAY),
-                   (b + 21 * DAY, b + 28 * DAY), (b + 28 * DAY, e)]
-    assert chs.chunks(b, b + 7 * DAY) == [(b, b + 7 * DAY)]
-    assert chs.chunks(b, b + 7 * DAY + 1) == [(b, b + 7 * DAY), (b + 7 * DAY, b + 7 * DAY + 1)]
+    assert chs.chunks(b, e) == [(b, b + 31 * DAY), (b + 31 * DAY, e)]
+    assert chs.chunks(b, b + 31 * DAY) == [(b, b + 31 * DAY)]
+    assert chs.chunks(b, b + 31 * DAY + 1) == [(b, b + 31 * DAY), (b + 31 * DAY, b + 31 * DAY + 1)]
     assert chs.chunks(b, b + 3600) == [(b, b + 3600)]
-    assert chs.MAX_REQUESTS == 6
+    assert chs.chunks(b, e, size=7 * DAY)[1] == (b + 7 * DAY, b + 14 * DAY)
+    assert chs.MAX_REQUESTS == 3
 
 
 def _synthetic(url, headers=None, data=None):
@@ -169,7 +168,7 @@ def _synthetic(url, headers=None, data=None):
     return json.dumps(rows).encode()
 
 
-def test_fetch_34_days_takes_five_curve_requests():
+def test_fetch_34_days_takes_two_curve_requests():
     calls = []
 
     def get(url, headers=None, data=None):
@@ -178,12 +177,12 @@ def test_fetch_34_days_takes_five_curve_requests():
     b, e = BEGIN - DAY, BEGIN + 33 * DAY
     got = chs.fetch(PA, b, e, get)
     curve_urls = [u for u in calls if "time-series-code=wlp&" in u]
-    assert len(calls) == 6 == chs.MAX_REQUESTS and len(curve_urls) == 5
+    assert len(calls) == 3 == chs.MAX_REQUESTS and len(curve_urls) == 2
     assert all("resolution=FIFTEEN_MINUTES" in u for u in curve_urls)
     froms = [chs.parse_time(re.search(r"from=([^&]+)", u).group(1).replace("%3A", ":")) for u in curve_urls]
     tos = [chs.parse_time(re.search(r"to=([^&]+)", u).group(1).replace("%3A", ":")) for u in curve_urls]
     assert froms[0] == b and tos[-1] == e and froms[1:] == tos[:-1]
-    assert all(0 < t - f <= 7 * DAY for f, t in zip(froms, tos))
+    assert all(0 < t - f <= 31 * DAY for f, t in zip(froms, tos))
     ts = [t for t, _ in got["curve"]]
     assert ts[0] == b and ts[-1] == e and len(ts) == len(set(ts)) == 34 * 96 + 1
     assert got["hilo"] and all(b <= t <= e for t, _, _ in got["hilo"])

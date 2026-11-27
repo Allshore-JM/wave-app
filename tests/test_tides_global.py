@@ -74,7 +74,7 @@ def _official_station(sid="qld:gold-coast", lat=-27.94, lon=153.43):
 
 def test_load_counts_and_types(stations):
     gauges = [s for s in stations.values() if s["type"] == "G"]
-    assert len(gauges) > 1200 and all(G.valid_id(s["id"]) for s in gauges)    # 1,331 after the official stations
+    assert len(gauges) > 700 and all(G.valid_id(s["id"]) for s in gauges)     # 829 after the official stations (3 km)
     assert all(s["lat0"] > 0 for s in gauges)                          # LAT lies below the mean level
     assert stations[BREST]["tz"] == "Europe/Paris"
     official = [s for s in stations.values() if s["type"] == "O"]
@@ -83,7 +83,7 @@ def test_load_counts_and_types(stations):
 
 def test_ticon_payload_shape(stations):
     status, p = G.GlobalTideService(stations, now=Clock()).forecast(BREST)
-    assert status == "ok" and p["datum"] == "LAT" and p["method"] == "ticon" and p["type"] == "G"
+    assert status == "ok" and p["datum"] == "LAT (computed)" and p["method"] == "ticon" and p["type"] == "G"
     begin = T.begin_of(NOW)
     assert p["begin"] == begin - T.LEAD_S and p["window"] == [begin, begin + T.SPAN_S] and p["step"] == T.STEP_S
     assert len(p["v"]) == T.POINTS and all(v is not None for v in p["v"])
@@ -246,7 +246,7 @@ def test_routes_list_and_station(client):
     types_ = {row[4] for row in d["stations"]}
     assert r.status_code == 200 and {"R", "S", "G"} <= types_ and len(d["sources"]) == 2
     r = client.get("/api/tides/" + BREST)
-    assert r.status_code == 200 and r.get_json()["datum"] == "LAT"
+    assert r.status_code == 200 and r.get_json()["datum"] == "LAT (computed)"
     assert client.get("/api/tides/ticon:nope").status_code == 404
     assert client.get("/api/tides/ticon:Brest").status_code == 404
     assert client.get("/api/tides/" + BREST + "/observed").get_json().get("t") == []

@@ -113,7 +113,7 @@ def test_fetch_across_the_new_year():
                                          Q.records_url(H26, DAYS["2026"], HILO_F),
                                          Q.records_url(C27, DAYS["2027"], CURVE_F),
                                          Q.records_url(H27, DAYS["2027"], HILO_F)]
-    assert len(get.calls) == Q.MAX_REQUESTS
+    assert len(get.calls) == 4 <= Q.MAX_REQUESTS
     curve, hilo = got["curve"], got["hilo"]
     # the 10-minute curve, AEST (UTC+10) -> UTC, both ends of the window included, no gap at the year boundary
     assert curve[0][0] == BEGIN and curve[-1][0] == END and len(curve) == 3 * 144 + 1
@@ -184,3 +184,20 @@ def test_records_url_filters_on_the_dates():
     assert u.startswith("https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id=" + C26)
     assert "filters=%7B%22Date%22%3A%5B%2230%2F12%2F2026%22%2C%2231%2F12%2F2026%22%5D%7D" in u
     assert "records_format=csv" in u and "fields=Date%2CTime%2CReading" in u
+
+
+def test_g76_a_year_missing_from_the_snapshot_is_looked_up_once_a_day(monkeypatch):
+    """The snapshot knows 2026 only: 2027 comes from package_show (curve and highs/lows datasets), kept a day."""
+    monkeypatch.setattr(Q, "_YEARS_CACHE", {})
+    st = dict(ABBOT, local=dict(ABBOT["local"], curve={"2026": C26}, hilo={"2026": H26}))
+    ds = st["local"]["dataset"]
+    show = lambda name, cid: json.dumps({"success": True, "result": {"resources": [
+        {"name": "Abbot Point 2027 predicted", "format": "CSV", "datastore_active": True, "id": cid}]}}).encode()
+    extra = {Q.API + "package_show?id=" + ds: show(ds, C27),
+             Q.API + "package_show?id=" + ds[:-len(Q.INTERVAL_SUFFIX)] + Q.HILO_SUFFIX: show(ds, H27)}
+    get = FakeGet(extra)
+    got = Q.fetch(st, BEGIN, END, get)
+    assert got["curve"][-1][0] == END and len(get.calls) == 6
+    get2 = FakeGet(extra)
+    Q.fetch(st, BEGIN, END, get2)
+    assert len(get2.calls) == 4                                      # the years found are kept a day

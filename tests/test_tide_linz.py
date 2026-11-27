@@ -254,3 +254,13 @@ def test_fetch_refuses_a_table_that_does_not_cover_the_window(monkeypatch):
     get = FakeGet({L.csv_url("Auckland", 2026): body})
     with pytest.raises(TideFetchError):
         L.fetch(AKL, _ep("2026-12-29 00:00"), _ep("2026-12-30 06:00"), get)
+
+
+def test_g76_chatham_islands_keep_their_own_clock():
+    """The Chatham Islands' tables are in Chatham time (UTC+12:45 / +13:45): read as mainland NZ time they ran 45 min
+    late against TICON (G76 re-check)."""
+    from datetime import datetime
+    local = datetime(2026, 11, 27, 12, 0)
+    nz = L._to_utc([[local, 1.0]])[0][0]
+    ch = L._to_utc([[local, 1.0]], L.station_zone({"id": "linz:waitangi-chatham-island", "tz": "Pacific/Chatham"}))[0][0]
+    assert nz - ch == 45 * 60 and L.station_zone({"id": "linz:auckland", "tz": "Pacific/Auckland"}) is L.TZ

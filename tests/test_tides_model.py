@@ -132,7 +132,7 @@ def test_model_forecast_slices_the_window():
     svc = G.GlobalTideService({}, get=get, now=Clock(), model_base=BASE)
     svc.refresh_models()
     status, p = svc.forecast("model:51201")
-    assert status == "ok" and p["method"] == "model" and p["datum"] == "LAT" and p["type"] == "M"
+    assert status == "ok" and p["method"] == "model" and p["datum"] == "LAT (computed)" and p["type"] == "M"
     assert p["begin"] == begin - T.LEAD_S and len(p["v"]) == T.POINTS
     i0 = (p["begin"] - file_begin) // 1800
     assert p["v"][0] == doc["v"][i0] / 100.0
@@ -159,3 +159,33 @@ def test_route_lists_model_points(monkeypatch):
     c = A.app.test_client()
     rows = c.get("/api/tides/stations").get_json()["stations"]
     assert any(r[0] == "model:51201" and r[4] == "M" for r in rows)
+
+
+def test_g76_add_file_one_at_a_time_equals_extract(tmp_path):
+    land = (slice(0, 31), slice(20, 31))
+    _grid_file(tmp_path / "m2_fes2022.nc", 50.0, 30.0, land)
+    _grid_file(tmp_path / "s2_fes2022.nc", 20.0, 60.0, land)
+    pts = [{"id": "model:a", "lat": 20.5, "lon": -159.8}, {"id": "model:b", "lat": 20.5, "lon": -159.05}]
+    part = F.new_partial(pts)
+    for f in ("s2_fes2022.nc", "m2_fes2022.nc", "m2_fes2022.nc"):          # any order; a file twice counts once
+        F.add_file(pts, part, str(tmp_path / f), log=lambda *a: None)
+    assert part["done"] == ["s2", "m2"]
+    norm = lambda d: {k: dict(v, c=sorted(v["c"])) for k, v in d.items()}
+    assert norm(F.finished(part)) == norm(F.extract(pts, str(tmp_path), log=lambda *a: None))
+    with pytest.raises(SystemExit):
+        F.finished(F.new_partial(pts))                                 # no M2: refused
+
+
+def test_g76_a_listed_model_point_opens(monkeypatch):
+    """G76 P0-1: the window of a listed model point answered 404 (the route looked in the stations only)."""
+    import app as A
+    monkeypatch.setattr(A, "_TIDES", {"svc": None, "list": None, "global": None, "base": None})
+    monkeypatch.setattr(A, "_points_root", lambda: "https://bucket.example")
+    import time as _t
+    begin = int(T.begin_of(_t.time()))
+    files = {BASE + "/points.json": POINTS, BASE + "/p/51201.json": _model_doc(begin - 2 * 86400)}
+    monkeypatch.setattr(A, "_tide_agency_get", FakeGet(files))
+    c = A.app.test_client()
+    r = c.get("/api/tides/model:51201")                               # before any list request: the list is read
+    assert r.status_code == 200 and r.get_json()["method"] == "model"
+    assert c.get("/api/tides/model:99999").status_code == 404

@@ -136,30 +136,58 @@ def sample(lat, lon, amp, pha, plat, plon):
     return amp[a, b] * np.exp(-1j * np.radians(pha[a, b])), d, coast
 
 
+def new_partial(points):
+    return {"points": _points_hash(points), "done": [], "dead": [],
+            "consts": {p["id"]: {"c": [], "km": 0.0, "coast": False} for p in points}}
+
+
+def add_file(points, partial, path, log=print):
+    """One FES constituent file into the partial constants (the workflow downloads, adds and deletes one file at a
+    time, so the runner's disk holds one global grid, not 34: G76 P2-9)."""
+    stem = os.path.basename(path).split("_fes2022")[0].lower()
+    if stem not in FES_NAMES:
+        raise SystemExit("not a FES2022b constituent file: %s" % path)
+    if stem in partial["done"]:
+        return partial
+    lat, lon, amp, pha = read_grid(path)
+    dead = set(partial["dead"])
+    name = FES_NAMES[stem]
+    for p in points:
+        if p["id"] in dead:
+            continue
+        v, d, coast = sample(lat, lon, amp, pha, p["lat"], p["lon"])
+        c = partial["consts"][p["id"]]
+        if stem == "m2":
+            c["coast"] = coast
+        if v is None:
+            if stem == "m2":
+                dead.add(p["id"])
+            continue
+        c["km"] = max(c["km"], d)
+        c["c"].append([name, round(float(abs(v)), 5), round(float(np.degrees(-np.angle(v))) % 360.0, 2)])
+    partial["dead"] = sorted(dead)
+    partial["done"].append(stem)
+    log("%s: done" % stem)
+    return partial
+
+
+def finished(partial):
+    """The points worth a model tide: an M2 value, land within COAST_KM, at least one constituent."""
+    if "m2" not in partial["done"]:
+        raise SystemExit("M2 was never added: no constants")
+    dead = set(partial["dead"])
+    return {k: v for k, v in partial["consts"].items() if k not in dead and v["coast"] and v["c"]}
+
+
 def extract(points, fes_dir, log=print):
-    consts = {p["id"]: {"c": [], "km": 0.0, "coast": False} for p in points}
-    dead = set()
-    for stem, name in sorted(FES_NAMES.items()):
+    partial = new_partial(points)
+    for stem in sorted(FES_NAMES):
         path = os.path.join(fes_dir, "%s_fes2022.nc" % stem)
         if not os.path.exists(path):
             log("missing %s: left out" % path)
             continue
-        lat, lon, amp, pha = read_grid(path)
-        for p in points:
-            if p["id"] in dead:
-                continue
-            v, d, coast = sample(lat, lon, amp, pha, p["lat"], p["lon"])
-            c = consts[p["id"]]
-            if stem == "m2":
-                c["coast"] = coast
-            if v is None:
-                if stem == "m2":
-                    dead.add(p["id"])
-                continue
-            c["km"] = max(c["km"], d)
-            c["c"].append([name, round(float(abs(v)), 5), round(float(np.degrees(-np.angle(v))) % 360.0, 2)])
-        log("%s: done" % stem)
-    return {k: v for k, v in consts.items() if k not in dead and v["coast"] and v["c"]}
+        add_file(points, partial, path, log)
+    return finished(partial)
 
 
 def predict_point(prep, lat0, begin, days=DAYS):
@@ -174,22 +202,41 @@ def predict_point(prep, lat0, begin, days=DAYS):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fes-dir")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--add-file", help="add one FES constituent file to --partial and stop")
+    ap.add_argument("--partial", default=os.path.join(HERE, ".fes_partial.json"))
+    ap.add_argument("--out")
     ap.add_argument("--consts", default=os.path.join(HERE, ".fes_consts.json"))
     ap.add_argument("--upload", action="store_true")
     ap.add_argument("--geonames")
     args = ap.parse_args()
     points = forecast_points()
     ph = _points_hash(points)
+    if args.add_file:                                                   # the workflow's one-file-at-a-time step
+        partial = json.load(open(args.partial, encoding="utf-8")) if os.path.exists(args.partial) else None
+        if partial is None or partial.get("points") != ph:
+            partial = new_partial(points)
+        add_file(points, partial, args.add_file)
+        with open(args.partial, "w", encoding="utf-8") as fh:            # never uploaded (the Actions runner only)
+            json.dump(partial, fh, separators=(",", ":"))
+        return
+    if not args.out:
+        raise SystemExit("--out is needed")
     cached = None
     if os.path.exists(args.consts):
         cached = json.load(open(args.consts, encoding="utf-8"))
         if cached.get("points") != ph:
             cached = None
     if cached is None:
-        if not args.fes_dir:
-            raise SystemExit("no constants cached for these points and no --fes-dir")
-        consts = extract(points, args.fes_dir)
+        if args.fes_dir:
+            consts = extract(points, args.fes_dir)
+        elif os.path.exists(args.partial):
+            partial = json.load(open(args.partial, encoding="utf-8"))
+            if partial.get("points") != ph:
+                raise SystemExit("the partial constants were made for other points")
+            consts = finished(partial)
+            os.remove(args.partial)
+        else:
+            raise SystemExit("no constants cached for these points, no --fes-dir and no partial file")
         tab = H.table()
         keep = [p for p in points if p["id"] in consts]
         stations = [{"consts_m": [tuple(c) for c in consts[p["id"]]["c"]]} for p in keep]

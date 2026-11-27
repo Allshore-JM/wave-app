@@ -1289,7 +1289,11 @@ def _tide_station(sid):
         return None, _tide_uncached({"error": TIDES_OFF}, 503)
     if ":" in sid:
         gsvc = _TIDES.get("global")
-        if gsvc is None or not tide_global.valid_id(sid) or sid not in gsvc.stations:
+        if gsvc is None or not tide_global.valid_id(sid):
+            return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)
+        if sid.startswith("model:") and not gsvc.models:
+            _tide_list()                                  # a fresh process: the model points' list (G76 P0-1)
+        if sid not in gsvc.stations and sid not in gsvc.models:
             return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)
         return gsvc, None
     if not tide_sources.valid_id(sid) or sid not in svc.stations:

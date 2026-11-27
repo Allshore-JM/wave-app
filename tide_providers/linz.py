@@ -108,24 +108,30 @@ def parse_rows(body):
     return out
 
 
-def _candidates(local):
+def _candidates(local, tz=TZ):
     """The UTC epochs a NZ wall-clock time can mean: one, or two in the repeated hour when daylight saving ends. A time
     in the spring gap (none in LINZ's tables) is read as standard time."""
     out = []
     for fold in (0, 1):
-        e = int(local.replace(tzinfo=TZ, fold=fold).timestamp())
-        if datetime.fromtimestamp(e, TZ).replace(tzinfo=None) == local and e not in out:
+        e = int(local.replace(tzinfo=tz, fold=fold).timestamp())
+        if datetime.fromtimestamp(e, tz).replace(tzinfo=None) == local and e not in out:
             out.append(e)
     if not out:                                          # the spring-forward gap: the clock had not moved yet
-        out.append(int(local.replace(tzinfo=TZ, fold=0).timestamp()))
+        out.append(int(local.replace(tzinfo=tz, fold=0).timestamp()))
     return sorted(out)
 
 
-def _to_utc(rows):
+def station_zone(st):
+    """The wall clock of a station's table: the Chatham Islands keep their own (UTC+12:45 / +13:45; G76 re-check: read
+    as mainland time they ran 45 min late); every other place New Zealand time."""
+    return ZoneInfo("Pacific/Chatham") if st.get("tz") == "Pacific/Chatham" or "chatham" in str(st.get("id", "")) else TZ
+
+
+def _to_utc(rows, tz=TZ):
     """[[naive local, h], ...] (time order) -> [(epoch, h), ...]. A time in the repeated autumn hour takes the reading
     nearest where its neighbours put it: the same-kind extremes two places away +- 12 h 25 min (else the midpoint of
     its neighbours), and never at or before the extreme before it."""
-    cands = [_candidates(r[0]) for r in rows]
+    cands = [_candidates(r[0], tz) for r in rows]
     out = []
     for i, (r, c) in enumerate(zip(rows, cands)):
         if len(c) > 1:
@@ -234,7 +240,7 @@ def fetch(st, begin, end, get):
             raise TideFetchError("LINZ's %d CSV is not that year's table" % y)
         rows.extend(got)
     rows.sort(key=lambda r: r[0])                        # (a repeated autumn hour keeps the file's order: stable sort)
-    ext = kinds(_to_utc(rows))
+    ext = kinds(_to_utc(rows, station_zone(st)))
     if ext[0][0] > begin or ext[-1][0] < end:
         raise TideFetchError("LINZ's tables do not cover the window")
     hilo = [(t, round(h, 3), k) for t, h, k in ext if begin <= t <= end]

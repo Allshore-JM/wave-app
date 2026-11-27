@@ -50,12 +50,13 @@
     ticon: 'Predicted on this site from this tide gauge’s harmonic constants (TICON-4, DGFI-TUM)',
     official: 'Curve: %AGENCY%’s official tide predictions',
     'official-cosine': 'Curve: drawn between %AGENCY%’s official predicted highs and lows',
-    model: 'Predicted on this site from the FES2022 tide model (CNES / AVISO+); not a tide gauge, may be off near harbours and estuaries'
+    model: 'Predicted from the FES2022 tide model (CNES / AVISO+) at this point; not a tide gauge, may be off near harbours and estuaries'
   };
   // the heights' zero line by the payload's datum
   function datumText(d) {
     if (!d || d === 'MLLW') return 'Heights above mean lower low water (MLLW)';
-    if (d === 'LAT') return 'Heights above the lowest astronomical tide (LAT, computed from the constants)';
+    if (d === 'LAT (computed)') return 'Heights above the lowest astronomical tide (LAT, computed from the constants)';
+    if (d === 'LAT') return 'Heights above the lowest astronomical tide (LAT)';
     return 'Heights above ' + d;
   }
   var MSG = {

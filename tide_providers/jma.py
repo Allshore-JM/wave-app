@@ -30,7 +30,7 @@ PREFIX = "jma"
 NAME = "Japan Meteorological Agency"
 CREDIT = ("Source: Japan Meteorological Agency website, tide tables (出典：気象庁ホームページ「潮位表」を加工して作成); "
           "edited by allshoresurf.com: heights converted to metres, times to UTC, hourly heights interpolated.")
-DATUM = "tide-table datum (≈ LAT)"
+DATUM = "tide-table datum (JMA; the lowest tides can read below zero)"   # G76: JMA heights reach -0.34 m
 MAX_REQUESTS = 2                      # one year file, two around New Year
 
 TXT_URL = "https://www.data.jma.go.jp/kaiyou/data/db/tide/suisan/txt/{year}/{code}.txt"

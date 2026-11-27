@@ -13,7 +13,7 @@ Source: https://api-iwls.dfo-mpo.gc.ca/api/v1 (no key). What CHS actually sends 
   high or a low: that is read from the neighbours (classify). wlp: the date-interval cap depends on the resolution:
   "should not be bigger than 7 days" at the default one-minute step, 31 days at FIFTEEN_MINUTES or SIXTY_MINUTES
   (THIRTY_MINUTES is refused as "improperly formatted"). The curve is asked at FIFTEEN_MINUTES in consecutive pieces of
-  CURVE_CHUNK_S (7 days: ~85 KB each), well inside both caps. A refused request answers HTTP 400 with
+  CURVE_CHUNK_S (31 days: ~380 KB each), well inside both caps. A refused request answers HTTP 400 with
   {"status", "message", "errors"}.
 - Heights are metres above chart datum (Canada: lower low water large tide / lowest normal tide, close to LAT).
 
@@ -46,10 +46,11 @@ PAGE = "https://tides.gc.ca/en/stations/"
 HEADERS = {"User-Agent": "allshoresurf.com tide stations (https://allshoresurf.com)", "Accept": "application/json"}
 CURVE_SERIES, HILO_SERIES = "wlp", "wlp-hilo"
 RESOLUTION = "FIFTEEN_MINUTES"
-CURVE_CHUNK_S = 7 * 86400              # one curve request covers at most this long
+CURVE_CHUNK_S = 31 * 86400             # one curve request covers at most this long: at FIFTEEN_MINUTES CHS takes 31 days
+                                       # (378 KB; 32 refused, checked 2026-11-27); 2 pieces + the extremes (G76 P2-8)
 MAX_SPAN_S = 35 * 86400                # the longest [begin, end] fetch() accepts (the site asks 34 days)
 HILO_PAD_S = 13 * 3600                 # the extremes are asked this much wider, so the ones at begin / end have neighbours
-MAX_REQUESTS = 1 + math.ceil(MAX_SPAN_S / CURVE_CHUNK_S)          # the extremes + the curve pieces: 6
+MAX_REQUESTS = 1 + math.ceil(MAX_SPAN_S / CURVE_CHUNK_S)          # the extremes + the curve pieces: 3
 UUID_RE = re.compile(r"[0-9a-f]{24}")
 CODE_RE = re.compile(r"[0-9]{5}")
 

@@ -1010,7 +1010,7 @@ test('section 112: a TICON gauge says LAT and the constants, credits DGFI-TUM, a
   const s = setup();
   const st = { id: 'ticon:brest-822-fra-uhslc-fd', name: 'Brest', tz: 'Pacific/Honolulu', obs: false, lat: 48.38 };
   s.view.load(st, { unit: 'US' });
-  s.answers[0].res(response(200, payload({ id: st.id, name: 'Brest', type: 'G', obs: false, datum: 'LAT', method: 'ticon',
+  s.answers[0].res(response(200, payload({ id: st.id, name: 'Brest', type: 'G', obs: false, datum: 'LAT (computed)', method: 'ticon',
     source: 'Predicted from tide-gauge harmonic constants: TICON-4 (Hart-Davis, Dettmering & Seitz, DGFI-TUM), CC BY 4.0' })));
   await flush();
   const m = s.els.meta.textContent;

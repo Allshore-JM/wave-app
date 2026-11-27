@@ -1,0 +1,19 @@
+{
+ "version": "ns-1",
+ "tables": {
+  "set": "ns-1",
+  "manifest_sha256": "8dd8f64fe5e1770c1b41456983493c5f6f1b81c4dbaa9077f5bfa149abc8ec19",
+  "regions": [
+   "laniakea",
+   "sunset",
+   "haleiwa",
+   "mokuleia",
+   "kaena",
+   "kahuku"
+  ]
+ },
+ "sha256": {
+  "tides.json": "67356a8e112b8186b5627e58a10fa973310c5a7ae301fd3df8aade91689fc9e6"
+ },
+ "built_utc": "2026-11-27T04:32:18Z"
+}

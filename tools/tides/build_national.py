@@ -51,30 +51,36 @@ TW_COUNTIES = {"基隆市": "Keelung City", "臺北市": "Taipei City", "新北�
                "臺南市": "Tainan City", "高雄市": "Kaohsiung City", "屏東縣": "Pingtung County", "臺東縣": "Taitung County",
                "花蓮縣": "Hualien County", "宜蘭縣": "Yilan County", "澎湖縣": "Penghu County", "金門縣": "Kinmen County",
                "連江縣": "Lienchiang County"}
-CWA_TOWN_KM = 6.0                        # GeoNames knows few Taiwanese towns: a farther one names the wrong place
 
 
-def cwa_names(stations, places):
+def cwa_names(stations, places=None):
     """CWA names its places in Chinese only. A township: its county's English name, the Chinese after it ("Lienchiang
-    County (連江縣南竿鄉)"). Any other place: "<GeoNames town within CWA_TOWN_KM> <type> (<its own name>)", e.g.
-    "Hengchun coast (南灣)", or without a town that near "Harbour (福隆)"; the type's Chinese prefix (海水浴場, 漁港, 衝浪
-    ...) is dropped, so no name calls a place a surf spot."""
+    County (連江縣南竿鄉)"). Any other place: its type, its own name and the county of the nearest CWA township, e.g.
+    "Harbour (永安), Taoyuan City" (G79-4: a GeoNames town nearby named the wrong place too often). The type's Chinese
+    prefix (海水浴場, 漁港, 衝浪 ...) is dropped: no name calls a place a surf spot (owner, 2026-11-27); a name with a
+    surf word left in it stops the build (G79-5)."""
+    towns = []
+    for t in stations:
+        if str((t.get("local") or {}).get("code") or "")[:1].isdigit():
+            county = TW_COUNTIES.get(t["name"][:3].replace("台", "臺"))
+            if county:
+                towns.append((t["lat"], t["lon"], county))
     for s in stations:
         code = str((s.get("local") or {}).get("code") or "")
         zh = s["name"]
         if code[:1].isdigit():
             county = TW_COUNTIES.get(zh[:3].replace("台", "臺"))
             s["name"] = "%s (%s)" % (county, zh) if county else zh
-            continue
-        word = None
-        if code[:1] in CWA_TYPES:
-            pre, word = CWA_TYPES[code[:1]]
-            if zh.startswith(pre) and len(zh) > len(pre):
-                zh = zh[len(pre):]
-        near = places.near(s["lat"], s["lon"], CWA_TOWN_KM)
-        town = near[0][1][2] if near else None
-        head = " ".join(x for x in (town, word) if x)
-        s["name"] = "%s (%s)" % (head[:1].upper() + head[1:], zh) if head else zh
+        else:
+            word = "Place"
+            if code[:1] in CWA_TYPES:
+                pre, word = CWA_TYPES[code[:1]]
+                if zh.startswith(pre) and len(zh) > len(pre):
+                    zh = zh[len(pre):]
+            near = min(towns, key=lambda t: (t[0] - s["lat"]) ** 2 + ((t[1] - s["lon"]) * 0.92) ** 2) if towns else None
+            s["name"] = "%s (%s)%s" % (word[:1].upper() + word[1:], zh, ", " + near[2] if near else "")
+        if "衝浪" in s["name"] or "surf" in s["name"].lower():
+            raise SystemExit("cwa: a surf word in a name: %r (owner, 2026-11-27: places by their proper names)" % s["name"])
 
 
 def readable_names(prefix, stations):
@@ -82,8 +88,7 @@ def readable_names(prefix, stations):
     gauge within 3 km (TICON's names are romanised), else the nearest GeoNames town within 15 km, keeping the Japanese
     name in brackets ("Tokyo (東京)"). CWA's Chinese names: cwa_names."""
     if prefix == "cwa":
-        import build_global as BG                                   # tools/tides/build_global.py: GeoNames
-        cwa_names(stations, BG.load_geonames(None))
+        cwa_names(stations)
         return
     if prefix != "jma":
         return

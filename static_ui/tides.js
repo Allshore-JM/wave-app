@@ -295,10 +295,25 @@
     flush();
     return { line: line, area: area };
   }
-  // whether the curve has a gap inside the strip (NOAA's list of highs and lows incomplete there: G27 A-F9)
+  // whether the curve has a gap inside the strip, between two drawn stretches (NOAA's list of highs and lows incomplete
+  // there: G27 A-F9). A curve that starts after the strip's first midnight or ends before its last is not a gap in the
+  // list: edges() says that (plan section 113 B, G79-1: an agency's month that starts at its own midnight).
   function hasGap(d, L) {
+    var a = L.mids[0], b = L.mids[L.mids.length - 1], seen = false, open = false;
+    return samples(d, a, b).some(function (p) {
+      if (p.t < a || p.t >= b) return false;
+      if (p.m === null) { open = seen; return false; }
+      if (open) return true;
+      seen = true; return false;
+    });
+  }
+  // {late, early}: the curve starts after the strip's first midnight / ends before its last one
+  function edges(d, L) {
     var a = L.mids[0], b = L.mids[L.mids.length - 1];
-    return samples(d, a, b).some(function (p) { return p.m === null && p.t >= a && p.t < b; });
+    var inside = samples(d, a, b).filter(function (p) { return p.t >= a && p.t < b; });
+    var drawn = inside.filter(function (p) { return p.m !== null; });
+    if (!drawn.length) return { late: false, early: false };
+    return { late: inside[0].m === null, early: inside[inside.length - 1].m === null };
   }
 
   // ---- the view ----------------------------------------------------------------------------------------------------
@@ -367,6 +382,11 @@
                    'Predictions do not include storm surge or wind effects.'];
       if (st.L && hasGap(d, st.L)) lines.push(noaa ? 'The curve has gaps where NOAA’s list of highs and lows is incomplete.'
                                                     : 'The curve has gaps where the list of highs and lows is incomplete.');
+      if (st.L) {
+        var ed = edges(d, st.L);
+        if (ed.late) lines.push('The predictions start partway through the first day shown.');
+        if (ed.early) lines.push('The predictions end partway through the last day shown.');
+      }
       if (st.obs && st.obs.note) lines.push(st.obs.note + '.');
       lines.forEach(function (t) { els.meta.appendChild(el('div', '', t)); });
       var src = el('div', '');
@@ -792,7 +812,7 @@
       zoneClock: zoneClock, localMidnightBefore: localMidnightBefore, midnights: midnights, noons: noons, clockText: clockText, dayShort: dayShort,
       dayLong: dayLong, stampText: stampText, layout: layout, dayOf: dayOf, xOf: xOf, tOf: tOf, yScale: yScale, tickText: tickText,
       samples: samples, heightAt: heightAt, extremesIn: extremesIn, eventsIn: eventsIn, moonOf: moonOf, nightSpans: nightSpans,
-      curvePaths: curvePaths, heightText: heightText, CALLOUT_EDGE: CALLOUT_EDGE, series: series, hasGap: hasGap,
+      curvePaths: curvePaths, heightText: heightText, CALLOUT_EDGE: CALLOUT_EDGE, series: series, hasGap: hasGap, edges: edges,
       RETRY_MAX_S: RETRY_MAX_S, TOUCH_MOUSE_MS: TOUCH_MOUSE_MS, REFRESH_RETRY_MS: REFRESH_RETRY_MS, CALLOUT_CHAR_W: CALLOUT_CHAR_W
     }
   };

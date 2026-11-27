@@ -101,11 +101,12 @@ bucket prefix: `static/places/v2` is unchanged.
 - **Name:** Natural Earth's `NAME`, or `NAME_EN` where `NAME` is abbreviated (Northern Cyprus and Eswatini by hand).
   Long names take a common short form (owner, 2026-11-27): USA, DR Congo, UAE, Central African Rep., Bosnia & Herz.,
   "and" pairs as "&", island groups as "Is.". A label still longer than 16 characters is cut onto two lines.
-- **Shown from:** by land area on the sphere: 1.5 million km² and more from zoom 1.5, 500,000 from 2.5, 100,000 from
-  3.3, 20,000 from 4.0, the rest from 4.7. 32 open-ocean island nations (Fiji, Samoa, Tonga, French Polynesia ...) from
-  zoom 3.0.
+- **Shown from:** counted from the screen's widest view (the map's minimum zoom, one world across: about 2.9 on a
+  1908-px laptop, 2.5 on a 1440-px screen, about 1.85 on a phone), by land area on the sphere: 1.5 million km² and more
+  at the widest view, 500,000 one zoom closer, 100,000 1.8 closer, 20,000 2.5 closer, the rest 3.2 closer. 32 open-ocean
+  island nations (Fiji, Samoa, Tonga, French Polynesia ...) 1.5 closer. The file stores these offsets (x 10).
 - **Gone from:** the zoom at which the country is about 900 px across (the square root of its area at its label
-  latitude), at least 1.5 zooms after it came, and never after zoom 7.
+  latitude), never after zoom 7. The client keeps a name at least 1.5 zooms after it came (still never after zoom 7).
 - **Left out:** leases and bases, the Cyprus buffer zone, uninhabited banks, reefs and ice, Antarctica, the U.S. Minor
   Outlying Islands, the Australian Indian Ocean Territories, Clipperton, and Spratly Is. (Natural Earth's `NAME_EN`
   calls it "Wake Island").

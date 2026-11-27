@@ -1207,42 +1207,53 @@ const cnames = (c) => c.map((x) => x.name);
 const WORLD = [-180, -80, 180, 85];
 
 test('section 114: the countries file decodes (239 names, zooms, groups); damaged files are refused', () => {
-  assert.equal(CS.n, 239); assert.equal(CS.label[0], 'Russia'); assert.equal(CS.start[0], 15); assert.equal(CS.size[0], 0);
+  assert.equal(CS.n, 239); assert.equal(CS.label[0], 'Russia'); assert.equal(CS.start[0], 0); assert.equal(CS.size[0], 0);
   const usa = CS.label.indexOf('USA');
-  assert.ok(usa >= 0 && CS.start[usa] === 15 && CS.end[usa] > 45 && CS.end[usa] < 56 && Math.abs(CS.lat[usa] - 39.538) < 1e-9);
+  assert.ok(usa >= 0 && CS.start[usa] === 0 && CS.end[usa] > 45 && CS.end[usa] < 56 && Math.abs(CS.lat[usa] - 39.538) < 1e-9);
   assert.ok(CS.label.includes('Central\nAfrican Rep.'), 'a long short form keeps its line break');
   const bad = (mut) => { const d = JSON.parse(JSON.stringify(COUNTRIES)); mut(d); return () => I.decodeCountries(d); };
   assert.throws(bad((d) => { d.format = 'x'; }), /countries-v1/);
   assert.throws(bad((d) => { d.count = 5; }), /countries-v1/);
-  assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 30, 20, 1]; }), /bad country/);    // ends before it starts
+  assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 90, 60, 1]; }), /bad country/);    // more than 8 zooms after the widest view
+  assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 20, 5, 1]; }), /bad country/);     // gone before zoom 1
   assert.throws(bad((d) => { d.countries[3] = ['X', 95, 0, 20, 30, 1]; }), /bad country/);
   assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 20, 30, 5]; }), /bad country/);
   assert.throws(bad((d) => { d.countries[3] = ['', 0, 0, 20, 30, 1]; }), /bad country/);
   assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 20.5, 30, 1]; }), /bad country/);
-  assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 20, 20, 1]; }), /bad country/);    // shown for no zoom at all
+  assert.throws(bad((d) => { d.countries[3] = ['X', 0, 0, 20, 251, 1]; }), /bad country/);   // an end past any zoom
   assert.throws(() => I.decodeCountries(null), /countries-v1/);
 });
 
-test('section 114: which country names a zoom shows: the largest at world view, Spain from 2.5, the islands from 3.0, all gone by 7; the fade; world copies', () => {
-  const at = (z, box) => cnames(I.countryCandidates(CS, z, ...(box || WORLD), 0));
-  const z2 = at(2);
-  for (const n of ['RUSSIA', 'CANADA', 'USA', 'CHINA', 'BRAZIL', 'AUSTRALIA']) assert.ok(z2.includes(n), n);
-  assert.equal(z2.length, 19, 'zoom 2.0: the 19 largest only'); assert.ok(!z2.includes('SPAIN') && !z2.includes('FIJI'));
-  assert.deepEqual(at(1.4), [], 'nothing before 1.5'); assert.equal(at(1.5).length, 19);
-  assert.ok(!at(2.49).includes('SPAIN') && at(2.5).includes('SPAIN'), 'Spain from 2.5');
-  assert.ok(!at(2.99).includes('FIJI') && at(3).includes('FIJI') && at(3).includes('SAMOA') && at(3).includes('MICRONESIA'), 'island nations from 3.0');
-  assert.ok(!at(3.29).includes('JAPAN') && at(3.3).includes('JAPAN'));
-  assert.ok(at(6).includes('SPAIN') && at(6).includes('PORTUGAL'), 'zoom 6: Spain and Portugal still named');
-  assert.deepEqual(at(7), [], 'zoom 7: every country name gone'); assert.ok(at(6.9).length > 0);
+test('section 114: which country names a zoom shows, counted from the screen\'s widest view: the largest there, Spain 1.0 closer, the islands 1.5, Japan 1.8; all gone by 7; the fade; world copies', () => {
+  const at = (world, z, box) => cnames(I.countryCandidates(CS, z, world, ...(box || WORLD), 0));
+  // the owner's laptop (1908 px: widest view 2.9) and a phone (widest view about 1.85): the same 19 at the widest view
+  for (const world of [2.9, 1.85, 2.49]) {
+    const w = at(world, world);
+    assert.equal(w.length, 19, 'widest view ' + world + ': the 19 largest only');
+    for (const n of ['RUSSIA', 'CANADA', 'USA', 'CHINA', 'BRAZIL', 'AUSTRALIA']) assert.ok(w.includes(n), n);
+    assert.ok(!w.includes('SPAIN') && !w.includes('FIJI'));
+  }
+  assert.deepEqual(at(2.9, 2.85), [], 'nothing before the widest view');
+  assert.ok(!at(2.9, 3.89).includes('SPAIN') && at(2.9, 3.9).includes('SPAIN'), 'Spain 1.0 after the widest view');
+  assert.ok(!at(2.9, 4.39).includes('FIJI') && at(2.9, 4.4).includes('FIJI') && at(2.9, 4.4).includes('SAMOA') && at(2.9, 4.4).includes('MICRONESIA'), 'island nations 1.5 after');
+  assert.ok(!at(2.9, 4.69).includes('JAPAN') && at(2.9, 4.7).includes('JAPAN'), 'mid-size 1.8 after');
+  assert.ok(!at(2.9, 5.39).includes('PORTUGAL') && at(2.9, 5.4).includes('PORTUGAL'), 'small 2.5 after');
+  assert.ok(!at(2.9, 6.09).includes('LUXEMBOURG') && at(2.9, 6.1).includes('LUXEMBOURG'), 'smallest 3.2 after');
+  assert.ok(at(2.9, 6).includes('SPAIN') && at(2.9, 6).includes('PORTUGAL'), 'zoom 6: Spain and Portugal still named');
+  assert.deepEqual(at(2.9, 7), [], 'zoom 7: every country name gone'); assert.ok(at(2.9, 6.9).length > 0);
   // the fade: full until the last half zoom, then falling to 0
-  assert.equal(I.countryAlpha(15, 51, 4.6), 1); assert.ok(Math.abs(I.countryAlpha(15, 51, 4.85) - 0.5) < 1e-9); assert.equal(I.countryAlpha(15, 51, 5.1), 0);
-  assert.equal(I.countryAlpha(15, 51, 1.49), 0); assert.equal(I.countryAlpha(15, 51, 1.5), 1);
-  const rus = I.countryCandidates(CS, 3.85, ...WORLD, 0).find((c) => c.name === 'RUSSIA');
+  assert.equal(I.countryAlpha(0, 51, 4.6, 1.5), 1); assert.ok(Math.abs(I.countryAlpha(0, 51, 4.85, 1.5) - 0.5) < 1e-9); assert.equal(I.countryAlpha(0, 51, 5.1, 1.5), 0);
+  assert.equal(I.countryAlpha(0, 51, 1.49, 1.5), 0); assert.equal(I.countryAlpha(0, 51, 1.5, 1.5), 1);
+  // kept at least 1.5 zooms after it came: Russia (gone at 4.1 by size) stays to 4.4 on the laptop
+  assert.ok(Math.abs(I.countryAlpha(0, 41, 4.2, 2.9) - 0.4) < 1e-9); assert.equal(I.countryAlpha(0, 41, 4.4, 2.9), 0);
+  // ... never after zoom 7: a group that would start after it never shows
+  assert.equal(I.countryAlpha(32, 70, 6.9, 4.0), 0); assert.ok(I.countryAlpha(32, 70, 6.5, 2.9) > 0);
+  const rus = I.countryCandidates(CS, 3.85, 1.5, ...WORLD, 0).find((c) => c.name === 'RUSSIA');
   assert.ok(Math.abs(rus.alpha - 0.5) < 1e-9 && rus.size === 0 && rus.country === true, 'Russia (gone at 4.1) half faded at 3.85');
   // world copies: a view wider than the world names a country once per copy
-  const wide = I.countryCandidates(CS, 2, -270, -80, 270, 85, 0).filter((c) => c.name === 'USA').map((c) => c.lon).sort((a, b) => a - b);
+  const wide = I.countryCandidates(CS, 2, 1.5, -270, -80, 270, 85, 0).filter((c) => c.name === 'USA').map((c) => c.lon).sort((a, b) => a - b);
   assert.deepEqual(wide, [-97.483, 262.517]);
-  assert.deepEqual(I.countryCandidates(null, 2, ...WORLD, 0), []);
+  assert.deepEqual(I.countryCandidates(null, 2, 1.5, ...WORLD, 0), []);
 });
 
 test('section 114: no city name before zoom 3.5 (each city still waits for its own zoom when later)', () => {
@@ -1267,7 +1278,9 @@ test('section 114 create(): world view = country names only, Los Angeles joins a
   const { M, flush } = loadWithFrames();
   const f = countryFetch(), seen = [];
   const ff = (u, init) => { seen.push([u, init && init.priority]); return f(u, init); };
-  const map = fakeMap(2, 20, -100, 1440, 810), pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: ff, whenReady: (go) => go() });
+  const map = fakeMap(2, 20, -100, 1440, 810);
+  map.getMinZoom = () => 1.5;                                          // the page's widest view (one world across)
+  const pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: ff, whenReady: (go) => go() });
   await settle(); flush();
   const spans = () => pl.labels.children.filter((s) => !s.hidden);
   const shown = () => spans().map((s) => s.textContent);
@@ -1295,6 +1308,23 @@ test('section 114 create(): world view = country names only, Los Angeles joins a
   // a pooled span used for a city again loses the country class and the opacity
   map.center = { lat: 21.3, lon: -157.9 }; map.zoom = 6; map.fire('zoomend'); flush();
   assert.ok(spans().length > 0 && spans().every((s) => s.className.indexOf('place-country') < 0 && s.style.opacity === ''), 'Hawaii at 6: cities only');
+});
+
+test('section 114 create(): the widest view is the map\'s minimum zoom (one world across without one): the same 19 largest on a 1908-px laptop and a phone', async () => {
+  const { M, flush } = loadWithFrames();
+  const run = async (z, sx, sy, minZoom) => {
+    const map = fakeMap(z, 20, 0, sx, sy);
+    if (minZoom !== undefined) map.getMinZoom = () => minZoom;
+    const pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: countryFetch(), whenReady: (go) => go() });
+    await settle(); flush();
+    return pl.labels.children.filter((s) => !s.hidden && /place-country/.test(s.className)).map((s) => s.textContent);
+  };
+  const laptop = await run(2.9, 1908, 906, 2.9);
+  assert.ok(laptop.includes('CHINA') && !laptop.includes('SPAIN') && !laptop.includes('FRANCE'), laptop.join());
+  assert.deepEqual(await run(2.9, 1908, 906), laptop, 'no minimum zoom: one world across (log2(1908 / 256) = 2.9)');
+  const phone = await run(1.85, 390, 720, 1.85);
+  assert.ok(phone.length > 0 && phone.every((n) => !['SPAIN', 'FRANCE', 'FIJI'].includes(n)), phone.join());
+  assert.ok((await run(3.9, 1908, 906, 2.9)).includes('SPAIN'), 'Spain 1.0 closer');
 });
 
 test('section 114 create(): the countries file failing keeps the city names; Places is credited with only the country names; Place names off asks for nothing and hides both', async () => {

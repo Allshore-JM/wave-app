@@ -9,10 +9,12 @@ Writes static_ui/countries.json, a small UI asset the page serves beside places.
            (NAME_FIXES after that), then the owner's short form for long names (SHORT_FORMS); a label still longer than
            WRAP_CHARS characters is cut onto two lines ("\\n") at the space nearest its middle
   lat/lon  Natural Earth's label point (LABEL_Y / LABEL_X), degrees, 3 decimals
-  start10  the map zoom (x 10) from which the name shows: by land area (AREA_TIERS), the open-ocean island nations of
-           ISLANDS from ISLAND_ZOOM10 (owner, 2026-11-27: "land area + islands")
-  end10    the map zoom (x 10) from which it has gone: once the country is about END_PX across on screen (the square
-           root of its area at its label latitude), at least MIN_SPAN10 after start10, never after END_CAP10
+  start10  how many zooms (x 10) after the screen's widest view (one world across: about 2.9 on a 1908-px laptop, 1.0
+           on a phone) the name shows: by land area (AREA_TIERS), the open-ocean island nations of ISLANDS after
+           ISLAND_ZOOM10 (owner, 2026-11-27: "land area + islands", counted from the widest view)
+  end10    the map zoom (x 10, absolute) from which it has gone: once the country is about END_PX across on screen (the
+           square root of its area at its label latitude), never after END_CAP10. The client keeps a name at least
+           MIN_SPAN10 after it came (still never after END_CAP10): it alone knows the screen's widest view
   size     0-4, the font group (the page's .pc-0 ... .pc-4): the area tier; island nations ISLAND_SIZE
 
 Records are sorted by start10, then area (largest first), then label: the order the client places them in.
@@ -37,9 +39,10 @@ NE_SHA256 = "239eec57ac17f100a11e2536cffc56752c318b50ae765b0918ff7aab4ce8f255"
 R_KM = 6371.0088
 M_PER_PX_Z0 = 156543.03392804097                    # Web Mercator metres per pixel at zoom 0 on the equator (256-px tiles)
 
-# (minimum land area km2, start zoom x 10): the largest countries at world view, smaller ones a little closer
-AREA_TIERS = ((1_500_000, 15), (500_000, 25), (100_000, 33), (20_000, 40), (0, 47))
-ISLAND_ZOOM10, ISLAND_SIZE = 30, 3
+# (minimum land area km2, zooms x 10 after the widest view): the largest countries at the widest view, smaller ones a
+# little closer (owner, 2026-11-27: counted from each screen's widest view, not from fixed zooms)
+AREA_TIERS = ((1_500_000, 0), (500_000, 10), (100_000, 18), (20_000, 25), (0, 32))
+ISLAND_ZOOM10, ISLAND_SIZE = 15, 3
 END_PX, MIN_SPAN10, END_CAP10 = 900, 15, 70
 WRAP_CHARS = 16
 
@@ -77,10 +80,10 @@ RULES = ("area tiers %s; islands %d/size %d; end %dpx min %d cap %d; wrap %d; sk
             WRAP_CHARS, ",".join(sorted(SKIP_TYPES))))
 COUNT_EXPECT = 239
 # (label, start10, end10 range (lo, hi) or None): landmarks a build from the pinned file must reproduce
-PROBES = [("USA", 15, (45, 55)), ("Russia", 15, (40, 45)), ("Canada", 15, None), ("China", 15, None),
-          ("Spain", 25, (70, 70)), ("France", 25, None), ("Portugal", 40, (70, 70)), ("Fiji", 30, (70, 70)),
-          ("Samoa", 30, None), ("French Polynesia", 30, None), ("Micronesia", 30, None), ("DR Congo", 15, None),
-          ("United Kingdom", 33, None), ("New Zealand", 33, None), ("Japan", 33, None), ("Luxembourg", 47, None)]
+PROBES = [("USA", 0, (45, 55)), ("Russia", 0, (40, 45)), ("Canada", 0, None), ("China", 0, None),
+          ("Spain", 10, (70, 70)), ("France", 10, None), ("Portugal", 25, (70, 70)), ("Fiji", 15, (70, 70)),
+          ("Samoa", 15, None), ("French Polynesia", 15, None), ("Micronesia", 15, None), ("DR Congo", 0, None),
+          ("United Kingdom", 18, None), ("New Zealand", 18, None), ("Japan", 18, None), ("Luxembourg", 32, None)]
 
 
 def log(*a):
@@ -129,11 +132,12 @@ def start10_of(area, island):
     return z10, tier
 
 
-def end10_of(area, lat, start10):
-    """The zoom (x 10, whole) from which the country is about END_PX across: sqrt(area) / (m per px) = END_PX."""
+def end10_of(area, lat):
+    """The zoom (x 10, whole) from which the country is about END_PX across: sqrt(area) / (m per px) = END_PX; never
+    after END_CAP10, never before zoom 1."""
     across_m = math.sqrt(max(area, 1.0)) * 1000.0
     z = math.log2(END_PX * M_PER_PX_Z0 * math.cos(math.radians(lat)) / across_m)
-    return int(min(END_CAP10, max(math.floor(z * 10 + 1e-9), start10 + MIN_SPAN10)))
+    return int(min(END_CAP10, max(math.floor(z * 10 + 1e-9), 10)))
 
 
 def build(src_bytes):
@@ -153,7 +157,7 @@ def build(src_bytes):
         label = SHORT_FORMS.get(name, name)
         if name in SHORT_FORMS:
             used_short.add(name)
-        rows.append((start10, -area, wrap(label), round(lat, 3), round(lon, 3), end10_of(area, lat, start10), size))
+        rows.append((start10, -area, wrap(label), round(lat, 3), round(lon, 3), end10_of(area, lat), size))
     missing = (ISLANDS - used_islands) | (set(SHORT_FORMS) - used_short)
     if missing:
         raise ValueError("hand-list names that match no country: %s" % ", ".join(sorted(missing)))
@@ -190,7 +194,7 @@ def check(data, real=True):
             problems.append("record %d (%s): long label not wrapped" % (k, label))
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             problems.append("record %d (%s): position out of range" % (k, label))
-        if not (10 <= s10 < e10 <= END_CAP10) or e10 - s10 < MIN_SPAN10:
+        if not (isinstance(s10, int) and isinstance(e10, int) and 0 <= s10 <= 40 and 10 <= e10 <= END_CAP10):
             problems.append("record %d (%s): zooms %r..%r out of rule" % (k, label, s10, e10))
         if size not in (0, 1, 2, 3, 4):
             problems.append("record %d (%s): size %r" % (k, label, size))

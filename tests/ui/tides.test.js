@@ -1043,3 +1043,26 @@ test('section 112: an agency\'s table names the agency, its datum and credit, an
   assert.match(t.els.meta.textContent, /Curve: drawn between LINZ’s official predicted highs and lows/);
   assert.equal(t.els.meta.querySelectorAll('a').length, 0, 'a link that is not https is not drawn');
 });
+
+test('section 113 B (G79-1): a curve that starts partway through the first day (an agency month from its own midnight) is not a gap in the list; it says it starts late', async () => {
+  const d = payload(), base = d.v.map((x) => (x === null ? 0.5 : x));
+  const L = I.layout(MIDS, { 0: true }, I.noons(MIDS, HNL));
+  const i0 = Math.ceil((MIDS[0] / 1000 - d.begin) / d.step);                // the strip's first sample
+  const late = base.slice(); for (let i = 0; i < i0 + 10; i++) late[i] = null;   // 5 h into the first day
+  assert.equal(I.hasGap(payload({ v: late }), L), false, 'a late start is no gap');
+  assert.deepEqual(I.edges(payload({ v: late }), L), { late: true, early: false });
+  const both = late.slice(); both[i0 + 30] = null;                           // and a real hole later on
+  assert.equal(I.hasGap(payload({ v: both }), L), true);
+  const end = base.slice(); const iz = Math.floor((MIDS[MIDS.length - 1] / 1000 - d.begin) / d.step);
+  for (let i = iz - 6; i < end.length; i++) end[i] = null;
+  assert.deepEqual(I.edges(payload({ v: end }), L), { late: false, early: true });
+  assert.equal(I.hasGap(payload({ v: end }), L), false);
+  assert.deepEqual(I.edges(payload({ v: base }), L), { late: false, early: false });
+  const s = setup();
+  s.view.load(HNL_ST);
+  s.answers[0].res(response(200, payload({ obs: false, v: late })));
+  await flush();
+  const text = s.els.meta.textContent;
+  assert.match(text, /The predictions start partway through the first day shown\./);
+  assert.doesNotMatch(text, /The curve has gaps/);
+});

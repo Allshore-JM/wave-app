@@ -2798,9 +2798,13 @@ agency's chart datum, said in the window.
   5-min curve thinned to 30 min, the MI's local LAT), Norway Kartverket (33; chart datum = LAT), Hong Kong Observatory
   (13; Chi Ma Wan and Lok On Pai left out: closed gauges), Taiwan CWA (266, plan section 113 B; F-A0021-001, one month
   of highs/lows from today Taipei time: half-cosine curve; `AboveChartDatum` = lowest low water; townships, harbours,
-  beaches, fishing and dive spots and 13 more coastal places; names: the county's English name or a GeoNames town within
-  6 km plus the place type, the Chinese in brackets; places are named by their proper names, never as surf spots
-  (owner, 2026-11-27): CWA's surf list reads "coast" with the place's own name; live through the REST API with `CWA_API_KEY`, one request a place per UTC day,
+  beaches, fishing and dive spots and 13 more coastal places; names: townships by their county's English name, other
+  places by type, own name and the nearest township's county ("Harbour (永安), Taoyuan City"); places are named by
+  their proper names, never as surf spots (owner, 2026-11-27): CWA's surf list reads "Coast (...)", and a surf word left
+  in a name stops the build; places under 50 m apart: the more official one; where CWA's chart-datum heights are not
+  one offset from its MSL heights (3 places), MSL + the median offset; `CWA_TIDES=0` turns the tides off alone; at most
+  2,000 requests a UTC day; each place's earlier highs and lows are kept 3 days, so a window that starts before CWA's
+  month (Taipei midnight) is filled after the first fetch; live through the REST API with `CWA_API_KEY`, one request a place per UTC day,
   the key only in the URL and never in an error; without the key the places are not listed; the station list is
   built without a key from the daily file on CWA's public storage). A station is fetched in the visitor's request at most once
   per UTC day (`tide_global.GlobalTideService`): a failure is remembered a minute (the page retries), a second visitor

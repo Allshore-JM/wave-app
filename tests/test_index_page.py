@@ -1168,7 +1168,8 @@ def test_location_aids_on_the_page(client, monkeypatch):
     grid = body.index('id="gridlines"')
     rows = [body.index('id="%s" checked' % k) for k in ("borders", "places")]
     assert grid < rows[0] < rows[1] < body.index('</div>', rows[1])
-    assert '<span class="form-check-label">Borders</span>' in body and '<span class="form-check-label">City names</span>' in body
+    assert '<span class="form-check-label">Borders</span>' in body and '<span class="form-check-label">Place names</span>' in body
+    assert "City names" not in body                                          # one row for country and city names (plan section 114)
     assert 'id="states"' not in body and "Country borders" not in body and "State/province" not in body
     tag = body.index('<script src="/ui/places.js?v=%s"></script>' % A.UI_ASSET_VERSION)
     assert body.index('<script src="/ui/tools.js?v=') < tag < body.index("Cloudflare Web Analytics")
@@ -1186,6 +1187,9 @@ def test_location_aids_on_the_page(client, monkeypatch):
         "position: absolute; transform: translate(-50%, -50%); white-space: nowrap;",   # the name centred on its place
         "var ids = ['borders', 'places'], pl = null;",
         "try { st && st.removeItem('allshore.states.v1'); } catch (e) {}",
+        # plan section 114: the country names' file beside the module, and their CSS = the module's constants
+        "countriesUrl: '/ui/countries.json?v=%s'," % A.UI_ASSET_VERSION,
+        ".place-label.place-country { color: #f2c66d; letter-spacing: 0.12em; white-space: pre; text-align: center; }",
     ):
         assert needle in body, needle
     # no dot before a name and no left-side variant (section 52): neither in the page's CSS nor in the module
@@ -1195,6 +1199,13 @@ def test_location_aids_on_the_page(client, monkeypatch):
     js = open(os.path.join(os.path.dirname(__file__), "..", "static_ui", "places.js"), encoding="utf-8").read()
     assert "LABEL_FONT = '600 11px system-ui, -apple-system, \"Segoe UI\", sans-serif'" in js
     assert "DOT_R" not in js and "LABEL_DX" not in js and "place-left" not in js
+    # plan section 114: each country group's CSS size and line height = the module's COUNTRY_PX x COUNTRY_LH, and the file is served
+    assert "COUNTRY_PX = [15, 13.5, 12.5, 12, 11]" in js and "COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25" in js
+    for g, px in enumerate((15, 13.5, 12.5, 12, 11)):
+        assert ".place-label.pc-%d { font-size: %spx; line-height: %dpx; }" % (g, ("%g" % px), round(px * 1.25)) in body, g
+    r = client.get("/ui/countries.json?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.mimetype == "application/json" and r.get_json()["format"] == "countries-v1"
+    assert r.get_data() == open(os.path.join(os.path.dirname(__file__), "..", "static_ui", "countries.json"), "rb").read()
     assert "createPane" not in body.split("<script src=\"/ui/places.js")[1].split("</script>", 2)[1]
     monkeypatch.setenv("PLACES_BASE", "https://example.test/places/v1/")
     body = client.get("/?station=51201").get_data(as_text=True)

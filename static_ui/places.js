@@ -15,6 +15,12 @@
  * no dot; plan section 52), kept only where the whole text lies on the map (never shifted: a name that would run off an
  * edge is dropped) and it overlaps neither another label nor a map control, the overlay's sheet or a gridline label; at
  * most 120 labels (60 on a narrow map).
+ * Country names (plan section 114): from static_ui/countries.json (opts.countriesUrl), placed before the cities in the
+ * same thinning, pale gold capitals in five font groups (.place-country.pc-0 ... pc-4). Each shows from a number of zooms
+ * after the screen's widest view (the map's minimum zoom: one world across; by land area, so the widest view of any
+ * screen names only the largest countries) until the country is about a screen wide (all gone by zoom 7), fading over
+ * its last half zoom. City names start no earlier than zoom 3.5. One setting (the "Place names" row, key
+ * allshore.places.v1) shows or hides both.
  * Nothing is fetched before the page has loaded and the overlay's first picture has settled (at most 30 s: on a slow
  * link the overlay's coastline comes first, G34 B-6), nor while every kind is off or the map is below the first wanted
  * zoom; every download asks for a low priority. A download is given up only after 15 s in which no byte arrived. The
@@ -36,7 +42,16 @@
   var LAT_MAX = 85.05112878;                         // Web Mercator's edge
   var KEYS = { borders: 'allshore.borders.v1', places: 'allshore.places.v1' };
   var KIND_ADMIN0 = 0, KIND_ADMIN1 = 1, KIND_DISPUTED = 2;
-  var BORDER_ZOOM = 3, STATE_ZOOM = 5, PLACES_ZOOM = 2;   // tile zoom from which each kind is drawn (owner, 2026-10-23)
+  var BORDER_ZOOM = 3, STATE_ZOOM = 5, PLACES_ZOOM = 1;   // tile zoom from which each kind is drawn (owner, 2026-10-23;
+                                                          // names from 1: the country names start at world view, plan section 114)
+  // Country names (plan section 114, owner 2026-11-27): static_ui/countries.json (tools/places/build_countries.py) gives
+  // each country's label, label point, how many zooms (x 10) after the screen's widest view it shows, the zoom (x 10) it
+  // has gone by, and its font group (.pc-0 ... .pc-4 in the page's CSS, sizes COUNTRY_PX). A name stays at least
+  // COUNTRY_MIN_SPAN10 after it came, never after COUNTRY_END_CAP10, and fades over the last COUNTRY_FADE10 before it
+  // goes. City names show no earlier than CITY_MIN_ZOOM10, so wide views name countries, closer ones cities.
+  var CITY_MIN_ZOOM10 = 35, COUNTRY_FADE10 = 5, COUNTRY_PX = [15, 13.5, 12.5, 12, 11], COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25;
+  var COUNTRY_MIN_SPAN10 = 15, COUNTRY_END_CAP10 = 70;
+  var MAX_COUNTRY_BYTES = 256 << 10, MAX_COUNTRIES = 1000;
   var TIER0_MAX_ZOOM = 7;                            // tile zoom up to which the world files serve (tier 1 from 8)
   var LINES_MAGIC = 'LNS1', LINES_HEADER = 40, PLACES_MAGIC = 'PLC1', PLACES_HEADER = 36;
   var FLAG_CAPITAL = 1, FLAG_GEONAMES = 2;
@@ -63,7 +78,7 @@
   var RELAY_CLASSES = ['ov-sheet', 'tools-fan', 'tools-label', 'tools-ring-label'];   // their coming and going lays the names out again
   var CHAR_PX = 6.2;                                 // the width estimate without a canvas
   var CREDIT_BORDERS = 'Borders: <a href="https://www.naturalearthdata.com/" target="_blank" rel="noopener" title="Made with Natural Earth (public domain)">Natural Earth</a>';
-  var CREDIT_PLACES = 'Places: <a href="https://www.geonames.org/" target="_blank" rel="noopener" title="Town names from GeoNames (and Natural Earth), modified: filtered and ranked">GeoNames</a> <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>';
+  var CREDIT_PLACES = 'Places: <a href="https://www.geonames.org/" target="_blank" rel="noopener" title="Country names from Natural Earth; town names from GeoNames (and Natural Earth), modified: filtered and ranked">GeoNames</a> <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>';
 
   // ---- projection (zoom-0 world pixels, as Leaflet's EPSG:3857 at zoom 0) ----
   function lonToX(lon) { return (lon + 180) / 360 * TILE; }
@@ -502,7 +517,54 @@
 
   // ---- the labels ----
   // A place shows when the map zoom (x 10, whole) reaches its own: Natural Earth's min_zoom, GeoNames 8 / 9 / 10 by size.
-  function placeShown(mz10, zoom10) { return mz10 <= zoom10; }
+  // No city name before CITY_MIN_ZOOM10 (plan section 114: the wide views name countries).
+  function placeShown(mz10, zoom10) { return Math.max(mz10, CITY_MIN_ZOOM10) <= zoom10; }
+
+  // ---- the country names (plan section 114) ----
+  // The default font of each group (the page's .pc-* CSS must match: the widths are measured with it).
+  function countryFonts() {
+    return COUNTRY_PX.map(function (px) {
+      return { f: '600 ' + px + 'px system-ui, -apple-system, "Segoe UI", sans-serif', lh: Math.round(px * COUNTRY_LH), ls: Math.round(px * COUNTRY_LS_EM * 100) / 100 };
+    });
+  }
+  // static_ui/countries.json -> {n, label [string], lat, lon (Float64Array, degrees), start (Uint8Array, zooms x 10 after
+  // the widest view), end (Uint8Array, zoom x 10), size (Uint8Array, 0-4)}. Throws on anything that does not add up (a
+  // damaged file never draws).
+  function decodeCountries(d) {
+    if (!d || d.format !== 'countries-v1' || !Array.isArray(d.countries) || d.count !== d.countries.length || d.countries.length > MAX_COUNTRIES) throw new Error('places: not a countries-v1 file');
+    var rows = d.countries, n = rows.length, out = { n: n, label: [], lat: new Float64Array(n), lon: new Float64Array(n), start: new Uint8Array(n), end: new Uint8Array(n), size: new Uint8Array(n) };
+    for (var k = 0; k < n; k++) {
+      var r = rows[k];
+      if (!Array.isArray(r) || r.length !== 6 || typeof r[0] !== 'string' || !r[0] || r[0].length > 80 || !(r[1] >= -90 && r[1] <= 90) || !(r[2] >= -180 && r[2] <= 180) ||
+          !(r[3] >= 0 && r[3] <= 80 && r[4] >= 10 && r[4] <= 250 && Math.floor(r[3]) === r[3] && Math.floor(r[4]) === r[4]) || !(r[5] >= 0 && r[5] < COUNTRY_PX.length && Math.floor(r[5]) === r[5])) throw new Error('places: a bad country record');
+      out.label.push(r[0]); out.lat[k] = r[1]; out.lon[k] = r[2]; out.start[k] = r[3]; out.end[k] = r[4]; out.size[k] = r[5];
+    }
+    return out;
+  }
+  // A country's name at map zoom `zoom` on a screen whose widest view is zoom `world`: shown from `off10` (x 10) after
+  // the widest view until its end, kept at least COUNTRY_MIN_SPAN10, never after COUNTRY_END_CAP10; its opacity falls
+  // from 1 to 0 over the last COUNTRY_FADE10. -> 0 when not shown.
+  function countryAlpha(off10, end10, zoom, world) {
+    var start = world * 10 + off10, z = zoom * 10;
+    var end = Math.min(COUNTRY_END_CAP10, Math.max(end10, start + COUNTRY_MIN_SPAN10));
+    if (z + 1e-6 < start || z >= end) return 0;
+    return Math.max(0, Math.min(1, (end - z) / COUNTRY_FADE10));
+  }
+  // The country candidates of a view (as candidatesFor: inside the box grown by marginDeg, every world copy), in the
+  // file's order (start, then the larger first).
+  function countryCandidates(cs, zoom, world, west, south, east, north, marginDeg) {
+    var out = [], w = west - marginDeg, e = east + marginDeg, s = south - marginDeg, n = north + marginDeg;
+    if (!cs) return out;
+    for (var k = 0; k < cs.n; k++) {
+      var a = countryAlpha(cs.start[k], cs.end[k], zoom, world);
+      if (!a || cs.lat[k] < s || cs.lat[k] > n) continue;
+      var lon = cs.lon[k];
+      for (var copy = Math.ceil((w - lon) / 360); lon + copy * 360 <= e; copy++) {
+        out.push({ lat: cs.lat[k], lon: lon + copy * 360, name: cs.label[k].toUpperCase(), size: cs.size[k], alpha: a, country: true });
+      }
+    }
+    return out;
+  }
   // The candidates of a view: every place of the sets whose zoom is reached and whose position (in any world copy) lies
   // inside the view box (unwrapped degrees) grown by `marginDeg`; each with the copy's longitude. Sorted largest first:
   // rank, then population, then name, then longitude (a stable order, so the same view always thins the same way).
@@ -527,9 +589,9 @@
   // edge is dropped, never shifted (owner, plan section 52: cities are areas, the name sits over the place).
   // h: the labels' height (the drawn font's line; LABEL_H by default).
   function thin(items, blocked, max, size, h) {
-    var kept = [], grid = {}, i, j, hh = (h || LABEL_H) / 2;
+    var kept = [], grid = {}, i, j;
     function boxOf(it) {
-      var hw = it.w / 2;
+      var hw = it.w / 2, hh = (it.h || h || LABEL_H) / 2;              // an item's own height (a country name's lines) first
       return { left: it.x - hw - LABEL_GAP, top: it.y - hh - LABEL_GAP, right: it.x + hw + LABEL_GAP, bottom: it.y + hh + LABEL_GAP };
     }
     function fits(r) { return !size || (r.left + LABEL_GAP >= 0 && r.top + LABEL_GAP >= 0 && r.right - LABEL_GAP <= size.x && r.bottom - LABEL_GAP <= size.y); }
@@ -573,7 +635,7 @@
   function readOn(storage, key) { try { return storage.getItem(key) !== '0'; } catch (e) { return true; } }
   function writeOn(storage, key, on) { try { storage.setItem(key, on ? '1' : '0'); } catch (e) {} }
 
-  // opts: base (the static/places/v2 URL), storage (localStorage-like), L, document, fetch, whenReady (fn(start): calls
+  // opts: base (the static/places/v2 URL), countriesUrl (the country names file, plan section 114), storage (localStorage-like), L, document, fetch, whenReady (fn(start): calls
   // start once the page may download; default: the window's load event + START_DELAY_MS, then waitFor), waitFor (fn ->
   // a promise of the overlay's first picture, or null: the downloads wait for it, WAIT_MAX_MS at most; G34 B-6).
   // Returns {on(kind), set(kind, on), layer, labels, store, redraw, update, wanted}.
@@ -600,6 +662,35 @@
     // the data is wanted once the page may download, with a kind on, from the zoom its first kind shows
     function firstZoom() { return on.places ? PLACES_ZOOM : BORDER_ZOOM; }
     function wanted() { return !!(started && store && (on.borders || on.places) && Math.round(map.getZoom()) >= firstZoom()); }
+    // The country names' file (opts.countriesUrl, the page's own versioned asset): asked once names are wanted, beside
+    // the tier-0 files, at a low priority; given up after STALL_MS with no byte, then asked again after RETRY_MS. A
+    // failure leaves the city names as they are.
+    var countries = { status: 'idle', data: null, failedAt: 0 };
+    function loadCountries() {
+      var url = opts.countriesUrl, fetchFn = opts.fetch || (root.fetch && root.fetch.bind(root));
+      if (!url || !fetchFn || countries.status === 'ok' || countries.status === 'loading') return;
+      if (countries.status === 'failed' && Date.now() - countries.failedAt < RETRY_MS) return;
+      countries.status = 'loading';
+      var ctrl = typeof AbortController === 'function' ? new AbortController() : null, timer = null;
+      var arm = function () { clearTimeout(timer); timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, STALL_MS); };
+      arm();
+      Promise.resolve().then(function () {
+        return fetchFn(url, { signal: ctrl ? ctrl.signal : undefined, priority: 'low', credentials: 'same-origin' });
+      }).then(function (r) {
+        if (!r.ok) throw new Error('places: countries ' + r.status);
+        arm();
+        if (r.body && r.body.getReader) return readAll(r.body.getReader(), MAX_COUNTRY_BYTES, arm).then(function (b) { return JSON.parse(new TextDecoder('utf-8').decode(b)); });
+        return r.json();
+      }).then(function (json) {
+        clearTimeout(timer);
+        countries.data = decodeCountries(json); countries.status = 'ok';
+        credits();
+        if (!map._animatingZoom) update();
+      }).catch(function () {
+        clearTimeout(timer);
+        countries.status = 'failed'; countries.failedAt = Date.now();
+      });
+    }
     // A tile with no line keeps a 1x1 backing store (a full one is 1 MB at dpr 2: most of a surf map has no border; G34
     // B-7); it is grown when a line comes into it.
     function paint(c, coords) {
@@ -631,7 +722,7 @@
     var box = doc.createElement('div');
     box.className = 'place-labels'; box.setAttribute('aria-hidden', 'true');
     lpane.appendChild(box);
-    var pool = [], widths = {}, nwidths = 0, measure = null, labelsComplete = true, font = { n: LABEL_FONT, b: CAPITAL_FONT, h: LABEL_H }, probed = false;
+    var pool = [], widths = {}, nwidths = 0, measure = null, labelsComplete = true, font = { n: LABEL_FONT, b: CAPITAL_FONT, h: LABEL_H, c: countryFonts() }, probed = false;
     // The font the names are drawn in, read from a hidden probe of each kind: a browser's minimum font size (or the page's
     // CSS) can make it larger than LABEL_FONT, and the widths and the line must be the drawn ones (G34 B-8).
     function probeFont() {
@@ -649,8 +740,42 @@
           if (kinds[i][0] === 'n') { var lh = parseFloat(cs.lineHeight); next.h = Math.max(LABEL_H, lh > 0 ? lh : 0, px > 0 ? Math.ceil(px * 1.2) : 0); }
           box.removeChild(sp);
         }
-        if (next.n && next.b && (next.n !== font.n || next.b !== font.b || next.h !== font.h)) { font = next; widths = {}; nwidths = 0; }
+        // the country names' groups (.pc-0 ... .pc-4): font, line height and letter spacing as drawn
+        next.c = countryFonts();
+        for (var g = 0; g < COUNTRY_PX.length; g++) {
+          var cp = doc.createElement('span');
+          cp.className = 'place-label place-country pc-' + g; cp.textContent = 'M'; cp.style.visibility = 'hidden';
+          box.appendChild(cp);
+          var cc = gcs.call(view, cp), cpx = parseFloat(cc.fontSize);
+          if (cpx > 0 && cc.fontFamily) {
+            var clh = parseFloat(cc.lineHeight), cls = parseFloat(cc.letterSpacing);
+            next.c[g] = { f: (cc.fontStyle && cc.fontStyle !== 'normal' ? cc.fontStyle + ' ' : '') + (cc.fontWeight || '') + ' ' + cpx + 'px ' + cc.fontFamily,
+                          lh: Math.max(clh > 0 ? clh : 0, Math.ceil(cpx * 1.2)), ls: cls > 0 ? cls : 0 };
+          }
+          box.removeChild(cp);
+        }
+        var cchanged = next.c.some(function (c, g) { return !font.c[g] || c.f !== font.c[g].f || c.lh !== font.c[g].lh || c.ls !== font.c[g].ls; });
+        if (next.n && next.b && (next.n !== font.n || next.b !== font.b || next.h !== font.h || cchanged)) { font = next; widths = {}; nwidths = 0; }
       } catch (e) { /* the defaults stay */ }
+    }
+    // A country name's box: the widest line (each letter followed by the letter spacing, as CSS draws it) and the lines.
+    function countryBox(text, g) {
+      var cf = font.c[g] || countryFonts()[g], key = 'c' + g + ':' + text;
+      var lines = text.split('\n'), w = widths[key];
+      if (w === undefined) {
+        if (measure === null) {
+          try { var cv = doc.createElement('canvas'); measure = (cv.getContext && cv.getContext('2d')) || false; } catch (e) { measure = false; }
+        }
+        w = 0;
+        for (var i = 0; i < lines.length; i++) {
+          var lw = lines[i].length * COUNTRY_PX[g] * 0.68;
+          if (measure) { measure.font = cf.f; var m = measure.measureText(lines[i]); if (m && m.width > 0) lw = m.width; }
+          w = Math.max(w, lw + cf.ls * lines[i].length);
+        }
+        if (nwidths >= WIDTH_CACHE_MAX) { widths = {}; nwidths = 0; }
+        nwidths++; widths[key] = w;
+      }
+      return { w: w, h: cf.lh * lines.length };
     }
     function textWidth(name, bold) {
       var key = (bold ? 'b:' : 'n:') + name;
@@ -681,25 +806,37 @@
       if (doc.querySelectorAll) Array.prototype.forEach.call(doc.querySelectorAll(FLOAT_SELECTOR), add);
       return out;
     }
+    // The screen's widest view: the map's minimum zoom (the page sets it to one world across, or the band between the
+    // poles on a tall screen); one world across where the map has none. Rounded down to the map's 0.1 zoom step, so each
+    // group starts on a zoom the map can land on (a phone's 1.82 -> 1.8: the islands from 3.3, not 3.32 = 3.4).
+    function worldZoom() {
+      var mz = typeof map.getMinZoom === 'function' ? map.getMinZoom() : NaN;
+      if (!(mz > 0)) mz = Math.max(1, Math.log(map.getSize().x / TILE) / Math.LN2);
+      return Math.floor(mz * 10 + 1e-6) / 10;
+    }
     function update() {
-      if (!on.places || !store || !store.ok('p')) { box.hidden = true; labelsComplete = !(on.places && store && store.unit.p.status === 'loading'); return; }
+      var cities = !!(store && store.ok('p')), countryNames = countries.status === 'ok';
+      if (!on.places || !store || !(cities || countryNames)) { box.hidden = true; labelsComplete = !(on.places && store && (store.unit.p.status === 'loading' || countries.status === 'loading')); return; }
       if (!probed) probeFont();
       box.hidden = false;
       var zoom = map.getZoom(), z = Math.round(zoom), zoom10 = Math.floor(zoom * 10 + 1e-6), size = map.getSize(), b = map.getBounds();
       var west = b.getWest(), east = b.getEast(), south = Math.max(b.getSouth(), -LAT_MAX), north = Math.min(b.getNorth(), LAT_MAX);
       var degPx = 360 / (TILE * Math.pow(2, zoom)), margin = VIEW_MARGIN_PX * degPx;
-      var got = store.placesFor(west - margin, south - margin, east + margin, north + margin, z);
-      labelsComplete = got.complete;
-      var cands = candidatesFor(got.sets, zoom10, west, south, east, north, margin), items = [];
+      var got = cities ? store.placesFor(west - margin, south - margin, east + margin, north + margin, z) : { sets: [], complete: false };
+      labelsComplete = got.complete && countries.status !== 'loading';
+      // the country names first (in the file's order: the earliest, then the larger), then the cities (plan section 114)
+      var cands = countryCandidates(countries.data, zoom, worldZoom(), west, south, east, north, margin).concat(candidatesFor(got.sets, zoom10, west, south, east, north, margin)), items = [];
       for (var i = 0; i < cands.length; i++) {
         var cd = cands[i], p = map.latLngToContainerPoint([cd.lat, cd.lon]);
-        items.push({ x: p.x, y: p.y, w: textWidth(cd.name, !!(cd.flags & FLAG_CAPITAL)), cand: cd });
+        if (cd.country) { var cb = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: cb.w, h: cb.h, cand: cd }); }
+        else items.push({ x: p.x, y: p.y, w: textWidth(cd.name, !!(cd.flags & FLAG_CAPITAL)), cand: cd });
       }
       var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size, font.h), used = 0;
       for (i = 0; i < kept.length; i++) {
         var it = kept[i], el = pool[used] || (pool[used] = box.appendChild(doc.createElement('span'))), lp = map.latLngToLayerPoint([it.cand.lat, it.cand.lon]);
-        el.className = 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '');
+        el.className = it.cand.country ? 'place-label place-country pc-' + it.cand.size : 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '');
         el.textContent = it.cand.name;
+        el.style.opacity = it.cand.country && it.cand.alpha < 1 ? it.cand.alpha.toFixed(2) : '';
         el.style.left = Math.round(lp.x) + 'px'; el.style.top = Math.round(lp.y) + 'px';
         el.hidden = false;
         used++;
@@ -753,7 +890,7 @@
     }
     // a kind is credited while it is on and its data has loaded (nothing is credited that cannot be drawn: V7-6)
     function credits() {
-      credit('borders', CREDIT_BORDERS, !!(store && store.ok('l')) && on.borders); credit('places', CREDIT_PLACES, !!(store && store.ok('p')) && on.places);
+      credit('borders', CREDIT_BORDERS, !!(store && store.ok('l')) && on.borders); credit('places', CREDIT_PLACES, !!(store && store.ok('p') || countries.status === 'ok') && on.places);
     }
     // the line layer is on the map only while Borders is on (City names alone draws no tile: G34 F-A5 / B-7)
     function sync() {
@@ -764,6 +901,7 @@
       credits();
       // only the files of the kinds that are on (Borders off downloads no lines: re-check R-2); each draws as it lands
       // a kind turned on during a load starts its file at once beside it (V2-2); nothing new asked: no second call
+      if (wanted() && on.places) loadCountries();
       var miss = wanted() ? units().filter(function (k) { return !store.ok(k) && !(store.loading && store.unit[k].status === 'loading'); }) : [];
       if (miss.length) store.load(units()).then(function () {
         credits();
@@ -788,7 +926,7 @@
     whenReady(function () { started = true; sync(); });
     sync();
     return { on: function (kind) { return !!on[kind]; }, set: set, layer: layer, labels: box, store: store, redraw: redraw, update: update, wanted: wanted, textWidth: textWidth,
-             fontUsed: function () { return font; } };
+             fontUsed: function () { return font; }, countries: function () { return countries; }, countryBox: countryBox };
   }
 
   root.AllshorePlaces = {
@@ -802,6 +940,8 @@
                   CREDIT_BORDERS: CREDIT_BORDERS, CREDIT_PLACES: CREDIT_PLACES,
                   lonToX: lonToX, latToY: latToY, yToLat: yToLat, decodeLines: decodeLines, decodePlaces: decodePlaces, readVarints: readVarints, unzz: unzz, validIndex: validIndex,
                   cellName: cellName, cellsForBox: cellsForBox, cellsForTile: cellsForTile, PlacesStore: PlacesStore, kindsAt: kindsAt, lineShown: lineShown, tilePaths: tilePaths, clipSegment: clipSegment, CLIP_PX: CLIP_PX,
-                  drawTile: drawTile, placeShown: placeShown, candidatesFor: candidatesFor, thin: thin, readOn: readOn, writeOn: writeOn }
+                  drawTile: drawTile, placeShown: placeShown, candidatesFor: candidatesFor, thin: thin, readOn: readOn, writeOn: writeOn,
+                  CITY_MIN_ZOOM10: CITY_MIN_ZOOM10, COUNTRY_FADE10: COUNTRY_FADE10, COUNTRY_MIN_SPAN10: COUNTRY_MIN_SPAN10, COUNTRY_END_CAP10: COUNTRY_END_CAP10, COUNTRY_PX: COUNTRY_PX, COUNTRY_LS_EM: COUNTRY_LS_EM, COUNTRY_LH: COUNTRY_LH,
+                  MAX_COUNTRY_BYTES: MAX_COUNTRY_BYTES, decodeCountries: decodeCountries, countryAlpha: countryAlpha, countryCandidates: countryCandidates, countryFonts: countryFonts }
   };
 })(typeof window !== 'undefined' ? window : this);

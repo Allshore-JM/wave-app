@@ -9,3 +9,5 @@ tests/fixtures/buoys_widen/** -text
 # Committed binary data (the Frost coast mask, plan section 69)
 tools/wind/*.bin binary
 tests/fixtures/keyed/** -text
+# The country names (plan section 114): the served bytes are pinned by sha256
+static_ui/countries.json -text

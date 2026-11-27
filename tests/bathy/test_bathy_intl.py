@@ -180,6 +180,9 @@ def test_the_international_regions():
         assert r["prio"] == 20 and not r.get("fill") and not r.get("presence")
     assert S.REGIONS["au-nsw-s"]["mhhw"] == S.REGIONS["au-nsw-n"]["mhhw"] == 0.7
     assert all(S.REGIONS[n]["mhhw"] == "grid:nz" for n in ("nz-north", "nz-central", "nz-south"))
+    # LINZ sheets that stop 300-700 m past the GSHHG shore need a nearer open-water seed than the default 1 km
+    assert all(S.REGIONS[n]["seed_m"] == S.NZ_SEED_M == 300.0 for n in ("nz-north", "nz-central", "nz-south"))
+    assert all("seed_m" not in S.REGIONS[n] for n in ("au-nsw-s", "au-nsw-n"))
     # no two international boxes overlap (a shared edge is allowed), and none meets a US region
     boxes = [S.REGIONS[n]["box"] for n in INTL]
     for i, a in enumerate(boxes):

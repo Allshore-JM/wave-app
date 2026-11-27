@@ -579,6 +579,13 @@ INTL_BOXES = {
 for _name, (_box, _srcs, _mhhw) in INTL_BOXES.items():
     REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw=_mhhw, zmin=8, prio=20, cut=True, seed="sea",
                           reach=INTL_REACH)
+# Several LINZ sheets stop 1-12 m deep only 300-700 m past the GSHHG shore (Taranaki BH28, Southland CG08 / CG09,
+# Wellington BP32, Northland AV27; measured 2026-11-27): with the default seed distance (1 km) they hold no open-water
+# seed at all and every pixel of them was dropped (dry run 3's per-sheet read-back: 0 % drawn as water). 300 m seeds
+# them; the GSHHG coast can be that far off, so a lagoon seaward of a wrong GSHHG line may also count as open water.
+NZ_SEED_M = 300.0
+for _name in ("nz-north", "nz-central", "nz-south"):
+    REGIONS[_name]["seed_m"] = NZ_SEED_M
 
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)

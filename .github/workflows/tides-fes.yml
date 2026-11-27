@@ -7,7 +7,9 @@ name: tides-fes
 # R2_SECRET_ACCESS_KEY, R2_BUCKET (the model bucket, as the other publishers).
 on:
   schedule:
-    - cron: "17 3 * * 1"                   # weekly (Monday 03:17 UTC): each run publishes 47 days from two days back
+    - cron: "17 3 * * 1,4"                 # Monday + Thursday 03:17 UTC: each run publishes 47 days from two days back;
+                                           # twice a week also keeps the constants' cache in use (GitHub drops a cache
+                                           # not used for 7 days, and making it again is the ~3 h download)
   workflow_dispatch:
     inputs:
       fes_url:
@@ -24,7 +26,8 @@ permissions:
 jobs:
   predict:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 330                   # the first run (no cache) downloads 34 files of ~160 MB from AVISO+:
+                                           # ~5 min a file on 2026-11-27 (run 45940535650), ~3 h in all
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0

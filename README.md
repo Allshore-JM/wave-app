@@ -2775,7 +2775,7 @@ agency's chart datum, said in the window.
   open), UKHO Discovery (caching not allowed); Korea KHOA and Taiwan CWA need free keys (later).
 - **Tide-model points** (type M, dashed ring): FES2022b (CNES / AVISO+) at the forecast stations with no tide station
   within 10 km and land within 30 km. Licensed to the owner's AVISO+ account, so the model never reaches the site: the
-  weekly job `.github/workflows/tides-fes.yml` (`tools/tides/fes_points.py`) extracts the constants on the runner (kept
+  twice-weekly job (Mon + Thu; the first run, with no cache, downloads ~3 h) `.github/workflows/tides-fes.yml` (`tools/tides/fes_points.py`) extracts the constants on the runner (kept
   in the Actions cache encrypted with AVISO_PASS: the repository is public), predicts 47 days from two days back and
   publishes predictions only, to R2 `tides/fes/v1/` (`points.json` + `p/<id>.json`, cm above LAT). FES2022b is
   downloaded over HTTPS from AVISO+'s THREDDS file server (`tds-odatis.aviso.altimetry.fr`, Basic auth with the AVISO+

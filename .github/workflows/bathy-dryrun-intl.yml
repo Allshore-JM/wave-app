@@ -1,0 +1,45 @@
+# TEMPORARY (plan section 111a, step 2): build the five Australia / New Zealand regions on GitHub's runner, check them
+# and read them back against their sources. No secrets, no upload. Results go to ::notice:: annotations (readable
+# without signing in). Removed before the job merge (a test pins that it is gone).
+name: bathy-dryrun-intl
+on:
+  push:
+    branches: ["feat/bathy-intl"]
+    paths: [".github/workflows/bathy-dryrun-intl.yml"]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        region: [nz-south, au-nsw-n, nz-central, au-nsw-s, nz-north]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: pip install numpy==2.5.4 scipy==1.18.1 pillow==13.0.0 rasterio==1.5.2 pyproj==3.8.0 certifi==2026.10.23
+      - name: Measure
+        shell: bash
+        env:
+          REGION: ${{ matrix.region }}
+        run: |
+          set -o pipefail
+          echo "::notice title=$REGION start::nproc $(nproc), $(df -h . | tail -1)"
+          rc=0
+          /usr/bin/time -v -o time.txt python tools/bathy/build_bathy.py build --region "$REGION" --version 1 --out build/bathy --keep-work > build.log 2>&1 || rc=$?
+          tail -25 build.log
+          echo "::notice title=$REGION build::rc $rc; $(grep -E 'Elapsed|Maximum resident' time.txt | tr -s ' ' | tr '\n' ';')"
+          grep -E "tiles meet the box|blocks of zoom|pass 1|pass 2|v1:|check " build.log | cut -c1-240 | while IFS= read -r line; do
+            echo "::notice title=$REGION log::$line"
+          done
+          echo "::notice title=$REGION size::$(du -sb build/bathy/$REGION | cut -f1) bytes; files $(find build/bathy/$REGION -type f | wc -l); $(df -h . | tail -1)"
+          [ "$rc" = 0 ] || exit "$rc"
+          python tools/bathy/bathy_readback.py "build/bathy/$REGION/v1" --n 3000 --work "build/bathy/_work_$REGION" > rb.log 2>&1 || rc=$?
+          cat rb.log
+          while IFS= read -r line; do echo "::notice title=$REGION readback::$line"; done < rb.log
+          exit "$rc"

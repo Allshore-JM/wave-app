@@ -1,0 +1,6 @@
+{
+ "https://api-iwls.dfo-mpo.gc.ca/api/v1/stations": "stations.json",
+ "https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/5cebf1de3d0f4a073c4bb94c/data?time-series-code=wlp&from=2026-11-26T00%3A00%3A00Z&to=2026-11-27T00%3A00%3A00Z&resolution=FIFTEEN_MINUTES": "pa_wlp_1.json",
+ "https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/5cebf1de3d0f4a073c4bb94c/data?time-series-code=wlp&from=2026-11-27T00%3A00%3A00Z&to=2026-11-28T00%3A00%3A00Z&resolution=FIFTEEN_MINUTES": "pa_wlp_2.json",
+ "https://api-iwls.dfo-mpo.gc.ca/api/v1/stations/5cebf1de3d0f4a073c4bb94c/data?time-series-code=wlp-hilo&from=2026-11-25T11%3A00%3A00Z&to=2026-11-28T13%3A00%3A00Z": "pa_hilo.json"
+}

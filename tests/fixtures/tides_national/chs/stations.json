@@ -1,0 +1,303 @@
+[
+{
+"alternativeName": "Caulfeild Cove",
+"chsRegionCode": "PAC",
+"code": "07795",
+"id": "5cebf1de3d0f4a073c4bb94c",
+"latitude": 49.3375,
+"longitude": -123.253583,
+"officialName": "Point Atkinson",
+"operating": true,
+"provinceCode": "BC",
+"timeSeries": [
+{
+"code": "wlo",
+"id": "5ddeee612a8a340001a3676f",
+"nameEn": "Water level official value",
+"nameFr": "Niveau d'eau, valeur officielle",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp",
+"id": "5cebf1de3d0f4a073c4bb94b",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp-hilo",
+"id": "5d9dd7b933a9f593161c3e57",
+"nameEn": "High and Low Tide Predictions",
+"nameFr": "Prédictions de pleines et basses mers",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+}
+],
+"type": "PERMANENT"
+},
+{
+"chsRegionCode": "PAC",
+"code": "08074",
+"id": "5cebf1de3d0f4a073c4bb996",
+"latitude": 50.042,
+"longitude": -125.247,
+"officialName": "Campbell River",
+"operating": true,
+"provinceCode": "BC",
+"timeSeries": [
+{
+"code": "wlo",
+"id": "5cebf1de3d0f4a073c4bb993",
+"nameEn": "Water level official value",
+"nameFr": "Niveau d'eau, valeur officielle",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp",
+"id": "5cebf1de3d0f4a073c4bb991",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp-hilo",
+"id": "5d9dd7bb33a9f593161c3e77",
+"nameEn": "High and Low Tide Predictions",
+"nameFr": "Prédictions de pleines et basses mers",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+}
+],
+"type": "PERMANENT"
+},
+{
+"alternativeName": "Koojesse Inlet, Frobisher Bay, FROBISHER BAY, KOOJESSE INLET",
+"chsRegionCode": "CNA",
+"code": "04140",
+"id": "5cebf1df3d0f4a073c4bbc03",
+"latitude": 63.712667,
+"longitude": -68.5025,
+"officialName": "Iqaluit",
+"operating": false,
+"provinceCode": "NU",
+"timeSeries": [
+{
+"code": "wlo",
+"id": "5dd306f3e0fdc4b9b4bfd1ce",
+"nameEn": "Water level official value",
+"nameFr": "Niveau d'eau, valeur officielle",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp",
+"id": "5cebf1df3d0f4a073c4bbc02",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp-hilo",
+"id": "5d9dd7c233a9f593161c3f1c",
+"nameEn": "High and Low Tide Predictions",
+"nameFr": "Prédictions de pleines et basses mers",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wl1",
+"id": "66293262c5dca376d18f67ec",
+"nameEn": "Water level sensor 1",
+"nameFr": "Niveau d'eau, capteur 1",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+}
+],
+"type": "SEASONAL"
+},
+{
+"chsRegionCode": "ATL",
+"code": "00490",
+"id": "5cebf1df3d0f4a073c4bbcbb",
+"latitude": 44.65914,
+"longitude": -63.583386,
+"officialName": "Halifax",
+"operating": true,
+"provinceCode": "NS",
+"timeSeries": [
+{
+"code": "wlo",
+"id": "5dd306f0e0fdc4b9b4bf9f2f",
+"nameEn": "Water level official value",
+"nameFr": "Niveau d'eau, valeur officielle",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp",
+"id": "5cebf1df3d0f4a073c4bbcba",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp-hilo",
+"id": "5d9dd7c633a9f593161c3f72",
+"nameEn": "High and Low Tide Predictions",
+"nameFr": "Prédictions de pleines et basses mers",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "dvc1",
+"id": "649aee14d8c51b16172f5c23",
+"latitude": 44.67755,
+"longitude": -63.612223,
+"nameEn": "Dynamic Vertical Clearance sensor 1",
+"nameFr": "Dégagement Vertical Dynamique, capteur 1",
+"owner": "port-halifax",
+"phenomenonId": "5dcc62f0df3df63661194835"
+},
+{
+"code": "dvc1-calc",
+"id": "6669b47ca57c8a5174e2b6e6",
+"nameEn": "Calculated Dynamic Vertical Clearance 1",
+"nameFr": "Dégagement Vertical Dynamique Calculé 1",
+"owner": "CHS-SHC",
+"phenomenonId": "5dcc62f0df3df63661194835"
+}
+],
+"type": "TEMPORARY"
+},
+{
+"chsRegionCode": "ATL",
+"code": "01825",
+"id": "5cebf1e33d0f4a073c4bc248",
+"latitude": 46.710852,
+"longitude": -64.791113,
+"officialName": "Richibucto Bar",
+"operating": false,
+"provinceCode": "NB",
+"timeSeries": [
+{
+"code": "wlp",
+"id": "5cebf1e33d0f4a073c4bc247",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp-hilo",
+"id": "5d9dd7db33a9f593161c416b",
+"nameEn": "High and Low Tide Predictions",
+"nameFr": "Prédictions de pleines et basses mers",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+}
+],
+"type": "DISCONTINUED"
+},
+{
+"alternativeName": "",
+"chsRegionCode": "QUE",
+"code": "03104",
+"id": "5ec57dff511c1b05269d0073",
+"latitude": 46.924833,
+"longitude": -70.869,
+"officialName": "Bouée K136",
+"operating": false,
+"provinceCode": "QC",
+"timeSeries": [
+{
+"code": "wlp",
+"id": "5ec5a48f511c1b05269d91e6",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlp-hilo",
+"id": "6294b91d23254d3f80320420",
+"nameEn": "High and Low Tide Predictions",
+"nameFr": "Prédictions de pleines et basses mers",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlf-spine",
+"id": "5ec83c18511c1b0526a0374f",
+"nameEn": "Water level forecasts generated by SPINE",
+"nameFr": "Prévisions de niveaux d'eau générées par SPINE",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+}
+],
+"type": "VIRTUAL"
+},
+{
+"alternativeName": "Port Saint-Francois",
+"chsRegionCode": "QUE",
+"code": "03365",
+"id": "5cebf1e03d0f4a073c4bbdc0",
+"latitude": 46.2725,
+"longitude": -72.619333,
+"officialName": "Port-Saint-François",
+"operating": true,
+"provinceCode": "QC",
+"timeSeries": [
+{
+"code": "wlo",
+"id": "5cebf1e03d0f4a073c4bbdb3",
+"nameEn": "Water level official value",
+"nameFr": "Niveau d'eau, valeur officielle",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wt2",
+"id": "5cebf1e03d0f4a073c4bbdb5",
+"nameEn": "Water temperature sensor 2",
+"nameFr": "Température de l'eau, capteur 2",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821f"
+},
+{
+"code": "wlp",
+"id": "5cebf1e03d0f4a073c4bbdb7",
+"nameEn": "Water level predictions",
+"nameFr": "Prédictions de niveaux d'eau",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+},
+{
+"code": "wlf-spine",
+"id": "5dc1c1b26828eee38e1e0929",
+"nameEn": "Water level forecasts generated by SPINE",
+"nameFr": "Prévisions de niveaux d'eau générées par SPINE",
+"owner": "CHS-SHC",
+"phenomenonId": "5ce598df487b84486892821c"
+}
+],
+"type": "PERMANENT"
+},
+{
+"chsRegionCode": "ATL",
+"code": "00560",
+"id": "5cebf1de3d0f4a073c4bb90f",
+"latitude": 45.383333,
+"longitude": -61.5,
+"officialName": "Guysborough",
+"operating": false,
+"provinceCode": "NS",
+"timeSeries": [],
+"type": "DISCONTINUED"
+}
+]

@@ -1,0 +1,16 @@
+<tide xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+xsi:noNamespaceSchemaLocation="http://api.sehavniva.no/stationinfo.xsd">
+<meta licenseurl="http://kartverket.no/data/lisens/"/>
+<stationinfo>
+<location name="Andenes" code="ANX" latitude="69.326067" longitude="16.134848" type="PERM"/>
+<location name="Bergen" code="BGO" latitude="60.398046" longitude="5.320487" type="PERM"/>
+<location name="Bodø" code="BOO" latitude="67.292330" longitude="14.399770" type="PERM"/>
+<location name="Bruravik" code="BRJ" latitude="60.492094" longitude="6.893949" type="PERM"/>
+<location name="Bøfjorden" code="BOH" latitude="61.135925" longitude="5.339699" type="PERM"/>
+<location name="Eydehavn" code="EYD" latitude="58.494604" longitude="8.875352" type="PERM"/>
+<location name="Hammerfest" code="HFT" latitude="70.664750" longitude="23.678690" type="PERM"/>
+<location name="Harstad" code="HAR" latitude="68.801261" longitude="16.548236" type="PERM"/>
+<location name="Heimsjøen" code="HEI" latitude="63.425224" longitude="9.101504" type="PERM"/>
+<location name="Helgeroa" code="HRO" latitude="58.995212" longitude="9.856379" type="PERM"/>
+</stationinfo>
+</tide>

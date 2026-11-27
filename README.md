@@ -2796,7 +2796,13 @@ agency's chart datum, said in the window.
   Islands' tables in their own UTC+12:45 clock), Queensland MSQ (76; 10-min curve + highs/lows through the data
   portal's DataStore API; a year missing from the snapshot is looked up at run time, kept a day), Ireland Marine Institute (38;
   5-min curve thinned to 30 min, the MI's local LAT), Norway Kartverket (33; chart datum = LAT), Hong Kong Observatory
-  (13; Chi Ma Wan and Lok On Pai left out: closed gauges). A station is fetched in the visitor's request at most once
+  (13; Chi Ma Wan and Lok On Pai left out: closed gauges), Taiwan CWA (266, plan section 113 B; F-A0021-001, one month
+  of highs/lows from today Taipei time: half-cosine curve; `AboveChartDatum` = lowest low water; townships, harbours,
+  beaches, fishing and dive spots and 13 more coastal places; names: the county's English name or a GeoNames town within
+  6 km plus the place type, the Chinese in brackets; places are named by their proper names, never as surf spots
+  (owner, 2026-11-27): CWA's surf list reads "coast" with the place's own name; live through the REST API with `CWA_API_KEY`, one request a place per UTC day,
+  the key only in the URL and never in an error; without the key the places are not listed; the station list is
+  built without a key from the daily file on CWA's public storage). A station is fetched in the visitor's request at most once
   per UTC day (`tide_global.GlobalTideService`): a failure is remembered a minute (the page retries), a second visitor
   waits for the first (the answer is cached before it is woken), each agency has a request budget
   (`TIDE_AGENCY_PER_MIN`, spent only after the shared build cap is held) and the far-feed time limits. Not used: SHOM, Puertos del Estado, Instituto Hidrografico, BSH, BOM / WA DoT (paid or not

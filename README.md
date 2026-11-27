@@ -3358,3 +3358,60 @@ Two causes of GitHub "Run failed" mail that were not data problems, and what the
 - **What still sends mail by design:** the stale alarms (a source that stopped updating, e.g. NOAA's MUR mirror stuck
   on 2026-10-29 for four days), a build that fails before it publishes (recorded under `failed/`, retried), and the
   tests.
+
+## Nearshore analysis: breaking zone and peel on Oahu's North Shore (plan section 109, overlay asset 2.34.0)
+
+A box "Nearshore analysis" in the GFS **Wave height** panel. Ticked, and zoomed in to zoom 12 or closer on the North
+Shore (Kaena Point to Kahuku Point), the map shows for the step on the slider:
+
+- the **breaking zone**, filled with the set-wave face height (H1/10) on the wave height's own colour scale;
+- the **break lines** on the zone's seaward edge, coloured by peel angle: closeout (under 15°), fast (15-30°), ideal
+  (30-50°), easy (50-70°), soft (over 70°); small arrows from zoom 15 show the way the wave peels;
+- a readout under the cursor (face height, sets, peel, side, ride length, breaker type) and, beside the box, the buoy
+  swell and the tide the step was made from.
+
+It is a **modelled estimate, not safety guidance**, and says so in the key. Heights are not validated against
+measurements. Switch: `NEARSHORE_OVERLAY=1` on the site (off by default; `0` removes the box and nothing is fetched).
+
+**How it is made.**
+
+1. **Transfer tables, once** (`tools/model_frames/nearshore_build.py`, workflow `nearshore-table.yml`, manual only).
+   The shore is cut into six rotated regions (`tools/model_frames/nearshore_regions.json`: laniakea, sunset, haleiwa,
+   mokuleia, kaena, kahuku). For each a 10 m grid is read from the published bathymetry tiles and one linear SWAN 41.51
+   run is made for each of 156 offshore swell bins (12 periods x 13 directions): how much of a unit swell from that bin
+   reaches every cell, and from which direction. The workflow splits each region into 6 chunks = 36 jobs, **six at a
+   time** (the account has 20 runners in all and the publishers need theirs; the first build ran 20 at once and every
+   publisher waited 14 minutes). The last job checks every region (all bins present, the offshore height within 2 %)
+   and writes `static/nearshore/<set>/<region>/table.npz`, then `static/nearshore/<set>/manifest.json` last. A set that
+   has a manifest is never rewritten: a new build needs a new `"set"` name in the regions file.
+2. **The data folder** (`tools/model_frames/nearshore_data.py`) on the branch `data/nearshore`, folder `ns/`:
+   `tides.json` (NOAA predicted highs and lows at Haleiwa, three years) and `manifest.json`, which names the table set
+   and pins the sha256 of its manifest. `model-gfsspec.yml` checks that branch out at a pinned commit. The tide file
+   runs to the end of 2028; past it the job uses mean sea level and warns in its summary.
+3. **Every GFS run** (`tools/model_frames/nearshore.py`, the second step of `model-gfsspec.yml`): the 2-D spectrum at
+   buoy 51201 that the first step keeps (`gfswave/spectral/v1/<RUN>/spec2d/51201.npz`) is split into swell trains; for
+   each of the overlay's 209 steps and each region the table gives the height and direction at every cell, waves that
+   broke on an outer reef are made smaller inside, the zone is where the set wave reaches 0.9 x (depth + tide), and the
+   break lines are traced on its seaward edge. Where two regions overlap, the one listed first owns the water (per map
+   pixel and per line vertex), so neighbours meet without a seam.
+4. **What is published** under `gfswave/nearshore/v1/`: `<RUN>/<SET>/<region>/fNNN.png` (one small grey picture per
+   region and step: a header row, a 256x256 height plane per z14 tile, then ten bytes per line vertex),
+   `<RUN>/<SET>/index.json` (format `nearshore-v2`: the regions, their boxes and tiles), then `latest.json` last. Four
+   runs are kept. The page asks only for the regions in view, twelve requests at most.
+
+**If something is wrong.**
+
+- *The box says "Nearshore data is unavailable".* The pointer or the index could not be read, or is of another
+  format than the page's. Look at the last `model-gfsspec` run's summary: the nearshore step never fails the workflow
+  (the forecast tables come first), it writes "nearshore: FAILED" and a warning, records the failure under
+  `gfswave/nearshore/v1/failed/` and tries again after an hour, six times at most per run.
+- *Run it by hand.* `model-gfsspec` -> Run workflow with `nearshore_only: true` (skips the spectral split). Locally,
+  nothing uploaded: `python tools/model_frames/nearshore.py --data <ns folder> --spec <a spec2d npz> --tables <a local
+  copy of static/nearshore/<set>/> --dry-run --out <folder>`.
+- *New tables.* New `"set"` in `nearshore_regions.json` -> run `nearshore-table` with `upload: true` (about 4-5 hours;
+  `smoke: 4` first runs four bins of one chunk as a check) -> `nearshore_data.py <out> <version> --tables <the new
+  manifest.json from the bucket>` -> commit to `data/nearshore` -> put that commit in `model-gfsspec.yml`. Runs made
+  with the old set stay readable: the set's name is in every run's path.
+- *Turn it off.* `NEARSHORE_OVERLAY=0` on the site. The job can stay on; it costs about five minutes a run.
+
+Tests: `tests/model_frames/test_nearshore*.py`, `tests/overlay/nearshore.test.js`.

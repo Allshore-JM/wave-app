@@ -1,4 +1,5 @@
-"""FES2022b tide predictions at the forecast points that have no tide station near (plan section 112, step 4).
+"""FES2022b tide predictions at the forecast points that have no tide station near (plan section 112, step 4), and
+along the coasts with no tide point near (plan section 113 C: tools/tides/coast_points.json, every 25 km).
 
     python -I tools/tides/fes_points.py --fes-dir FES2022B_OCEAN_EXTRAPOLATED --mask mask_fes2022B.nc \
         --out build/tides-fes [--consts consts.json] [--upload]
@@ -11,7 +12,8 @@ the owner's AVISO+ credentials and publishes PREDICTIONS only; the constants it 
 Steps:
   1. points: the forecast stations (station_coords.json, zones station_timezones.json) farther than STATION_KM from
      every tide station the layer already has (NOAA tide_stations.json, TICON tide_global.json, the agencies'
-     tide_national.json);
+     tide_national.json), and the coast points (tools/tides/coast_points.json, built by build_coast_points.py: 15 km
+     clear of those stations and of the forecast points);
   2. constants (only when --consts is missing or was made for other points): per FES constituent file
      ("<name>_fes2022.nc": amplitude cm, phase deg, lat x lon, 1/30 deg, extrapolated over the coast), the complex
      value bilinearly from the 4 surrounding cells when all are ocean, else the nearest ocean cell within NEAREST_KM;
@@ -51,6 +53,9 @@ STEP_S = 1800
 EX_STEP_S = 360
 MIN_KEPT = 0.05          # fewer points than this share with a model tide = a broken land test: stop, publish nothing
                          # (run 46037126451 kept 452 of 3958 = 11.4%; the broken run kept 2)
+MIN_KEPT_COAST = 0.50    # the coast points lie on the coast: most must get a model tide (section 113 C)
+COAST_PATH = os.path.join(HERE, "coast_points.json")
+UPLOAD_THREADS = 8
 # FES2022b's 34 ocean-tide constituents (file name stem -> tide_harmonic name)
 FES_NAMES = {"2n2": "2n2", "eps2": "eps2", "j1": "j1", "k1": "k1", "k2": "k2", "l2": "l2", "lambda2": "lambda2",
              "m2": "m2", "m3": "m3", "m4": "m4", "m6": "m6", "m8": "m8", "mf": "mf", "mks2": "mks2", "mm": "mm",
@@ -86,6 +91,27 @@ def forecast_points():
             continue
         out.append({"id": "model:" + sid.lower(), "src": sid, "lat": lat, "lon": lon, "tz": zones.get(sid, "UTC")})
     return out
+
+
+def coast_points(path=COAST_PATH):
+    """The coast points (section 113 C) as fes_points' points ("set": "coast"); [] without the file."""
+    if not os.path.exists(path):
+        return []
+    d = json.load(open(path, encoding="utf-8"))
+    f = d["fields"]
+    out = []
+    for row in d["points"]:
+        r = dict(zip(f, row))
+        out.append({"id": str(r["id"]), "src": "coast", "lat": float(r["lat"]), "lon": float(r["lon"]),
+                    "tz": r.get("tz") or "UTC", "set": "coast"})
+    return out
+
+
+def all_points(coast_path=COAST_PATH):
+    """The forecast points, then the coast points (an id both have: the forecast point's)."""
+    pts = forecast_points()
+    seen = {p["id"] for p in pts}
+    return pts + [p for p in coast_points(coast_path) if p["id"] not in seen]
 
 
 def _points_hash(points):
@@ -145,16 +171,20 @@ def sample(lat, lon, amp, pha, plat, plon):
             fi, fj = i - i0, j - j0
             v = (vals[0] * (1 - fi) * (1 - fj) + vals[1] * fi * (1 - fj) + vals[2] * (1 - fi) * fj + vals[3] * fi * fj)
             return v, 0.0, coast
-    best = None
-    for a in ii:
-        for b in jj:
-            if np.isfinite(amp[a, b]):
-                d = km(plat, plon, lat[a], ((lon[b] + 180.0) % 360.0) - 180.0)
-                if d <= NEAREST_KM and (best is None or d < best[0]):
-                    best = (d, a, b)
-    if best is None:
+    # the nearest cell with a value within NEAREST_KM: the window's distances at once (section 113 C: ~17,000 coast
+    # points x 34 files; the first of equal distances in row order, as the cell-by-cell loop it replaces chose)
+    ok = np.isfinite(win)
+    if not ok.any():
         return None, None, coast
-    d, a, b = best
+    p1, p2 = math.radians(plat), np.radians(lat[ii])[:, None]
+    dl = np.radians(((lon[jj] + 180.0) % 360.0 - 180.0) - plon)[None, :]
+    h = np.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
+    dist = np.where(ok, 12742.0 * np.arcsin(np.minimum(1.0, np.sqrt(h))), np.inf)
+    k = int(np.argmin(dist))
+    d = float(dist.flat[k])
+    if not d <= NEAREST_KM:
+        return None, None, coast
+    a, b = ii[k // len(jj)], jj[k % len(jj)]
     return amp[a, b] * np.exp(-1j * np.radians(pha[a, b])), d, coast
 
 
@@ -216,12 +246,19 @@ def extract(points, fes_dir, log=print, mask=None):
     return finished(partial)
 
 
-def check_kept(n_kept, n_points):
+def check_kept(n_kept, n_points, share=MIN_KEPT, what="points"):
     """Refuse a result where almost no point got a model tide (the extrapolated grids read without the mask gave
     exactly that, and the job passed: run 45958228397)."""
-    if n_points and n_kept < MIN_KEPT * n_points:
-        raise SystemExit("only %d of %d points have a model tide (< %d%%): the land test is broken; nothing published"
-                         % (n_kept, n_points, round(MIN_KEPT * 100)))
+    if n_points and n_kept < share * n_points:
+        raise SystemExit("only %d of %d %s have a model tide (< %d%%): the land test is broken; nothing published"
+                         % (n_kept, n_points, what, round(share * 100)))
+
+
+def check_sets(points, kept_ids):
+    """check_kept for the forecast points (MIN_KEPT: most are at sea) and the coast points (MIN_KEPT_COAST)."""
+    for name, share in (("forecast", MIN_KEPT), ("coast", MIN_KEPT_COAST)):
+        mine = [p for p in points if p.get("set", "forecast") == name]
+        check_kept(sum(p["id"] in kept_ids for p in mine), len(mine), share, name + " points")
 
 
 def predict_point(prep, lat0, begin, days=DAYS):
@@ -244,7 +281,7 @@ def main():
     ap.add_argument("--upload", action="store_true")
     ap.add_argument("--geonames")
     args = ap.parse_args()
-    points = forecast_points()
+    points = all_points()
     ph = _points_hash(points)
     if (args.add_file or args.fes_dir) and not args.mask:
         raise SystemExit("--mask is needed: the extrapolated grids have values over land")
@@ -277,7 +314,7 @@ def main():
             raise SystemExit("no constants cached for these points, no --fes-dir and no partial file")
         tab = H.table()
         keep = [p for p in points if p["id"] in consts]
-        check_kept(len(keep), len(points))                              # before anything is cached
+        check_sets(points, set(consts))                                 # before anything is cached
         stations = [{"consts_m": [tuple(c) for c in consts[p["id"]]["c"]]} for p in keep]
         lat0 = _lat_offsets_fes(stations, tab)
         for p, z in zip(keep, lat0):
@@ -287,7 +324,7 @@ def main():
             json.dump(cached, fh, separators=(",", ":"))
     consts = cached["consts"]
     keep = [p for p in points if p["id"] in consts]
-    check_kept(len(keep), len(points))
+    check_sets(points, set(consts))
     places = BG.load_geonames(args.geonames)
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     begin = int((today - timedelta(days=2)).timestamp())
@@ -300,16 +337,27 @@ def main():
         doc["id"] = p["id"]
         with open(os.path.join(args.out, "p", p["id"].split(":", 1)[1] + ".json"), "w", encoding="utf-8") as fh:
             json.dump(doc, fh, separators=(",", ":"))
-        near = places.near(p["lat"], p["lon"], 40.0)
-        name = ("Off %s" % near[0][1][2]) if near else "Sea %.2f, %.2f" % (p["lat"], p["lon"])
+        name = point_name(p, places)
         index.append([p["id"], name, round(p["lat"], 4), round(p["lon"], 4), p["tz"]])
     meta = {"made": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"), "begin": begin, "days": DAYS,
             "units": "cm above LAT", "credit": CREDIT, "fields": ["id", "name", "lat", "lon", "tz"], "points": index}
     with open(os.path.join(args.out, "points.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, separators=(",", ":"), ensure_ascii=False)
-    print("points: %d forecast points, %d with a model tide" % (len(points), len(index)))
+    nf = sum(1 for p in points if p.get("set", "forecast") == "forecast")
+    kf = sum(1 for p in keep if p.get("set", "forecast") == "forecast")
+    print("points: %d forecast points, %d with a model tide" % (nf, kf))
+    print("coast points: %d, %d with a model tide" % (len(points) - nf, len(index) - kf))
     if args.upload:
         upload(args.out, index)
+
+
+def point_name(p, places):
+    """A point's name: "Off <the nearest GeoNames town within 40 km>" (a proper place name, never a surf spot: owner,
+    2026-11-27), else its position ("Coast 12.34, 56.78" for a coast point, "Sea ..." for a forecast point at sea)."""
+    near = places.near(p["lat"], p["lon"], 40.0)
+    if near:
+        return "Off %s" % near[0][1][2]
+    return ("Coast %.2f, %.2f" if p.get("set") == "coast" else "Sea %.2f, %.2f") % (p["lat"], p["lon"])
 
 
 def _lat_offsets_fes(stations, tab):
@@ -332,15 +380,39 @@ def upload(out_dir, index):
                                     request_checksum_calculation="when_required",
                                     response_checksum_validation="when_required"))
     bucket = os.environ["R2_BUCKET"]
-    for row in index:
+
+    def put(row):
         local = row[0].split(":", 1)[1]
         with open(os.path.join(out_dir, "p", local + ".json"), "rb") as fh:
             s3.put_object(Bucket=bucket, Key="%s/p/%s.json" % (PREFIX, local), Body=fh.read(),
                           ContentType="application/json", CacheControl="public, max-age=21600")
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(UPLOAD_THREADS) as pool:                  # ~17,000 files: a few at a time (section 113 C)
+        list(pool.map(put, index))                                    # an error raises here: the index is not sent
     with open(os.path.join(out_dir, "points.json"), "rb") as fh:          # the index last
         s3.put_object(Bucket=bucket, Key="%s/points.json" % PREFIX, Body=fh.read(),
                       ContentType="application/json", CacheControl="public, max-age=3600")
     print("uploaded %d point files + points.json under %s/" % (len(index), PREFIX))
+    gone = stale_keys(s3, bucket, index)
+    for i in range(0, len(gone), 1000):                                # after the new index is up
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in gone[i:i + 1000]], "Quiet": True})
+    print("removed %d point files no longer listed" % len(gone))
+
+
+def stale_keys(s3, bucket, index):
+    """The point files under PREFIX/p/ that the index no longer lists."""
+    want = {"%s/p/%s.json" % (PREFIX, row[0].split(":", 1)[1]) for row in index}
+    gone, token = [], None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": PREFIX + "/p/"}
+        if token:
+            kw["ContinuationToken"] = token
+        page = s3.list_objects_v2(**kw)
+        gone += [o["Key"] for o in page.get("Contents", []) if o["Key"] not in want]
+        if not page.get("IsTruncated"):
+            return gone
+        token = page.get("NextContinuationToken")
 
 
 if __name__ == "__main__":

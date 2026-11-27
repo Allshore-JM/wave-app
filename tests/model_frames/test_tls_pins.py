@@ -190,9 +190,9 @@ def test_no_workflow_downloads_or_installs_around_the_pins():
             assert pin == PIN, (n, pin)
         assert not re.search(r"(?m)^[^#\n]*\b(REQUESTS_CA_BUNDLE|CURL_CA_BUNDLE|SSL_CERT_FILE|SSL_CERT_DIR|AWS_CA_BUNDLE)\b",
                              text), n
-    # coast-build's three downloads + bathy-build's GEBCO zip (plan section 93b) + tides-fes's two FTPS reads of
-    # FES2022b (plan section 112: --ssl-reqd, the AVISO+ login never in clear); a new one must be looked at
-    assert curls == 6
+    # coast-build's three downloads + bathy-build's GEBCO zip (plan section 93b) + tides-fes's HTTPS read of FES2022b
+    # from AVISO+'s THREDDS (plan section 112: --proto =https, the AVISO+ login never in clear); a new one must be looked at
+    assert curls == 5
 
 
 def test_the_real_hosts_include_the_rrfs_bucket():

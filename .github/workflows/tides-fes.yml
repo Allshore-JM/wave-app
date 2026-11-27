@@ -10,9 +10,9 @@ on:
     - cron: "17 3 * * 1"                   # weekly (Monday 03:17 UTC): each run publishes 47 days from two days back
   workflow_dispatch:
     inputs:
-      fes_path:
-        description: "the FES2022b ocean-tide (extrapolated) folder on AVISO+'s FTP"
-        default: "/auxiliary/tide_model/fes2022b/ocean_tide_extrapolated"
+      fes_url:
+        description: "the FES2022b ocean-tide (extrapolated) folder on AVISO+'s THREDDS file server (https)"
+        default: "https://tds-odatis.aviso.altimetry.fr/thredds/fileServer/dataset-auxiliary-fes-tide-model/fes2022b/ocean_tide_extrapolated"
       upload:
         description: "publish to R2 (true/false)"
         default: "true"
@@ -57,21 +57,22 @@ jobs:
         env:
           AVISO_USER: ${{ secrets.AVISO_USER }}
           AVISO_PASS: ${{ secrets.AVISO_PASS }}
-          FES_PATH: ${{ github.event.inputs.fes_path || '/auxiliary/tide_model/fes2022b/ocean_tide_extrapolated' }}
+          FES_URL: ${{ github.event.inputs.fes_url || 'https://tds-odatis.aviso.altimetry.fr/thredds/fileServer/dataset-auxiliary-fes-tide-model/fes2022b/ocean_tide_extrapolated' }}
         shell: bash
         run: |
           set -eo pipefail
           test -n "$AVISO_USER" -a -n "$AVISO_PASS" || { echo "AVISO_USER / AVISO_PASS secrets are not set"; exit 2; }
+          case "$FES_URL" in https://*) ;; *) echo "fes_url must be https"; exit 2;; esac
           CA="$(python -c 'import certifi; print(certifi.where())')"   # certifi's list, not the runner's (plan section 57)
           NOCAPATH="$(mktemp -d)"     # an empty CA folder: --cacert alone leaves Ubuntu curl's /etc/ssl/certs in use
           mkdir -p fes
-          # FTP over TLS (--ssl-reqd): the AVISO+ login never travels in clear
+          # HTTPS (AVISO+'s THREDDS file server, Basic auth inside TLS): the AVISO+ login never travels in clear. Their FTP
+          # offers no TLS (2026-11-27: "500 AUTH not understood"), so it is not used.
           # one global grid on disk at a time: download, add to the partial constants, delete (G76 P2-9)
           for c in 2n2 eps2 j1 k1 k2 l2 lambda2 m2 m3 m4 m6 m8 mf mks2 mm mn4 ms4 msf msqm mtm mu2 n2 n4 nu2 o1 p1 q1 r2 s1 s2 s4 sa ssa t2; do
             f="${c}_fes2022.nc"
-            curl -sSf --retry 3 --ssl-reqd --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f.xz" \
-              && xz -d "fes/$f.xz" \
-              || curl -sSf --retry 3 --ssl-reqd --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f"
+            curl -sSf --retry 3 --proto '=https' --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "$FES_URL/$f.xz"
+            xz -d "fes/$f.xz"
             python tools/tides/fes_points.py --add-file "fes/$f"
             rm -f "fes/$f" "fes/$f.xz"
           done

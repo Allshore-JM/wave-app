@@ -2778,7 +2778,8 @@ agency's chart datum, said in the window.
   weekly job `.github/workflows/tides-fes.yml` (`tools/tides/fes_points.py`) extracts the constants on the runner (kept
   in the Actions cache encrypted with AVISO_PASS: the repository is public), predicts 47 days from two days back and
   publishes predictions only, to R2 `tides/fes/v1/` (`points.json` + `p/<id>.json`, cm above LAT). FES2022b is
-  downloaded over FTPS one constituent file at a time (`fes_points.py --add-file`, then deleted: one global grid on
+  downloaded over HTTPS from AVISO+'s THREDDS file server (`tds-odatis.aviso.altimetry.fr`, Basic auth with the AVISO+
+  login; their FTP has no TLS, so it is not used) one constituent file at a time (`fes_points.py --add-file`, then deleted: one global grid on
   disk); a cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
   it). The site reads the list at most hourly (5 min after a failed read; outside the tide lock;
   `/api/tides/stations` changes when it does) and a point's file when it opens; a model point's window works before any

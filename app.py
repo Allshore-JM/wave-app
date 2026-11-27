@@ -1217,6 +1217,18 @@ TIDE_FINAL_MAX_AGE = 600          # NOAA says it has nothing for this station (i
 TIDES_OFF = "Tide stations are not available on this server"
 _TIDES = {"svc": None, "list": None, "global": None}
 _TIDES_LOCK = threading.Lock()
+# The agencies' official predictions (plan section 112): fetched in the visitor's request (a station at most once a UTC
+# day), far hosts included (Japan, Hong Kong, New Zealand: the far feeds' limits), at most TIDE_AGENCY_MAX_BYTES an
+# answer (Queensland's year of 10-minute heights is the largest, ~1.5 MB), each agency within its own request budget.
+TIDE_AGENCY_MAX_BYTES = 4 << 20
+TIDE_AGENCY_PER_MIN = 30
+TIDE_AGENCY_BURST = 15
+
+
+def _tide_agency_get(url, headers=None, data=None):
+    if data is not None:
+        raise ValueError("no POST for the tide agencies")
+    return _capped_get(url, TIDE_AGENCY_MAX_BYTES, headers, _FAR_WINDOW_TIMEOUT, _FAR_WINDOW_MAX_S)
 
 
 def _tides():
@@ -1229,7 +1241,10 @@ def _tides():
             listing = tide_sources.client_list(doc)
             try:
                 gstations, gdoc = tide_global.load()
-                _TIDES["global"] = tide_global.GlobalTideService(gstations)
+                buckets = {p: wind_sources.TokenBucket(TIDE_AGENCY_PER_MIN, burst=TIDE_AGENCY_BURST)
+                           for p in tide_global.PROVIDERS}
+                _TIDES["global"] = tide_global.GlobalTideService(gstations, get=_tide_agency_get, buckets=buckets,
+                                                                 cap=_REQUEST_BUILDS)
                 listing["stations"] = listing["stations"] + tide_global.client_rows(gstations)
                 listing["sources"] = [listing.get("source"), gdoc.get("source")]
             except Exception as exc:                      # NOAA's layer stands without the worldwide stations

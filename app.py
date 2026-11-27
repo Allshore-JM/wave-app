@@ -325,7 +325,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.33.3"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.34.0"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
@@ -388,7 +388,7 @@ def _bathy_overlay_enabled() -> bool:
 
 def _nearshore_overlay_enabled() -> bool:
     """NEARSHORE_OVERLAY=1: the GFS wave-height panel offers the "Nearshore analysis" box (plan section 109: the breaking
-    zone and the break lines of the pilot stretch on Oahu's North Shore, published by tools/model_frames/nearshore.py
+    zone and the break lines of Oahu's North Shore, Kaena Point to Kahuku Point, published by tools/model_frames/nearshore.py
     under the frames bucket's gfswave/nearshore/v1/). Off by default: on once checked on the test site."""
     return os.environ.get("NEARSHORE_OVERLAY", "0") == "1"
 

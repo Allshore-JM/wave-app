@@ -103,7 +103,10 @@ def main():
     f = d["fields"]
     names = d["constituents"]
     grids = {c: read_got(os.path.join(args.got, "%sx.nc" % c)) for c in SPEED}
-    flagged, rows = {}, []
+    # flags accumulate: a flagged record is left out of the next build (before the one-per-harbour choice), so it is
+    # not in the file to be checked again; build and check alternate until no new flag appears (README)
+    flagged = dict(json.load(open(args.out, encoding="utf-8"))["flagged"]) if os.path.exists(args.out) else {}
+    new, rows = 0, []
     for r in d["stations"]:
         s = dict(zip(f, r))
         gc = {names[i]: (a / 10000.0, p / 10.0) for i, a, p in s["c"]}
@@ -116,6 +119,7 @@ def main():
         consistent = semi is not None and di is not None and abs(semi - di) <= BAND_AGREE_MIN
         k = round(tot / 60.0)
         if k != 0 and abs(tot - 60.0 * k) <= HOUR_TOL_MIN and consistent:
+            new += s["id"] not in flagged
             flagged[s["id"]] = round(tot, 1)
     with open(args.out, "w", encoding="utf-8", newline="\n") as fh:
         json.dump({"model": "GOT5.5 extrapolated (NASA GSFC)", "hour_tol_min": HOUR_TOL_MIN,
@@ -125,7 +129,7 @@ def main():
             fh.write("id,shift,semi,di\n")
             for i, a, b, c in rows:
                 fh.write("%s,%.1f,%s,%s\n" % (i, a, "" if b is None else "%.1f" % b, "" if c is None else "%.1f" % c))
-    print("checked %d gauges, flagged %d" % (len(rows), len(flagged)))
+    print("checked %d gauges, flagged %d (%d new)" % (len(rows), len(flagged), new))
 
 
 if __name__ == "__main__":

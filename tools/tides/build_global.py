@@ -13,11 +13,13 @@ Rules:
     kept: the layer measures from its own computed LAT);
   * one station per gauge: TICON-4 records within DEDUP_KM keep the best (no flag, then the longest record), TICON-3
     adds a gauge only farther than DEDUP_KM from every TICON-4 one;
-  * a gauge within NOAA_KM of a NOAA station (tide_stations.json) is left out: NOAA's own predictions are shown there;
+  * a gauge within NOAA_KM (3 km) of a NOAA station (tide_stations.json) is left out: NOAA's own predictions are shown there;
   * constituents with an amplitude under MIN_AMP_CM are dropped (zeroed ones too: TICON zeroes unreliable ones);
   * each station's LAT: the lowest hourly height over 18.61 years from 2020 (tide_harmonic, convention 'ticon'),
     stored as `lat0` (metres below the constants' mean level) so heights above LAT = prediction + lat0;
-  * zones: the live buoys' nearest-civil-zone rule (app._nearest_civil_tz).
+  * UHSLC records take UHSLC's own position for the gauge (uhslc_positions.json): its two copies become one;
+  * a record whose longitude repeats its latitude is a position error and is left out;
+  * zones: the live buoys' nearest-civil-zone rule (app._nearest_civil_tz), except ZONE_FIX (a neighbour's zone).
 """
 import argparse
 import csv
@@ -42,7 +44,7 @@ OUT = os.path.join(ROOT, "tide_global.json")
 NOAA = os.path.join(ROOT, "tide_stations.json")
 GEONAMES_URL = "https://download.geonames.org/export/dump/cities1000.zip"
 DEDUP_KM = 3.0                     # two records of one harbour (Andenes, Vardo: 1-3 km apart) are one station
-NOAA_KM = 2.0
+NOAA_KM = DEDUP_KM                 # one harbour, as for the agencies (tide_global.OFFICIAL_KM): one datum per harbour
 NAME_KM = 15.0
 MIN_AMP_CM = 0.5
 LAT_START = datetime(2020, 1, 1, tzinfo=timezone.utc).timestamp()
@@ -55,6 +57,93 @@ QUALITY_OK = ("No obvious issues", "Possible datum issues")
 MIN_TIDE_CM = 5.0
 MAIN = ("M2", "S2", "N2", "K1", "O1")
 QC = os.path.join(HERE, "ticon_qc.json")
+# Test-site check (section 112): the nearest-civil-zone rule takes a neighbouring country's zone where the nearest land
+# is across a border; these gauges get their own country's zone (the clock was an hour off for part of the year).
+# Keyed by station id (TICON's own keys mix "_" and "-").
+ZONE_FIX = {
+    "ticon:melillatg-mel-esp-cmems": "Africa/Ceuta",               # Spain's Melilla, not Morocco's Casablanca
+    "ticon:narvajoesuu-nar-est-cmems": "Europe/Tallinn",           # Estonia, not Moscow
+}
+# Names TICON's file names spell as a code (the Spanish IEO's, a Copernicus code with a rounded position).
+NAME_FIX = {
+    "ticon:pluz-pluz-esp-ieo": "Las Palmas (Puerto de la Luz)",
+    "ticon:cruz-cruz-esp-ieo": "Santa Cruz de La Palma",
+    "ticon:gomeratg-gom-esp-cmems": "La Gomera (tide gauge)",
+}
+# Germany's WSV gauges: TICON's file names drop the umlauts and the spaces ("bsum", "lbeckbauhof"); the name comes from
+# the WSV's own station list (PEGELONLINE, by gauge number; wsv_names.json, `--wsv-refresh`).
+WSV = os.path.join(HERE, "wsv_names.json")
+WSV_URL = "https://www.pegelonline.wsv.de/webservices/rest-api/v2/stations.json"
+WSV_KEY = re.compile(r"-(\d{7,8})-deu-wsv$")
+WSV_WORDS = {"BHV": "Bremerhaven", "WHV": "Wilhelmshaven", "LT": "Leuchtturm", "AUF": "auf"}
+WSV_KEEP = {"BP", "SP", "MPM"}
+
+
+def refresh_wsv(t4, path=WSV):
+    req = urllib.request.Request(WSV_URL, headers={"User-Agent": UA})
+    by = {s["number"]: s["longname"] for s in json.loads(urllib.request.urlopen(req, timeout=120).read())}
+    want = {m.group(1) for g in t4 for m in [WSV_KEY.search(g["key"])] if m}
+    doc = {"source": "PEGELONLINE (WSV) stations.json, longname by gauge number",
+           "captured": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+           "names": {n: by[n] for n in sorted(want) if n in by}}
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=0, sort_keys=True)
+    return doc
+
+
+def wsv_name(longname):
+    """'LÜBECK-BAUHOF' -> 'Lübeck-Bauhof', 'BHV ALTER LEUCHTTURM' -> 'Bremerhaven Alter Leuchtturm'."""
+    out = []
+    for w in longname.split():
+        if w in WSV_KEEP:
+            out.append(w)
+        elif w in WSV_WORDS:
+            out.append(WSV_WORDS[w])
+        else:
+            out.append("-".join(x[:1] + x[1:].lower() for x in w.split("-")))
+    return " ".join(out)
+# UHSLC publishes a gauge twice (fast delivery "-142-..._fd", research quality "-142a-..._rq") and TICON's two copies
+# can sit 3-106 km apart (Port Stanley, Langkawi, Sao Tome, Mossel Bay ...), neither reliably right: every UHSLC record
+# takes the gauge's position from UHSLC's own station list (uhslc_positions.json, `--uhslc-refresh`), so the copies
+# meet within DEDUP_KM and one station is kept.
+UHSLC = os.path.join(HERE, "uhslc_positions.json")
+UHSLC_ERDDAP = "https://uhslc.soest.hawaii.edu/erddap/tabledap/%s.csv?uhslc_id,station_name,latitude,longitude&distinct()"
+UHSLC_KEY = re.compile(r"-(\d{3})[a-z]?-[a-z]{3}-uhslc_(?:fd|rq)$")
+UA = "allshoresurf.com tide stations (https://allshoresurf.com)"
+
+
+def refresh_uhslc(path=UHSLC):
+    """UHSLC's station positions: the fast-delivery list (each gauge's current position), then research-quality
+    gauges with one position only."""
+    pos = {}
+    for ds in ("global_hourly_fast", "global_hourly_rqds"):
+        req = urllib.request.Request(UHSLC_ERDDAP % ds, headers={"User-Agent": UA})
+        rows = list(csv.reader(io.StringIO(urllib.request.urlopen(req, timeout=120).read().decode("utf-8"))))[2:]
+        got = {}
+        for sid, name, lat, lon in rows:
+            got.setdefault(int(sid), set()).add((round(float(lat), 5), round((float(lon) + 180.0) % 360.0 - 180.0, 5)))
+        for sid, ps in got.items():
+            if sid not in pos and len(ps) == 1:
+                pos[sid] = list(next(iter(ps)))
+    doc = {"source": "UHSLC ERDDAP global_hourly_fast, then global_hourly_rqds (gauges with one position)",
+           "captured": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+           "positions": {str(k): pos[k] for k in sorted(pos)}}
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(doc, fh, separators=(",", ":"))
+    return doc
+
+
+def uhslc_positions(t4, log, path=UHSLC):
+    pos = json.load(open(path, encoding="utf-8"))["positions"] if os.path.exists(path) else {}
+    moved = 0
+    for g in t4:
+        m = UHSLC_KEY.search(g["key"])
+        if m and str(int(m.group(1))) in pos:
+            lat, lon = pos[str(int(m.group(1)))]
+            if km(g["lat"], g["lon"], lat, lon) > 0.5:
+                moved += 1
+            g["lat"], g["lon"] = lat, lon
+    log["uhslc_positions_moved"] = moved
 SMALL = {"of", "de", "la", "le", "du", "des", "del", "da", "do", "das", "dos", "di", "el", "en", "y", "and", "on", "am",
          "an", "der", "den", "van", "aan", "sur", "et"}
 UPPER = {"bc", "nb", "ns", "pe", "nl", "qc", "on", "uk", "usa", "pr", "nz"}
@@ -162,10 +251,24 @@ def tidal(g):
     return sum(amp.get(m, 0.0) for m in MAIN) >= MIN_TIDE_CM
 
 
-def choose(t4, t3, noaa_pts, log):
+def station_id(key):
+    return "ticon:" + re.sub(r"[^a-z0-9]+", "-", key.lower()).strip("-")[:60]
+
+
+def choose(t4, t3, noaa_pts, log, flagged=frozenset()):
+    uhslc_positions(t4, log)
     coastal = [g for g in t4 if g["type"] == "Coastal" and g["quality"] in QUALITY_OK and g["country"] != "USA"
                and tidal(g)]
     log["t4_gauges"], log["t4_coastal_ok"] = len(t4), len(coastal)
+    # a record the clock check flagged goes BEFORE the one-per-harbour choice, so it cannot shadow a good record of
+    # the same gauge (Las Palmas: UHSLC 217a-c run 55 min early, 217 and 217d are right)
+    log["clock_flagged_dropped"] = sum(1 for g in coastal if station_id(g["key"]) in flagged)
+    coastal = [g for g in coastal if station_id(g["key"]) not in flagged]
+    # a record whose longitude repeats its latitude is a position error (TICON-4's REFMAR Tubuai sits at -23.34,
+    # -23.34, in the Atlantic; its CMEMS record has the real position)
+    bad = [g["key"] for g in coastal if g["lat"] == g["lon"]]
+    coastal = [g for g in coastal if g["lat"] != g["lon"]]
+    log["position_errors_dropped"] = bad
     coastal.sort(key=lambda g: (g["quality"] != "No obvious issues", -g["years"]))
     kept = []
     grid = Grid([])
@@ -225,14 +328,23 @@ def main():
     ap.add_argument("--ticon4", required=True)
     ap.add_argument("--ticon3", required=True)
     ap.add_argument("--geonames")
+    ap.add_argument("--uhslc-refresh", action="store_true", help="fetch UHSLC's station positions first")
+    ap.add_argument("--wsv-refresh", action="store_true", help="fetch the WSV's gauge names first")
     args = ap.parse_args()
+    if args.uhslc_refresh:
+        print("UHSLC positions:", len(refresh_uhslc()["positions"]))
     import app as A                                                # the live buoys' nearest-civil-zone rule
     tab = H.table()
     log = {}
     noaa = json.load(open(NOAA, encoding="utf-8"))
     fi = noaa["fields"]
     noaa_pts = [(r[fi.index("lat")], r[fi.index("lon")]) for r in noaa["stations"]]
-    stations = choose(read_ticon4(args.ticon4), read_ticon3(args.ticon3), noaa_pts, log)
+    flagged = set(json.load(open(QC, encoding="utf-8"))["flagged"]) if os.path.exists(QC) else set()
+    t4 = read_ticon4(args.ticon4)
+    if args.wsv_refresh:
+        print("WSV names:", len(refresh_wsv(t4)["names"]))
+    wsv = json.load(open(WSV, encoding="utf-8"))["names"] if os.path.exists(WSV) else {}
+    stations = choose(t4, read_ticon3(args.ticon3), noaa_pts, log, flagged)
     places = load_geonames(args.geonames)
     dropped = {}
     for s in stations:
@@ -249,20 +361,18 @@ def main():
         if not name:
             near = places.near(s["lat"], s["lon"], NAME_KM)
             name = ("%s (tide gauge)" % near[0][1][2]) if near else "Tide gauge %.2f, %.2f" % (s["lat"], s["lon"])
-        s["name"] = name
-        s["tz"] = A._nearest_civil_tz(s["lat"], s["lon"])
+        m = WSV_KEY.search(s["key"])
+        if m and m.group(1) in wsv:
+            name = wsv_name(wsv[m.group(1)])
+        s["name"] = NAME_FIX.get(station_id(s["key"]), name)
+        s["tz"] = ZONE_FIX.get(station_id(s["key"])) or A._nearest_civil_tz(s["lat"], s["lon"])
     stations = [s for s in stations if s["consts_m"]]
-    flagged = set(json.load(open(QC, encoding="utf-8"))["flagged"]) if os.path.exists(QC) else set()
-    slug = lambda s: "ticon:" + re.sub(r"[^a-z0-9]+", "-", s["key"].lower()).strip("-")[:60]
-    log["clock_flagged_dropped"] = sum(1 for s in stations if slug(s) in flagged)
-    stations = [s for s in stations if slug(s) not in flagged]
     lat0 = lat_offsets(stations, tab)
     names = sorted({H._norm(n) for s in stations for n, _, _ in s["consts_m"]})
     ni = {n: i for i, n in enumerate(names)}
     rows = []
     for s, z in sorted(zip(stations, lat0), key=lambda x: (x[0]["country"], x[0]["name"])):
-        slug = re.sub(r"[^a-z0-9]+", "-", s["key"].lower()).strip("-")[:60]
-        rows.append(["ticon:" + slug, s["name"], round(s["lat"], 5), round(s["lon"], 5), s["country"], s["tz"],
+        rows.append([station_id(s["key"]), s["name"], round(s["lat"], 5), round(s["lon"], 5), s["country"], s["tz"],
                      round(float(z), 3), round(s["years"], 1), s["source"], s["ticon"],
                      [[ni[H._norm(n)], int(round(a * 10000)), int(round(g * 10))] for n, a, g in s["consts_m"]]])
     doc = {

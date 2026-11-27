@@ -2820,8 +2820,16 @@ agency's chart datum, said in the window.
   login; their FTP has no TLS, so it is not used) one constituent file at a time (`fes_points.py --add-file`, then deleted: one global grid on
   disk). The grids are the EXTRAPOLATED ones (values over land too), so "ocean" and "land" come from AVISO+'s
   `mask_fes2022B.nc` (1 MB, downloaded first; only 0 = native ocean is ocean; `--mask` is required to make
-  constants), and the job stops without publishing or caching when fewer than 5% of the points get a model tide
-  (run 45958228397 read the grids without the mask and kept 2; run 46037126451 with it kept 452 of 3,958 = 11.4%); a cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
+  constants), and the job stops without publishing or caching when fewer than 5% of the forecast points (50% of the coast
+  points) get a model tide
+  (run 45958228397 read the grids without the mask and kept 2; run 46037126451 with it kept 452 of 3,958 = 11.4%).
+  Coast points (plan section 113 C): `tools/tides/build_coast_points.py` walks Natural Earth's 10 m coastline (public
+  domain, pinned commit + sha256, cached beside the script, not committed) every 25 km below 66 degrees, 15 km clear of
+  every tide station and forecast point, into the committed `tools/tides/coast_points.json` (~16,900 points; ids
+  `model:c<lat><lon>` in 1/100 degree; zones by the nearest-zone rule, UTC south of 60 S); the job adds them to the forecast
+  points (same ocean / land tests: a point in a lake or the Caspian drops out), names a point "Off <GeoNames town within
+  40 km>" else by its position, uploads the point files 8 at a time, the index last, then removes point files the index
+  no longer lists. Rebuild the coast points after the tide snapshots or the forecast points change. A cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
   it). The site reads the list at most hourly (5 min after a failed read; outside the tide lock;
   `/api/tides/stations` changes when it does) and a point's file when it opens; a model point's window works before any
   list request. Needs the secrets AVISO_USER / AVISO_PASS; until the first run there are no model points.

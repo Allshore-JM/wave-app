@@ -7,3 +7,5 @@ tools/alerts/.cache/
 tools/tides/.cities1000.zip
 tools/tides/.fes_consts.json
 tools/tides/.fes_partial.json
+# Natural Earth's coastline, cached by tools/tides/build_coast_points.py (plan section 113 C)
+tools/tides/.ne_10m_coastline.geojson

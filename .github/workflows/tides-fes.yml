@@ -34,13 +34,13 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements.txt h5py==3.14.0 boto3==1.43.98 certifi==2026.10.23 pytest==9.1.1   # the site's own (tests import app: G76 P1-1)
-      - run: python -m pytest -q tests/test_tides_model.py tests/test_tide_harmonic.py
+      - run: python -m pytest -q tests/test_tides_model.py tests/test_tides_coast.py tests/test_tide_harmonic.py
       - name: Restore the encrypted constants
         id: cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809   # v4.2.4
         with:
           path: consts.json.enc
-          key: fes-consts-v1-${{ hashFiles('station_coords.json', 'tide_stations.json', 'tide_global.json', 'tide_national.json', 'tide_constituents.json', 'tools/tides/fes_points.py') }}
+          key: fes-consts-v1-${{ hashFiles('station_coords.json', 'tide_stations.json', 'tide_global.json', 'tide_national.json', 'tide_constituents.json', 'tools/tides/fes_points.py', 'tools/tides/coast_points.json') }}
       - name: Decrypt the constants
         id: decrypt
         if: steps.cache.outputs.cache-hit == 'true'

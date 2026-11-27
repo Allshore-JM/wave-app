@@ -132,3 +132,9 @@ def test_a_short_read_back_stops_the_run(tmp_path):
     store.client.head_object = lambda Bucket, Key: {"ContentLength": 1}
     with pytest.raises(RuntimeError, match="bucket holds"):
         M.mirror(m, store, str(tmp_path), get=_getter({m["files"][0]["url"]: blob}), log=lambda *a: None)
+
+
+def test_the_one_off_mirror_workflow_is_gone():
+    """The NSW archives were mirrored once (2026-11-27, run 45941943721, 10 of 10 read back by hash); the temporary
+    push-triggered workflow must never reach production."""
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "bathy-mirror-once.yml"))

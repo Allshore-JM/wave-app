@@ -2728,10 +2728,18 @@ agency's chart datum, said in the window.
 - **Tide gauges' harmonic constants** (type G, `tide_global.json`, built by `tools/tides/build_global.py` from TICON-4,
   Hart-Davis, Dettmering & Seitz, DGFI-TUM, CC BY 4.0, from GESLA records): coastal gauges without a quality-control
   flag, outside the US (NOAA's network; TICON's US gauges are marsh monitors and river gauges), with a tide to show (M2
-  + S2 + N2 + K1 + O1 at least 5 cm: lakes and rivers above weirs go), one per harbour (3 km), none within 2 km of a
-  NOAA station, none flagged by the clock check below; 1,277 built, 829 listed (the rest give way to an agency's
+  + S2 + N2 + K1 + O1 at least 5 cm: lakes and rivers above weirs go), one per harbour (3 km), none within 3 km of a
+  NOAA station, none flagged by the clock check below; 1,246 built, 797 listed (the rest give way to an agency's
   station within 3 km). TICON-3's extra gauges are not used (it names no country and calls some lakes "Coastal").
-  Names from TICON's file names, else the nearest GeoNames town ("... (tide gauge)", credited in the window).
+  UHSLC's gauges come twice in TICON (fast delivery `-142-..._fd`, research quality `-142a-..._rq`) with positions up
+  to 106 km apart (Port Stanley, Langkawi, Sao Tome, Mossel Bay; neither copy reliably right): every UHSLC record takes
+  UHSLC's own position for the gauge (`tools/tides/uhslc_positions.json`, `build_global.py --uhslc-refresh`, from
+  UHSLC's ERDDAP), so the copies become one station. A record whose longitude repeats its latitude (TICON's REFMAR
+  Tubuai, in the Atlantic) is left out. Names from TICON's file names, else the nearest GeoNames town ("... (tide
+  gauge)", credited in the window); Germany's WSV gauges by the WSV's own names (`tools/tides/wsv_names.json`, from
+  PEGELONLINE, `--wsv-refresh`: TICON drops the umlauts, "Bsum" -> Büsum); `NAME_FIX` for three Spanish codes.
+  Zones by the live buoys' nearest-civil-zone rule, except `ZONE_FIX` where the nearest land is a neighbour's
+  (Melilla, Narva-Joesuu: an hour off for part of the year).
   Predicted on the site by `tide_harmonic.py` (numpy only): Doodson arguments with Meeus' mean longitudes, the nodal
   factors f / u tabulated monthly 2010-2050 in `tide_constituents.json` (`tools/tides/make_constituent_table.py`, pyTMD,
   run once in a developer's venv), high / low by a parabola through the 6-minute series. Checked: equal to pyTMD to 2 mm
@@ -2747,8 +2755,11 @@ agency's chart datum, said in the window.
   median of 1.8 min; 11 differ by more than 20 min (a lagoon or river mouth beside a harbour, or a clock error: TICON's
   Hong Kong record runs 58 min early). A clock check (`tools/tides/qc_ticon.py`, `tools/tides/ticon_qc.json`) compares
   each gauge's phases with GOT5.5 (NASA GSFC): a shift within 8 min of a whole number of hours, the same in the
-  semidiurnal and diurnal bands, is a clock error's signature, and 15 such gauges are left out. Estuaries and fjords
-  genuinely lag the model by up to an hour, so smaller clock errors cannot be told from real lags and stay.
+  semidiurnal and diurnal bands, is a clock error's signature, and 19 such records are left out (before the
+  one-per-harbour choice, so a flagged record cannot hide a good one of the same gauge: Las Palmas' UHSLC 217a-c run
+  55 min early, the IEO's Puerto de la Luz record is kept). Flags accumulate in `ticon_qc.json`; after a rebuild, run
+  `qc_ticon.py` and rebuild again until it reports no new flag. Estuaries and fjords genuinely lag the model by up to
+  an hour, so smaller clock errors cannot be told from real lags and stay.
 - **Agencies' official predictions** (type O, `tide_national.json`, `tools/tides/build_national.py`; one module per
   agency in `tide_providers/`, interface in its `__init__`): Canada CHS IWLS (1,074; highs/lows + the 15-min curve in two
   31-day pieces: 3 requests; the licence's notice verbatim; non-profit use only), Japan JMA tide tables (239; hourly

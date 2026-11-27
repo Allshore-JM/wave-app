@@ -74,7 +74,7 @@ def _official_station(sid="qld:gold-coast", lat=-27.94, lon=153.43):
 
 def test_load_counts_and_types(stations):
     gauges = [s for s in stations.values() if s["type"] == "G"]
-    assert len(gauges) > 700 and all(G.valid_id(s["id"]) for s in gauges)     # 829 after the official stations (3 km)
+    assert len(gauges) > 700 and all(G.valid_id(s["id"]) for s in gauges)     # 797 after the official stations (3 km)
     assert all(s["lat0"] > 0 for s in gauges)                          # LAT lies below the mean level
     assert stations[BREST]["tz"] == "Europe/Paris"
     official = [s for s in stations.values() if s["type"] == "O"]

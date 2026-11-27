@@ -36,6 +36,7 @@ PROVIDERS = {"chs": "chs", "kv": "kartverket", "jma": "jma", "hko": "hko", "linz
              "qld": "queensland", "cwa": "cwa"}
 ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld|cwa|model):[a-z0-9][a-z0-9._-]{0,79}")
 MODEL_PREFIX = "tides/fes/v1"
+COAST_ID_RE = re.compile(r"model:c\d{10}")   # the coast points' ids (tools/tides/build_coast_points.py)
 MODEL_LIST_TTL_S = 3600               # the model points' list is asked again at most this often
 MODEL_RETRY_S = 300                   # ... and this soon after a failed read (G76 P2-6)
 # AVISO licence (Issue 20, section 3.1): producer, CNES as licensor, the DOI, the licence's address, and that the material
@@ -317,10 +318,13 @@ class GlobalTideService:
             if not isinstance(doc["points"], list):
                 raise ValueError("no point list")
             found = {}
+            coast_off = os.environ.get("FES_COAST", "1").strip() == "0"
             for row in doc["points"]:
                 s = dict(zip(f, row))
                 if not valid_id(s["id"]) or not s["id"].startswith("model:"):
                     continue
+                if coast_off and (s.get("set") == "coast" or COAST_ID_RE.fullmatch(s["id"])):
+                    continue                            # FES_COAST=0: the coast points are off (plan section 113 C)
                 found[s["id"]] = {"id": s["id"], "name": str(s["name"]), "lat": float(s["lat"]), "lon": float(s["lon"]),
                                   "tz": s.get("tz") or "UTC", "type": "M", "obs": False}
         except Exception:

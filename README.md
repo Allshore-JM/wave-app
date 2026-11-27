@@ -2824,12 +2824,21 @@ agency's chart datum, said in the window.
   points) get a model tide
   (run 45958228397 read the grids without the mask and kept 2; run 46037126451 with it kept 452 of 3,958 = 11.4%).
   Coast points (plan section 113 C): `tools/tides/build_coast_points.py` walks Natural Earth's 10 m coastline (public
-  domain, pinned commit + sha256, cached beside the script, not committed) every 25 km below 66 degrees, 15 km clear of
-  every tide station and forecast point, into the committed `tools/tides/coast_points.json` (~16,900 points; ids
-  `model:c<lat><lon>` in 1/100 degree; zones by the nearest-zone rule, UTC south of 60 S); the job adds them to the forecast
-  points (same ocean / land tests: a point in a lake or the Caspian drops out), names a point "Off <GeoNames town within
-  40 km>" else by its position, uploads the point files 8 at a time, the index last, then removes point files the index
-  no longer lists. Rebuild the coast points after the tide snapshots or the forecast points change. A cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
+  domain, pinned commit + sha256, cached beside the script, not committed; "Coastline" features only) every 25 km below
+  66 degrees, 15 km clear of every tide station, into the committed `tools/tides/coast_points.json` (~16,950 points; ids
+  `model:c<lat><lon>` in 1/100 degree; zones by the nearest-zone rule, UTC south of 60 S) with each point's NAME, made
+  there once: "Off <GeoNames town>" for the point nearest a town within 15 km, else "<km> km <direction> of <town>"
+  (within 300 km), else its position; unique; proper place names, never surf spots (owner, 2026-11-27). The job adds
+  them to the forecast points: a coast point needs AVISO ocean within 6 km of itself (a lake, the Caspian or a lagoon
+  behind a barrier gets no tide from the sea beyond) and no land test (small islands), and one within 15 km of a forecast
+  point that got a model tide is left out. Each set is checked on its own (forecast >= 5%, coast >= 50% kept): a short
+  set is not published (its rows online are carried over) and the job fails after publishing the other set and caching
+  the constants (cached also when the job fails later: actions/cache restore + save; never when every set is short).
+  The cache key is `fes_points.py --cache-key` (the points' positions + `CONST_VERSION`: bump it when the way constants
+  are made changes; names and other code keep the cache). Only Live-Buoy-Update publishes (a run from any other branch
+  is a dry run). Upload: point files 8 at a time, the index (with a `set` column) last, then the point files that
+  neither the old nor the new index lists are deleted, 250 a request, R2's errors raise. The site's `FES_COAST=0` hides
+  the coast points (default on). Rebuild the coast points after the tide snapshots change. A cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
   it). The site reads the list at most hourly (5 min after a failed read; outside the tide lock;
   `/api/tides/stations` changes when it does) and a point's file when it opens; a model point's window works before any
   list request. Needs the secrets AVISO_USER / AVISO_PASS; until the first run there are no model points.

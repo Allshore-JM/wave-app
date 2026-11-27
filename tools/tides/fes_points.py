@@ -32,6 +32,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -55,7 +56,12 @@ MIN_KEPT = 0.05          # fewer points than this share with a model tide = a br
                          # (run 46037126451 kept 452 of 3958 = 11.4%; the broken run kept 2)
 MIN_KEPT_COAST = 0.50    # the coast points lie on the coast: most must get a model tide (section 113 C)
 COAST_PATH = os.path.join(HERE, "coast_points.json")
+COAST_NEAREST_KM = 6.0   # a coast point takes the sea's tide only from ocean this near (G80-3: not across a lagoon's
+                         # barrier beach or from the sea beyond a lake's shore); no land test (G80-7: small islands)
 UPLOAD_THREADS = 8
+DELETE_BATCH = 250       # R2 delete_objects per request (tools/model_frames/publish.py's size after R2's 2026-11-03 timeouts)
+CONST_VERSION = "2"      # bump whenever the way constants are made changes (the cache key: --cache-key)
+COAST_ID_RE = re.compile(r"model:c\d{10}")
 # FES2022b's 34 ocean-tide constituents (file name stem -> tide_harmonic name)
 FES_NAMES = {"2n2": "2n2", "eps2": "eps2", "j1": "j1", "k1": "k1", "k2": "k2", "l2": "l2", "lambda2": "lambda2",
              "m2": "m2", "m3": "m3", "m4": "m4", "m6": "m6", "m8": "m8", "mf": "mf", "mks2": "mks2", "mm": "mm",
@@ -93,9 +99,12 @@ def forecast_points():
     return out
 
 
-def coast_points(path=COAST_PATH):
-    """The coast points (section 113 C) as fes_points' points ("set": "coast"); [] without the file."""
+def coast_points(path=COAST_PATH, required=True):
+    """The coast points (section 113 C) as fes_points' points ("set": "coast", with their names). Without the file:
+    SystemExit (G80-5: a missing file must not empty the coast set and delete its files), or [] when not required."""
     if not os.path.exists(path):
+        if required:
+            raise SystemExit("%s is missing: no coast points (rebuild it with build_coast_points.py)" % path)
         return []
     d = json.load(open(path, encoding="utf-8"))
     f = d["fields"]
@@ -103,15 +112,21 @@ def coast_points(path=COAST_PATH):
     for row in d["points"]:
         r = dict(zip(f, row))
         out.append({"id": str(r["id"]), "src": "coast", "lat": float(r["lat"]), "lon": float(r["lon"]),
-                    "tz": r.get("tz") or "UTC", "set": "coast"})
+                    "tz": r.get("tz") or "UTC", "set": "coast", "name": r.get("name")})
     return out
 
 
-def all_points(coast_path=COAST_PATH):
+def all_points(coast_path=COAST_PATH, required=True):
     """The forecast points, then the coast points (an id both have: the forecast point's)."""
     pts = forecast_points()
     seen = {p["id"] for p in pts}
-    return pts + [p for p in coast_points(coast_path) if p["id"] not in seen]
+    return pts + [p for p in coast_points(coast_path, required) if p["id"] not in seen]
+
+
+def cache_key(points):
+    """The Actions cache key of the constants: the points' positions and CONST_VERSION only, so a change of names or
+    of code that does not change the constants keeps the cache (G80-1)."""
+    return "fes-consts-v2-" + hashlib.sha256((_points_hash(points) + "|" + CONST_VERSION).encode()).hexdigest()[:40]
 
 
 def _points_hash(points):
@@ -209,8 +224,11 @@ def add_file(points, partial, path, log=print, mask=None):
             continue
         v, d, coast = sample(lat, lon, amp, pha, p["lat"], p["lon"])
         c = partial["consts"][p["id"]]
+        is_coast = p.get("set") == "coast"
         if stem == "m2":
-            c["coast"] = coast
+            c["coast"] = True if is_coast else coast    # a coast point lies on the coast (G80-7: small islands)
+            if is_coast and v is not None and d > COAST_NEAREST_KM:
+                v = None                                # no sea at the point itself: a lake, a lagoon (G80-3)
         if v is None:
             if stem == "m2":
                 dead.add(p["id"])
@@ -223,6 +241,9 @@ def add_file(points, partial, path, log=print, mask=None):
         alive = [p["id"] for p in points if p["id"] not in dead]
         log("m2: %d of %d points with an ocean value, %d of them with land within %g km"
             % (len(alive), len(points), sum(partial["consts"][k]["coast"] for k in alive), COAST_KM))
+        coast = [p for p in points if p.get("set") == "coast"]
+        log("m2: coast points: %d of %d with ocean within %g km" % (sum(p["id"] not in dead for p in coast), len(coast),
+                                                                       COAST_NEAREST_KM))
     log("%s: done" % stem)
     return partial
 
@@ -254,11 +275,35 @@ def check_kept(n_kept, n_points, share=MIN_KEPT, what="points"):
                          % (n_kept, n_points, what, round(share * 100)))
 
 
+SETS = (("forecast", MIN_KEPT), ("coast", MIN_KEPT_COAST))
+
+
+def set_failures(points, kept_ids):
+    """{set name: message} for the sets with too few points kept (check_kept's test, per set, without raising)."""
+    out = {}
+    for name, share in SETS:
+        mine = [p for p in points if p.get("set", "forecast") == name]
+        try:
+            check_kept(sum(p["id"] in kept_ids for p in mine), len(mine), share, name + " points")
+        except SystemExit as exc:
+            out[name] = str(exc)
+    return out
+
+
 def check_sets(points, kept_ids):
     """check_kept for the forecast points (MIN_KEPT: most are at sea) and the coast points (MIN_KEPT_COAST)."""
-    for name, share in (("forecast", MIN_KEPT), ("coast", MIN_KEPT_COAST)):
-        mine = [p for p in points if p.get("set", "forecast") == name]
-        check_kept(sum(p["id"] in kept_ids for p in mine), len(mine), share, name + " points")
+    failed = set_failures(points, kept_ids)
+    if failed:
+        raise SystemExit("; ".join(failed.values()))
+
+
+def drop_coast_near_forecast(keep, near_km=None):
+    """A coast point within NEAR_KM (build_coast_points) of a forecast point that has a model tide is left out: that
+    stretch of coast has its tide point (G80-7: a forecast point without one leaves its coast points in)."""
+    import build_coast_points as C
+    near_km = C.NEAR_KM if near_km is None else near_km
+    grid = BG.Grid([(p["lat"], p["lon"]) for p in keep if p.get("set", "forecast") == "forecast"])
+    return [p for p in keep if p.get("set") != "coast" or not grid.near(p["lat"], p["lon"], near_km)]
 
 
 def predict_point(prep, lat0, begin, days=DAYS):
@@ -280,9 +325,13 @@ def main():
     ap.add_argument("--consts", default=os.path.join(HERE, ".fes_consts.json"))
     ap.add_argument("--upload", action="store_true")
     ap.add_argument("--geonames")
+    ap.add_argument("--cache-key", action="store_true", help="print key=<the constants' Actions cache key> and stop")
     args = ap.parse_args()
     points = all_points()
     ph = _points_hash(points)
+    if args.cache_key:
+        print("key=" + cache_key(points))
+        return
     if (args.add_file or args.fes_dir) and not args.mask:
         raise SystemExit("--mask is needed: the extrapolated grids have values over land")
     mask = read_mask(args.mask) if (args.add_file or args.fes_dir) else None
@@ -314,7 +363,8 @@ def main():
             raise SystemExit("no constants cached for these points, no --fes-dir and no partial file")
         tab = H.table()
         keep = [p for p in points if p["id"] in consts]
-        check_sets(points, set(consts))                                 # before anything is cached
+        if len(set_failures(points, set(consts))) == len(SETS):        # every set short: a broken land test, nothing
+            check_sets(points, set(consts))                             # cached (run 45958228397); one set short: cached
         stations = [{"consts_m": [tuple(c) for c in consts[p["id"]]["c"]]} for p in keep]
         lat0 = _lat_offsets_fes(stations, tab)
         for p, z in zip(keep, lat0):
@@ -324,7 +374,12 @@ def main():
             json.dump(cached, fh, separators=(",", ":"))
     consts = cached["consts"]
     keep = [p for p in points if p["id"] in consts]
-    check_sets(points, set(consts))
+    # G80-2: each set stands on its own: a set short of its share is not published (its previous rows are carried over
+    # from the index online) and the job fails at the end, after the other set is published and the constants cached
+    failed = set_failures(points, set(consts))
+    if len(failed) == len(SETS):
+        check_sets(points, set(consts))
+    keep = drop_coast_near_forecast([p for p in keep if p.get("set", "forecast") not in failed])
     places = BG.load_geonames(args.geonames)
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     begin = int((today - timedelta(days=2)).timestamp())
@@ -338,9 +393,10 @@ def main():
         with open(os.path.join(args.out, "p", p["id"].split(":", 1)[1] + ".json"), "w", encoding="utf-8") as fh:
             json.dump(doc, fh, separators=(",", ":"))
         name = point_name(p, places)
-        index.append([p["id"], name, round(p["lat"], 4), round(p["lon"], 4), p["tz"]])
+        index.append([p["id"], name, round(p["lat"], 4), round(p["lon"], 4), p["tz"], p.get("set", "forecast")])
     meta = {"made": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ"), "begin": begin, "days": DAYS,
-            "units": "cm above LAT", "credit": CREDIT, "fields": ["id", "name", "lat", "lon", "tz"], "points": index}
+            "units": "cm above LAT", "credit": CREDIT, "fields": ["id", "name", "lat", "lon", "tz", "set"],
+            "points": index}
     with open(os.path.join(args.out, "points.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, separators=(",", ":"), ensure_ascii=False)
     nf = sum(1 for p in points if p.get("set", "forecast") == "forecast")
@@ -348,12 +404,16 @@ def main():
     print("points: %d forecast points, %d with a model tide" % (nf, kf))
     print("coast points: %d, %d with a model tide" % (len(points) - nf, len(index) - kf))
     if args.upload:
-        upload(args.out, index)
+        upload(args.out, index, carry=set(failed))
+    if failed:
+        raise SystemExit("not published: " + "; ".join(failed.values()))
 
 
 def point_name(p, places):
-    """A point's name: "Off <the nearest GeoNames town within 40 km>" (a proper place name, never a surf spot: owner,
-    2026-11-27), else its position ("Coast 12.34, 56.78" for a coast point, "Sea ..." for a forecast point at sea)."""
+    """A point's name: a coast point's own (made by build_coast_points.py: G80-1); else "Off <the nearest GeoNames town
+    within 40 km>" (a proper place name, never a surf spot: owner, 2026-11-27), else its position ("Sea 12.34, 56.78")."""
+    if p.get("name"):
+        return p["name"]
     near = places.near(p["lat"], p["lon"], 40.0)
     if near:
         return "Off %s" % near[0][1][2]
@@ -370,16 +430,35 @@ def _lat_offsets_fes(stations, tab):
         H.CONVENTIONS["ticon"] = saved
 
 
-def upload(out_dir, index):
-    import boto3
-    from botocore.config import Config
-    s3 = boto3.client("s3", endpoint_url="https://%s.r2.cloudflarestorage.com" % os.environ["R2_ACCOUNT_ID"],
-                      aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
-                      aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto",
-                      config=Config(retries={"max_attempts": 5, "mode": "standard"},
-                                    request_checksum_calculation="when_required",
-                                    response_checksum_validation="when_required"))
-    bucket = os.environ["R2_BUCKET"]
+def row_set(row):
+    """An index row's set: its "set" column, else by id (indexes before section 113 C had none)."""
+    if len(row) > 5 and row[5] in ("forecast", "coast"):
+        return row[5]
+    return "coast" if COAST_ID_RE.fullmatch(str(row[0])) else "forecast"
+
+
+def upload(out_dir, index, carry=(), s3=None, bucket=None):
+    """The point files (UPLOAD_THREADS at a time), then the index (rows of a set in `carry` come from the index online:
+    G80-2), then the point files that neither the old nor the new index lists are deleted (G80-5: a point dropped now
+    goes at the next run, after the site, the edge and open pages have moved on), DELETE_BATCH a request, errors raise."""
+    if s3 is None:
+        import boto3
+        from botocore.config import Config
+        s3 = boto3.client("s3", endpoint_url="https://%s.r2.cloudflarestorage.com" % os.environ["R2_ACCOUNT_ID"],
+                          aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                          aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto",
+                          config=Config(retries={"max_attempts": 5, "mode": "standard"},
+                                        request_checksum_calculation="when_required",
+                                        response_checksum_validation="when_required"))
+        bucket = os.environ["R2_BUCKET"]
+    old = old_index(s3, bucket)
+    if carry:
+        index = list(index) + [r for r in old if row_set(r) in carry]
+        path = os.path.join(out_dir, "points.json")
+        meta = json.load(open(path, encoding="utf-8"))
+        meta["points"] = index
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, separators=(",", ":"), ensure_ascii=False)
 
     def put(row):
         local = row[0].split(":", 1)[1]
@@ -388,21 +467,37 @@ def upload(out_dir, index):
                           ContentType="application/json", CacheControl="public, max-age=21600")
 
     from concurrent.futures import ThreadPoolExecutor
+    fresh = [r for r in index if row_set(r) not in carry]
     with ThreadPoolExecutor(UPLOAD_THREADS) as pool:                  # ~17,000 files: a few at a time (section 113 C)
-        list(pool.map(put, index))                                    # an error raises here: the index is not sent
+        list(pool.map(put, fresh))                                    # an error raises here: the index is not sent
     with open(os.path.join(out_dir, "points.json"), "rb") as fh:          # the index last
         s3.put_object(Bucket=bucket, Key="%s/points.json" % PREFIX, Body=fh.read(),
                       ContentType="application/json", CacheControl="public, max-age=3600")
-    print("uploaded %d point files + points.json under %s/" % (len(index), PREFIX))
-    gone = stale_keys(s3, bucket, index)
-    for i in range(0, len(gone), 1000):                                # after the new index is up
-        s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in gone[i:i + 1000]], "Quiet": True})
-    print("removed %d point files no longer listed" % len(gone))
+    print("uploaded %d point files + points.json under %s/ (%d rows carried over)" % (len(fresh), PREFIX,
+                                                                                     len(index) - len(fresh)))
+    gone = stale_keys(s3, bucket, index, old)
+    for i in range(0, len(gone), DELETE_BATCH):
+        res = s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in gone[i:i + DELETE_BATCH]],
+                                                       "Quiet": True})
+        if res.get("Errors"):
+            raise SystemExit("R2 refused to delete %d point files: %s" % (len(res["Errors"]), res["Errors"][:3]))
+    print("removed %d point files neither index lists" % len(gone))
 
 
-def stale_keys(s3, bucket, index):
-    """The point files under PREFIX/p/ that the index no longer lists."""
-    want = {"%s/p/%s.json" % (PREFIX, row[0].split(":", 1)[1]) for row in index}
+def old_index(s3, bucket):
+    """The rows of the index online, or [] when there is none yet."""
+    try:
+        body = s3.get_object(Bucket=bucket, Key="%s/points.json" % PREFIX)["Body"].read()
+    except Exception as exc:                                         # noqa: BLE001
+        if "NoSuchKey" in type(exc).__name__ or "NoSuchKey" in str(exc) or "404" in str(exc):
+            return []
+        raise
+    return json.loads(body.decode("utf-8")).get("points") or []
+
+
+def stale_keys(s3, bucket, index, old=()):
+    """The point files under PREFIX/p/ that neither the new index nor the old one lists."""
+    want = {"%s/p/%s.json" % (PREFIX, row[0].split(":", 1)[1]) for row in list(index) + list(old)}
     gone, token = [], None
     while True:
         kw = {"Bucket": bucket, "Prefix": PREFIX + "/p/"}

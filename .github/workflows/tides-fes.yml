@@ -35,12 +35,17 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements.txt h5py==3.14.0 boto3==1.43.98 certifi==2026.10.23 pytest==9.1.1   # the site's own (tests import app: G76 P1-1)
       - run: python -m pytest -q tests/test_tides_model.py tests/test_tides_coast.py tests/test_tide_harmonic.py
+      # the constants' key: the points' positions and fes_points.CONST_VERSION only (G80-1: a name or code change that
+      # does not change the constants keeps the 3-hour download away)
+      - name: The constants' cache key
+        id: ck
+        run: python tools/tides/fes_points.py --cache-key >> "$GITHUB_OUTPUT"
       - name: Restore the encrypted constants
         id: cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809   # v4.2.4
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809   # v4.2.4
         with:
           path: consts.json.enc
-          key: fes-consts-v1-${{ hashFiles('station_coords.json', 'tide_stations.json', 'tide_global.json', 'tide_national.json', 'tide_constituents.json', 'tools/tides/fes_points.py', 'tools/tides/coast_points.json') }}
+          key: ${{ steps.ck.outputs.key }}
       - name: Decrypt the constants
         id: decrypt
         if: steps.cache.outputs.cache-hit == 'true'
@@ -104,7 +109,8 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          UPLOAD: ${{ github.event.inputs.upload || 'true' }}
+          # only the production branch publishes (G80-4: a run from another branch is a dry run, whatever its input)
+          UPLOAD: ${{ github.ref == 'refs/heads/Live-Buoy-Update' && (github.event.inputs.upload || 'true') || 'false' }}
         shell: bash
         run: |
           set -eo pipefail
@@ -113,10 +119,25 @@ jobs:
           python tools/tides/fes_points.py "${ARGS[@]}"
           rm -rf fes                          # the model's files never leave this job
           if [ -f consts.json.enc ]; then rm -f tools/tides/.fes_consts.json; fi   # a cache hit: the plain copy goes
+      # G80-2: the constants are kept even when the job fails afterwards (a set short of its share, an upload error):
+      # made once, they are encrypted and saved whenever they exist; never when the job made none
       - name: Encrypt the constants for the cache
-        if: steps.cache.outputs.cache-hit != 'true' || steps.decrypt.outputs.ok != 'true'
+        id: enc
+        if: always() && (steps.cache.outputs.cache-hit != 'true' || steps.decrypt.outputs.ok != 'true')
         env:
           AVISO_PASS: ${{ secrets.AVISO_PASS }}
+        shell: bash
         run: |
+          if [ ! -f tools/tides/.fes_consts.json ]; then echo "no constants made"; exit 0; fi
           openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:AVISO_PASS -in tools/tides/.fes_consts.json -out consts.json.enc
           rm -f tools/tides/.fes_consts.json
+          echo "made=true" >> "$GITHUB_OUTPUT"
+      - name: Save the encrypted constants
+        if: always() && steps.enc.outputs.made == 'true'
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809   # v4.2.4
+        with:
+          path: consts.json.enc
+          key: ${{ steps.ck.outputs.key }}
+      - name: Remove the model's files
+        if: always()
+        run: rm -rf fes tools/tides/.fes_consts.json tools/tides/.fes_partial.json

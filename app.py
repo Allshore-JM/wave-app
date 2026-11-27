@@ -22,7 +22,7 @@ import buoy_sources
 import point_forecast
 import gfs_bulletins
 import sky
-import tide_global
+import tide_global              # plain json / math at import: numpy only on a worldwide window (tide_global._prep)
 import tide_sources
 import chain_tls
 import cwa_tls

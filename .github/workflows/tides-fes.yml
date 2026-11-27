@@ -53,12 +53,15 @@ jobs:
         run: |
           set -eo pipefail
           test -n "$AVISO_USER" -a -n "$AVISO_PASS" || { echo "AVISO_USER / AVISO_PASS secrets are not set"; exit 2; }
+          CA="$(python -c 'import certifi; print(certifi.where())')"   # certifi's list, not the runner's (plan section 57)
+          NOCAPATH="$(mktemp -d)"     # an empty CA folder: --cacert alone leaves Ubuntu curl's /etc/ssl/certs in use
           mkdir -p fes
+          # FTP over TLS (--ssl-reqd): the AVISO+ login never travels in clear
           for c in 2n2 eps2 j1 k1 k2 l2 lambda2 m2 m3 m4 m6 m8 mf mks2 mm mn4 ms4 msf msqm mtm mu2 n2 n4 nu2 o1 p1 q1 r2 s1 s2 s4 sa ssa t2; do
             f="${c}_fes2022.nc"
-            curl -sSf --retry 3 --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f.xz" \
+            curl -sSf --retry 3 --ssl-reqd --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f.xz" \
               && xz -d "fes/$f.xz" \
-              || curl -sSf --retry 3 --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f"
+              || curl -sSf --retry 3 --ssl-reqd --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f"
           done
           ls -la fes | head -40
       - name: Predict (and publish)

@@ -25,9 +25,6 @@ import threading
 import time
 from collections import OrderedDict
 
-import numpy as np
-
-import tide_harmonic as H
 import tide_sources as T
 from tide_providers import TideFetchError
 
@@ -99,12 +96,13 @@ def load(path=GLOBAL_PATH, national_path=NATIONAL_PATH):
         doc = json.load(fh)
     fields = doc["fields"]
     names = doc["constituents"]
-    tab = H.table()
+    conv = doc.get("convention", "ticon")
     out = {}
     for row in doc["stations"]:
         s = dict(zip(fields, row))
-        consts = [(names[i], a / 10000.0, g / 10.0) for i, a, g in s["c"]]
-        s["prep"] = H.prepare(consts, tab, convention=doc.get("convention", "ticon"))
+        # the constants stay plain until the station's window is first asked (_prep): loading the list needs no numpy
+        s["consts"] = [(names[i], a / 10000.0, g / 10.0) for i, a, g in s["c"]]
+        s["conv"] = conv
         s["type"] = "G"                                    # a gauge's constants (NOAA's are R / S)
         s["obs"] = False
         del s["c"]
@@ -121,9 +119,22 @@ def client_rows(stations):
     return [[s["id"], s["name"], s["lat"], s["lon"], s["type"], s["tz"], False] for s in stations.values()]
 
 
+def _prep(st):
+    """The station's constants prepared for tide_harmonic (numpy and the predictor are imported here, on the first
+    window of a TICON station: the web process pays for them only when somebody opens one)."""
+    p = st.get("prep")
+    if p is None:
+        import tide_harmonic as H
+        p = st["prep"] = H.prepare(st["consts"], convention=st.get("conv", "ticon"))
+    return p
+
+
 def harmonic_payload(st, begin, credit, method):
     """The window's answer for a station predicted from constants: the 30-min curve over [begin - LEAD, begin + SPAN +
     LEAD], the highs and lows from a 6-min series over the window +- 2 LEAD, heights above LAT."""
+    import numpy as np
+    import tide_harmonic as H
+    _prep(st)
     start = begin - T.LEAD_S
     grid_t = start + T.STEP_S * np.arange(T.POINTS)
     lat0 = float(st["lat0"])
@@ -151,6 +162,7 @@ def curve_grid(curve, start, n=T.POINTS, step=T.STEP_S):
     """An agency's curve [(epoch, m)] (any regular step) on the window's grid start + i * step: linear between samples
     up to 15 minutes apart, a Catmull-Rom cubic between coarser ones (JMA's and HKO's hourly heights: a straight line
     would cut the tops); None where the series has a gap over MAX_CURVE_GAP_S or does not reach."""
+    import numpy as np
     pts = sorted({int(t): float(v) for t, v in curve}.items())
     if len(pts) < 2:
         return [None] * n

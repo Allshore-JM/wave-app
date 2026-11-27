@@ -33,8 +33,8 @@ GLOBAL_PATH = os.path.join(HERE, "tide_global.json")
 NATIONAL_PATH = os.path.join(HERE, "tide_national.json")
 # prefix -> module in tide_providers/ (the agencies whose official predictions are shown)
 PROVIDERS = {"chs": "chs", "kv": "kartverket", "jma": "jma", "hko": "hko", "linz": "linz", "mi": "marine_institute",
-             "qld": "queensland"}
-ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld|model):[a-z0-9][a-z0-9._-]{0,79}")
+             "qld": "queensland", "cwa": "cwa"}
+ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld|cwa|model):[a-z0-9][a-z0-9._-]{0,79}")
 MODEL_PREFIX = "tides/fes/v1"
 MODEL_LIST_TTL_S = 3600               # the model points' list is asked again at most this often
 MODEL_RETRY_S = 300                   # ... and this soon after a failed read (G76 P2-6)
@@ -64,17 +64,28 @@ def _km(a_lat, a_lon, b_lat, b_lon):
     return 12742.0 * math.asin(min(1.0, math.sqrt(h)))
 
 
+def _agency_on(prefix, seen):
+    """An agency module may answer only with a key the server holds (CWA: section 113 B): its available() says so;
+    without that function an agency is always on."""
+    if prefix not in seen:
+        f = getattr(provider(prefix), "available", None)
+        seen[prefix] = bool(f()) if callable(f) else True
+    return seen[prefix]
+
+
 def load_national(path=NATIONAL_PATH):
-    """tide_national.json -> {id: station} (type O), only stations of a known agency module; {} without the file."""
+    """tide_national.json -> {id: station} (type O), only stations of a known agency module that can answer here (a
+    keyed agency without its key is left out); {} without the file."""
     if not os.path.exists(path):
         return {}
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
     fields = doc["fields"]
-    out = {}
+    out, on = {}, {}
     for row in doc["stations"]:
         s = dict(zip(fields, row))
-        if s["id"].split(":", 1)[0] in PROVIDERS and valid_id(s["id"]):
+        prefix = s["id"].split(":", 1)[0]
+        if prefix in PROVIDERS and valid_id(s["id"]) and _agency_on(prefix, on):
             s["type"] = "O"
             s["obs"] = False
             out[s["id"]] = s

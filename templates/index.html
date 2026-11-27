@@ -3859,7 +3859,7 @@
     // The window's subtitle says whose prediction it is (plan section 112): NOAA ids are bare; the others carry their
     // source in the id prefix (the raw TICON / agency id means nothing to a visitor, so it is not shown).
     const TIDE_AGENCY = { chs: 'CHS Canada', kv: 'Kartverket Norway', jma: 'JMA Japan', hko: 'Hong Kong Observatory',
-      linz: 'LINZ New Zealand', mi: 'Marine Institute Ireland', qld: 'Queensland MSQ' };
+      linz: 'LINZ New Zealand', mi: 'Marine Institute Ireland', qld: 'Queensland MSQ', cwa: 'CWA Taiwan' };
     function tideSubtitle(station) {
       const id = String(station.id || ''), i = id.indexOf(':');
       if (i < 0) return 'Tide station \u00b7 NOAA ' + id;

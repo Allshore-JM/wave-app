@@ -37,10 +37,54 @@ def get(url, headers=None, data=None):
         return r.read()
 
 
+# CWA's place types (plan section 113 B): the id's first letter, the name's Chinese prefix, the English word. Type O
+# is CWA's surf list: the site names a place by its proper (formal) name, never as a surf spot (owner, 2026-11-27), so
+# those read as "coast" with the place's own geographic name (CWA's name without the 衝浪 "surf" prefix).
+CWA_TYPES = {"A": ("海水浴場", "beach"), "B": ("海釣", "fishing spot"), "I": ("漁港", "harbour"), "N": ("潛點", "dive spot"),
+             "O": ("衝浪", "coast")}
+
+
+# Taiwan's counties and cities by their official English names (a township's CWA name starts with one)
+TW_COUNTIES = {"基隆市": "Keelung City", "臺北市": "Taipei City", "新北市": "New Taipei City", "桃園市": "Taoyuan City",
+               "新竹縣": "Hsinchu County", "新竹市": "Hsinchu City", "苗栗縣": "Miaoli County", "臺中市": "Taichung City",
+               "彰化縣": "Changhua County", "雲林縣": "Yunlin County", "嘉義縣": "Chiayi County", "嘉義市": "Chiayi City",
+               "臺南市": "Tainan City", "高雄市": "Kaohsiung City", "屏東縣": "Pingtung County", "臺東縣": "Taitung County",
+               "花蓮縣": "Hualien County", "宜蘭縣": "Yilan County", "澎湖縣": "Penghu County", "金門縣": "Kinmen County",
+               "連江縣": "Lienchiang County"}
+CWA_TOWN_KM = 6.0                        # GeoNames knows few Taiwanese towns: a farther one names the wrong place
+
+
+def cwa_names(stations, places):
+    """CWA names its places in Chinese only. A township: its county's English name, the Chinese after it ("Lienchiang
+    County (連江縣南竿鄉)"). Any other place: "<GeoNames town within CWA_TOWN_KM> <type> (<its own name>)", e.g.
+    "Hengchun coast (南灣)", or without a town that near "Harbour (福隆)"; the type's Chinese prefix (海水浴場, 漁港, 衝浪
+    ...) is dropped, so no name calls a place a surf spot."""
+    for s in stations:
+        code = str((s.get("local") or {}).get("code") or "")
+        zh = s["name"]
+        if code[:1].isdigit():
+            county = TW_COUNTIES.get(zh[:3].replace("台", "臺"))
+            s["name"] = "%s (%s)" % (county, zh) if county else zh
+            continue
+        word = None
+        if code[:1] in CWA_TYPES:
+            pre, word = CWA_TYPES[code[:1]]
+            if zh.startswith(pre) and len(zh) > len(pre):
+                zh = zh[len(pre):]
+        near = places.near(s["lat"], s["lon"], CWA_TOWN_KM)
+        town = near[0][1][2] if near else None
+        head = " ".join(x for x in (town, word) if x)
+        s["name"] = "%s (%s)" % (head[:1].upper() + head[1:], zh) if head else zh
+
+
 def readable_names(prefix, stations):
     """JMA names its tide-table stations in Japanese only ("東京 (TK)"): give each a romanised name from the nearest TICON
     gauge within 3 km (TICON's names are romanised), else the nearest GeoNames town within 15 km, keeping the Japanese
-    name in brackets ("Tokyo (東京)")."""
+    name in brackets ("Tokyo (東京)"). CWA's Chinese names: cwa_names."""
+    if prefix == "cwa":
+        import build_global as BG                                   # tools/tides/build_global.py: GeoNames
+        cwa_names(stations, BG.load_geonames(None))
+        return
     if prefix != "jma":
         return
     import build_global as BG                                       # tools/tides/build_global.py: Grid, GeoNames
@@ -61,7 +105,7 @@ def readable_names(prefix, stations):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--only", help="comma-separated prefixes (chs, kv, jma, hko, linz, mi, qld)")
+    ap.add_argument("--only", help="comma-separated prefixes (chs, kv, jma, hko, linz, mi, qld, cwa)")
     args = ap.parse_args()
     only = set(args.only.split(",")) if args.only else set(tide_global.PROVIDERS)
     import app as A
@@ -85,7 +129,7 @@ def main():
                 raise SystemExit("%s: bad or duplicate id %r" % (prefix, s["id"]))
             seen.add(s["id"])
             lat, lon = float(s["lat"]), float(s["lon"])
-            rows.append([s["id"], s["name"], round(lat, 5), round(lon, 5), A._nearest_civil_tz(lat, lon),
+            rows.append([s["id"], s["name"], round(lat, 5), round(lon, 5), s.get("tz") or A._nearest_civil_tz(lat, lon),
                          s.get("local") or {}])
         counts[prefix] = len(got)
         print("%s: %d stations" % (prefix, len(got)))

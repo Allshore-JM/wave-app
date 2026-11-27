@@ -7,7 +7,9 @@ name: tides-fes
 # R2_SECRET_ACCESS_KEY, R2_BUCKET (the model bucket, as the other publishers).
 on:
   schedule:
-    - cron: "17 3 * * 1"                   # weekly (Monday 03:17 UTC): each run publishes 47 days from two days back
+    - cron: "17 3 * * 1,4"                 # Monday + Thursday 03:17 UTC: each run publishes 47 days from two days back;
+                                           # twice a week also keeps the constants' cache in use (GitHub drops a cache
+                                           # not used for 7 days, and making it again is the ~3 h download)
   workflow_dispatch:
     inputs:
       fes_url:
@@ -24,7 +26,8 @@ permissions:
 jobs:
   predict:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 330                   # the first run (no cache) downloads 34 files of ~160 MB from AVISO+:
+                                           # ~5 min a file on 2026-11-27 (run 45940535650), ~3 h in all
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
@@ -68,12 +71,31 @@ jobs:
           mkdir -p fes
           # HTTPS (AVISO+'s THREDDS file server, Basic auth inside TLS): the AVISO+ login never travels in clear. Their FTP
           # offers no TLS (2026-11-27: "500 AUTH not understood"), so it is not used.
+          # AVISO+ can close a transfer early (run 45944053840: "curl: (18) transfer closed with 4266025 bytes remaining",
+          # file 14 of 34): curl retries every error and resumes the file (-C -), a check proves it is whole, and a file
+          # still bad is fetched afresh, three attempts in all
+          fetch() {   # fetch URL OUT CHECK...
+            local url="$1" out="$2"; shift 2
+            for attempt in 1 2 3; do
+              if curl -sSf --retry 5 --retry-all-errors --retry-delay 30 -C - --proto '=https' --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "$out" "$url" && "$@"; then
+                return 0
+              fi
+              echo "$(basename "$out"): attempt $attempt failed"
+              rm -f "$out"
+              if [ "$attempt" = 3 ]; then return 1; fi
+              sleep 60
+            done
+          }
+          # the extrapolated grids have values over land too: AVISO+'s mask (1 MB, beside the grids' folder) says which
+          # cells are native ocean (run 45958228397 read them without it and kept ~no point)
+          MASK_URL="${FES_URL%/*}/mask_fes2022B.nc"
+          fetch "$MASK_URL" fes/mask_fes2022B.nc python -c "import h5py, sys; h5py.File(sys.argv[1], 'r')['mask'].shape" fes/mask_fes2022B.nc
           # one global grid on disk at a time: download, add to the partial constants, delete (G76 P2-9)
           for c in 2n2 eps2 j1 k1 k2 l2 lambda2 m2 m3 m4 m6 m8 mf mks2 mm mn4 ms4 msf msqm mtm mu2 n2 n4 nu2 o1 p1 q1 r2 s1 s2 s4 sa ssa t2; do
             f="${c}_fes2022.nc"
-            curl -sSf --retry 3 --proto '=https' --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "$FES_URL/$f.xz"
+            fetch "$FES_URL/$f.xz" "fes/$f.xz" xz -t "fes/$f.xz"
             xz -d "fes/$f.xz"
-            python tools/tides/fes_points.py --add-file "fes/$f"
+            python tools/tides/fes_points.py --mask fes/mask_fes2022B.nc --add-file "fes/$f"
             rm -f "fes/$f" "fes/$f.xz"
           done
       - name: Predict (and publish)

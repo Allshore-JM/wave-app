@@ -176,6 +176,60 @@ def test_g76_add_file_one_at_a_time_equals_extract(tmp_path):
         F.finished(F.new_partial(pts))                                 # no M2: refused
 
 
+def _mask_file(path, land, n=31, extrapolated=None):
+    """AVISO+'s mask_fes2022B.nc on the test grid: 0 ocean, 1 extrapolated, 2 land."""
+    import h5py
+    m = np.zeros((n, n), dtype=np.float32)
+    m[land] = 2.0
+    if extrapolated is not None:
+        m[extrapolated] = 1.0
+    with h5py.File(path, "w") as h:
+        h["lat"] = 20.0 + np.arange(n) / 30.0
+        h["lon"] = 200.0 + np.arange(n) / 30.0
+        h["mask"] = m
+
+
+def test_run45958228397_extrapolated_grids_need_the_mask(tmp_path):
+    # the extrapolated grids have a value in every cell, land included: read alone, no point ever sees land and the
+    # job keeps nothing (run 45958228397 passed with ~no constants); with the mask the coastal point is kept
+    land = (slice(0, 31), slice(20, 31))
+    _grid_file(tmp_path / "m2_fes2022.nc", 50.0, 30.0)                 # no NaN anywhere = extrapolated
+    _grid_file(tmp_path / "s2_fes2022.nc", 20.0, 60.0)
+    _mask_file(tmp_path / "mask.nc", land, extrapolated=(slice(0, 31), slice(18, 20)))
+    pts = [{"id": "model:a", "lat": 20.5, "lon": -159.8}, {"id": "model:b", "lat": 20.5, "lon": -159.05}]
+    assert F.extract(pts, str(tmp_path), log=lambda *a: None) == {}
+    mask = F.read_mask(str(tmp_path / "mask.nc"))
+    got = F.extract(pts, str(tmp_path), log=lambda *a: None, mask=mask)
+    assert set(got) == {"model:a"} and {c[0] for c in got["model:a"]["c"]} == {"m2", "s2"}
+    lat, lon, amp, pha = F.read_grid(str(tmp_path / "m2_fes2022.nc"), mask)
+    assert np.isnan(amp[:, 18:]).all() and np.isfinite(amp[:, :18]).all()   # extrapolated + land: no value
+
+
+def test_mask_on_another_grid_is_refused(tmp_path):
+    _grid_file(tmp_path / "m2_fes2022.nc", 50.0, 30.0)
+    _mask_file(tmp_path / "mask.nc", (slice(0, 1), slice(0, 1)), n=30)
+    with pytest.raises(SystemExit):
+        F.read_grid(str(tmp_path / "m2_fes2022.nc"), F.read_mask(str(tmp_path / "mask.nc")))
+
+
+def test_almost_no_points_kept_stops_the_job():
+    with pytest.raises(SystemExit):
+        F.check_kept(3, 3958)
+    with pytest.raises(SystemExit):
+        F.check_kept(395, 3958)
+    F.check_kept(396, 3958)
+    F.check_kept(0, 0)
+
+
+def test_making_constants_without_the_mask_is_refused(tmp_path, monkeypatch):
+    _grid_file(tmp_path / "m2_fes2022.nc", 50.0, 30.0)
+    monkeypatch.setattr(sys, "argv", ["fes_points.py", "--add-file", str(tmp_path / "m2_fes2022.nc"),
+                                      "--partial", str(tmp_path / "p.json")])
+    with pytest.raises(SystemExit) as e:
+        F.main()
+    assert "--mask" in str(e.value) and not (tmp_path / "p.json").exists()
+
+
 def test_g76_a_listed_model_point_opens(monkeypatch):
     """G76 P0-1: the window of a listed model point answered 404 (the route looked in the stations only)."""
     import app as A

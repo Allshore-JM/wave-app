@@ -1,7 +1,7 @@
 """FES2022b tide predictions at the forecast points that have no tide station near (plan section 112, step 4).
 
-    python -I tools/tides/fes_points.py --fes-dir FES2022B_OCEAN_EXTRAPOLATED --out build/tides-fes \
-        [--consts consts.json] [--upload]
+    python -I tools/tides/fes_points.py --fes-dir FES2022B_OCEAN_EXTRAPOLATED --mask mask_fes2022B.nc \
+        --out build/tides-fes [--consts consts.json] [--upload]
 
 FES2022b (CNES / LEGOS / NOVELTIS / CLS, distributed by AVISO+) is licensed to the registered user: heights derived
 from it may be published with credit, the model's files may NOT be re-shared. So this job runs on GitHub Actions with
@@ -16,7 +16,9 @@ Steps:
      ("<name>_fes2022.nc": amplitude cm, phase deg, lat x lon, 1/30 deg, extrapolated over the coast), the complex
      value bilinearly from the 4 surrounding cells when all are ocean, else the nearest ocean cell within NEAREST_KM;
      a point is kept only if land (a cell without a value) lies within COAST_KM (the forecast stations far at sea need
-     no tide) and an ocean cell within NEAREST_KM;
+     no tide) and an ocean cell within NEAREST_KM. The extrapolated grids carry values over land too, so "ocean" is
+     AVISO+'s mask (`--mask mask_fes2022B.nc`, 0 = native ocean, 1 = extrapolated, 2 = land, 3 = lake): every cell
+     not 0 is read as no value (run 45958228397 had no mask: no point saw land, ~no constants);
   3. LAT per point over 18.61 years (tide_harmonic, convention 'fes');
   4. predictions: from 00:00 UTC two days back, DAYS days at 30 minutes + the highs and lows (6-min series), heights
      above LAT in cm -> out/p/<id>.json; the index out/points.json (id, name, lat, lon, zone);
@@ -47,6 +49,7 @@ NEAREST_KM = 15.0
 DAYS = 47
 STEP_S = 1800
 EX_STEP_S = 360
+MIN_KEPT = 0.10          # fewer points than this share with a model tide = a broken land test: stop, publish nothing
 # FES2022b's 34 ocean-tide constituents (file name stem -> tide_harmonic name)
 FES_NAMES = {"2n2": "2n2", "eps2": "eps2", "j1": "j1", "k1": "k1", "k2": "k2", "l2": "l2", "lambda2": "lambda2",
              "m2": "m2", "m3": "m3", "m4": "m4", "m6": "m6", "m8": "m8", "mf": "mf", "mks2": "mks2", "mm": "mm",
@@ -88,8 +91,20 @@ def _points_hash(points):
     return hashlib.sha256(json.dumps([(p["id"], p["lat"], p["lon"]) for p in points]).encode()).hexdigest()
 
 
-def read_grid(path):
-    """(lat[], lon[] in 0..360, amplitude m, phase deg) of one FES2022b file (NetCDF-4 = HDF5)."""
+def read_mask(path):
+    """(lat[], lon[] in 0..360, ocean bool[lat, lon]) from AVISO+'s mask_fes2022B.nc: only native ocean (0) is ocean;
+    extrapolated (1), land (2), lake (3) and fill are not."""
+    import h5py
+    with h5py.File(path, "r") as h:
+        lat = np.asarray(h["lat"][:], dtype=float)
+        lon = np.asarray(h["lon"][:], dtype=float) % 360.0
+        m = np.asarray(h["mask"][:], dtype=np.float32)
+    return lat, lon, m == 0
+
+
+def read_grid(path, mask=None):
+    """(lat[], lon[] in 0..360, amplitude m, phase deg) of one FES2022b file (NetCDF-4 = HDF5); with `mask` (from
+    read_mask, the same grid or the file is refused) every cell that is not native ocean has no value."""
     import h5py
     with h5py.File(path, "r") as h:
         lat = np.asarray(h["lat"][:], dtype=float)
@@ -100,6 +115,12 @@ def read_grid(path):
     bad = ~np.isfinite(amp) | (amp > 1e5) | (amp < 0)
     if fill is not None:
         bad |= amp == np.float32(np.asarray(fill).ravel()[0])
+    if mask is not None:
+        mlat, mlon, ocean = mask
+        if (ocean.shape != amp.shape or not np.allclose(mlat, lat, atol=1e-6)
+                or not np.allclose(mlon, lon, atol=1e-6)):
+            raise SystemExit("the mask's grid is not %s's grid" % os.path.basename(path))
+        bad |= ~ocean
     amp = np.where(bad, np.nan, amp / 100.0)                       # cm -> m
     return lat, lon, amp, np.where(bad, np.nan, pha)
 
@@ -141,7 +162,7 @@ def new_partial(points):
             "consts": {p["id"]: {"c": [], "km": 0.0, "coast": False} for p in points}}
 
 
-def add_file(points, partial, path, log=print):
+def add_file(points, partial, path, log=print, mask=None):
     """One FES constituent file into the partial constants (the workflow downloads, adds and deletes one file at a
     time, so the runner's disk holds one global grid, not 34: G76 P2-9)."""
     stem = os.path.basename(path).split("_fes2022")[0].lower()
@@ -149,7 +170,7 @@ def add_file(points, partial, path, log=print):
         raise SystemExit("not a FES2022b constituent file: %s" % path)
     if stem in partial["done"]:
         return partial
-    lat, lon, amp, pha = read_grid(path)
+    lat, lon, amp, pha = read_grid(path, mask)
     dead = set(partial["dead"])
     name = FES_NAMES[stem]
     for p in points:
@@ -167,6 +188,10 @@ def add_file(points, partial, path, log=print):
         c["c"].append([name, round(float(abs(v)), 5), round(float(np.degrees(-np.angle(v))) % 360.0, 2)])
     partial["dead"] = sorted(dead)
     partial["done"].append(stem)
+    if stem == "m2":
+        alive = [p["id"] for p in points if p["id"] not in dead]
+        log("m2: %d of %d points with an ocean value, %d of them with land within %g km"
+            % (len(alive), len(points), sum(partial["consts"][k]["coast"] for k in alive), COAST_KM))
     log("%s: done" % stem)
     return partial
 
@@ -179,15 +204,23 @@ def finished(partial):
     return {k: v for k, v in partial["consts"].items() if k not in dead and v["coast"] and v["c"]}
 
 
-def extract(points, fes_dir, log=print):
+def extract(points, fes_dir, log=print, mask=None):
     partial = new_partial(points)
     for stem in sorted(FES_NAMES):
         path = os.path.join(fes_dir, "%s_fes2022.nc" % stem)
         if not os.path.exists(path):
             log("missing %s: left out" % path)
             continue
-        add_file(points, partial, path, log)
+        add_file(points, partial, path, log, mask)
     return finished(partial)
+
+
+def check_kept(n_kept, n_points):
+    """Refuse a result where almost no point got a model tide (the extrapolated grids read without the mask gave
+    exactly that, and the job passed: run 45958228397)."""
+    if n_points and n_kept < MIN_KEPT * n_points:
+        raise SystemExit("only %d of %d points have a model tide (< %d%%): the land test is broken; nothing published"
+                         % (n_kept, n_points, round(MIN_KEPT * 100)))
 
 
 def predict_point(prep, lat0, begin, days=DAYS):
@@ -203,6 +236,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fes-dir")
     ap.add_argument("--add-file", help="add one FES constituent file to --partial and stop")
+    ap.add_argument("--mask", help="AVISO+'s mask_fes2022B.nc (needed to make constants from the extrapolated grids)")
     ap.add_argument("--partial", default=os.path.join(HERE, ".fes_partial.json"))
     ap.add_argument("--out")
     ap.add_argument("--consts", default=os.path.join(HERE, ".fes_consts.json"))
@@ -211,11 +245,14 @@ def main():
     args = ap.parse_args()
     points = forecast_points()
     ph = _points_hash(points)
+    if (args.add_file or args.fes_dir) and not args.mask:
+        raise SystemExit("--mask is needed: the extrapolated grids have values over land")
+    mask = read_mask(args.mask) if (args.add_file or args.fes_dir) else None
     if args.add_file:                                                   # the workflow's one-file-at-a-time step
         partial = json.load(open(args.partial, encoding="utf-8")) if os.path.exists(args.partial) else None
         if partial is None or partial.get("points") != ph:
             partial = new_partial(points)
-        add_file(points, partial, args.add_file)
+        add_file(points, partial, args.add_file, mask=mask)
         with open(args.partial, "w", encoding="utf-8") as fh:            # never uploaded (the Actions runner only)
             json.dump(partial, fh, separators=(",", ":"))
         return
@@ -228,7 +265,7 @@ def main():
             cached = None
     if cached is None:
         if args.fes_dir:
-            consts = extract(points, args.fes_dir)
+            consts = extract(points, args.fes_dir, mask=mask)
         elif os.path.exists(args.partial):
             partial = json.load(open(args.partial, encoding="utf-8"))
             if partial.get("points") != ph:
@@ -239,6 +276,7 @@ def main():
             raise SystemExit("no constants cached for these points, no --fes-dir and no partial file")
         tab = H.table()
         keep = [p for p in points if p["id"] in consts]
+        check_kept(len(keep), len(points))                              # before anything is cached
         stations = [{"consts_m": [tuple(c) for c in consts[p["id"]]["c"]]} for p in keep]
         lat0 = _lat_offsets_fes(stations, tab)
         for p, z in zip(keep, lat0):
@@ -248,6 +286,7 @@ def main():
             json.dump(cached, fh, separators=(",", ":"))
     consts = cached["consts"]
     keep = [p for p in points if p["id"] in consts]
+    check_kept(len(keep), len(points))
     places = BG.load_geonames(args.geonames)
     today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     begin = int((today - timedelta(days=2)).timestamp())

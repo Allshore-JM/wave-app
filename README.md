@@ -1736,7 +1736,12 @@ water seeded from the GSHHG land file, `reach` 0.3 degrees):
   mean (the gauges' own method), plus the gauges' difference from the model interpolated the same way. Both committed and
   pinned in `DATUM_GRIDS`.
 - **Coverage.** LINZ has published 65 sheets so far, not the whole coast: Piha and Raglan, for example, lie outside them
-  and keep GEBCO.
+  and keep GEBCO; some sheets hold little seabed (BH28, Taranaki: nothing off Stent Road). The NSW 2018 survey has
+  gaps close inshore round Sydney (Bondi bay, Cronulla: its data starts about 400 m out), which keep GEBCO there.
+- **Published** 2026-11-27 (bathy-build run #76, version 1, one region after another): au-nsw-s 4,504 tiles, au-nsw-n
+  4,874, nz-south 17,238, nz-central 12,693, nz-north 48,412 (87,721 tiles, 2.44 GB; 53 regions in `regions.json`). Each
+  digest equals its dry run's; the bucket read-back (400 finest-zoom tiles per region from the public host against the
+  source) gave |median| 0.010-0.019 m, signed median within 0.001 m.
 
 ### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.5)
 

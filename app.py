@@ -326,7 +326,7 @@ def _live_stations_edge_ttl() -> int:
 # served from object storage). Off unless MODEL_OVERLAYS=1: with the flag unset the page is
 # byte-identical to the pre-feature page (tests/test_overlay_flag.py replays a golden).
 # ---------------------------------------------------------------------------------------------
-OVERLAY_ASSET_VERSION = "2.32.5"          # bump on every change to static_overlay/* (immutable URLs)
+OVERLAY_ASSET_VERSION = "2.33.0"          # bump on every change to static_overlay/* (immutable URLs)
 OVERLAY_MODELS = ("gfswave", "ecmwf", "rrfs")   # the models the overlay panel can offer (plan section 43; each has a frames job;
                                               # rrfs: NOAA RRFS, Wind speed only, regional: plan section 99 D)
 _OVERLAY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_overlay")
@@ -576,6 +576,24 @@ BATHY_NOTICE = "\n".join([
     "surveys are, every value it gives taken as water. It is an estimate from satellite images, often off by 2 m (measured",
     "against NOAA's surveys of Hawaii and Guam: too deep on shallow reef flats, too shallow past about 12 m). Not endorsed",
     "by SPC.",
+    "",
+    "New Zealand (the 65 map sheets LINZ has published, 1 m; Northland, Auckland, the Coromandel and Bay of Plenty,",
+    "Gisborne, Taranaki, Kapiti, Wellington, Nelson and Golden Bay, Haast, Otago, Southland and Stewart Island):",
+    "Toitu Te Whenua Land Information New Zealand (LINZ), New Zealand Coastal LiDAR 1m DEM (2024-2026), from LINZ's open",
+    "data on AWS (s3://nz-coastal). Licence: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Shown here modified:",
+    "heights above NZVD2016 converted to mean sea level with a grid of mean sea level in NZVD2016 interpolated from 10 LINZ",
+    "standard ports (-0.03 to -0.21 m); water deeper than 30 m drawn only to zoom 15. Not endorsed by LINZ.",
+    "",
+    "New South Wales, Australia (Point Danger to Cape Howe, 5 m):",
+    "NSW Marine LiDAR Topo-Bathy 2018, Department of Planning, Industry and Environment (now the NSW Department of Climate",
+    "Change, Energy, the Environment and Water), captured by Fugro; ordered through ELVIS (elevation.fsdf.org.au). Licence:",
+    "CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/). Heights are above the Australian Height Datum, which lies",
+    "within 0.05 m of mean sea level at most NSW ocean tide gauges (MHL 2012), used as mean sea level. Not endorsed by the",
+    "NSW Government.",
+    "",
+    "Where the water's edge is in New Zealand (mean higher high water above mean sea level): from the EOT20 global ocean",
+    "tide model (Hart-Davis, M., et al. 2021, DGFI-TUM; SEANOE, doi:10.17882/79489; CC BY 4.0), predicted by Allshore",
+    "Surf and corrected at 12 tide gauges of the University of Hawaii Sea Level Center.",
     "",
     "Everywhere else (regional context only, about 460 m):",
     "GEBCO Compilation Group (2026) GEBCO 2026 Grid (doi:10.5285/4f68d5c7-45eb-f999-e063-7086abc036fa).",

@@ -288,7 +288,7 @@ GAUGES = {"San Diego": (32.714, -117.174, 0.77, 0.85), "Seattle": (47.602, -122.
 
 def test_the_committed_datum_grids_are_the_pinned_ones_and_match_the_gauges():
     names = {"us_msl_navd88.tif": 2, "us_mhhw_msl.tif": 3}
-    assert set(S.DATUM_GRIDS) == set(names)
+    assert set(S.DATUM_GRIDS) == set(names) | {"nz_msl_nzvd2016.tif", "nz_mhhw_msl.tif"}
     for name, col in names.items():
         path = os.path.join(S.DATUM_DIR, name)
         with open(path, "rb") as f:
@@ -312,12 +312,13 @@ def test_every_grid_datum_region_s_blocks_lie_inside_the_datum_grids():
     import math
     from pyproj import Transformer
     tr = Transformer.from_crs(3857, 4326, always_xy=True)
-    s0, w0, n0, e0 = G.BOX
-    m = G.STEP
+    import build_tide_grids as TG
+    grids = {"grid": (G.BOX, G.STEP), "grid:nz": (TG.BOX, TG.STEP)}        # each grid's (S, W, N, E) and cell size
     names = [n for n, r in S.REGIONS.items() if isinstance(r.get("mhhw"), str)]
-    assert len(names) >= 12
+    assert len(names) >= 15 and {S.REGIONS[n]["mhhw"] for n in names} == set(grids)
     for name in names:
         r = B.region_config(name)
+        (s0, w0, n0, e0), m = grids[r["mhhw"]]
         z = r["zmax"] - B.BLOCK_LEVELS
         w, s, e, n = r["box"]
         rc = r.get("reach", 0)

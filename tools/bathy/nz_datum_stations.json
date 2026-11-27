@@ -1,0 +1,153 @@
+{
+ "about": "New Zealand datum stations for tools/bathy/build_tide_grids.py (plan section 111a, step 1 2026-11-26). ports: mean sea level in NZVD2016 (m) = the port's NZVD2016 benchmark height (LINZ National Geodetic Adjustment 1-12-2017) - chart datum's depth below that benchmark (LINZ 'Tidal level information for surveyors') + MSL above chart datum (LINZ 'Standard port tidal levels'); positions are the ports' tide gauges, about 1 km. gauges: UHSLC research-quality hourly sea level, the latest 19 years (or all), mean higher high water above mean sea level (m) = mean of each UTC day's highest hourly value (parabola peak fit) - the mean, observed (weather included).",
+ "ports": {
+  "marsden-point": {
+   "lat": -35.8333,
+   "lon": 174.5,
+   "msl_nzvd2016": -0.116
+  },
+  "auckland": {
+   "lat": -36.8435,
+   "lon": 174.765,
+   "msl_nzvd2016": -0.156
+  },
+  "tauranga": {
+   "lat": -37.65,
+   "lon": 176.1833,
+   "msl_nzvd2016": -0.033
+  },
+  "gisborne": {
+   "lat": -38.6833,
+   "lon": 178.0333,
+   "msl_nzvd2016": -0.139
+  },
+  "napier": {
+   "lat": -39.4833,
+   "lon": 176.9167,
+   "msl_nzvd2016": -0.107
+  },
+  "taranaki": {
+   "lat": -39.05,
+   "lon": 174.0333,
+   "msl_nzvd2016": -0.115
+  },
+  "nelson": {
+   "lat": -41.2667,
+   "lon": 173.2667,
+   "msl_nzvd2016": -0.178
+  },
+  "lyttelton": {
+   "lat": -43.6,
+   "lon": 172.7167,
+   "msl_nzvd2016": -0.188
+  },
+  "dunedin": {
+   "lat": -45.878,
+   "lon": 170.508,
+   "msl_nzvd2016": -0.208
+  },
+  "bluff": {
+   "lat": -46.6,
+   "lon": 168.35,
+   "msl_nzvd2016": -0.158
+  }
+ },
+ "gauges": {
+  "uhslc-71": {
+   "name": "Wellington",
+   "lat": -41.2833,
+   "lon": 174.7833,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.556
+  },
+  "uhslc-72": {
+   "name": "Bluff",
+   "lat": -46.6,
+   "lon": 168.35,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.909
+  },
+  "uhslc-73": {
+   "name": "Tauranga",
+   "lat": -37.65,
+   "lon": 176.1833,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.746
+  },
+  "uhslc-76": {
+   "name": "Taranaki",
+   "lat": -39.05,
+   "lon": 174.0333,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 1.265
+  },
+  "uhslc-77": {
+   "name": "Nelson",
+   "lat": -41.2667,
+   "lon": 173.2667,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 1.488
+  },
+  "uhslc-78": {
+   "name": "Gisborne",
+   "lat": -38.6833,
+   "lon": 178.0333,
+   "years": "2006-2024",
+   "n_years": 15,
+   "mhhw_msl": 0.693
+  },
+  "uhslc-398": {
+   "name": "Marsden Point",
+   "lat": -35.8333,
+   "lon": 174.5,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.964
+  },
+  "uhslc-403": {
+   "name": "Jackson",
+   "lat": -43.9833,
+   "lon": 168.6167,
+   "years": "2003-2021",
+   "n_years": 9,
+   "mhhw_msl": 0.903
+  },
+  "uhslc-665": {
+   "name": "Timaru",
+   "lat": -44.3833,
+   "lon": 171.25,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.847
+  },
+  "uhslc-667": {
+   "name": "Lyttelton",
+   "lat": -43.6,
+   "lon": 172.7167,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.953
+  },
+  "uhslc-668": {
+   "name": "Napier",
+   "lat": -39.4833,
+   "lon": 176.9167,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.737
+  },
+  "uhslc-669": {
+   "name": "Port Chalmers",
+   "lat": -45.8167,
+   "lon": 170.65,
+   "years": "2006-2024",
+   "n_years": 19,
+   "mhhw_msl": 0.863
+  }
+ }
+}

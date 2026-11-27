@@ -71,7 +71,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import bathy_bluetopo as BT  # noqa: E402
 import bathy_dep as D       # noqa: E402
+import bathy_fetch as F     # noqa: E402
 import bathy_lakes as L     # noqa: E402
+import bathy_stac as STAC   # noqa: E402
 import bathy_sources as S   # noqa: E402
 import bathy_tiles as T     # noqa: E402
 import bathy_water as W     # noqa: E402
@@ -197,12 +199,26 @@ def region_config(name, box=None, local=None):
         if local and "seed:" + seed in local:
             reg["seed_path"] = local["seed:" + seed]
     mh = reg.get("mhhw")
-    if mh == "grid":
-        reg["mhhw_path"] = (local or {}).get("mhhw:grid") or S.MHHW_GRID
-        if not (local and "mhhw:grid" in local):
+    if isinstance(mh, str):
+        if mh not in S.MHHW_GRIDS:
+            raise ValueError("%s: mhhw %r names no grid (have %s)" % (name, mh, sorted(S.MHHW_GRIDS)))
+        reg["mhhw_path"] = (local or {}).get("mhhw:" + mh) or (S.MHHW_GRID if mh == "grid" else S.MHHW_GRIDS[mh])
+        if not (local and "mhhw:" + mh in local):
             check_datum_grid(reg["mhhw_path"])
     elif isinstance(mh, bool) or not isinstance(mh, (int, float)) or not -1.0 <= mh <= 5.0:
-        raise ValueError('%s: mhhw %r must be metres above mean sea level (-1..5) or "grid"' % (name, mh))
+        raise ValueError('%s: mhhw %r must be metres above mean sea level (-1..5) or a grid ("grid", "grid:<name>")'
+                         % (name, mh))
+    for s in srcs:
+        k = s.get("kind")
+        if k == "stac" and not s.get("local"):
+            st = s.get("stac") or {}
+            if not (isinstance(st.get("collection"), str) and st["collection"].startswith("https://")
+                    and isinstance(st.get("items"), int) and st["items"] > 0 and STAC.SHA_RE.match(str(st.get("digest")))):
+                raise ValueError("%s: stac source %s needs a collection https URL, an item count and a digest pin"
+                                 % (name, s["key"]))
+        if k == "tilezip" and not s.get("local"):
+            if not s.get("mirror") or not s.get("crs"):
+                raise ValueError("%s: tilezip source %s needs its mirror manifest and its CRS" % (name, s["key"]))
     if box:
         b = reg["box"]
         reg["box"] = (max(b[0], box[0]), max(b[1], box[1]), min(b[2], box[2]), min(b[3], box[3]))
@@ -489,6 +505,58 @@ def dep_blocks(reg, src, workers):
             found |= f
     log("%s: %d blocks hold a usable pixel, from %d tiles (%.0f s)" % (src["key"], len(found), len(tiles),
                                                                      time.time() - t0))
+    return found
+
+
+PREPASS_FACTOR = 16     # a sheet's pre-pass reads every 16th pixel (its overview, where the file has one)
+PREPASS_HIGH_M = 5.0    # a pre-pass pixel at or below this (source datum, offset added) is low ground worth a block
+
+
+def _sheet_blocks(args):
+    """{(x, y)} of the blocks (zoom bz) under the low ground of one sheet, from a 1/PREPASS_FACTOR read (nearest), grown
+    by one block each way."""
+    path, bz, nodata, offset = args
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.warp import transform
+    with rasterio.open(path) as d:
+        h, w = max(1, d.height // PREPASS_FACTOR), max(1, d.width // PREPASS_FACTOR)
+        a = d.read(1, out_shape=(h, w), resampling=Resampling.nearest)
+        nd = d.nodata if d.nodata is not None else nodata
+        tr = d.transform @ d.transform.scale(d.width / w, d.height / h)
+        crs = d.crs
+    with np.errstate(invalid="ignore"):
+        ok = np.isfinite(a) & (np.abs(a) < S.SANE_M) & (a + np.float32(offset) <= PREPASS_HIGH_M)
+    if nd is not None:
+        ok &= a != np.float32(nd)
+    rr, cc = np.nonzero(ok)
+    if not rr.size:
+        return set()
+    xs = tr.c + (cc + 0.5) * tr.a
+    ys = tr.f + (rr + 0.5) * tr.e
+    lon, lat = transform(crs, "EPSG:4326", xs.tolist(), ys.tolist())
+    n = 2 ** bz
+    lon, lat = np.asarray(lon), np.clip(np.asarray(lat), -85.0, 85.0)
+    s = np.sin(np.radians(lat))
+    tx = np.floor((lon + 180.0) / 360.0 * n).astype(np.int64)
+    ty = np.floor((0.5 - np.log((1 + s) / (1 - s)) / (4 * math.pi)) * n).astype(np.int64)
+    core = set(zip(tx.tolist(), ty.tolist()))
+    return {(x + dx, y + dy) for (x, y) in core for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+            if 0 <= x + dx < n and 0 <= y + dy < n}
+
+
+def sheet_blocks(reg, src, workers):
+    """The blocks holding low ground of a sheet source (kinds stac and tilezip: most of a sheet's rectangle is land or
+    empty), one pre-pass read per sheet."""
+    bz = reg["zmax"] - BLOCK_LEVELS
+    t0 = time.time()
+    found = set()
+    with pool(workers) as ex:
+        for f in ex.map(_sheet_blocks, [(p, bz, src.get("nodata"), src.get("offset", 0.0)) for (p, _) in src["tiles"]],
+                        chunksize=1):
+            found |= f
+    log("%s: %d blocks hold low ground, from %d sheets (%.0f s)" % (src["key"], len(found), len(src["tiles"]),
+                                                                  time.time() - t0))
     return found
 
 
@@ -1338,15 +1406,25 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                 s["gdal"] = s["local"] = L.fetch(s["lake"], work, USER_AGENT)     # NCEI's archive, checked by hash
             if s.get("kind") == "dep" and not s.get("local"):
                 s["gdal"] = dep_vrt(s, work)
-            if s.get("kind") == "bluetopo":
+            if s.get("kind") in ("bluetopo", "stac", "tilezip"):
                 if s.get("local"):          # tests: local tile files (a list, or one path)
                     files = s["local"] if isinstance(s["local"], (list, tuple)) else [s["local"]]
                     s["tiles"] = [(f, r) for f in files for r in footprint({"local": f, "gdal": f})]
-                else:
+                elif s["kind"] == "bluetopo":
                     if scheme is None:
                         scheme = BT.read_scheme(bluetopo_scheme(work, local))
                     s["tiles"] = BT.tiles_in(scheme, read_box(reg), s["bt_res"])
-                log("%s: %d BlueTopo tiles meet the box" % (s["key"], len(s["tiles"])))
+                elif s["kind"] == "stac":
+                    # the pinned collection's sheets meeting the box (lon/lat outlines from the items, no file read)
+                    s["tiles"] = [(p, r) for (_, r, p) in STAC.read_items(s["stac"], _https_bytes)
+                                  if _hits([r], whole)]
+                else:
+                    # the mirrored archives (bathy_mirror), checked by hash; each one's GeoTIFF taken out and checked
+                    files = F.fetch_mirror(s["mirror"], work, s["crs"], log=log, get=lambda u, p, ua: retrying(
+                        lambda: L.download(u, p, ua), http_transient, "download " + u))
+                    s["tiles"] = [(f, r) for f in files for r in footprint({"local": f, "gdal": f})
+                                  if _hits([r], whole)]
+                log("%s: %d %s tiles meet the box" % (s["key"], len(s["tiles"]), s["kind"]))
             s["rects"] = footprint(s)     # once, here: the workers read only the blocks a source reaches
             if s.get("clip"):
                 area = clip_box(s["clip"], whole)
@@ -1355,6 +1433,8 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                     s["clip_area"] = area      # cut per pixel too (read_field): a block reaches past the clip
             if s.get("kind") == "dep" and not s.get("local") and not s.get("fill"):
                 s["blocks"] = dep_blocks(reg, s, workers)
+            if s.get("kind") in ("stac", "tilezip") and not s.get("fill"):
+                s["blocks"] = sheet_blocks(reg, s, workers)
         bad = outside_box(whole, reg["srcs"])   # the configured box (+ reach), whatever --box narrowed
         if bad:
             raise ValueError("%s: %d footprint rectangle(s) outside the region's box %s, e.g. %s: widen the box"
@@ -1473,7 +1553,8 @@ def write_index(reg, out, version):
         f.write(licence_text(reg))
     digest, count, size = file_digest(out)
     sources = {str(s["id"]): dict({k: s[k] for k in ("name", "year", "res_m", "datum", "licence", "credit", "zmax")},
-                                  deep=list(s["deep"]) if s.get("deep") else None)
+                                  deep=list(s["deep"]) if s.get("deep") else None,
+                                  **({"short": s["short"]} if s.get("short") else {}))
                for s in reg["srcs"]}
     index = {
         "format": FORMAT, "region": reg["name"], "version": version, "land_id": T.LAND_ID,
@@ -1518,6 +1599,17 @@ def licence_text(reg):
                   "level. The lake grids are NOAA NCEI's (NGDC 1996-1999 compilations, Superior a draft), downloaded "
                   "from www.ngdc.noaa.gov; the lidar DEMs' heights are taken below the same datum (the two NAVD88 "
                   "surveys 0.01 m lower). Lake St Clair from Lake Erie's grid, 0.9 m lower."]
+    if reg.get("mhhw") == "grid:nz":
+        lines += ["- The water's edge (mean higher high water above mean sea level, 0.56-1.49 m): the EOT20 global ocean "
+                  "tide model (Hart-Davis et al. 2021, DGFI-TUM; SEANOE doi:10.17882/79489; CC BY 4.0), predicted for "
+                  "19 years by Allshore Surf and corrected at 12 UHSLC tide gauges."]
+    if any(s.get("kind") == "stac" for s in reg["srcs"]):
+        lines += ["- LINZ data: Toitu Te Whenua Land Information New Zealand, CC BY 4.0, read from s3://nz-coastal; "
+                  "not endorsed by LINZ."]
+    if any(s.get("kind") == "tilezip" for s in reg["srcs"]):
+        lines += ["- NSW data: Department of Planning, Industry and Environment, CC BY 4.0, ordered through ELVIS "
+                  "(elevation.fsdf.org.au) and kept unchanged under static/bathy-src/; not endorsed by the NSW "
+                  "Government."]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

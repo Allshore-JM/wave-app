@@ -1705,10 +1705,38 @@ owner's chosen areas (key surf areas, all of California to 30 m, all of Florida,
   get a blend, so part of their intertidal fringe is judged wrongly as land or water. A lake held above the sea by locks
   (Lake Washington, Lake Union) lies below the sea's high-tide line in NAVD88 and joins the sea through its canal: it is
   drawn as sea, its depth below mean sea level (the lake's surface is ~4.5 m above it).
-- **Regions in all.** 34 with stage 1 (the client takes up to 64). The notice (`/notice/bathy`) names every source,
+- **Regions in all.** 34 with stage 1, 48 with the mainland lidar, 53 with section 111a (the client takes up to 256). The notice (`/notice/bathy`) names every source,
   the datum conversion and the lakes' chart datum.
 - **Before any lake upload.** The panel says "Depth below mean sea level" for every region today; the client's datum line
   for the lakes ships first (a later step of section 98).
+
+### Bathymetry stage 3a: Australia and New Zealand (plan section 111a, the builder)
+
+Five regions, each built on its own and cut to its box (prio 20, zooms 8 to their source's finest, GEBCO beneath, open
+water seeded from the GSHHG land file, `reach` 0.3 degrees):
+
+| Region | Source (kind) | Finest zoom | Datum to mean sea level | Water's edge (MHHW above MSL) |
+|---|---|---|---|---|
+| `au-nsw-s`, `au-nsw-n` (split at 32.85 S) | NSW Marine LiDAR Topo-Bathy 2018, 5 m (`tilezip`) | 15 | AHD taken as MSL (within 0.05 m at most NSW ocean gauges) | 0.7 m |
+| `nz-north`, `nz-central`, `nz-south` | LINZ New Zealand Coastal LiDAR 1m DEM (`stac`) | 17 (deeper than 30 m: 15) | NZVD2016 less `nz_msl_nzvd2016.tif` (10 LINZ ports) | `nz_mhhw_msl.tif` (EOT20 + 12 gauges) |
+
+- **`stac`** (`tools/bathy/bathy_stac.py`). The collection's id, item count and a digest of its item links are pinned in
+  `bathy_sources.py`; each item document is checked against its listed checksum and its sheet COG read by window over
+  https (`/vsicurl/`). LINZ's collection is "ongoing": when a sheet is added or changed the build stops with
+  "renew the pin" and the new digest. Look at what changed (the collection's `updated`, the new items), then update
+  `items` and `digest` (and the README / notice if the coverage grew).
+- **`tilezip`** (`tools/bathy/bathy_fetch.py`). NSW's archives came from ELVIS order links that expire after two days, so
+  they were copied once to `static/bathy-src/nsw-marine-2018/<sha16>.zip` (`tools/bathy/bathy_mirror.py`,
+  `mirror_nsw.json`: size, SHA-256 and the GeoTIFF member of each; never overwritten; a README.txt with the credit and
+  licence beside them). The build downloads each from the public host, checks it against the manifest, takes out the one
+  GeoTIFF (EPSG:7856, nodata -3.4028e38) and reads it by window.
+- **The NZ datum grids** (`tools/bathy/build_tide_grids.py`, laptop only: pyTMD 3.1.0 and the 2.3 GB EOT20 model). MSL in
+  NZVD2016 from the ports in `nz_datum_stations.json` (inverse distance squared, nearest 4); MHHW above MSL from EOT20
+  predicted hourly for 19 years at each 1/8-degree cell near a region, the mean of each UTC day's highest hour less the
+  mean (the gauges' own method), plus the gauges' difference from the model interpolated the same way. Both committed and
+  pinned in `DATUM_GRIDS`.
+- **Coverage.** LINZ has published 65 sheets so far, not the whole coast: Piha and Raglan, for example, lie outside them
+  and keep GEBCO.
 
 ### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.5)
 

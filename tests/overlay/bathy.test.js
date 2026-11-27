@@ -891,3 +891,29 @@ test('a busy redraw of 8 costly tiles: exactly one slice between consecutive fra
   assert.ok(perFrame.every((n) => n === 1), 'one 9-ms tile a frame: ' + perFrame.join(','));
   assert.equal(layer._staleQ, null, 'nothing left queued');
 });
+
+test('regions.json may list up to 256 regions (plan section 111); a short credit from the index is kept when it is one word of 12 characters or fewer', () => {
+  const many = (n) => {
+    const d = json('regions.json'), base = d.regions.hawaii;
+    const have = Object.keys(d.regions).length;
+    for (let i = 0; i < n - have; i++) d.regions['r' + i] = Object.assign({}, base);
+    return d;
+  };
+  const d256 = many(256);
+  assert.equal(Object.keys(d256.regions).length, 256);
+  assert.equal(I.validBathyRegions(d256).length, 256);
+  const d257 = many(257);
+  assert.equal(Object.keys(d257.regions).length, 257);
+  assert.equal(I.validBathyRegions(d257), null, 'more than 256 regions');
+  const regs = I.validBathyRegions(json('regions.json')), hawaii = regs[0];
+  const doc = json('hawaii_index.json');
+  doc.sources['10'].short = 'LINZ';
+  assert.equal(I.validBathyIndex(doc, hawaii).sources[10].short, 'LINZ');
+  assert.equal(I.bathyShort(I.validBathyIndex(doc, hawaii).sources[10]), 'LINZ');
+  for (const bad of ['', 'two words', 'thirteen-char', 'a,b', 7]) {
+    doc.sources['10'].short = bad;
+    const s = I.validBathyIndex(doc, hawaii).sources[10];
+    assert.equal(s.short, '', String(bad));
+    assert.equal(I.bathyShort(s), 'NOAA', 'falls back to the credit\'s first word: ' + bad);
+  }
+});

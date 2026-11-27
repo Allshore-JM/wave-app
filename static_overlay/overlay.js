@@ -4808,6 +4808,7 @@
   var MAX_BATHY_BYTES = 32 * 1024 * 1024;                  // decoded tiles kept (LRU); the ones in view never go
   var MAX_BATHY_INFLIGHT = 4;
   var MAX_BATHY_POINTER = 64 * 1024, MAX_BATHY_INDEX = 1024 * 1024, MAX_BATHY_IDX = 64 * 1024;
+  var BATHY_MAX_REGIONS = 256;                              // regions.json lists at most this many (plan section 111)
   var BATHY_RETRY_MS = 60 * 1000, BATHY_STALL_MS = 15000;
   var BATHY_ENTRY_BYTES = BATHY_SIDE * BATHY_ROWS + BATHY_PLANE;   // the decoded planes + the shade made from them
   var BATHY_NAME = /^[a-z0-9_-]{1,32}$/;
@@ -4879,7 +4880,7 @@
         !bathyInt(r.v, 1, 9999) || !bathyInt(r.zmin, 0, 20) || !bathyInt(r.zmax, 0, 20) || r.zmin > r.zmax) return null;
       out.push({ name: name, box: r.box.slice(), prio: r.prio, v: r.v, zmin: r.zmin, zmax: r.zmax });
     }
-    if (out.length > 64) return null;
+    if (out.length > BATHY_MAX_REGIONS) return null;
     out.sort(function (a, b) { return (a.name === 'gebco') - (b.name === 'gebco') || b.prio - a.prio || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0); });
     return out;
   }
@@ -4919,7 +4920,8 @@
       var s = doc.sources[id];
       if (!/^\d{1,2}$/.test(id) || +id > BATHY_SRC || !s || typeof s !== 'object') return null;
       sources[+id] = { name: String(s.name || ''), year: String(s.year || ''), res_m: typeof s.res_m === 'number' ? s.res_m : null,
-        credit: String(s.credit || ''), datum: String(s.datum || ''), licence: String(s.licence || '') };
+        credit: String(s.credit || ''), datum: String(s.datum || ''), licence: String(s.licence || ''),
+        short: typeof s.short === 'string' && /^[^\s,]{1,12}$/.test(s.short) ? s.short : '' };
     }
     var landId = 0;
     if (doc.land_id !== undefined) {

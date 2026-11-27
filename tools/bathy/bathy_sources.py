@@ -529,6 +529,56 @@ for _name, (_box, _srcs, _fill, _base) in LIDAR98_BOXES.items():
     REGIONS[_name] = dict(box=_box, mhhw="grid", zmin=16, prio=20, ring=1, margin=72, cut=True, seed="sea",
                           sources=list(_srcs), fill=list(_fill), presence=[_base])
 
+# International coasts (plan section 111a: Australia and New Zealand). Each region is built on its own, cut to its box
+# (nothing finer lies beneath them: GEBCO only), its open water seeded from the GSHHG land file (seed "sea": the surveys
+# stop 10-49 m deep).
+#
+# New Zealand: LINZ's national "New Zealand Coastal LiDAR 1m DEM" (kind "stac": the collection's 65 1-m COG sheets on the
+# open bucket nz-coastal, NZGD2000 / NZTM EPSG:2193, NZVD2016 heights, nodata -9999), read by window over https. The
+# collection is LINZ's "ongoing" one: the build checks it holds exactly the pinned item list (count + digest of each
+# item's link checksum), so a new or changed sheet stops the build until the pin is renewed. Heights become heights above
+# mean sea level by subtracting the committed grid of MSL in NZVD2016 (from 10 LINZ standard ports, -0.03 .. -0.21 m),
+# and the water's edge is mean higher high water from the committed EOT20 tide grid corrected at 12 tide gauges
+# (tools/bathy/build_tide_grids.py; 0.56-1.49 m round the coast). Deeper than 30 m a pixel earns zoom 15 only.
+#
+# New South Wales: the 2018 Marine LiDAR topo-bathy DEM, 5 m (kind "tilezip": ten ELVIS order archives mirrored to the
+# bucket by tools/bathy/bathy_mirror.py, mirror_nsw.json; each holds one GeoTIFF in GDA2020 / MGA zone 56, EPSG:7856,
+# Australian Height Datum). AHD is mean sea level within 0.05 m at most NSW ocean gauges (MHL 2012, 1990-2010: -0.10 ..
+# +0.05 m, median +0.02), so offset 0; mean higher high water 0.68 m above it at Sydney and Port Kembla (UHSLC
+# 2003-2021; EOT20 0.66-0.67), rounded up to 0.7.
+LINZ_COLLECTION = "https://nz-coastal.s3.ap-southeast-2.amazonaws.com/new-zealand/new-zealand/dem_1m/2193/collection.json"
+NZ_MSL = dict(geoid="nz_msl_nzvd2016", offset=0.0,
+              datum="NZVD2016 to mean sea level: grid from 10 LINZ standard ports (-0.03 to -0.21 m)")
+INTL_REACH = 0.3
+SOURCES.update({
+    "linz-nz-coastal": dict(NZ_MSL, kind="stac", id=1, zmax=17, res_m=1, deep=(30.0, 15), clip=True, nodata=-9999.0,
+                            survey_fade=True,
+                            year="2024-2026", name="LINZ coastal lidar", short="LINZ", licence="CC BY 4.0",
+                            stac=dict(collection=LINZ_COLLECTION, id="01JXTPWYDWTP9TRXV5CTW6MTCX", items=65,
+                                      digest="03e9b4447fd02fda404aa25983bee34ddc36b10fce0cfe640ba215af95f3b9bf"),
+                            credit="LINZ (Toitu Te Whenua Land Information New Zealand) New Zealand Coastal LiDAR 1m "
+                                   "DEM 2024-2026, CC BY 4.0"),
+    "nsw-marine18": dict(kind="tilezip", id=1, zmax=15, res_m=5, offset=0.0, clip=True,
+                         nodata=-3.402820018375656e38, year="2018", name="NSW marine lidar", short="NSW", licence="CC BY 4.0",
+                         mirror="mirror_nsw.json", crs="EPSG:7856",
+                         datum="AHD (Australian Height Datum), mean sea level within 0.05 m at most NSW ocean gauges",
+                         credit="NSW Department of Planning, Industry and Environment, NSW Marine LiDAR Topo-Bathy 2018 "
+                                "(5 m), CC BY 4.0"),
+})
+INTL_BOXES = {
+    # New South Wales, split at 32.85 S (the order strips' own seam) so each half stays well inside a runner's 5 hours
+    "au-nsw-s": ((149.5, -37.7, 152.6, -32.85), ["nsw-marine18"], 0.7),
+    "au-nsw-n": ((151.2, -32.85, 153.8, -28.0), ["nsw-marine18"], 0.7),
+    # New Zealand's 65 sheets in three groups: the North Island to Taranaki and Gisborne, Kapiti / Wellington / Nelson,
+    # and the south (Haast, Otago, Southland, Stewart Island)
+    "nz-north": ((172.9, -39.5, 178.9, -34.5), ["linz-nz-coastal"], "grid:nz"),
+    "nz-central": ((172.4, -41.7, 175.4, -39.5), ["linz-nz-coastal"], "grid:nz"),
+    "nz-south": ((167.3, -47.1, 171.2, -43.5), ["linz-nz-coastal"], "grid:nz"),
+}
+for _name, (_box, _srcs, _mhhw) in INTL_BOXES.items():
+    REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw=_mhhw, zmin=8, prio=20, cut=True, seed="sea",
+                          reach=INTL_REACH)
+
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 
@@ -539,14 +589,23 @@ DATUM_DIR = os.path.dirname(os.path.abspath(__file__))
 DATUM_GRIDS = {      # file name -> sha256 (built 2026-11-16 from tools/bathy/us_datum_stations.json; box widened)
     "us_msl_navd88.tif": "ba1cb69e124cc7ae7755ef1a05a79704e6b8b5ee694825082c35e86fc838dff5",
     "us_mhhw_msl.tif": "cc574bbe57b92d89464a20dbd59b64e317cae7d060a748ce0a65a135d86e89fc",
+    # New Zealand (plan section 111a, built 2026-11-26 by tools/bathy/build_tide_grids.py from nz_datum_stations.json
+    # and EOT20): MSL in NZVD2016, MHHW above MSL
+    "nz_msl_nzvd2016.tif": "e14f883213f1aae4bdffdd16685ded8a7c221a8019591c53329c2bd025b347ac",
+    "nz_mhhw_msl.tif": "2d345eb9ca36f8b2a2f9fbf033010449a52615b2a08172899dcc331643eaac9e",
 }
 MHHW_GRID = os.path.join(DATUM_DIR, "us_mhhw_msl.tif")
+# A region's mhhw "grid" (the Lower 48) or "grid:<name>" -> the committed grid of MHHW above mean sea level it reads.
+# nz_mhhw_msl.tif: EOT20 (DGFI-TUM, CC BY 4.0) predicted 19 years at each 1/8-degree cell, corrected at 12 UHSLC tide
+# gauges (tools/bathy/build_tide_grids.py, plan section 111a).
+MHHW_GRIDS = {"grid": MHHW_GRID, "grid:nz": os.path.join(DATUM_DIR, "nz_mhhw_msl.tif")}
 
 # Grids a source subtracts from its elevations (a source's `geoid`), GDAL paths, metres. "egm2008": the geoid height N
 # above the ellipsoid (ellipsoid height - N = height above the geoid). "msl_navd88": mean sea level above NAVD88 (NAVD88
-# height - it = height above mean sea level).
+# height - it = height above mean sea level). "nz_msl_nzvd2016": mean sea level in NZVD2016 (plan section 111a).
 GEOIDS = {"egm2008": "/vsicurl/https://cdn.proj.org/us_nga_egm08_25.tif",
-          "msl_navd88": os.path.join(DATUM_DIR, "us_msl_navd88.tif")}
+          "msl_navd88": os.path.join(DATUM_DIR, "us_msl_navd88.tif"),
+          "nz_msl_nzvd2016": os.path.join(DATUM_DIR, "nz_msl_nzvd2016.tif")}
 GEOID_SANE_M = 200.0  # |geoid height| beyond this is a fill value of the geoid grid (real N: about -107 to +86 m)
 
 GEBCO_URL = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/geotiff/gebco_2026_geotiff.zip"

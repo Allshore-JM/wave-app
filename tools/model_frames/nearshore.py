@@ -1,25 +1,30 @@
-"""Publishes the Nearshore Analysis product to R2 under gfswave/nearshore/v1/ (plan section 109, stage 5): for every step
-of the wave overlay (209 steps to +384 h), the breaking zone and the break lines of the pilot stretch (Himalayas to
-Chun's, Oahu), from the GFS-Wave 2-D spectrum at buoy 51201, a SWAN transfer table and the predicted tide.
+"""Publishes the Nearshore Analysis product to R2 under gfswave/nearshore/v1/ (plan section 109): for every step of the
+wave overlay (209 steps to +384 h), the breaking zone and the break lines of Oahu's North Shore, region by region (Kaena
+Point to Kahuku Point), from the GFS-Wave 2-D spectrum at buoy 51201, each region's SWAN transfer table and the predicted
+tide.
 
 Inputs
 - the spectrum: gfswave/spectral/v1/<RUN>/spec2d/51201.npz, written by the spectral job (gfs_spectral.py). With
-  --from-archive a run that has none is read from NOAA's archive directly (a manual run; the stream stops at the member).
-- the data folder (--data): table.npz (nearshore_table.pack), atlas.json (the best-swell texts), tides.json (predicted
-  highs and lows at Haleiwa) and manifest.json with their sha256. It is a checkout of the data branch at a pinned commit.
+  --from-archive a run that has none is read from NOAA's archive directly (the stream stops at the member).
+- the tables: static/nearshore/<SET>/manifest.json and <region>/table.npz in the bucket (nearshore_build.py), read by the
+  manifest's sha256 pinned in the data folder. Where regions' cores overlap, the earlier region of the manifest owns the
+  water; a region's picture holds only what it owns.
+- the data folder (--data): tides.json (predicted highs and lows at Haleiwa) and manifest.json (the table set, the sha256
+  of its manifest and of tides.json). It is a checkout of the data branch at a pinned commit.
 
-Layout (immutable but for the pointer). The table's version is part of the path: the same run built from another table
-is another set of objects, never the same keys with other bytes.
-  gfswave/nearshore/v1/<RUN>/<TABLE>/f<HHH>.png   one 8-bit grey PNG per step, 256 wide: a header row, one 256x256 height
-                                                  plane per z14 tile (the index lists them), then the lines' vertex table
-  gfswave/nearshore/v1/<RUN>/<TABLE>/index.json   steps, tiles, box, units, versions
-  gfswave/nearshore/v1/latest.json                -> {run, table, index}, written last
-  gfswave/nearshore/v1/failed/<RUN>.<TABLE>.json  the attempts of a build that failed (tried again after an hour, six times)
-  static/nearshore/<table version>/atlas.json   the best-swell texts (written once per table version)
+Layout (immutable but for the pointer). The table set is part of the path: the same run built from another set is
+another set of objects, never the same keys with other bytes.
+  gfswave/nearshore/v1/<RUN>/<SET>/<region>/f<HHH>.png   one 8-bit grey PNG per region and step, 256 wide: a header row, one
+                                                          256x256 height plane per z14 tile (the index lists them), then
+                                                          the lines' vertex table
+  gfswave/nearshore/v1/<RUN>/<SET>/index.json             steps, regions (id, box, tiles), units, versions
+  gfswave/nearshore/v1/latest.json                        -> {run, set, index}, written last
+  gfswave/nearshore/v1/failed/<RUN>.<SET>.json            the attempts of a build that failed (again after an hour, six times)
 
 Usage
   python tools/model_frames/nearshore.py --data D                 # publish the spectral job's live run, if not live here
-  python tools/model_frames/nearshore.py --data D --dry-run --out O [--spec FILE.npz] [--run YYYYMMDDHH] [--from-archive]
+  python tools/model_frames/nearshore.py --data D --dry-run --out O [--spec FILE.npz] [--tables DIR] [--run YYYYMMDDHH]
+      (--tables DIR: a local copy of the bucket's static/nearshore/<SET>/ folder, for a run without the bucket)
 
 Exit codes: 0 published or already live, 3 nothing to do yet (no spectrum for the run, storage busy), 1 failed.
 A modelled estimate, not safety guidance."""
@@ -46,7 +51,7 @@ import publish as P  # noqa: E402
 PREFIX = P.NEARSHORE_PREFIX
 SPEC_PREFIX = P.GFSSPEC_PREFIX
 STATIC_PREFIX = "static/nearshore"
-FORMAT = "nearshore-v1"
+FORMAT = "nearshore-v2"
 STATION = "51201"
 STEPS = list(range(0, 121)) + list(range(123, 385, 3))      # the wave overlay's steps (fetch.STEPS; a test pins the match)
 KEEP = 4
@@ -61,41 +66,95 @@ MSL_MINUS_MLLW_M = 0.2835            # Haleiwa 1612668 (bigwave's datum note)
 MAX_VERTICES = 6000
 
 
-def frame_key(run, table, step):
-    return f"{PREFIX}/{run}/{table}/f{step:03d}.png"
+def frame_key(run, tset, rid, step):
+    return f"{PREFIX}/{run}/{tset}/{rid}/f{step:03d}.png"
 
 
-def index_key(run, table):
-    return f"{PREFIX}/{run}/{table}/index.json"
+def index_key(run, tset):
+    return f"{PREFIX}/{run}/{tset}/index.json"
 
 
-def failed_label(run, table):
-    return f"{run}.{table}"
+def failed_label(run, tset):
+    return f"{run}.{tset}"
 
 
 def spec2d_key(run, sid=STATION):
     return f"{SPEC_PREFIX}/{run}/spec2d/{sid}.npz"
 
 
-def atlas_key(version):
-    return f"{STATIC_PREFIX}/{version}/atlas.json"
+def tables_key(tset, name="manifest.json"):
+    return f"{STATIC_PREFIX}/{tset}/{name}"
 
 
 # ---------------------------------------------------------------- the data folder
 
 def load_data(folder):
-    """-> (table, atlas bytes, tides dict, manifest). Every file's sha256 must match the manifest."""
-    man = json.load(open(os.path.join(folder, "manifest.json"), encoding="utf-8"))
-    got = {}
-    for name in ("table.npz", "atlas.json", "tides.json"):
-        with open(os.path.join(folder, name), "rb") as f:
-            got[name] = f.read()
-        if hashlib.sha256(got[name]).hexdigest() != man["sha256"][name]:
-            raise ValueError(f"{name}: sha256 does not match the manifest")
-    table = E.Table.from_npz(io.BytesIO(got["table.npz"]))
-    if table.version != man["version"]:
-        raise ValueError("table version does not match the manifest")
-    return table, got["atlas.json"], json.loads(got["tides.json"]), man
+    """-> (tides dict, manifest). The manifest names the table set and pins the sha256 of its manifest and of tides.json."""
+    with open(os.path.join(folder, "manifest.json"), encoding="utf-8") as f:
+        man = json.load(f)
+    with open(os.path.join(folder, "tides.json"), "rb") as f:
+        raw = f.read()
+    if hashlib.sha256(raw).hexdigest() != man["sha256"]["tides.json"]:
+        raise ValueError("tides.json: sha256 does not match the manifest")
+    t = man.get("tables") or {}
+    if not isinstance(t.get("set"), str) or not isinstance(t.get("manifest_sha256"), str) or len(t["manifest_sha256"]) != 64:
+        raise ValueError("the data manifest names no table set")
+    return json.loads(raw), man
+
+
+# ---------------------------------------------------------------- the regions' tables
+
+def load_tables(fetch, man):
+    """The table set's manifest from the bucket (fetch(key) -> bytes or None), checked against the data folder's pin."""
+    tset = man["tables"]["set"]; raw = fetch(tables_key(tset))
+    if raw is None:
+        raise ValueError(f"table set {tset}: no manifest in the bucket")
+    if hashlib.sha256(raw).hexdigest() != man["tables"]["manifest_sha256"]:
+        raise ValueError(f"table set {tset}: the manifest is not the pinned one")
+    doc = json.loads(raw)
+    if doc.get("format") != "nearshore-tables-v1" or doc.get("set") != tset or not doc.get("regions"):
+        raise ValueError(f"table set {tset}: not a table manifest")
+    return doc
+
+
+def region_xy(facts, lon, lat):
+    """lon, lat -> the region's own metres about its ref (x alongshore, y offshore)."""
+    ky = math.pi / 180.0 * 6371008.8; kx = ky * math.cos(math.radians(facts["ref"][1])); a = math.radians(facts["alpha"])
+    e = (np.asarray(lon) - facts["ref"][0]) * kx; n = (np.asarray(lat) - facts["ref"][1]) * ky
+    return e * math.cos(a) + n * math.sin(a), -e * math.sin(a) + n * math.cos(a)
+
+
+def in_core(facts, dx, lon, lat):
+    """True where lon, lat lies in the band the region owns: its core alongshore, its kept rows offshore."""
+    x, y = region_xy(facts, lon, lat); e = 0.01          # a centimetre: a cell on the edge itself is inside
+    return (x >= facts["core"][0] - e) & (x <= facts["core"][1] + e) & (y >= facts["y0"] - e) & (y <= facts["y0"] + (facts["rows"] - 1) * dx + e)
+
+
+def owner(facts, earlier, dx):
+    """owns(lon, lat) -> True where the point is in this region's core and in no earlier region's of the manifest.
+    The one rule for a map pixel, a grid cell and a line's vertex, so neighbouring regions meet without a seam."""
+    def owns(lon, lat):
+        ok = in_core(facts, dx, lon, lat)
+        for other in earlier:
+            ok = ok & ~in_core(other, dx, lon, lat)
+        return ok
+    return owns
+
+
+def open_region(fetch, doc, k):
+    """Region k of the table manifest, ready to build: its table (sha256 checked), what it owns, its map tiles."""
+    facts = doc["regions"][k]; raw = fetch(facts["table"])
+    if raw is None:
+        raise ValueError(f"region {facts['id']}: no table in the bucket")
+    if hashlib.sha256(raw).hexdigest() != facts["sha256"]:
+        raise ValueError(f"region {facts['id']}: the table is not the manifest's")
+    table = E.Table.from_npz(io.BytesIO(raw))
+    if list(table.F) != list(doc["freqs"]) or list(table.D) != [float(d) for d in doc["dirs"]]:
+        raise ValueError(f"region {facts['id']}: the table's bins are not the set's")
+    owns = owner(facts, doc["regions"][:k], doc["dx"])
+    X, Y = np.meshgrid(np.arange(table.nx) * table.dx, np.arange(table.ny) * table.dx)
+    maps, box = tile_maps(table, owns)
+    return dict(id=facts["id"], table=table, own=owns(*table.lonlat(X, Y)), owns=owns, maps=maps, box=box)
 
 
 def tide_msl(tides, when):
@@ -145,9 +204,10 @@ def tile_pixels(x, y, z=Z):
     return (x + k) / n * 360.0 - 180.0, np.degrees(np.arctan(np.sinh(math.pi * (1 - 2 * (y + k) / n))))
 
 
-def tile_maps(table):
-    """The z14 tiles that hold wet cells of the band, and for each the grid cell under every pixel:
-    -> [(x, y, flat index array[256, 256] into the grid, -1 outside)], sorted, and the band's box (w, s, e, n)."""
+def tile_maps(table, owns=None):
+    """The z14 tiles that hold wet water the region owns (owns(lon, lat), asked at every pixel's centre; None = all), and
+    for each the grid cell under every pixel: -> [(x, y, flat index array[256, 256] into the grid, -1 outside or not
+    owned)], sorted, and the band's box (w, s, e, n)."""
     xs = np.array([0.0, table.nx - 1.0, 0.0, table.nx - 1.0]) * table.dx; ys = np.array([0.0, 0.0, table.ny - 1.0, table.ny - 1.0]) * table.dx
     lon, lat = table.lonlat(xs, ys); box = (float(lon.min()), float(lat.min()), float(lon.max()), float(lat.max()))
     x0, y1 = lonlat_to_tile(box[0], box[1]); x1, y0 = lonlat_to_tile(box[2], box[3])
@@ -159,14 +219,16 @@ def tile_maps(table):
             i = np.rint(gx / table.dx).astype(int); j = np.rint(gy / table.dx).astype(int)
             ok = (i >= 0) & (i < table.nx) & (j >= 0) & (j < table.ny)
             idx = np.where(ok, j * table.nx + i, -1)
-            if (table.dep.reshape(-1)[idx[ok]] > 0).any():
+            if owns is not None:
+                idx = np.where(owns(plon[None, :], plat[:, None]), idx, -1)
+            if (table.dep.reshape(-1)[idx[idx >= 0]] > 0).any():
                 out.append((tx, ty, idx))
     return out, box
 
 
 # ---------------------------------------------------------------- one step
 
-def trains_of(freqs, dirs, Es, wind, table):
+def trains_of(freqs, dirs, Es, wind, F, D):
     """The step's swell trains for the engine: the partitions of the spectrum, largest first, at most MAX_TRAINS, the
     rest folded into one remainder. -> (trains, the buoy's largest train as (hs m, tp s, dir deg) or None, lost share)."""
     import partition2d as P2
@@ -177,15 +239,15 @@ def trains_of(freqs, dirs, Es, wind, table):
     keep = {p["label"] for p in big}
     trains, total, lost = [], 0.0, 0.0
     for p in big:
-        Wt, _ = E.weights(freqs, dirs, Es, table.F, table.D, mask=lab == p["label"])
+        Wt, _ = E.weights(freqs, dirs, Es, F, D, mask=lab == p["label"])
         trains.append(dict(W=Wt, tp=float(p["tp"])))
     rest = ~np.isin(lab, list(keep))
     if rest.any():
-        Wt, _ = E.weights(freqs, dirs, Es, table.F, table.D, mask=rest)
+        Wt, _ = E.weights(freqs, dirs, Es, F, D, mask=rest)
         others = [p for p in parts if p["label"] not in keep]
         if Wt.sum() > 0 and others:
             trains.append(dict(W=Wt, tp=float(others[0]["tp"])))
-    _, lost = E.weights(freqs, dirs, Es, table.F, table.D)
+    _, lost = E.weights(freqs, dirs, Es, F, D)
     trains = [t for t in trains if t["W"].sum() > 0]
     return trains, (float(parts[0]["hs"]), float(parts[0]["tp"]), float(parts[0]["dir"])), float(lost)
 
@@ -240,17 +302,34 @@ def png_bytes(rows):
     return buf.getvalue()
 
 
-def build_frame(table, maps, box, freqs, dirs, Es, wind, tide):
-    """One step -> (PNG bytes, stats dict)."""
-    trains, buoy, lost = trains_of(freqs, dirs, Es, wind, table)
+def clip_lines(lines, keep):
+    """The vertices the region owns (keep[n]); a line cut by the edge becomes separate lines (never a join across the gap)."""
+    n = int(lines["x"].size)
+    if n == 0 or keep is None:
+        return lines
+    keep = np.asarray(keep, bool)
+    if keep.all():
+        return lines
+    prev_kept = np.concatenate(([False], keep[:-1])); same = np.concatenate(([False], lines["line"][1:] == lines["line"][:-1]))
+    starts = keep & ~(prev_kept & same)                    # the first kept vertex of a line, or the first after a gap
+    out = {k: v[keep] for k, v in lines.items()}
+    out["line"] = (np.cumsum(starts)[keep] - 1).astype(float)
+    return out
+
+
+def build_frame(table, maps, box, trains, buoy, lost, tide, own=None, owns=None):
+    """One region's step -> (PNG bytes, stats dict). trains, buoy, lost = trains_of() of the step's spectrum;
+    own[ny, nx] / owns(lon, lat) = what the region owns (None = everything)."""
     planes = bytearray(); nvert = 0; vbytes = b""; zone_cells = 0; hmax = 0.0
     if trains:
         r = E.analyse(table, trains, tide)
-        code = np.where(r["zone"], np.clip(np.rint(r["hset"] / HEIGHT_STEP_M), 1, 255), 0).astype(np.uint8).reshape(-1)
-        zone_cells = int(r["zone"].sum()); hmax = float(r["hset"][r["zone"]].max()) if zone_cells else 0.0
+        zone = r["zone"] if own is None else r["zone"] & own
+        code = np.where(zone, np.clip(np.rint(r["hset"] / HEIGHT_STEP_M), 1, 255), 0).astype(np.uint8).reshape(-1)
+        zone_cells = int(zone.sum()); hmax = float(r["hset"][zone].max()) if zone_cells else 0.0
         for _, _, idx in maps:
             planes += np.where(idx >= 0, code[np.maximum(idx, 0)], 0).astype(np.uint8).tobytes()
-        vbytes, nvert = pack_vertices(r["lines"], table, box)
+        L = r["lines"]
+        vbytes, nvert = pack_vertices(clip_lines(L, owns(*table.lonlat(L["x"], L["y"])) if owns is not None and L["x"].size else None), table, box)
     else:
         planes = bytearray(len(maps) * TILE * TILE)
     pad = (-len(vbytes)) % TILE
@@ -274,38 +353,48 @@ def decode_frame(png):
                 planes=planes)
 
 
-def build_run(table, tides, spec, run_dt, steps=STEPS, log=print):
-    """Every step's frame -> ({step: png}, index document). `spec` = the opened spec2d npz."""
-    maps, box = tile_maps(table)
-    if not maps:
-        raise ValueError("no map tile holds water")
+def build_run(doc, fetch, tides, spec, run_dt, steps=STEPS, log=print):
+    """Every region's frame of every step -> ({(region id, step): png}, index document, stats).
+    doc = the table set's manifest, fetch(key) -> bytes, spec = the opened spec2d npz. The step's swell trains are split
+    once and used by every region; one region's table is in memory at a time."""
     freqs = np.asarray(spec["freqs"], float); dirs = np.asarray(spec["dirs"], float)
     hours = {int(h): n for n, h in enumerate(np.asarray(spec["hours"]))}
-    frames, stats, t0, no_tide = {}, {}, time.monotonic(), 0
+    t0, no_tide, per_step = time.monotonic(), 0, {}
     for step in steps:
         n = hours.get(step)
         if n is None:
             continue
-        when = run_dt + timedelta(hours=step)
         try:
-            tide = tide_msl(tides, when)
+            tide = tide_msl(tides, run_dt + timedelta(hours=step))
         except ValueError:                               # past the end of the tide file: mean sea level, and said so
             tide, no_tide = 0.0, no_tide + 1
-        frames[step], stats[step] = build_frame(table, maps, box, freqs, dirs, np.asarray(spec["E"][n], float),
-                                                (float(spec["u10"][n]), float(spec["udir"][n])), tide)
-    if len(frames) < 0.9 * len(steps):
-        raise ValueError(f"{len(frames)} of {len(steps)} steps in the spectrum")
-    doc = {"format": FORMAT, "run": W.run_name(run_dt), "station": STATION, "steps": sorted(frames), "z": Z,
-           "tiles": [[x, y] for x, y, _ in maps], "box": [round(v, 6) for v in box], "height_step_m": HEIGHT_STEP_M,
-           "vertex_bytes": VERTEX_BYTES, "bands": list(E.PARAMS["bands"]), "band_names": list(E.BAND_NAMES),
-           "table": table.version, "params": E.PARAMS["version"], "atlas": atlas_key(table.version),
-           "steps_without_tide": no_tide, "tides_end_utc": tides_end(tides),
-           "bytes": sum(len(b) for b in frames.values()), "vertices_max": max(s["vertices"] for s in stats.values()),
-           "hmax_m": max(s["hmax_m"] for s in stats.values()), "build_s": round(time.monotonic() - t0, 1),
-           "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        per_step[step] = (trains_of(freqs, dirs, np.asarray(spec["E"][n], float), (float(spec["u10"][n]), float(spec["udir"][n])),
+                                    doc["freqs"], doc["dirs"]), tide)
+    if len(per_step) < 0.9 * len(steps):
+        raise ValueError(f"{len(per_step)} of {len(steps)} steps in the spectrum")
+    frames, stats, regions = {}, {}, []
+    for k in range(len(doc["regions"])):
+        t1 = time.monotonic(); reg = open_region(fetch, doc, k)
+        if not reg["maps"]:
+            raise ValueError(f"region {reg['id']}: no map tile holds water it owns")
+        nbytes, vmax, hmax = 0, 0, 0.0
+        for step, ((trains, buoy, lost), tide) in per_step.items():
+            png, st = build_frame(reg["table"], reg["maps"], reg["box"], trains, buoy, lost, tide, reg["own"], reg["owns"])
+            frames[(reg["id"], step)] = png; stats[(reg["id"], step)] = st
+            nbytes += len(png); vmax = max(vmax, st["vertices"]); hmax = max(hmax, st["hmax_m"])
+        regions.append(dict(id=reg["id"], box=[round(v, 6) for v in reg["box"]], tiles=[[x, y] for x, y, _ in reg["maps"]],
+                            bytes=nbytes, vertices_max=vmax, hmax_m=hmax))
+        log(f"  {reg['id']}: {len(reg['maps'])} tiles, {nbytes} B, {time.monotonic() - t1:.0f} s")
+        del reg
+    out = {"format": FORMAT, "run": W.run_name(run_dt), "set": doc["set"], "station": STATION, "steps": sorted(per_step), "z": Z,
+           "regions": regions, "height_step_m": HEIGHT_STEP_M, "vertex_bytes": VERTEX_BYTES, "bands": list(E.PARAMS["bands"]),
+           "band_names": list(E.BAND_NAMES), "params": E.PARAMS["version"], "steps_without_tide": no_tide,
+           "tides_end_utc": tides_end(tides), "bytes": sum(r["bytes"] for r in regions),
+           "vertices_max": max(r["vertices_max"] for r in regions), "hmax_m": max(r["hmax_m"] for r in regions),
+           "build_s": round(time.monotonic() - t0, 1), "built_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "note": "Modelled estimate from the GFS-Wave spectrum at buoy 51201. Not safety guidance."}
-    log(f"nearshore {doc['run']}: {len(frames)} steps, {len(maps)} tiles, {doc['bytes']} B, {doc['build_s']} s")
-    return frames, doc, stats
+    log(f"nearshore {out['run']}: {len(per_step)} steps, {len(regions)} regions, {out['bytes']} B, {out['build_s']} s")
+    return frames, out, stats
 
 
 # ---------------------------------------------------------------- reading the spectrum
@@ -338,13 +427,12 @@ def spec_from_archive(run_dt, opener=urllib.request.urlopen, budget_s=ARCHIVE_BU
 
 # ---------------------------------------------------------------- publishing
 
-def publish(store, run, frames, doc, atlas=None):
-    if atlas is not None and not store.list_keys(atlas_key(doc["table"])):
-        store.put(atlas_key(doc["table"]), atlas, "application/json", P.IMMUTABLE)
-    for step in sorted(frames):
-        store.put(frame_key(run, doc["table"], step), frames[step], "image/png", P.IMMUTABLE)
-    store.put(index_key(run, doc["table"]), json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
-    pointer = {"run": run, "index": index_key(run, doc["table"]), "steps": len(frames), "table": doc["table"],
+def publish(store, run, frames, doc):
+    tset = doc["set"]
+    for rid, step in sorted(frames):
+        store.put(frame_key(run, tset, rid, step), frames[(rid, step)], "image/png", P.IMMUTABLE)
+    store.put(index_key(run, tset), json.dumps(doc, separators=(",", ":")).encode(), "application/json", P.IMMUTABLE)
+    pointer = {"run": run, "index": index_key(run, tset), "steps": len(doc["steps"]), "set": tset, "regions": len(doc["regions"]),
                "published_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     store.put(P.latest_key(PREFIX), json.dumps(pointer, sort_keys=True).encode(), "application/json", P.POINTER)
     return pointer
@@ -378,9 +466,9 @@ def prune(store, keep=KEEP):
     return deleted
 
 
-def _skip_failed(store, run, table):
-    """True while a failed build of this run and table waits for its next try (an hour), or has had its six."""
-    rec = store.get_json(P.failed_key(failed_label(run, table), PREFIX))
+def _skip_failed(store, run, tset):
+    """True while a failed build of this run and table set waits for its next try (an hour), or has had its six."""
+    rec = store.get_json(P.failed_key(failed_label(run, tset), PREFIX))
     if not rec:
         return False
     if rec.get("attempts", 0) >= W.FAILED_MAX_ATTEMPTS:
@@ -390,19 +478,33 @@ def _skip_failed(store, run, table):
 
 
 def _write_out(out, frames, doc, stats):
-    os.makedirs(out, exist_ok=True)
-    for step, png in frames.items():
-        with open(os.path.join(out, f"f{step:03d}.png"), "wb") as f:
+    for (rid, step), png in frames.items():
+        os.makedirs(os.path.join(out, rid), exist_ok=True)
+        with open(os.path.join(out, rid, f"f{step:03d}.png"), "wb") as f:
             f.write(png)
     with open(os.path.join(out, "index.json"), "w", encoding="utf-8") as f:
-        json.dump(dict(doc, stats={str(k): v for k, v in stats.items()}), f)
+        json.dump(dict(doc, stats={f"{rid}/{step}": v for (rid, step), v in stats.items()}), f)
+
+
+def local_fetch(folder, tset):
+    """fetch(key) over a local copy of the bucket's static/nearshore/<SET>/ folder."""
+    root = tables_key(tset, "")
+
+    def fetch(key):
+        path = os.path.join(folder, *key[len(root):].split("/")) if key.startswith(root) else None
+        if not path or not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            return f.read()
+    return fetch
 
 
 def main(argv=None, store=None, opener=urllib.request.urlopen):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--data", required=True, help="the data folder (table.npz, atlas.json, tides.json, manifest.json)")
+    ap.add_argument("--data", required=True, help="the data folder (tides.json, manifest.json)")
     ap.add_argument("--run", help="YYYYMMDDHH (default: the spectral job's live run)")
     ap.add_argument("--spec", help="a spec2d npz file to read instead of the bucket's (implies --dry-run)")
+    ap.add_argument("--tables", help="a local copy of static/nearshore/<SET>/ to read instead of the bucket's")
     ap.add_argument("--from-archive", action="store_true", help="read the spectrum from NOAA's archive when the bucket has none")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--out", help="with --dry-run: write the frames and the index into this directory")
@@ -416,11 +518,11 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
         print(f"{a.run}: not YYYYMMDDHH")
         return 2
     try:
-        table, atlas, tides, man = load_data(a.data)
+        tides, man = load_data(a.data)
     except Exception as exc:                             # noqa: BLE001
         print(f"data folder: {exc.__class__.__name__}: {exc}")
         return 1
-    run = a.run
+    tset = man["tables"]["set"]; run = a.run
     try:
         if a.spec:
             with open(a.spec, "rb") as f:
@@ -436,16 +538,16 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
                     return 3
             latest = store.get_json(P.latest_key(PREFIX)) or {}
             if live:
-                if latest.get("index") == index_key(run, table.version):          # the pointer names this very index
+                if latest.get("index") == index_key(run, tset):                   # the pointer names this very index
                     print(f"{run} already live")
                     return 0
                 if latest.get("run", "") > run:
                     print(f"{run} is older than the live run {latest['run']}: nothing to do")
                     return 0
-                if store.get_json(index_key(run, table.version)) is not None:     # built before (the pointer moved on and back)
-                    print(f"{run} / {table.version} is already published: its objects are immutable, nothing rewritten")
+                if store.get_json(index_key(run, tset)) is not None:              # built before (the pointer moved on and back)
+                    print(f"{run} / {tset} is already published: its objects are immutable, nothing rewritten")
                     return 0
-                if _skip_failed(store, run, table.version):
+                if _skip_failed(store, run, tset):
                     print(f"{run} failed recently: waiting before another try")
                     return 3
             raw = get_bytes(store, spec2d_key(run))
@@ -459,14 +561,21 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
         spec = np.load(io.BytesIO(raw))
         if str(spec["run"]) != run:
             raise ValueError(f"the spectrum is of run {spec['run']}, not {run}")
-        steps = [int(s) for s in a.steps.split(",")] if a.steps else STEPS
-        frames, doc, stats = build_run(table, tides, spec, run_dt, steps)
+        if a.tables:
+            fetch = local_fetch(a.tables, tset)
+        else:
+            if store is None:
+                store = W._store_from_env()
+            fetch = lambda key: get_bytes(store, key)    # noqa: E731
+        doc = load_tables(fetch, man)
+        steps = [int(v) for v in a.steps.split(",")] if a.steps else STEPS
+        frames, out, stats = build_run(doc, fetch, tides, spec, run_dt, steps)
         if not live:
             if a.out:
-                _write_out(a.out, frames, doc, stats)
+                _write_out(a.out, frames, out, stats)
             print("dry run: nothing published")
             return 0
-        publish(store, run, frames, doc, atlas)
+        publish(store, run, frames, out)
     except Exception as exc:                             # noqa: BLE001
         if P.is_storage_busy(exc):
             print(f"storage busy ({exc.__class__.__name__}): the next tick tries again")
@@ -476,7 +585,7 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
         W._summary(line)
         if live and run:                                 # counted: tried again after an hour, six times at most (as the tables' job)
             try:
-                P.record_failure(store, failed_label(run, table.version), f"{exc.__class__.__name__}: {exc}", PREFIX)
+                P.record_failure(store, failed_label(run, tset), f"{exc.__class__.__name__}: {exc}", PREFIX)
             except Exception as exc2:                    # noqa: BLE001
                 print(f"the failure could not be recorded ({exc2.__class__.__name__})")
         return 1
@@ -485,7 +594,7 @@ def main(argv=None, store=None, opener=urllib.request.urlopen):
         print(warn)
         W._summary(warn)
     deleted = P.safe_prune(lambda: prune(store), store.bucket, W._summary)
-    line = f"nearshore {run}: {len(frames)} steps, {doc['bytes']} B, {doc['build_s']} s; pruned {deleted or 'nothing'}"
+    line = f"nearshore {run}: {len(out['steps'])} steps, {len(out['regions'])} regions, {out['bytes']} B, {out['build_s']} s; pruned {deleted or 'nothing'}"
     print(line)
     W._summary(line)
     return 0

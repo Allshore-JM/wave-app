@@ -5,7 +5,9 @@
 # height within 2 %) and, only when `upload` is true, publishes static/nearshore/<set>/<region>/table.npz and the set's
 # manifest.json (written last). A set that has a manifest is never rewritten: change "set" in nearshore_regions.json.
 # `smoke` > 0 runs that many bins of one chunk of one region and stops (the chunk goes under .../smoke/ when uploaded).
-# About 36 jobs of 2-3 hours for the whole set; the publisher (model-gfsspec's second step) reads the tables by the manifest.
+# 36 jobs for the whole set, SIX at a time: the account has 20 runners in all and the site's publishers need theirs (the
+# first full build ran 20 at once and every publisher waited). About 4 hours; the publisher (model-gfsspec's second step)
+# reads the tables by the manifest.
 # Secrets for the upload: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
 name: nearshore-table
 on:
@@ -61,7 +63,7 @@ jobs:
     name: ${{ matrix.region }} chunk ${{ matrix.chunk }}
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 6            # never more: 20 runners in the whole account, and the publishers come first
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ubuntu-24.04

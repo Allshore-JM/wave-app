@@ -176,3 +176,5 @@ def test_the_workflow_is_manual_pinned_and_publishes_only_when_asked():
     step = text.split("- name: Run the chunk's SWAN bins", 1)[1].split("      - name:", 1)[0]
     assert step.index("set +eo pipefail") < step.index('exit "$rc"'), "a login shell's logout script must not fail the step (smoke test, 2026-11-26)"
     assert "contents: read" in text and "secrets.R2_BUCKET" in text and "secrets." not in text.split("  build:", 1)[0]
+    # the account has 20 runners in all: a build that takes them all stops every publisher of the site (2026-11-27)
+    assert [int(n) for n in re.findall(r"max-parallel:[ ]*(\d+)", text)] == [6]

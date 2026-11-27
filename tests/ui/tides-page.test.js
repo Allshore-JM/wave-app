@@ -658,3 +658,14 @@ test('section 112: the worldwide rows keep their type; importance R / O, then G,
   assert.ok(!agency.opts.icon.divIcon || !/tide-icon-model/.test(agency.opts.icon.divIcon.className));
   assert.match(b.api.TIDE_CREDIT, /NOAA CO-OPS<\/a>, national agencies, <a href="https:\/\/www\.seanoe\.org\/data\/00980\/109129\/"[^>]*>TICON-4 \(DGFI-TUM\)<\/a>, <a href="https:\/\/www\.aviso\.altimetry\.fr\/"[^>]*>FES2022 \(CNES \/ AVISO\+\)<\/a>, GeoNames/);
 });
+
+test('the subtitle names the source: NOAA with its id, a TICON gauge, an agency, a model point (section 112)', () => {
+  const b = boot();
+  const open = (id) => { b.api.openTideStation({ id, name: 'X', lat: 1, lon: 2, tz: 'UTC' }); return b.byId.tideSubtitle.textContent; };
+  assert.equal(open('9414290'), 'Tide station · NOAA 9414290');
+  assert.equal(open('ticon:brest-822-fra-uhslc-fd'), 'Tide gauge · TICON-4 constants');
+  assert.equal(open('chs:08545'), 'Tide station · CHS Canada');
+  assert.equal(open('linz:auckland'), 'Tide station · LINZ New Zealand');
+  assert.equal(open('model:51201'), 'Tide model point · FES2022');
+  assert.equal(open('constructor:x'), 'Tide station · official table', 'no prototype key read as an agency');
+});

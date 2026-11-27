@@ -49,7 +49,7 @@
   // has gone by, and its font group (.pc-0 ... .pc-4 in the page's CSS, sizes COUNTRY_PX). A name stays at least
   // COUNTRY_MIN_SPAN10 after it came, never after COUNTRY_END_CAP10, and fades over the last COUNTRY_FADE10 before it
   // goes. City names show no earlier than CITY_MIN_ZOOM10, so wide views name countries, closer ones cities.
-  var CITY_MIN_ZOOM10 = 35, COUNTRY_FADE10 = 5, COUNTRY_PX = [15, 13.5, 12.5, 12, 11], COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25;
+  var CITY_MIN_ZOOM10 = 35, COUNTRY_FADE10 = 5, COUNTRY_PX = [13.5, 12.5, 12, 11.5, 11], COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25;
   var COUNTRY_MIN_SPAN10 = 15, COUNTRY_END_CAP10 = 70;
   var MAX_COUNTRY_BYTES = 256 << 10, MAX_COUNTRIES = 1000;
   var TIER0_MAX_ZOOM = 7;                            // tile zoom up to which the world files serve (tier 1 from 8)

@@ -78,7 +78,8 @@ def test_load_counts_and_types(stations):
     assert all(s["lat0"] > 0 for s in gauges)                          # LAT lies below the mean level
     assert stations[BREST]["tz"] == "Europe/Paris"
     official = [s for s in stations.values() if s["type"] == "O"]
-    assert len(official) > 1500 and {s["id"].split(":")[0] for s in official} == set(G.PROVIDERS)
+    keyed = set() if os.environ.get("CWA_API_KEY", "").strip() else {"cwa"}     # CWA's places only with its key (113 B)
+    assert len(official) > 1500 and {s["id"].split(":")[0] for s in official} == set(G.PROVIDERS) - keyed
 
 
 def test_ticon_payload_shape(stations):

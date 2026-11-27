@@ -745,6 +745,11 @@ test('section 113 A: a tide icon\'s touch pad stops before a dot\'s box; a live 
   b.api.rebuildTideMarkers(true); await flush();
   assert.deepEqual(stepOf(byTitle(b, 'Pad')), [0, 0]);
   assert.equal(byTitle(b, 'Pad').el.style.props['--tide-tap'], '7px', '22 - 4 - 9 - 2 = 7 (10 without the dot)');
+  // touch screens: a dot 25 px away (gap 25 - 9 - 4 = 12: the icon stays); the pad ends before the dot's 8 px tap margin
+  const t = boot({ zoom: 9, list, coarse: true, forecast: [{ id: 'X', lat: 40, lon: -149.975 }] });
+  t.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(t, 'Pad')), [0, 0]);
+  assert.equal(byTitle(t, 'Pad').el.style.props['--tide-tap'], '4px', '25 - 4 - 9 - 8 = 4');
   assert.deepEqual(stepOf(byTitle(b, 'Late buoy')), [0, 0], 'no buoy yet');
   b.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
   b.api.rebuildLiveBuoyMarkers(true);                                  // the live list lands: the tides follow after the round

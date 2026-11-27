@@ -921,7 +921,7 @@ def test_wind_stations_on_the_page(client):
         "const hit = windDotHit(drawn, e && e.originalEvent);", "if (hit) { pickDot(hit); return; }",
         "let windByKey = new Map();", "windByKey.forEach(function (d) { windLayer.removeLayer(d.marker); });",
         "if (old && old.state === state && old.lng === c.lng) { windByKey.delete(key); next.set(key, old); drawnNow.push(old); return; }",
-        "if (typeof tideTargets === 'function') tideTargets();", "const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h), Math.floor(dotPad + 1e-6)));",
+        "if (typeof tideTargets === 'function') tideTargets();", "const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h), Math.floor(dotPad + 1e-6)));   // (1e-6: projection round-off)",
         "windView.load(station, { unit: getSelectedUnit(), zone: windZone(station), reading: windReading(station.id) });",
         ".leaflet-marker-icon.wind-marker { background: transparent; border: 0; cursor: pointer; pointer-events: none; }",
         ".wind-arrow path { fill: currentColor; stroke: #fff; stroke-width: 1.2; paint-order: stroke; pointer-events: auto; }",

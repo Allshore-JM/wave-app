@@ -2024,6 +2024,9 @@
     // more; plan section 113 A). Fingers get more room (the dots take taps COARSE_TOL px beyond their edge).
     const TIDE_CLEAR_PX = 8, TIDE_CLEAR_TOUCH_PX = 12;
     const TIDE_DOT_HALF = { forecast: 4, point: 7 };   // the drawn half sizes: the circle marker (3 + stroke), My point (14 px)
+    // a tide icon's touch pad ends this far before a dot's box: 2 px, and on touch screens the dot's own tap margin
+    // (COARSE_TOL, 8 px: the canvas takes taps that far beyond a forecast dot's edge)
+    const TIDE_DOT_ROOM = 2, TIDE_DOT_ROOM_TOUCH = 8;
     const TIDE_CELL_PX = 32;                        // the reveal grid: >= TIDE_GAP_PX, and a divisor of the world's width
     const TIDE_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this (not on every pan)
     let tideListFailedAt = -Infinity;
@@ -3708,13 +3711,14 @@
       const z0 = map.getZoom(), ref = tideDrawn[0], wp = map.project([ref.s.lat, ref.lng], z0), cp = map.latLngToContainerPoint([ref.s.lat, ref.lng]);
       const sx = cp.x - wp.x, sy = cp.y - wp.y;        // world pixels -> the container's
       const dots = tideObstacles(z0).map(function (q) { return { x: q.x + sx, y: q.y + sy, h: q.h }; });
+      const dotRoom = tideClearPx() === TIDE_CLEAR_TOUCH_PX ? TIDE_DOT_ROOM_TOUCH : TIDE_DOT_ROOM;
       pts.forEach(function (p, i) {
         let c = Infinity;                               // the nearest drawn icon, by the boxes' measure (Chebyshev)
         pts.forEach(function (q, j) { if (j !== i) c = Math.min(c, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y))); });
-        // a dot: the pad ends at least 2 px before the dot's own box (the pad may reach half-way to an icon's centre,
-        // but a dot is small: half-way to its centre would cover it)
+        // a dot: the pad ends before the dot's own tap area (the pad may reach half-way to an icon's centre, but a dot
+        // is small: half-way to its centre would cover it)
         let dotPad = Infinity;
-        dots.forEach(function (q) { dotPad = Math.min(dotPad, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y)) - q.h - p.h - 2); });
+        dots.forEach(function (q) { dotPad = Math.min(dotPad, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y)) - q.h - p.h - dotRoom); });
         // a wind flag on the same spot: no pad (the flag's ring disc around the icon opens the wind window: owner, 2026-10-10)
         // (the same gauge by its id: the two snapshots place some gauges 1-2 m apart, several pixels at zoom 18: G28 A-10)
         const tid = 'coops:' + tideDrawn[i].s.id;

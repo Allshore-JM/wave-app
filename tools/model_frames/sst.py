@@ -72,9 +72,11 @@ UPLOAD_BACKLOG = 64
 KEEP_DAYS = 3
 STALE_DAYS = 3                          # a live day older than this is an outage (MUR or its source); section 107: 4 -> 3
 STALE_ALARM_EVERY_H = 12
-FAILED_RETRY_AFTER_S = 3600
+FAILED_RETRY_AFTER_S = 50 * 60         # under the hourly tick: a failure at hh:05:54 is tried again at the next hh:05:31
+                                        # (3600 s skipped it by seconds and cost two hours: 2026-11-27, section 108c)
 FAILED_MAX_ATTEMPTS = 6
 NOTREADY_WARN = 6                       # hourly ticks in a row of a day PO.DAAC lists but will not serve: one mail (~6 h)
+LOGIN_WARN = 2                          # ... when the live day is refused too (all of PO.DAAC, or the login): one mail (~1 h)
 PNG = "image/png"
 JSON = "application/json"
 
@@ -620,10 +622,16 @@ PRIMARY, FALLBACK = "PO.DAAC", "ERDDAP"
 
 
 class NotServedYet(Exception):
-    """PO.DAAC lists the day (CMR) but refuses its file while the login still fetches the live day: the new day is not
-    served yet (section 108c: 2026-11-27 18:05Z, a 403 for 20261125 minutes after NASA re-ingested 11-23..11-25;
-    2026-11-23, the same for 20261122). Tried again next tick, no failure record or back-off, mailed only after
-    NOTREADY_WARN ticks in a row."""
+    """PO.DAAC lists the day (CMR) but answers 403 / 404 for its file (section 108c: 2026-11-27 18:05Z, a 403 for
+    20261125 minutes after NASA re-ingested 11-23..11-25; 20:05Z, a 403 for EVERY day, the live one too, while PO.DAAC
+    moved its downloads to CloudFront; 40 min later all six days answered 206). Tried again next tick, no failure record
+    or back-off; one mail per day once it has lasted NOTREADY_WARN ticks in a row, or LOGIN_WARN when the live day is
+    refused too (the whole archive, or this login: a refused login itself is URS's 401, which mails at once)."""
+
+    def __init__(self, message, login_ok):
+        super().__init__(message)
+        self.login_ok = login_ok
+        self.warn_at = NOTREADY_WARN if login_ok else LOGIN_WARN
 
 
 def podaac_login_ok(eget, live_day, log=print):
@@ -730,10 +738,12 @@ def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
                             path = download(name, size, dest, get=eget, url=f"{PODAAC}/{name}", exact=False,
                                             md5=podaac_md5(name, get), start=started)
                         except urllib.error.HTTPError as exc:
-                            # a listed day refused while the live day still downloads: not served yet (section 108c)
-                            if exc.code in (403, 404) and live and podaac_login_ok(eget, latest.get("run")):
-                                not_served = NotServedYet(f"PO.DAAC lists {name} but answers {exc.code}; the live day "
-                                                          f"{latest.get('run')} still downloads, so the login is fine")
+                            # a listed day refused: not served yet, tried again next tick (section 108c)
+                            if exc.code in (403, 404) and live:
+                                ok = podaac_login_ok(eget, latest.get("run"))
+                                not_served = NotServedYet(
+                                    f"PO.DAAC lists {name} but answers {exc.code}; the live day {latest.get('run')} "
+                                    + ("still downloads, so the login is fine" if ok else "is refused too"), ok)
                                 raise SourceError(str(not_served)) from None
                             raise
                     else:
@@ -768,7 +778,9 @@ def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
         rec = P.record_notready(store, day, str(exc), PREFIX)
         print(f"day {day} not served yet ({rec['count']} in a row): {exc}; the next tick tries again")
         rc = 0
-        if rec["count"] == NOTREADY_WARN:
+        if rec["count"] >= exc.warn_at and not rec.get("warned"):     # one mail per day
+            rec["warned"] = True
+            store.put(notready_key(day), json.dumps(rec, sort_keys=True).encode(), JSON, P.POINTER)
             _summary(f"WARNING: PO.DAAC has listed {day} but not served it {rec['count']} ticks in a row: {exc}")
             rc = 1
         return finish(max(rc, stale(f"day {day} not served by PO.DAAC yet")))

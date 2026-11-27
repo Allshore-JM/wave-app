@@ -778,7 +778,7 @@ def test_coastal_fill_needs_one_valued_neighbour_and_the_pinned_constants():
     v, n = T.coastal_fill(b, passes=1)
     assert n == 1 and v[2, 2] == pytest.approx(20.0)
     assert (T.COAST_PX, T.FILL_PASSES, T.NODE_FILL) == (3, 2, 1)
-    assert (S.STALE_DAYS, S.STALE_ALARM_EVERY_H, S.FAILED_MAX_ATTEMPTS, S.FAILED_RETRY_AFTER_S) == (3, 12, 6, 3600)
+    assert (S.STALE_DAYS, S.STALE_ALARM_EVERY_H, S.FAILED_MAX_ATTEMPTS, S.FAILED_RETRY_AFTER_S) == (3, 12, 6, 3000)   # 108c: under the hourly tick
 
 
 def test_the_temporary_dry_run_workflow_is_gone():
@@ -1250,14 +1250,27 @@ def test_a_404_counts_the_same_and_the_sixth_tick_in_a_row_mails_once(monkeypatc
     assert S.failed_key(day) not in fc.objects and S.source_alarm_key() not in fc.objects
 
 
-def test_a_refused_login_is_still_structural_and_mails_at_once(monkeypatch):
+def test_the_live_day_refused_too_is_not_served_and_mails_at_the_second_tick_once(monkeypatch):
+    """2026-11-27 20:05Z: PO.DAAC answered 403 for every day, the live one too; 40 min later all answered 206."""
     day, live, fc, store, get = _late(monkeypatch)
     eget, seen = _podaac(day, new=_http(403, "https://archive/x"), live=_http(403, "https://archive/live"))
-    with pytest.raises(IOError, match="no source delivered"):
-        S.main([], get=get, store=store, earthdata=eget)
-    assert json.loads(fc.objects[S.failed_key(day)]["body"])["attempts"] == 1
-    assert "403" in json.loads(fc.objects[S.source_alarm_key()]["body"])["reason"]
-    assert S.notready_key(day) not in fc.objects
+    codes = [S.main([], get=get, store=store, earthdata=eget) for _ in range(S.NOTREADY_WARN + 1)]
+    assert codes == [0, 1] + [0] * (S.NOTREADY_WARN - 1), "one mail, at the second tick in a row"
+    rec = json.loads(fc.objects[S.notready_key(day)]["body"])
+    assert rec["count"] == S.NOTREADY_WARN + 1 and rec["warned"] is True and "refused too" in rec["last_error"]
+    assert S.failed_key(day) not in fc.objects and S.source_alarm_key() not in fc.objects
+    eget, _ = _podaac(day)                                          # served again: published at once
+    assert S.main([], get=get, store=store, reader=_reader_for(b"m" * 1000), earthdata=eget) == 0
+    assert json.loads(fc.objects[S.latest_key()]["body"])["run"] == day
+
+
+def test_a_refusal_that_widens_to_the_live_day_mails_at_that_tick(monkeypatch):
+    """Three ticks of the new day alone refused, then the live day too: mailed at the fourth, not left for the sixth."""
+    day, live, fc, store, get = _late(monkeypatch)
+    only_new, _ = _podaac(day, new=_http(403, "https://archive/x"))
+    everything, _ = _podaac(day, new=_http(403, "https://archive/x"), live=_http(403, "https://archive/live"))
+    codes = [S.main([], get=get, store=store, earthdata=e) for e in (only_new,) * 3 + (everything,) * 3]
+    assert codes == [0, 0, 0, 1, 0, 0]
 
 
 def test_a_401_is_never_taken_for_a_day_not_served(monkeypatch):
@@ -1267,18 +1280,30 @@ def test_a_401_is_never_taken_for_a_day_not_served(monkeypatch):
         S.main([], get=get, store=store, earthdata=eget)
     assert not [u for u, r in seen if r], "no login check: URS refused the login itself"
     assert S.source_alarm_key() in fc.objects and S.notready_key(day) not in fc.objects
+    assert json.loads(fc.objects[S.failed_key(day)]["body"])["attempts"] == 1
 
 
-def test_no_live_day_means_no_login_check(monkeypatch):
+def test_no_live_day_counts_as_refused(monkeypatch):
     monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
     day = _ago(1)
     fc, store = _store_with_live(None)
     get, _ = _net(cmr=_cmr_text(day), md5=b"", erddap=_http(404, S.LISTING))
     eget, seen = _podaac(day, new=_http(403, "https://archive/x"))
-    with pytest.raises(IOError):
-        S.main([], get=get, store=store, earthdata=eget)
-    assert len(seen) == 1 and S.source_alarm_key() in fc.objects
+    S.main([], get=get, store=store, earthdata=eget)
+    assert len(seen) == 1, "no live day to check the login on"
+    assert json.loads(fc.objects[S.notready_key(day)]["body"])["count"] == 1
     assert S.podaac_login_ok(eget, "2026112") is False and S.podaac_login_ok(eget, None) is False
+
+
+def test_a_failed_day_is_tried_again_at_the_next_hourly_tick():
+    """The back-off must end before the next :05 tick: 3600 s from hh:05:54 skipped hh+1:05:31 (2026-11-27)."""
+    fc = FakeClient()
+    store = P.Store(fc, "b")
+    fc.objects[S.failed_key("20261126")] = {"body": json.dumps({"attempts": 1, "last_attempt_utc": "2026-11-27T20:05:54Z"}).encode(),
+                                            "ct": "", "cc": ""}
+    assert S.skip_failed(store, "20261126", now=datetime(2026, 11, 27, 20, 30, tzinfo=timezone.utc))
+    assert not S.skip_failed(store, "20261126", now=datetime(2026, 11, 27, 21, 5, 31, tzinfo=timezone.utc))
+    assert S.FAILED_RETRY_AFTER_S < 3600 - 60
 
 
 def test_prune_drops_old_not_served_records_with_the_failed_ones():

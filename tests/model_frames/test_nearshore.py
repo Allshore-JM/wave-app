@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, os.path.join(ROOT, "tools", "model_frames"))
 import fetch  # noqa: E402
 import nearshore as N  # noqa: E402
+import nearshore_data as ND  # noqa: E402
 import nearshore_engine as E  # noqa: E402
 import publish as P  # noqa: E402
 from test_gfs_spectral import FakeClient  # noqa: E402
@@ -142,6 +143,40 @@ def test_the_data_folder_pins_the_tides_and_the_table_set(tmp_path):
     (tmp_path / "manifest.json").write_text(json.dumps({"version": "x", "sha256": {"tides.json": hashlib.sha256(open(os.path.join(folder, "tides.json"), "rb").read()).hexdigest()}}))
     with pytest.raises(ValueError, match="names no table set"):
         N.load_data(folder)
+
+
+def test_the_data_folder_builder_writes_what_the_job_accepts(tmp_path, capsys):
+    objs = tables(); raw = objs[N.tables_key(SET)]
+    (tmp_path / "tables.json").write_bytes(raw); (tmp_path / "old.json").write_text(json.dumps(tides_doc()))
+    out = str(tmp_path / "ns")
+    assert ND.main([out, "ns-test", "--tables", str(tmp_path / "tables.json"), "--tides", str(tmp_path / "old.json")]) == 0
+    assert sorted(os.listdir(out)) == ["manifest.json", "tides.json"], "the tables stay in the bucket"
+    tides, man = N.load_data(out)
+    assert man["version"] == "ns-test" and man["tables"] == {"set": SET, "manifest_sha256": hashlib.sha256(raw).hexdigest(), "regions": ["west", "east"]}
+    assert tides == tides_doc() and "west, east" in capsys.readouterr().out
+    assert N.load_tables(fetch_of(objs), man)["set"] == SET, "the pin is the bucket's manifest, byte for byte"
+    for bad in (b"{}", json.dumps({"format": "nearshore-tables-v1", "set": SET, "regions": []}).encode(),
+                json.dumps({"format": "nearshore-tables-v1", "set": SET, "regions": [{"id": "west", "table": "k"}]}).encode()):
+        with pytest.raises(ValueError):
+            ND.check_tables(bad)
+
+
+def test_the_tides_come_from_noaa_year_by_year():
+    asked = []
+
+    class Reply(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def opener(url, timeout):
+        y = int(re.search(r"begin_date=(\d{4})", url).group(1)); asked.append(y)
+        t0 = datetime(y, 1, 1, tzinfo=timezone.utc)
+        return Reply(json.dumps({"predictions": [{"t": (t0 + timedelta(hours=6.2 * k)).strftime("%Y-%m-%d %H:%M"), "v": "0.5", "type": "H"}
+                                                 for k in range(1400)]}).encode())
+    doc = ND.fetch_tides(2026, years=2, opener=opener)
+    assert asked == [2026, 2027] and len(doc["hilo"]) == 2800 and doc["hilo"] == sorted(doc["hilo"]) and doc["station"] == "1612668"
+    with pytest.raises(ValueError, match="only 2800"):
+        ND.fetch_tides(2026, years=3, opener=lambda url, timeout: Reply(b'{"predictions": []}') if "begin_date=2028" in url else opener(url, timeout))
 
 
 def test_the_tables_are_read_by_the_pinned_manifest_and_their_own_sha(data):

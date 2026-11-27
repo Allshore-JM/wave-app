@@ -40,7 +40,7 @@ function boot(o = {}) {
     dispatchEvent: (e) => { events.push(e.type); return true; },
   };
   let zoom = o.zoom === undefined ? 9 : o.zoom, on = o.on !== false;
-  const tideLayer = { items: [], clearLayers() { this.items = []; } };
+  const tideLayer = { items: [], clears: 0, clearLayers() { this.items = []; this.clears++; } };
   // Leaflet's attribution control COUNTS: each addAttribution needs its removeAttribution before the text goes
   const counts = new Map();
   const credits = { count: (t) => counts.get(t) || 0, has: (t) => (counts.get(t) || 0) > 0,
@@ -53,7 +53,8 @@ function boot(o = {}) {
   const forecastLayer = { name: 'forecast' }, pointLayer = { name: 'points' };
   const map = { hasLayer: (l) => (l === tideLayer && on) || (l === liveLayer && o.liveOn !== false) ||
       (l === forecastLayer && o.forecastOn !== false) || (l === pointLayer && o.pointsOn !== false), getZoom: () => zoom,
-    latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
+    // o.pane: the map pane's offset (container = layer point + pane position; G78-8)
+    latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale() + ((o.pane || {}).x || 0), y: (90 - ll[0]) * scale() + ((o.pane || {}).y || 0) }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),   // Leaflet's: x from -180
     getSize: () => o.size || { x: 1e9, y: 1e9 }, getContainer: () => container,
     attributionControl: { addAttribution: (t) => { counts.set(t, credits.count(t) + 1); },
@@ -675,32 +676,35 @@ test('the subtitle names the source: NOAA with its id, a TICON gauge, an agency,
   assert.equal(open('constructor:x'), 'Tide station · official table', 'no prototype key read as an agency');
 });
 
-// ---- plan section 113 A: a tide icon steps clear of the forecast dots, live dots and My points ----
+// ---- plan section 113 A: a tide icon steps clear of the forecast dots, live dots and My points (G78 fixes) ----
 const byLabel = (b, label) => b.tideLayer.items.find((m) => m.opts.title === label);
 const stepOf = (m) => (m.opts.icon && m.opts.icon.divIcon ? m.opts.icon.divIcon.tooltipAnchor : [0, 0]);
 // the gap between two square boxes (half sizes ha, hb) whose centres are (dx, dy) apart
 const boxGap = (dx, dy, ha, hb) => Math.max(Math.abs(dx), Math.abs(dy)) - ha - hb;
+const cheb = (a, b) => Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
+// a station's drawn centre in the stub's pixels at zoom z (x from -180, y from 90; 1/1000 degree = 2^(z-9) px)
+const at = (m, z) => { const k = 1000 * Math.pow(2, z - 9), o = stepOf(m); return [(m.ll[1] + 180) * k + o[0], (90 - m.ll[0]) * k + o[1]]; };
 
-test('section 113 A: J-Bay, a model point on its forecast dot steps >= 21 px aside, its box 8 px clear of the dot, at zooms 9-13; the forecast layer off: it stays', async () => {
+test('section 113 A: J-Bay, a model point on its forecast dot steps aside (sized for the opened icon: 11 + 4 + 8 = 23 px), at zooms 9-13; opening it moves nothing; the forecast layer off: it stays', async () => {
   const list = { fields: FIELDS, stations: [['model:jbay', 'Off Jeffreys Bay', -34.05, 24.93, 'M', 'Africa/Johannesburg', false]] };
   const forecast = [{ id: 'JBAY', lat: -34.05, lon: 24.93 }];
   for (const z of [9, 10, 11, 12, 13]) {
     const b = boot({ zoom: z, list, forecast });
     b.api.rebuildTideMarkers(true); await flush();
     const m = byLabel(b, 'Tide model point Off Jeffreys Bay');
-    assert.ok(m, 'drawn at zoom ' + z);
     const off = stepOf(m);
-    assert.ok(Math.max(Math.abs(off[0]), Math.abs(off[1])) >= 21, 'zoom ' + z + ': moved ' + off);
-    assert.ok(boxGap(off[0], off[1], 9, 4) >= 8, 'zoom ' + z + ': its box clear of the dot by 8 px');
+    assert.ok(boxGap(off[0], off[1], 11, 4) >= 8, 'zoom ' + z + ': even the opened icon clears the dot by 8 px: ' + off);
     assert.ok(/tide-icon-model/.test(m.opts.icon.divIcon.className), 'still the model icon');
     assert.deepEqual(m.ll, [-34.05, 24.93], 'its place on the map stays (only the anchor moves)');
+    m.handlers.click({ latlng: null, originalEvent: {} });               // opened: the same spot (G78-4)
+    assert.deepEqual(stepOf(byLabel(b, 'Tide model point Off Jeffreys Bay')), off, 'zoom ' + z + ': opening moves nothing');
   }
   const off = boot({ zoom: 11, list, forecast, forecastOn: false });
   off.api.rebuildTideMarkers(true); await flush();
   assert.deepEqual(stepOf(byLabel(off, 'Tide model point Off Jeffreys Bay')), [0, 0], 'no forecast dots shown: nothing to step off');
 });
 
-test('section 113 A: a tide icon steps off a live dot (drawn 6.5 px right of its coordinate, 2 px border) and off a My point; fingers get 12 px', async () => {
+test('section 113 A: a tide icon steps off a live dot (both its sizes: centre +7.5, half 7.5) and a My point; fingers get 12 px; opening the buoy moves nothing', async () => {
   const list = { fields: FIELDS, stations: [['G', 'Gauge on buoy', 30, -150, 'R', 'UTC', true], ['P', 'Gauge on point', 20, -150, 'R', 'UTC', true]] };
   for (const coarse of [false, true]) {
     const gap = coarse ? 12 : 8;
@@ -709,9 +713,12 @@ test('section 113 A: a tide icon steps off a live dot (drawn 6.5 px right of its
     b.api.rebuildLiveBuoyMarkers(true);
     b.api.rebuildTideMarkers(true); await flush();
     const g = stepOf(byTitle(b, 'Gauge on buoy'));
-    assert.ok(boxGap(g[0] - 6.5, g[1], 9, 7.5) >= gap, (coarse ? 'touch' : 'mouse') + ': clear of the live dot by ' + gap + ' px: ' + g);
+    assert.ok(boxGap(g[0] - 7.5, g[1], 11, 7.5) >= gap, (coarse ? 'touch' : 'mouse') + ': clear of the live dot: ' + g);
     const p = stepOf(byTitle(b, 'Gauge on point'));
-    assert.ok(boxGap(p[0], p[1], 9, 7) >= gap, (coarse ? 'touch' : 'mouse') + ': clear of My point by ' + gap + ' px: ' + p);
+    assert.ok(boxGap(p[0], p[1], 11, 7) >= gap, (coarse ? 'touch' : 'mouse') + ': clear of My point: ' + p);
+    b.liveLayer.items[0].handlers.click({ latlng: null, originalEvent: {} });   // the buoy opened: its dot grows
+    await flush();
+    assert.deepEqual(stepOf(byTitle(b, 'Gauge on buoy')), g, 'opening the buoy moves no tide icon (G78-4)');
   }
   const plain = boot({ zoom: 10, list, pointsOn: false, liveOn: false, points: [{ id: 'p1', lat: 20, lon: -150, label: 'Mine' }] });
   plain.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
@@ -727,33 +734,142 @@ test('section 113 A: several tide icons around one forecast dot: every box clear
     ['F', 'Far one', 40, -150, 'R', 'UTC', true]] };
   const b = boot({ zoom: 11, list, forecast: [{ id: 'X', lat: 25, lon: -150 }, { id: 'Y', lat: 40, lon: -149.9925 }] });
   b.api.rebuildTideMarkers(true); await flush();
-  const spots = new Set();
-  for (const [n, title] of [['C1', 'Tide station Crowd a'], ['C2', 'Tide station Crowd b'], ['C3', 'Tide station Crowd c'],
-    ['C4', 'Tide station Crowd d'], ['c5', 'Tide model point Crowd e']]) {
-    const m = byLabel(b, title), off = stepOf(m), at = [(m.ll[1] + 150) * 4000 + off[0], (25 - m.ll[0]) * 4000 + off[1]];
-    assert.ok(boxGap(at[0], at[1], 9, 4) >= 8, n + ' clear of the dot: ' + at);
-    spots.add(Math.round(at[0]) + ',' + Math.round(at[1]));
+  const dot = [30 * 4000, 65 * 4000], spots = new Set();
+  for (const title of ['Tide station Crowd a', 'Tide station Crowd b', 'Tide station Crowd c', 'Tide station Crowd d', 'Tide model point Crowd e']) {
+    const c = at(byLabel(b, title), 11);
+    assert.ok(boxGap(c[0] - dot[0], c[1] - dot[1], 9, 4) >= 8, title + ' clear of the dot');
+    spots.add(Math.round(c[0]) + ',' + Math.round(c[1]));
   }
   assert.equal(spots.size, 5, 'five icons, five places');
-  assert.deepEqual(stepOf(byTitle(b, 'Far one')), [0, 0], '30 px from a dot (gap 17): it stays');
+  assert.deepEqual(stepOf(byTitle(b, 'Far one')), [0, 0], '30 px from a dot (>= 23): it stays');
 });
 
-test('section 113 A: a tide icon\'s touch pad stops before a dot\'s box; a live list that brings a buoy onto a tide icon moves it (one rebuild after the round)', async () => {
-  // zoom 9: 1/1000 degree = 1 px; a forecast dot 22 px east (gap 22 - 9 - 4 = 9 >= 8: the icon stays) leaves 7 px of pad
-  const list = { fields: FIELDS, stations: [['A', 'Pad', 40, -150, 'R', 'UTC', true], ['B', 'Late buoy', 30, -150, 'R', 'UTC', true]] };
-  const b = boot({ zoom: 9, list, forecast: [{ id: 'X', lat: 40, lon: -149.978 }] });
+test('G78-1: stations on one spot never stack: a pair ringed by dots keeps the old 12-px step; twins on a dot with few free spots get two places, both clear of the dots', async () => {
+  // zoom 11: 1/1000 degree = 4 px. Eight dots 24 px around the pair (none near enough to move it: 11 + 4 + 8 = 23):
+  // no spot at 12 or 24 px is clear of them
+  const ringDots = [];
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) ringDots.push({ id: 'R' + dx + dy, lat: 25 - dy * 0.006, lon: -150 + dx * 0.006 });
+  const pair = { fields: FIELDS, stations: [['S1', 'Pair one', 25, -150, 'R', 'UTC', true], ['S2', 'Pair two', 25, -150, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 11, list: pair, forecast: ringDots });
   b.api.rebuildTideMarkers(true); await flush();
-  assert.deepEqual(stepOf(byTitle(b, 'Pad')), [0, 0]);
-  assert.equal(byTitle(b, 'Pad').el.style.props['--tide-tap'], '7px', '22 - 4 - 9 - 2 = 7 (10 without the dot)');
-  // touch screens: a dot 25 px away (gap 25 - 9 - 4 = 12: the icon stays); the pad ends before the dot's 8 px tap margin
-  const t = boot({ zoom: 9, list, coarse: true, forecast: [{ id: 'X', lat: 40, lon: -149.975 }] });
+  assert.deepEqual(stepOf(byTitle(b, 'Pair one')), [0, 0]);
+  assert.notDeepEqual(stepOf(byTitle(b, 'Pair two')), [0, 0], 'the second steps 12 px as before, not onto the first');
+  // twins on a dot whose 23-px ring is blocked in seven directions by more dots
+  const blocked = [{ id: 'X', lat: 30, lon: -150 }];
+  for (const [dx, dy] of [[-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) blocked.push({ id: 'B' + dx + dy, lat: 30 - dy * 0.00575, lon: -150 + dx * 0.00575 });
+  const twins = { fields: FIELDS, stations: [['T1', 'Twin one', 30, -150, 'R', 'UTC', true], ['T2', 'Twin two', 30, -150, 'S', 'UTC', false]] };
+  const t = boot({ zoom: 11, list: twins, forecast: blocked });
   t.api.rebuildTideMarkers(true); await flush();
-  assert.deepEqual(stepOf(byTitle(t, 'Pad')), [0, 0]);
-  assert.equal(byTitle(t, 'Pad').el.style.props['--tide-tap'], '4px', '25 - 4 - 9 - 8 = 4');
+  const a1 = at(byTitle(t, 'Twin one'), 11), a2 = at(byTitle(t, 'Twin two'), 11);
+  assert.ok(cheb(a1, a2) >= 10, 'two places: ' + a1 + ' / ' + a2);
+  for (const c of [a1, a2]) {
+    for (const d of blocked) assert.ok(boxGap(c[0] - (d.lon + 180) * 4000, c[1] - (90 - d.lat) * 4000, 11, 4) >= 8, 'clear of every dot');
+  }
+});
+
+test('G78-2: below zoom 11 a step keeps 24 px from the other tide icons (the thinning gap)', async () => {
+  // zoom 9: 1/1000 degree = 1 px. A on a dot, B 24 px east of A: east (23 px) would put A 1 px from B
+  const list = { fields: FIELDS, stations: [['A', 'On dot', 30, -150, 'R', 'UTC', true], ['B', 'East one', 30, -149.976, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 9, list, forecast: [{ id: 'X', lat: 30, lon: -150 }] });
+  b.api.rebuildTideMarkers(true); await flush();
+  const a = at(byTitle(b, 'On dot'), 9), e = at(byTitle(b, 'East one'), 9);
+  assert.notDeepEqual(stepOf(byTitle(b, 'On dot')), [0, 0]);
+  assert.ok(cheb(a, e) >= 24 - 1e-6, 'the moved icon is 24 px from B: ' + a + ' / ' + e);
+});
+
+test('G78-3 / G78-8: touch pads stop at each dot kind’s own tap margin (forecast 8, My point 12, live 10; mouse 2), with the map pane moved too', async () => {
+  // zoom 9: 1 px = 1/1000 degree; each dot just beyond the step distance (11 + half + gap), so the icon stays
+  const list = { fields: FIELDS, stations: [['F', 'By forecast', 40, -150, 'R', 'UTC', true], ['P', 'By point', 30, -150, 'R', 'UTC', true],
+    ['L', 'By live', 20, -150, 'R', 'UTC', true]] };
+  for (const pane of [null, { x: 37, y: -11 }]) {
+    const b = boot({ zoom: 9, list, coarse: true, pane, forecast: [{ id: 'X', lat: 40, lon: -149.972 }],
+      points: [{ id: 'p1', lat: 30, lon: -149.969, label: 'Mine' }] });
+    b.api.liveData = [{ id: 'B1', lat: 20, lon: -149.9755, source: 'NDBC' }];   // its centre 24.5 + 7.5 = 32 px east
+    b.api.rebuildLiveBuoyMarkers(true);
+    b.api.rebuildTideMarkers(true); await flush();
+    const pad = (n) => byTitle(b, n).el.style.props['--tide-tap'];
+    for (const n of ['By forecast', 'By point', 'By live']) assert.deepEqual(stepOf(byTitle(b, n)), [0, 0], n + ' stays');
+    assert.equal(pad('By forecast'), '7px', '28 - 4 - 9 - 8');
+    assert.equal(pad('By point'), '3px', '31 - 7 - 9 - 12');
+    assert.equal(pad('By live'), '5px', '32 - 7.5 - 9 - 10 = 5.5');
+  }
+  const m = boot({ zoom: 9, list: { fields: FIELDS, stations: [['F', 'By forecast', 40, -150, 'R', 'UTC', true]] }, forecast: [{ id: 'X', lat: 40, lon: -149.976 }] });
+  m.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(m, 'By forecast')), [0, 0]);
+  assert.equal(byTitle(m, 'By forecast').el.style.props['--tide-tap'], '9px', 'mouse: 24 - 4 - 9 - 2');
+});
+
+test('G78-5: a tide icon stepping off a dot keeps off a wind flag’s speed number when it can', async () => {
+  // zoom 11: the gauge's own flag on its spot, the wind from the east: the number 14 px east of the ring
+  const list = { fields: FIELDS, stations: [['G', 'Gauge with wind', 30, -150, 'R', 'UTC', true]] };
+  const num = { style: { left: '34px', top: '20px' } };
+  const windDrawn = [{ s: { lat: 30, id: 'coops:G' }, lng: -150, o: 0, flag: { querySelector: (q) => (q === '.wind-num' ? num : null) } }];
+  const b = boot({ zoom: 11, list, windDrawn, forecast: [{ id: 'X', lat: 30, lon: -150 }] });
+  b.api.rebuildTideMarkers(true); await flush();
+  const off = stepOf(byTitle(b, 'Gauge with wind'));
+  assert.ok(off[0] < 0 || Math.abs(off[1]) >= 20, 'not onto the number 14 px east: ' + off);
+  num.style.left = '6px';                                              // the wind from the west: east is free again
+  const w = boot({ zoom: 11, list, windDrawn, forecast: [{ id: 'X', lat: 30, lon: -150 }] });
+  w.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(w, 'Gauge with wind')), [23, 0]);
+});
+
+test('section 113 A: a live list that brings a buoy onto a tide icon moves it, with one tide redraw after the round; a round that redrew the tides itself adds none (G78-8)', async () => {
+  const list = { fields: FIELDS, stations: [['B', 'Late buoy', 30, -150, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 9, list });
+  b.api.rebuildTideMarkers(true); await flush();
   assert.deepEqual(stepOf(byTitle(b, 'Late buoy')), [0, 0], 'no buoy yet');
+  const before = b.tideLayer.clears;
   b.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
-  b.api.rebuildLiveBuoyMarkers(true);                                  // the live list lands: the tides follow after the round
+  b.api.rebuildLiveBuoyMarkers(true); b.api.rebuildLiveBuoyMarkers(true);   // two live redraws in one round
   await flush();
+  assert.equal(b.tideLayer.clears - before, 1, 'one tide redraw after the round');
   const g = stepOf(byTitle(b, 'Late buoy'));
-  assert.ok(boxGap(g[0] - 6.5, g[1], 9, 7.5) >= 8, 'moved off the new live dot: ' + g);
+  assert.ok(boxGap(g[0] - 7.5, g[1], 11, 7.5) >= 8, 'moved off the new live dot: ' + g);
+  const mid = b.tideLayer.clears;
+  b.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }, { id: 'B2', lat: 31, lon: -150, source: 'NDBC' }];
+  b.api.rebuildLiveBuoyMarkers(true);
+  b.api.rebuildTideMarkers(false);                                      // the pan's own tide rebuild, in the same round
+  await flush();
+  assert.equal(b.tideLayer.clears - mid, 0, 'nothing changed for the tides, and the queued request was dropped');
+});
+
+test('G78-6: the step off a live dot is sized by both its drawn sizes (centre +7.5 px, half 7.5): exactly 27 px with a mouse, 31 on touch', async () => {
+  const list = { fields: FIELDS, stations: [['G', 'Gauge on buoy', 30, -150, 'R', 'UTC', true]] };
+  for (const [coarse, want] of [[false, [-27, 0]], [true, [-31, 0]]]) {
+    const b = boot({ zoom: 10, list, coarse });
+    b.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
+    b.api.rebuildLiveBuoyMarkers(true);
+    b.api.rebuildTideMarkers(true); await flush();
+    // east (27 px) is only 19.5 px from the dot's centre at +7.5: west, ceil(11 + 7.5 + gap) px
+    assert.deepEqual(stepOf(byTitle(b, 'Gauge on buoy')), want, coarse ? 'touch' : 'mouse');
+  }
+});
+
+test('G78-2: a step that would pass the 12-px rule but come within 24 px of an icon already placed goes elsewhere below zoom 11', async () => {
+  // zoom 9 (1 px = 1/1000 degree): the gauge B (placed first) 36 px east of A's dot; east (23 px) would be 13 px from B
+  const list = { fields: FIELDS, stations: [['B', 'Placed first', 30, -149.964, 'R', 'UTC', true], ['A', 'On dot', 30, -150, 'S', 'UTC', false]] };
+  const b = boot({ zoom: 9, list, forecast: [{ id: 'X', lat: 30, lon: -150 }] });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(b, 'Placed first')), [0, 0]);
+  assert.deepEqual(stepOf(byTitle(b, 'On dot')), [-23, 0], 'west: 24 px from B is not reachable east at 23 px');
+  const z11 = boot({ zoom: 11, list: { fields: FIELDS, stations: [['B', 'Placed first', 30, -149.991, 'R', 'UTC', true], ['A', 'On dot', 30, -150, 'S', 'UTC', false]] },
+    forecast: [{ id: 'X', lat: 30, lon: -150 }] });
+  z11.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(z11, 'On dot')), [23, 0], 'from zoom 11 the box rule: 13 px from B (36 - 23) is enough');
+});
+
+test('G78-1: when every spot clear of the dots is near another icon, the step takes the one farthest from them, never the first by habit', async () => {
+  // zoom 11 (1 px = 1/4000 degree). T on a dot; dots 30 and 53 px out in seven directions block every ring there; east,
+  // the gauges B1 (28 px) and B2 (53 px) sit 5-7 px from each ring spot (23, 35, 47, 59): 35 is the farthest (7 px)
+  const px = 0.00025, dots = [{ id: 'X', lat: 30, lon: -150 }];
+  for (const [dx, dy] of [[-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+    for (const d of [30, 53]) dots.push({ id: 'D' + dx + dy + d, lat: 30 - dy * d * px, lon: -150 + dx * d * px });
+  }
+  const list = { fields: FIELDS, stations: [['T', 'On dot', 30, -150, 'S', 'UTC', false],                 // placed after the gauges
+    ['B1', 'Near one', 30, -150 + 28 * px, 'R', 'UTC', true], ['B2', 'Near two', 30, -150 + 53 * px, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 11, list, forecast: dots });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(b, 'Near one')), [0, 0]); assert.deepEqual(stepOf(byTitle(b, 'Near two')), [0, 0]);
+  assert.deepEqual(stepOf(byTitle(b, 'On dot')), [35, 0], 'clear of the dots, 7 px from the nearest icon (23 would be 5)');
 });

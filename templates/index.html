@@ -2026,10 +2026,13 @@
     // tide icon steps aside, far enough that each is clicked on its own (owner, 2026-11-27: the forecast point matters
     // more; plan section 113 A). Fingers get more room (the dots take taps COARSE_TOL px beyond their edge).
     const TIDE_CLEAR_PX = 8, TIDE_CLEAR_TOUCH_PX = 12;
-    const TIDE_DOT_HALF = { forecast: 4, point: 7 };   // the drawn half sizes: the circle marker (3 + stroke), My point (14 px)
+    // the drawn half sizes: the circle marker (3 + stroke), My point (14 px), a live dot (both its sizes: 7.5)
+    const TIDE_DOT_HALF = { forecast: 4, point: 7, live: 7.5 };
     // a tide icon's touch pad ends this far before a dot's box: 2 px, and on touch screens the dot's own tap margin
-    // (COARSE_TOL, 8 px: the canvas takes taps that far beyond a forecast dot's edge)
-    const TIDE_DOT_ROOM = 2, TIDE_DOT_ROOM_TOUCH = 8;
+    // (the canvas takes taps COARSE_TOL = 8 px beyond a forecast dot; .my-pt::after 12 px; a live dot's pad up to
+    // LIVE_TAP_MAX = 8 px plus its 2 px border: G78-3)
+    const TIDE_DOT_ROOM = 2, TIDE_DOT_ROOM_TOUCH = { forecast: 8, point: 12, live: 10 };
+    const TIDE_WIND_RING_HALF = 6, TIDE_WIND_NUM_HALF = 9;   // a wind flag's ring and speed number (G78-5)
     const TIDE_CELL_PX = 32;                        // the reveal grid: >= TIDE_GAP_PX, and a divisor of the world's width
     const TIDE_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this (not on every pan)
     let tideListFailedAt = -Infinity;
@@ -3545,77 +3548,116 @@
     // that box needs the room (fresh check F-2: placed first, it swapped places with a neighbour under the pointer; every
     // station opened at zooms 9 to 11 still finds a free spot this way, desktop and phone views).
     // The fixed boxes a tide icon steps away from (plan section 113 A), in world pixels at zoom z: the forecast dots,
-    // the live dots (drawn right of their coordinate, with a 2 or 3 px border) and My points, each while its layer is
-    // on. They never move; the tide icon does.
+    // the live dots and My points, each while its layer is on. They never move; the tide icon does. A live dot is the
+    // box of both its sizes (11 px at +6.5 px, opened 15 px at +7.5: Bootstrap's border-box), so opening a buoy moves
+    // no tide icon (G78-4, G78-6). `kind` sets how far a touch pad keeps off it (tideTargets: each dot's own tap margin).
     function tideClearPx() {
       return (window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) ? TIDE_CLEAR_TOUCH_PX : TIDE_CLEAR_PX;
     }
     function tideObstacles(z) {
       const out = [];
-      const add = function (lat, lng, h, dx) {
+      const add = function (lat, lng, h, dx, kind) {
         if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) return;
         const p = map.project([Number(lat), Number(lng)], z);
-        out.push({ x: p.x + (dx || 0), y: p.y, h: h, fixed: true });
+        out.push({ x: p.x + (dx || 0), y: p.y, h: h, kind: kind });
       };
       if (typeof forecastLayer !== 'undefined' && map.hasLayer(forecastLayer) && typeof forecastStationsData !== 'undefined') {
-        visibleCopies(forecastStationsData).forEach(function (c) { add(c.s.lat, c.lng, TIDE_DOT_HALF.forecast); });
+        visibleCopies(forecastStationsData).forEach(function (c) { add(c.s.lat, c.lng, TIDE_DOT_HALF.forecast, 0, 'forecast'); });
       }
       if (typeof pointLayer !== 'undefined' && map.hasLayer(pointLayer) && typeof savedPointsData !== 'undefined') {
-        visibleCopies(savedPointsData).forEach(function (c) { add(c.s.lat, c.lng, TIDE_DOT_HALF.point); });
+        visibleCopies(savedPointsData).forEach(function (c) { add(c.s.lat, c.lng, TIDE_DOT_HALF.point, 0, 'point'); });
       }
       if (typeof liveDrawn !== 'undefined' && (typeof liveBuoyLayer === 'undefined' || map.hasLayer(liveBuoyLayer))) {
-        liveDrawn.forEach(function (d) {              // createLiveBuoyIcon's geometry (liveDotAt), plus the border
-          const size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
-          add(d.lat, d.lng, size / 2 + (d.active ? 3 : 2), size / 2 - anchor);
-        });
+        liveDrawn.forEach(function (d) { add(d.lat, d.lng, TIDE_DOT_HALF.live, TIDE_DOT_HALF.live, 'live'); });
       }
+      return out;
+    }
+    // The wind flags' rings and speed numbers (the number 14 px upwind of the ring: static_ui/winds.js numberAt): a
+    // tide icon stepping off a dot avoids them when it can, so it hides no reading (G78-5). Soft: never a reason to step.
+    function tideWindMarks(z) {
+      const out = [];
+      if (typeof windDrawn === 'undefined') return out;
+      windDrawn.forEach(function (d) {
+        if (!d || !d.s || !Number.isFinite(Number(d.s.lat)) || !Number.isFinite(Number(d.lng))) return;
+        const p = map.project([Number(d.s.lat), Number(d.lng)], z);
+        out.push({ x: p.x, y: p.y, h: TIDE_WIND_RING_HALF });
+        const n = d.flag && d.flag.querySelector ? d.flag.querySelector('.wind-num') : null;
+        const nx = n && n.style ? parseFloat(n.style.left) : NaN, ny = n && n.style ? parseFloat(n.style.top) : NaN;
+        if (Number.isFinite(nx) && Number.isFinite(ny)) out.push({ x: p.x + nx - 20, y: p.y + ny - 20, h: TIDE_WIND_NUM_HALF });
+      });
       return out;
     }
     function tideNudges(copies) {
       const out = new Map(), z = map.getZoom();
       if (!copies.length) return out;
-      const gap = tideClearPx();
-      const placed = tideObstacles(z);
-      if (copies.length < 2 && !placed.length) return out;
-      // a tide icon's centre outside another tide icon's box (+1 px); its box `gap` px clear of a fixed one
-      const clearOf = function (x, y, h, q) {
-        const d = Math.max(Math.abs(q.x - x), Math.abs(q.y - y));
-        return q.fixed ? d >= h + q.h + gap : d >= Math.max(h, q.h) + 1;
+      const gap = tideClearPx(), dots = tideObstacles(z);
+      if (copies.length < 2 && !dots.length) return out;
+      const soft = dots.length ? tideWindMarks(z) : [];
+      const sparse = z < TIDE_ALL_ZOOM;              // below it the thinning keeps icons TIDE_GAP_PX apart (G78-2)
+      const tides = [];                              // the tide icons placed so far
+      const cheb = function (q, x, y) { return Math.max(Math.abs(q.x - x), Math.abs(q.y - y)); };
+      // the step off a dot is sized for the opened (larger) icon, so opening a station moves nothing (G78-4)
+      const HD = TIDE_HALF_ACTIVE;
+      const dotClear = function (x, y) { return dots.every(function (q) { return cheb(q, x, y) >= HD + q.h + gap; }); };
+      // the icons placed so far, and for a step off a dot also the spots of those still to come (most stay put there)
+      let ahead = [];
+      const tideClear = function (x, y, h, wide) {
+        const ok = function (q) { return cheb(q, x, y) >= (wide ? Math.max(TIDE_GAP_PX, Math.max(h, q.h) + 1) : Math.max(h, q.h) + 1); };
+        return tides.every(ok) && ahead.every(ok);
       };
-      const free = function (x, y, h, tidesToo) {
-        return placed.every(function (q) { return (!tidesToo && !q.fixed) || clearOf(x, y, h, q); });
-      };
+      const softClear = function (x, y, h) { return soft.every(function (q) { return cheb(q, x, y) >= h + q.h + 2; }); };
       const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
-      const tryRing = function (p, h, dist) {
+      const ring = function (p, dist, ok) {
         let got = null;
         DIRS.some(function (t) {
           const dx = t[0] * dist, dy = t[1] * dist;
-          if (free(p.x + dx, p.y + dy, h, true)) { got = [dx, dy]; return true; }
+          if (ok(p.x + dx, p.y + dy)) { got = [dx, dy]; return true; }
           return false;
         });
         return got;
       };
-      copies.slice().sort(function (a, b) { return tideRankOrder(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
-        const p = map.project([c.s.lat, c.lng], z), h = c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF;
+      const order = copies.slice().sort(function (a, b) { return tideRankOrder(a.s, b.s) || a.o - b.o; });
+      const spots = order.map(function (c) {
+        const p = map.project([c.s.lat, c.lng], z);
+        return { x: p.x, y: p.y, h: c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF };
+      });
+      const stays = spots.map(function (q) { return dotClear(q.x, q.y); });   // not on a dot (once per rebuild)
+      order.forEach(function (c, i) {
+        const p = spots[i], h = p.h;
         let off = null;
-        if (!free(p.x, p.y, h, true)) {
-          // the fixed boxes it touches set how far it must go: the smallest step that clears them all
+        if (!stays[i]) {
+          ahead = spots.filter(function (q, j) { return j > i && stays[j]; });   // the ones not on a dot stay put
+          // on a dot: the smallest step that clears every dot it touches, then further out; first clear of the dots,
+          // the other tide icons (TIDE_GAP_PX below TIDE_ALL_ZOOM) and the wind readings, then of dots and icons
           let need = 0;
-          placed.forEach(function (q) { if (q.fixed && !clearOf(p.x, p.y, h, q)) need = Math.max(need, Math.ceil(h + q.h + gap)); });
-          const rings = need ? [need, need + TIDE_NUDGE_STEP, need + 2 * TIDE_NUDGE_STEP]
-            : [TIDE_NUDGE_STEP, 2 * TIDE_NUDGE_STEP];   // 12 px away, then 24 (a crowded harbour beside the opened icon)
-          rings.some(function (dist) { off = tryRing(p, h, dist); return !!off; });
-          if (!off && need) {                          // no spot clear of everything: clear of the dots at least (a
-            [need, need + TIDE_NUDGE_STEP, need + 2 * TIDE_NUDGE_STEP].some(function (dist) {   // tide icon on a tide
-              return DIRS.some(function (t) {        // icon still opens one of them; one on a dot hides the dot)
-                const dx = t[0] * dist, dy = t[1] * dist;
-                if (free(p.x + dx, p.y + dy, h, false)) { off = [dx, dy]; return true; }
-                return false;
+          dots.forEach(function (q) { if (cheb(q, p.x, p.y) < HD + q.h + gap) need = Math.max(need, Math.ceil(HD + q.h + gap)); });
+          const rings = [need, need + TIDE_NUDGE_STEP, need + 2 * TIDE_NUDGE_STEP, need + 3 * TIDE_NUDGE_STEP];
+          [function (x, y) { return dotClear(x, y) && tideClear(x, y, h, sparse) && softClear(x, y, h); },
+           function (x, y) { return dotClear(x, y) && tideClear(x, y, h, sparse); },
+           function (x, y) { return dotClear(x, y) && tideClear(x, y, h, false); }].some(function (ok) {
+            return rings.some(function (d) { off = ring(p, d, ok); return !!off; });
+          });
+          if (!off) {                                // clear of the dots, as far from the other icons as it gets: two
+            let best = -1;                           // stations never land on one spot (G78-1)
+            rings.forEach(function (d) {
+              DIRS.forEach(function (t) {
+                const x = p.x + t[0] * d, y = p.y + t[1] * d;
+                if (!dotClear(x, y)) return;
+                const m = tides.concat(ahead).reduce(function (a, q) { return Math.min(a, cheb(q, x, y)); }, Infinity);
+                if (m > best) { best = m; off = [t[0] * d, t[1] * d]; }
               });
             });
           }
+          ahead = [];
+        } else if (!tideClear(p.x, p.y, h, false)) {
+          // on another tide icon (a NOAA spot with several stations, beside the opened one): 12 px away, then 24,
+          // a spot clear of the dots first (G78-1), else as before
+          [function (x, y) { return tideClear(x, y, h, false) && dotClear(x, y); },
+           function (x, y) { return tideClear(x, y, h, false); }].some(function (ok) {
+            return [TIDE_NUDGE_STEP, 2 * TIDE_NUDGE_STEP].some(function (d) { off = ring(p, d, ok); return !!off; });
+          });
         }
-        placed.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
+        tides.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
         if (off) out.set(c.s.id + '#' + c.o, off);
       });
       return out;
@@ -3713,15 +3755,17 @@
       // (plan section 113 A; in screen pixels, the same boxes as tideObstacles)
       const z0 = map.getZoom(), ref = tideDrawn[0], wp = map.project([ref.s.lat, ref.lng], z0), cp = map.latLngToContainerPoint([ref.s.lat, ref.lng]);
       const sx = cp.x - wp.x, sy = cp.y - wp.y;        // world pixels -> the container's
-      const dots = tideObstacles(z0).map(function (q) { return { x: q.x + sx, y: q.y + sy, h: q.h }; });
-      const dotRoom = tideClearPx() === TIDE_CLEAR_TOUCH_PX ? TIDE_DOT_ROOM_TOUCH : TIDE_DOT_ROOM;
+      const touch = tideClearPx() === TIDE_CLEAR_TOUCH_PX;
+      const dots = tideObstacles(z0).map(function (q) {
+        return { x: q.x + sx, y: q.y + sy, h: q.h, room: touch ? (TIDE_DOT_ROOM_TOUCH[q.kind] || 8) : TIDE_DOT_ROOM };
+      });
       pts.forEach(function (p, i) {
         let c = Infinity;                               // the nearest drawn icon, by the boxes' measure (Chebyshev)
         pts.forEach(function (q, j) { if (j !== i) c = Math.min(c, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y))); });
         // a dot: the pad ends before the dot's own tap area (the pad may reach half-way to an icon's centre, but a dot
         // is small: half-way to its centre would cover it)
         let dotPad = Infinity;
-        dots.forEach(function (q) { dotPad = Math.min(dotPad, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y)) - q.h - p.h - dotRoom); });
+        dots.forEach(function (q) { dotPad = Math.min(dotPad, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y)) - q.h - p.h - q.room); });
         // a wind flag on the same spot: no pad (the flag's ring disc around the icon opens the wind window: owner, 2026-10-10)
         // (the same gauge by its id: the two snapshots place some gauges 1-2 m apart, several pixels at zoom 18: G28 A-10)
         const tid = 'coops:' + tideDrawn[i].s.id;

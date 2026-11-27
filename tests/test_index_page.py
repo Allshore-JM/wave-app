@@ -610,6 +610,11 @@ def test_tide_stations_on_the_page(client):
         "'<span class=\"lc-dot lc-tide\"></span>Tide stations<span class=\"lc-note\" data-tide-note aria-hidden=\"true\"></span>': tideLayer",
         "layersControl._update = function () { const r = lcUpdate.apply(this, arguments); paintTideNote(); paintWindNote(); paintAlertsNote(); paintLiveNote(); return r; };",
         "map.on('overlayadd overlayremove', function (e) { if (e.layer === tideLayer) rebuildTideMarkers(true); });",
+        # plan section 113 A (G78-7): the tide icons step off the dots, so every change of the dots asks for a tide rebuild
+        "map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer || e.layer === liveBuoyLayer) requestTideRebuild(); });",
+        "source: 'map' } }));\n        });\n      });\n      if (typeof requestTideRebuild === 'function') requestTideRebuild();   // tide icons step off the dots (section 113 A)\n    }",
+        "source: 'map' } }));\n        });\n      });\n      if (typeof requestTideRebuild === 'function') requestTideRebuild();   // tide icons step off the points (section 113 A)\n    }",
+        "      liveTabStops();\n      if (typeof requestTideRebuild === 'function') requestTideRebuild();   // tide icons step off the dots (section 113 A)\n    }",
         "rebuildTideMarkers(true);\n        return;", "rebuildTideMarkers(false);\n      }, REFRESH_DEBOUNCE_MS);",
         "const TIDE_CREDIT = 'Tides: <a href=\"https://tidesandcurrents.noaa.gov/\" target=\"_blank\" rel=\"noopener\">NOAA CO-OPS</a>, national agencies, '",
         "'<a href=\"https://www.seanoe.org/data/00980/109129/\" target=\"_blank\" rel=\"noopener\">TICON-4 (DGFI-TUM)</a>, '",

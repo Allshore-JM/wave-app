@@ -17,3 +17,5 @@ tests/fixtures/gfswinds/** -text
 tests/fixtures/radar/** -text
 # The coast band (plan section 105): its sha256 is pinned in build_coast_v2.SETS, so its bytes never change
 tools/coast/band_v5.json -text
+# The country names (plan section 114): the served bytes are pinned by sha256 in tests/places/test_build_countries.py
+static_ui/countries.json -text

@@ -90,3 +90,32 @@ The real build of 2026-10-23 (GeoNames file of 2026-10-23) had these sizes:
   182 KB).
 - **GeoNames:** 138,786 towns read, 24 " / " names left out, 6,406 Natural Earth places by id, 392 by name, 39 twins,
   131,949 kept, 5,120 left out by the cell cap.
+
+## Country names (`static_ui/countries.json`, plan section 114)
+
+`build_countries.py` builds the country names the map shows at wide zooms from Natural Earth's
+`ne_10m_admin_0_countries.geojson` (the same pinned commit; the file's sha256 is pinned in the script). The output is a
+small UI asset (about 9 KB) committed to the repository and served with the page's other `static_ui` files, not a
+bucket prefix: `static/places/v2` is unchanged.
+
+- **Name:** Natural Earth's `NAME`, or `NAME_EN` where `NAME` is abbreviated (Northern Cyprus and Eswatini by hand).
+  Long names take a common short form (owner, 2026-11-27): USA, DR Congo, UAE, Central African Rep., Bosnia & Herz.,
+  "and" pairs as "&", island groups as "Is.". A label still longer than 16 characters is cut onto two lines.
+- **Shown from:** by land area on the sphere: 1.5 million km² and more from zoom 1.5, 500,000 from 2.5, 100,000 from
+  3.3, 20,000 from 4.0, the rest from 4.7. 32 open-ocean island nations (Fiji, Samoa, Tonga, French Polynesia ...) from
+  zoom 3.0.
+- **Gone from:** the zoom at which the country is about 900 px across (the square root of its area at its label
+  latitude), at least 1.5 zooms after it came, and never after zoom 7.
+- **Left out:** leases and bases, the Cyprus buffer zone, uninhabited banks, reefs and ice, Antarctica, the U.S. Minor
+  Outlying Islands, the Australian Indian Ocean Territories, Clipperton, and Spratly Is. (Natural Earth's `NAME_EN`
+  calls it "Wake Island").
+
+```bash
+curl -sSfLo ne_10m_admin_0_countries.geojson \
+  https://raw.githubusercontent.com/nvkelso/natural-earth-vector/ca96624a56bd078437bca8184e78163e5039ad19/geojson/ne_10m_admin_0_countries.geojson
+python tools/places/build_countries.py --ne ne_10m_admin_0_countries.geojson --out static_ui/countries.json
+python tools/places/build_countries.py --ne ne_10m_admin_0_countries.geojson --check static_ui/countries.json
+```
+
+`--check` with `--ne` also requires the committed file to equal a rebuild byte for byte. `tests/places/test_build_countries.py`
+pins the committed file's sha256, so a rebuild with new rules must update that pin.

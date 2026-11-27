@@ -641,3 +641,20 @@ test('fresh check T16 / T17 / T27: live markers: Tab stops follow the view witho
   byId('IN').el.keys.keydown({ key: 'Enter', preventDefault() {} });
   assert.deepEqual(b.liveOpened, ['IN']);
 });
+
+test('section 112: the worldwide rows keep their type; importance R / O, then G, then S, then M; a model point says so and wears the dashed ring', async () => {
+  const list = { fields: ['id', 'name', 'lat', 'lon', 'type', 'tz', 'obs'], stations: [
+    ['ticon:a', 'Gauge constants', 25.000, -150, 'G', 'UTC', false], ['chs:1', 'Agency table', 25.010, -150, 'O', 'UTC', false],
+    ['model:1', 'Model point', 26.000, -150, 'M', 'UTC', false], ['S9', 'Subordinate', 26.010, -150, 'S', 'UTC', false],
+    ['model:2', 'Lone model point', 28.000, -150, 'M', 'UTC', false], ['xx:1', 'Unknown type', 29.000, -150, 'Q', 'UTC', false]] };
+  const b = boot({ zoom: 10, list });
+  b.api.rebuildTideMarkers(true); await flush();
+  const titles = b.tideLayer.items.map((m) => m.opts.title).sort();
+  assert.deepEqual(titles, ['Tide model point Lone model point', 'Tide station Agency table', 'Tide station Subordinate', 'Tide station Unknown type'],
+    'an agency table before the gauge constants beside it; a NOAA subordinate before a model point; an unknown type counts as R');
+  const lone = b.tideLayer.items.find((m) => /Lone model/.test(m.opts.title));
+  assert.match(lone.opts.icon.divIcon.className, /tide-icon-model/);
+  const agency = b.tideLayer.items.find((m) => /Agency table/.test(m.opts.title));
+  assert.ok(!agency.opts.icon.divIcon || !/tide-icon-model/.test(agency.opts.icon.divIcon.className));
+  assert.match(b.api.TIDE_CREDIT, /NOAA CO-OPS<\/a>, national agencies, <a href="https:\/\/www\.seanoe\.org\/data\/00980\/109129\/"[^>]*>TICON-4 \(DGFI-TUM\)<\/a>/);
+});

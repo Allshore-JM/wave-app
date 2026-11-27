@@ -45,8 +45,19 @@
   var METHOD_TEXT = {
     harmonic: 'Curve: NOAA tide predictions',
     reference: 'Curve: the predictions of NOAA station %REF% shaped between this station’s predicted highs and lows (NOAA subordinate station)',
-    cosine: 'Curve: drawn between NOAA’s predicted highs and lows (NOAA subordinate station)'
+    cosine: 'Curve: drawn between NOAA’s predicted highs and lows (NOAA subordinate station)',
+    // plan section 112: the worldwide stations
+    ticon: 'Predicted on this site from this tide gauge’s harmonic constants (TICON-4, DGFI-TUM)',
+    official: 'Curve: %AGENCY%’s official tide predictions',
+    'official-cosine': 'Curve: drawn between %AGENCY%’s official predicted highs and lows',
+    model: 'Predicted on this site from the FES2022 tide model (CNES / AVISO+); not a tide gauge, may be off near harbours and estuaries'
   };
+  // the heights' zero line by the payload's datum
+  function datumText(d) {
+    if (!d || d === 'MLLW') return 'Heights above mean lower low water (MLLW)';
+    if (d === 'LAT') return 'Heights above the lowest astronomical tide (LAT, computed from the constants)';
+    return 'Heights above ' + d;
+  }
   var MSG = {
     unknown: 'This tide station is not known.',
     failed: 'The tide predictions could not be loaded.',
@@ -349,16 +360,28 @@
       if (!els.meta || !d) return;
       els.meta.textContent = '';
       var ref = d.ref_name ? d.ref_name + ' (' + d.ref + ')' : (d.ref || '');
-      var lines = ['Heights above mean lower low water (MLLW) · times in ' + zoneMeta() + ' · click a day to open or close it',
-                   (METHOD_TEXT[d.method] || METHOD_TEXT.harmonic).replace('%REF%', ref),
+      var noaa = String(d.id || '').indexOf(':') < 0;                 // NOAA's ids are bare; the others carry a prefix
+      var lines = [datumText(d.datum) + ' · times in ' + zoneMeta() + ' · click a day to open or close it',
+                   (METHOD_TEXT[d.method] || METHOD_TEXT.harmonic).replace('%REF%', ref).replace('%AGENCY%', d.agency || 'the agency'),
                    'Predictions do not include storm surge or wind effects.'];
-      if (st.L && hasGap(d, st.L)) lines.push('The curve has gaps where NOAA’s list of highs and lows is incomplete.');
+      if (st.L && hasGap(d, st.L)) lines.push(noaa ? 'The curve has gaps where NOAA’s list of highs and lows is incomplete.'
+                                                    : 'The curve has gaps where the list of highs and lows is incomplete.');
       if (st.obs && st.obs.note) lines.push(st.obs.note + '.');
       lines.forEach(function (t) { els.meta.appendChild(el('div', '', t)); });
-      var src = el('div', ''), a = el('a', '', 'NOAA CO-OPS station ' + d.id);
-      a.setAttribute('href', 'https://tidesandcurrents.noaa.gov/noaatidepredictions.html?id=' + encodeURIComponent(d.id));
-      a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener');
-      src.appendChild(doc.createTextNode('Source: ')); src.appendChild(a);
+      var src = el('div', '');
+      if (noaa) {
+        var a = el('a', '', 'NOAA CO-OPS station ' + d.id);
+        a.setAttribute('href', 'https://tidesandcurrents.noaa.gov/noaatidepredictions.html?id=' + encodeURIComponent(d.id));
+        a.setAttribute('target', '_blank'); a.setAttribute('rel', 'noopener');
+        src.appendChild(doc.createTextNode('Source: ')); src.appendChild(a);
+      } else {
+        src.appendChild(doc.createTextNode(d.source || ''));         // the credit the source's terms ask for (text, never HTML)
+        if (/^https:\/\//.test(d.link || '')) {
+          var b = el('a', '', 'station page');
+          b.setAttribute('href', d.link); b.setAttribute('target', '_blank'); b.setAttribute('rel', 'noopener');
+          src.appendChild(doc.createTextNode(' · ')); src.appendChild(b);
+        }
+      }
       els.meta.appendChild(src);
     }
 

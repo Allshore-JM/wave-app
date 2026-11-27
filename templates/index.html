@@ -562,6 +562,7 @@
     /* a tide station (plan section 38): a sine wave in a white disc, shown from zoom 9 (one empty div per marker: the
        glyph is a CSS background, so 300 markers parse no SVG each); the station on screen in its window gets a coral rim */
     .tide-icon { background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E") center / 100% 100% no-repeat; cursor: pointer; }
+    .tide-icon.tide-icon-model { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%231d2b4f' stroke-width='1.3' stroke-dasharray='2.4 1.6'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); }
     .tide-icon.tide-icon-active { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='9' fill='%23fff' stroke='%23ff6b5a' stroke-width='2'/%3E%3Cpath d='M3 10 C4.3 4.5 6.2 4.5 7.5 10 S10.7 15.5 12 10 S15.2 4.5 17 10' fill='none' stroke='%230f8f8c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E"); }
     /* a finger-sized target: 10 px around the icon, cut to half the gap to the nearest drawn icon (--tide-tap, set by
        the page after every redraw) so no target covers another icon's centre (G27 re-check RC-1) */
@@ -3456,7 +3457,11 @@
         const f = doc.fields, ix = function (k) { return f.indexOf(k); };
         const I = { id: ix('id'), name: ix('name'), lat: ix('lat'), lon: ix('lon'), type: ix('type'), tz: ix('tz'), obs: ix('obs') };
         tideStationsData = (doc.stations || []).map(function (r) {
-          return { id: String(r[I.id]), name: String(r[I.name] || r[I.id]), lat: +r[I.lat], lon: +r[I.lon], type: r[I.type] === 'S' ? 'S' : 'R', tz: r[I.tz] || 'UTC', obs: !!r[I.obs] };
+          // type: R / S NOAA harmonic / subordinate; O an agency's official predictions, G a tide gauge's constants
+          // (TICON), M a tide-model point (plan section 112)
+          const ty = r[I.type];
+          return { id: String(r[I.id]), name: String(r[I.name] || r[I.id]), lat: +r[I.lat], lon: +r[I.lon],
+                   type: (ty === 'S' || ty === 'O' || ty === 'G' || ty === 'M') ? ty : 'R', tz: r[I.tz] || 'UTC', obs: !!r[I.obs] };
         }).filter(function (st) { return Number.isFinite(st.lat) && Number.isFinite(st.lon); });
         tideListNote = '';
         rebuildTideMarkers(true);
@@ -3475,7 +3480,10 @@
     // from zoom 9 + log2(24 / d)). A station is drawn from its reveal zoom on, so an icon shown never vanishes as you
     // zoom in (G27 B-P1-1); every station at the map's last zoom. The opened station is drawn whatever its reveal zoom,
     // on top of the others, and changes nothing else (G27 re-check RC-15: no icon elsewhere comes or goes on opening).
-    function tideRank(s) { return (s.obs ? 0 : 2) + (s.type === 'R' ? 0 : 1); }
+    // who keeps its place where icons crowd: a NOAA gauge, a NOAA harmonic or an agency's station, a tide gauge's
+    // constants, a NOAA subordinate, a model point
+    const TIDE_TYPE_RANK = { R: 1, O: 1, G: 2, S: 3, M: 4 };
+    function tideRank(s) { return s.obs ? 0 : (TIDE_TYPE_RANK[s.type] || 3); }
     function tideRankOrder(a, b) { return tideRank(a) - tideRank(b) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); }
     function tideRevealZooms() {
       const key = String(tideStationsData.length);
@@ -3550,13 +3558,16 @@
       return parts.sort().join(';');
     }
     const tideIconCache = {};
-    function tideIconFor(active, off) {
-      if (!off) return active ? tideIconActive : tideIcon;
-      const key = (active ? 'a' : 'i') + off[0] + ',' + off[1];
+    function tideIconFor(active, off, model) {
+      if (!off && !model) return active ? tideIconActive : tideIcon;
+      const o = off || [0, 0];
+      const key = (active ? 'a' : 'i') + (model ? 'm' : '') + o[0] + ',' + o[1];
       if (!tideIconCache[key]) {
         const half = active ? 11 : 9;
-        tideIconCache[key] = L.divIcon({ className: active ? 'tide-icon tide-icon-active' : 'tide-icon', html: '', iconSize: [half * 2, half * 2],
-                                         iconAnchor: [half - off[0], half - off[1]], tooltipAnchor: [off[0], off[1]] });
+        const cls = 'tide-icon' + (active ? ' tide-icon-active' : model ? ' tide-icon-model' : '');
+        const off2 = o;
+        tideIconCache[key] = L.divIcon({ className: cls, html: '', iconSize: [half * 2, half * 2],
+                                         iconAnchor: [half - off2[0], half - off2[1]], tooltipAnchor: [off2[0], off2[1]] });
       }
       return tideIconCache[key];
     }
@@ -3671,8 +3682,8 @@
       tideDrawn = [];
       vis.forEach(function (c) {
         const s = c.s, active = s.id === activeTideId, off = nudges.get(s.id + '#' + c.o);
-        const label = 'Tide station ' + s.name;
-        const icon = tideIconFor(active, off);
+        const label = (s.type === 'M' ? 'Tide model point ' : 'Tide station ') + s.name;
+        const icon = tideIconFor(active, off, s.type === 'M');
         const marker = L.marker([s.lat, c.lng], { icon: icon, title: label, zIndexOffset: active ? 450 : 400, autoPanOnFocus: false }).addTo(tideLayer);
         tideDrawn.push({ marker: marker, s: s, lng: c.lng, o: c.o, off: off || null, active: active, pad: null });
         marker.bindTooltip(textTip(label), { permanent: false, direction: 'top', offset: [0, -8] });   // NOAA's name: text, never HTML
@@ -3689,7 +3700,8 @@
       refocusMarker(tideDrawn.map(function (d) { return d.marker; }), focusKey, 't:');
       tideTargets();
     }
-    const TIDE_CREDIT = 'Tides: <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">NOAA CO-OPS</a>';
+    const TIDE_CREDIT = 'Tides: <a href="https://tidesandcurrents.noaa.gov/" target="_blank" rel="noopener">NOAA CO-OPS</a>, national agencies, '
+      + '<a href="https://www.seanoe.org/data/00980/109129/" target="_blank" rel="noopener">TICON-4 (DGFI-TUM)</a>';
     // the zone the tide window shows: the site's Time Zone when one is chosen, else the station's own (the forecast
     // window's rule; the live-buoy panel keeps its own-zone rule)
     function tideZone(station) { const sel = document.getElementById('tz'); return (sel && sel.value) || (station && station.tz) || 'UTC'; }

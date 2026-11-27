@@ -1215,7 +1215,7 @@ TIDE_MAX_AGE = 1800               # a station's forecast (the same all UTC day; 
 TIDE_OBS_MAX_AGE = 300            # observed water level (6-minute samples)
 TIDE_FINAL_MAX_AGE = 600          # NOAA says it has nothing for this station (it has said so for a moment: G27 RC-2)
 TIDES_OFF = "Tide stations are not available on this server"
-_TIDES = {"svc": None, "list": None, "global": None}
+_TIDES = {"svc": None, "list": None, "global": None, "base": None}
 _TIDES_LOCK = threading.Lock()
 # The agencies' official predictions (plan section 112): fetched in the visitor's request (a station at most once a UTC
 # day), far hosts included (Japan, Hong Kong, New Zealand: the far feeds' limits), at most TIDE_AGENCY_MAX_BYTES an
@@ -1242,16 +1242,32 @@ def _tides():
             try:
                 gstations, gdoc = tide_global.load()
                 buckets = {p: wind_sources.TokenBucket(TIDE_AGENCY_PER_MIN, burst=TIDE_AGENCY_BURST)
-                           for p in tide_global.PROVIDERS}
-                _TIDES["global"] = tide_global.GlobalTideService(gstations, get=_tide_agency_get, buckets=buckets,
-                                                                 cap=_REQUEST_BUILDS)
+                           for p in list(tide_global.PROVIDERS) + ["model"]}
+                root = _points_root()
+                _TIDES["global"] = tide_global.GlobalTideService(
+                    gstations, get=_tide_agency_get, buckets=buckets, cap=_REQUEST_BUILDS,
+                    model_base=(root + "/" + tide_global.MODEL_PREFIX) if root else None)
                 listing["stations"] = listing["stations"] + tide_global.client_rows(gstations)
                 listing["sources"] = [listing.get("source"), gdoc.get("source")]
             except Exception as exc:                      # NOAA's layer stands without the worldwide stations
                 app.logger.warning("worldwide tide stations not loaded: %s", exc)
+            _TIDES["base"] = listing
             _TIDES["list"] = _json_payload_and_etag(listing)
             _TIDES["svc"] = tide_sources.TideService(stations, _points_fetch, bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
         return _TIDES["svc"], _TIDES["list"]
+
+
+def _tide_list():
+    """The list answer (payload, etag), the model points' list asked again at most hourly OUTSIDE the lock (a slow
+    bucket never holds the other tide requests); a changed list is swapped in under the lock."""
+    _tides()
+    gsvc = _TIDES.get("global")
+    if gsvc is not None and gsvc.refresh_models():
+        with _TIDES_LOCK:
+            listing = dict(_TIDES["base"])
+            listing["stations"] = _TIDES["base"]["stations"] + gsvc.model_rows()
+            _TIDES["list"] = _json_payload_and_etag(listing)
+    return _TIDES["list"]
 
 
 def _tide_uncached(payload, status, retry=False):
@@ -1292,7 +1308,7 @@ def _tide_answer(status, payload, max_age):
 @app.route("/api/tides/stations")
 def api_tide_stations():
     try:
-        _, (payload, etag) = _tides()
+        payload, etag = _tide_list()
     except Exception:
         return _tide_uncached({"error": TIDES_OFF}, 503)
     return _station_list_answer(payload, etag)

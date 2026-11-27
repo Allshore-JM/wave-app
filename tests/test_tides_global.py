@@ -74,9 +74,11 @@ def _official_station(sid="qld:gold-coast", lat=-27.94, lon=153.43):
 
 def test_load_counts_and_types(stations):
     gauges = [s for s in stations.values() if s["type"] == "G"]
-    assert len(gauges) > 1500 and all(G.valid_id(s["id"]) for s in gauges)
+    assert len(gauges) > 1200 and all(G.valid_id(s["id"]) for s in gauges)    # 1,331 after the official stations
     assert all(s["lat0"] > 0 for s in gauges)                          # LAT lies below the mean level
     assert stations[BREST]["tz"] == "Europe/Paris"
+    official = [s for s in stations.values() if s["type"] == "O"]
+    assert len(official) > 1500 and {s["id"].split(":")[0] for s in official} == set(G.PROVIDERS)
 
 
 def test_ticon_payload_shape(stations):
@@ -234,7 +236,7 @@ def test_national_file_unknown_agency_ignored(tmp_path):
 @pytest.fixture
 def client(monkeypatch):
     import app as A
-    monkeypatch.setattr(A, "_TIDES", {"svc": None, "list": None, "global": None})
+    monkeypatch.setattr(A, "_TIDES", {"svc": None, "list": None, "global": None, "base": None})
     return A.app.test_client()
 
 

@@ -4,6 +4,9 @@ Station ids carry a source prefix (NOAA's stay bare, served by tide_sources.Tide
 
   ticon:<gauge>   a tide gauge's harmonic constants from TICON-4 / TICON-3 (DGFI-TUM, CC BY 4.0), predicted here by
                   tide_harmonic (no upstream request); tide_global.json, built by tools/tides/build_global.py
+  model:<point>   a forecast point with no tide station near: FES2022b predictions computed by the GitHub job
+                  tools/tides/fes_points.py (the model's files stay there, per AVISO+'s licence) and published to the
+                  model bucket under tides/fes/v1/ (points.json + p/<point>.json); the list is read at most hourly
   <agency>:<id>   an agency's own official predictions (tide_providers/: chs, kv, jma, hko, linz, mi, qld), fetched at
                   most once a station per UTC day; tide_national.json, built by tools/tides/build_national.py. A TICON
                   gauge within OFFICIAL_KM of an official station is not listed (the agency's table is what locals read).
@@ -34,7 +37,11 @@ NATIONAL_PATH = os.path.join(HERE, "tide_national.json")
 # prefix -> module in tide_providers/ (the agencies whose official predictions are shown)
 PROVIDERS = {"chs": "chs", "kv": "kartverket", "jma": "jma", "hko": "hko", "linz": "linz", "mi": "marine_institute",
              "qld": "queensland"}
-ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld):[a-z0-9][a-z0-9._-]{0,79}")
+ID_RE = re.compile(r"(ticon|chs|kv|jma|hko|linz|mi|qld|model):[a-z0-9][a-z0-9._-]{0,79}")
+MODEL_PREFIX = "tides/fes/v1"
+MODEL_LIST_TTL_S = 3600               # the model points' list is asked again at most this often
+MODEL_CREDIT = ("Tide model FES2022b (NOVELTIS, LEGOS, CLS Space Oceanography Division and CNES; distributed by "
+                "AVISO+ with support from CNES)")
 OFFICIAL_KM = 2.0
 ERROR_TTL_S = 60                      # a failed agency fetch is answered "retry" for this long without asking again
 WAIT_S = 2.0                          # a second visitor of a station being fetched waits this long, then "busy"
@@ -203,6 +210,35 @@ def official_payload(st, begin, mod, got):
     return out
 
 
+def model_payload(st, begin, doc):
+    """A model point's window from its published prediction file (begin, step 1800, v[] cm above LAT, hilo [[t, cm,
+    k]]): the file must cover the whole curve span, else it is too old (the job runs weekly; 47 days from two days
+    back)."""
+    start = begin - T.LEAD_S
+    b, step, v = int(doc["begin"]), int(doc["step"]), doc["v"]
+    if step != T.STEP_S or (start - b) % step:
+        raise TideFetchError("the model file's grid does not match")
+    i0 = (start - b) // step
+    if i0 < 0 or i0 + T.POINTS > len(v):
+        raise TideFetchError("the model file does not cover the window (made %s)" % doc.get("made"))
+    lo, hi = begin - 2 * T.LEAD_S, begin + T.SPAN_S + 2 * T.LEAD_S
+    out = {
+        "id": st["id"], "name": st["name"], "lat": st["lat"], "lon": st["lon"], "tz": st["tz"], "type": "M",
+        "obs": False, "datum": DATUM_LAT, "units": "m",
+        "begin": start, "window": [begin, begin + T.SPAN_S], "step": T.STEP_S,
+        "v": [round(x / 100.0, 2) for x in v[i0:i0 + T.POINTS]],
+        "hilo": [[int(t), round(h / 100.0, 2), k] for t, h, k in doc.get("hilo", []) if lo <= t <= hi and k in ("H", "L")],
+        "night": None, "events": None, "moon": None,
+        "method": "model", "ref": None, "ref_name": None, "source": MODEL_CREDIT,
+    }
+    a, z = start, begin + T.SPAN_S + T.LEAD_S
+    evs = T.sky_events(st["lat"], st["lon"], a, z)
+    out["night"] = T.night_bands(st["lat"], st["lon"], a, z, evs)
+    out["events"] = T.sun_moon(evs)
+    out["moon"] = T.moon_samples(st["lat"], a, z)
+    return out
+
+
 def provider(prefix):
     return importlib.import_module("tide_providers." + PROVIDERS[prefix])
 
@@ -213,8 +249,12 @@ class GlobalTideService:
     Both are kept per station per UTC day (LRU). buckets: {prefix: TokenBucket} limiting each agency's requests (a
     fetch takes its module's MAX_REQUESTS); cap: the request-path build cap shared with the other services."""
 
-    def __init__(self, stations, get=None, now=time.time, max_entries=256, buckets=None, cap=None):
+    def __init__(self, stations, get=None, now=time.time, max_entries=256, buckets=None, cap=None, model_base=None):
         self.stations = stations
+        self._model_base = model_base.rstrip("/") if model_base else None
+        self.models = {}
+        self.model_version = 0
+        self._models_at = None
         self._get = get
         self._now = now
         self._max = max_entries
@@ -231,8 +271,41 @@ class GlobalTideService:
             while len(self._cache) > self._max:
                 self._cache.popitem(last=False)
 
+    # -- model points
+    def refresh_models(self):
+        """Read the model points' list (at most once an hour): True when it changed. A failure keeps the list in hand."""
+        if not self._model_base or self._get is None:
+            return False
+        now = self._now()
+        with self._lock:                                # one visitor asks; the others carry on with the list in hand
+            if self._models_at is not None and now - self._models_at < MODEL_LIST_TTL_S:
+                return False
+            self._models_at = now
+        try:
+            doc = json.loads(self._get(self._model_base + "/points.json"))
+            f = doc["fields"]
+            found = {}
+            for row in doc["points"]:
+                s = dict(zip(f, row))
+                if not valid_id(s["id"]) or not s["id"].startswith("model:"):
+                    continue
+                found[s["id"]] = {"id": s["id"], "name": str(s["name"]), "lat": float(s["lat"]), "lon": float(s["lon"]),
+                                  "tz": s.get("tz") or "UTC", "type": "M", "obs": False}
+        except Exception:
+            return False
+        if set(found) == set(self.models) and all(found[k] == self.models[k] for k in found):
+            return False
+        self.models = found
+        self.model_version += 1
+        return True
+
+    def model_rows(self):
+        return [[s["id"], s["name"], s["lat"], s["lon"], "M", s["tz"], False] for s in self.models.values()]
+
     def forecast(self, sid):
         st = self.stations.get(sid) if valid_id(sid) else None
+        if st is None and valid_id(sid):
+            st = self.models.get(sid)
         if st is None:
             return "final", {"id": sid, "error": "Unknown tide station"}
         begin = T.begin_of(self._now())
@@ -254,6 +327,7 @@ class GlobalTideService:
     def _official(self, st, key, begin):
         sid = st["id"]
         prefix = sid.split(":", 1)[0]
+        model = prefix == "model"
         with self._lock:
             err_until = self._errors.get(key)
             if err_until is not None and self._now() < err_until:
@@ -270,15 +344,19 @@ class GlobalTideService:
         try:
             if self._get is None:
                 return "error", {"id": sid, "error": "The agency's tide predictions are not available here"}
-            mod = provider(prefix)
+            mod = None if model else provider(prefix)
             bucket = self._buckets.get(prefix)
-            if bucket is not None and not bucket.take(mod.MAX_REQUESTS):
+            if bucket is not None and not bucket.take(1 if model else mod.MAX_REQUESTS):
                 return "busy", {"id": sid, "error": "Busy"}
             if self._cap is not None and not self._cap.acquire(timeout=WAIT_S):
                 return "busy", {"id": sid, "error": "Busy"}
             try:
-                lo, hi = begin - 2 * T.LEAD_S, begin + T.SPAN_S + 2 * T.LEAD_S
-                payload = official_payload(st, begin, mod, mod.fetch(st, lo, hi, self._get))
+                if model:
+                    doc = json.loads(self._get("%s/p/%s.json" % (self._model_base, sid.split(":", 1)[1])))
+                    payload = model_payload(st, begin, doc)
+                else:
+                    lo, hi = begin - 2 * T.LEAD_S, begin + T.SPAN_S + 2 * T.LEAD_S
+                    payload = official_payload(st, begin, mod, mod.fetch(st, lo, hi, self._get))
             finally:
                 if self._cap is not None:
                     self._cap.release()

@@ -1,0 +1,86 @@
+name: tides-fes
+# FES2022b tide predictions at the forecast points with no tide station near (plan section 112, step 4).
+# FES2022b is licensed to the owner's AVISO+ account: its files and the constants extracted from them never leave this
+# job. The constants are kept between runs in the Actions cache ENCRYPTED with AVISO_PASS (the repository is public and
+# a pull request from a fork may read caches, never secrets); only predictions are published, to R2 tides/fes/v1/.
+# Secrets: AVISO_USER, AVISO_PASS (the owner's AVISO+ login with FES2022b access), R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET (the model bucket, as the other publishers).
+on:
+  schedule:
+    - cron: "17 3 * * 1"                   # weekly (Monday 03:17 UTC): each run publishes 47 days from two days back
+  workflow_dispatch:
+    inputs:
+      fes_path:
+        description: "the FES2022b ocean-tide (extrapolated) folder on AVISO+'s FTP"
+        default: "/auxiliary/tide_model/fes2022b/ocean_tide_extrapolated"
+      upload:
+        description: "publish to R2 (true/false)"
+        default: "true"
+concurrency:
+  group: tides-fes
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  predict:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.11"
+      - run: pip install numpy==2.2.6 h5py==3.14.0 boto3==1.43.98 certifi==2026.10.23 pytest==9.1.1
+      - run: python -m pytest -q tests/test_tides_model.py tests/test_tide_harmonic.py
+      - name: Restore the encrypted constants
+        id: cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809   # v4.2.4
+        with:
+          path: consts.json.enc
+          key: fes-consts-v1-${{ hashFiles('station_coords.json', 'tide_stations.json', 'tide_global.json', 'tide_national.json', 'tide_constituents.json', 'tools/tides/fes_points.py') }}
+      - name: Decrypt the constants
+        if: steps.cache.outputs.cache-hit == 'true'
+        env:
+          AVISO_PASS: ${{ secrets.AVISO_PASS }}
+        run: openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:AVISO_PASS -in consts.json.enc -out tools/tides/.fes_consts.json
+      - name: Download FES2022b (only when the constants must be made)
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          AVISO_USER: ${{ secrets.AVISO_USER }}
+          AVISO_PASS: ${{ secrets.AVISO_PASS }}
+          FES_PATH: ${{ github.event.inputs.fes_path || '/auxiliary/tide_model/fes2022b/ocean_tide_extrapolated' }}
+        shell: bash
+        run: |
+          set -eo pipefail
+          test -n "$AVISO_USER" -a -n "$AVISO_PASS" || { echo "AVISO_USER / AVISO_PASS secrets are not set"; exit 2; }
+          mkdir -p fes
+          for c in 2n2 eps2 j1 k1 k2 l2 lambda2 m2 m3 m4 m6 m8 mf mks2 mm mn4 ms4 msf msqm mtm mu2 n2 n4 nu2 o1 p1 q1 r2 s1 s2 s4 sa ssa t2; do
+            f="${c}_fes2022.nc"
+            curl -sSf --retry 3 --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f.xz" \
+              && xz -d "fes/$f.xz" \
+              || curl -sSf --retry 3 --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f" "ftp://ftp-access.aviso.altimetry.fr${FES_PATH}/$f"
+          done
+          ls -la fes | head -40
+      - name: Predict (and publish)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          UPLOAD: ${{ github.event.inputs.upload || 'true' }}
+        shell: bash
+        run: |
+          set -eo pipefail
+          ARGS=(--out build/tides-fes --consts tools/tides/.fes_consts.json)
+          [ -d fes ] && ARGS+=(--fes-dir fes)
+          [ "$UPLOAD" = "true" ] && ARGS+=(--upload)
+          python tools/tides/fes_points.py "${ARGS[@]}"
+          rm -rf fes                          # the model's files never leave this job
+          if [ -f consts.json.enc ]; then rm -f tools/tides/.fes_consts.json; fi   # a cache hit: the plain copy goes
+      - name: Encrypt the constants for the cache
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          AVISO_PASS: ${{ secrets.AVISO_PASS }}
+        run: |
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:AVISO_PASS -in tools/tides/.fes_consts.json -out consts.json.enc
+          rm -f tools/tides/.fes_consts.json

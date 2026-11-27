@@ -1197,3 +1197,99 @@ def test_the_workflow_hands_the_earthdata_login_to_the_publish_step_only():
     assert "EARTHDATA_USERNAME: ${{ secrets.EARTHDATA_USERNAME }}" in with_login[0]
     assert "EARTHDATA_PASSWORD: ${{ secrets.EARTHDATA_PASSWORD }}" in with_login[0]
     assert "PO.DAAC" in text and "set -x" not in text, "never echo the environment"
+
+
+# ---------------------------------------------------------------- section 108c: a listed day PO.DAAC does not serve yet
+
+def _podaac(new_day, body=b"m" * 1000, new=None, live=None):
+    """The logged-in get: the new day's file answers `new` (an exception) or `body`; the live day's (the login check,
+    Range 0-0) answers `live` (an exception) or one byte. `seen` lists (url, range header)."""
+    seen = []
+
+    def eget(url, headers=None, timeout=None):
+        seen.append((url, (headers or {}).get("Range")))
+        if url == f"{S.PODAAC}/{new_day}{MUR}.nc":
+            if new is not None:
+                raise new
+            return _HResp(body)
+        if live is not None:
+            raise live
+        return _HResp(b"\x89")
+    return eget, seen
+
+
+def _late(monkeypatch, code=403):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    monkeypatch.setattr(S.time, "sleep", lambda s: None)
+    day, live = _ago(1), _ago(2)
+    fc, store = _store_with_live(live)
+    get, _ = _net(cmr=_cmr_text(day), md5=b"", erddap=_http(404, S.LISTING))
+    return day, live, fc, store, get
+
+
+def test_a_listed_day_refused_while_the_live_day_downloads_is_tried_again_quietly(monkeypatch, capsys):
+    day, live, fc, store, get = _late(monkeypatch)
+    eget, seen = _podaac(day, new=_http(403, "https://archive/x"))
+    assert S.main([], get=get, store=store, earthdata=eget) == 0, "not served yet: no failed run, no mail"
+    assert (f"{S.PODAAC}/{live}{MUR}.nc", "bytes=0-0") in seen, "the login checked on the live day, one byte"
+    assert S.failed_key(day) not in fc.objects and S.source_alarm_key() not in fc.objects
+    assert json.loads(fc.objects[S.notready_key(day)]["body"])["count"] == 1
+    assert "not served yet" in capsys.readouterr().out
+    assert S.main([], get=get, store=store, earthdata=eget) == 0, "no back-off: asked again at the next tick"
+    assert json.loads(fc.objects[S.notready_key(day)]["body"])["count"] == 2
+    eget, _ = _podaac(day)                                          # served now: published
+    assert S.main([], get=get, store=store, reader=_reader_for(b"m" * 1000), earthdata=eget) == 0
+    assert json.loads(fc.objects[S.latest_key()]["body"])["run"] == day
+
+
+def test_a_404_counts_the_same_and_the_sixth_tick_in_a_row_mails_once(monkeypatch):
+    day, live, fc, store, get = _late(monkeypatch)
+    eget, _ = _podaac(day, new=_http(404, "https://archive/x"))
+    codes = [S.main([], get=get, store=store, earthdata=eget) for _ in range(S.NOTREADY_WARN + 1)]
+    assert codes == [0] * (S.NOTREADY_WARN - 1) + [1, 0]
+    assert S.failed_key(day) not in fc.objects and S.source_alarm_key() not in fc.objects
+
+
+def test_a_refused_login_is_still_structural_and_mails_at_once(monkeypatch):
+    day, live, fc, store, get = _late(monkeypatch)
+    eget, seen = _podaac(day, new=_http(403, "https://archive/x"), live=_http(403, "https://archive/live"))
+    with pytest.raises(IOError, match="no source delivered"):
+        S.main([], get=get, store=store, earthdata=eget)
+    assert json.loads(fc.objects[S.failed_key(day)]["body"])["attempts"] == 1
+    assert "403" in json.loads(fc.objects[S.source_alarm_key()]["body"])["reason"]
+    assert S.notready_key(day) not in fc.objects
+
+
+def test_a_401_is_never_taken_for_a_day_not_served(monkeypatch):
+    day, live, fc, store, get = _late(monkeypatch)
+    eget, seen = _podaac(day, new=_http(401, "https://urs/x"))
+    with pytest.raises(IOError):
+        S.main([], get=get, store=store, earthdata=eget)
+    assert not [u for u, r in seen if r], "no login check: URS refused the login itself"
+    assert S.source_alarm_key() in fc.objects and S.notready_key(day) not in fc.objects
+
+
+def test_no_live_day_means_no_login_check(monkeypatch):
+    monkeypatch.setattr(S, "MIN_FILE_BYTES", 10)
+    day = _ago(1)
+    fc, store = _store_with_live(None)
+    get, _ = _net(cmr=_cmr_text(day), md5=b"", erddap=_http(404, S.LISTING))
+    eget, seen = _podaac(day, new=_http(403, "https://archive/x"))
+    with pytest.raises(IOError):
+        S.main([], get=get, store=store, earthdata=eget)
+    assert len(seen) == 1 and S.source_alarm_key() in fc.objects
+    assert S.podaac_login_ok(eget, "2026112") is False and S.podaac_login_ok(eget, None) is False
+
+
+def test_prune_drops_old_not_served_records_with_the_failed_ones():
+    fc = FakeClient()
+    store = P.Store(fc, "b")
+    for d in ("20261101", "20261102", "20261103"):
+        fc.objects[f"{S.PREFIX}/{d}/manifest-x.json"] = {"body": b"{}", "ct": "", "cc": ""}
+    fc.objects[S.latest_key()] = {"body": b'{"run":"20261103"}', "ct": "", "cc": ""}
+    for d in ("20261030", "20261102"):
+        fc.objects[S.notready_key(d)] = {"body": b'{"count":1}', "ct": "", "cc": ""}
+        fc.objects[S.failed_key(d)] = {"body": b'{"attempts":1}', "ct": "", "cc": ""}
+    S.prune(store, keep=2)
+    assert S.notready_key("20261030") not in fc.objects and S.failed_key("20261030") not in fc.objects
+    assert S.notready_key("20261102") in fc.objects and S.failed_key("20261102") in fc.objects

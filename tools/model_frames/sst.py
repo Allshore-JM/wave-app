@@ -53,6 +53,7 @@ URS = "https://urs.earthdata.nasa.gov"   # the only host ever sent the Earthdata
 ERDDAP = "https://coastwatch.pfeg.noaa.gov/erddap/files/jplMURSST41"
 LISTING = ERDDAP + "/.csv"
 FILE_RE = re.compile(r"^(\d{8})090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02\.0-fv04\.1\.nc$")
+FILE_TAIL = "090000-JPL-L4_GHRSST-SSTfnd-MUR-GLOB-v02.0-fv04.1.nc"     # a day's file: <YYYYMMDD> + FILE_TAIL
 UA = "allshoresurf.com sst tiles (https://allshoresurf.com)"
 SOURCE = {"name": "NASA JPL MUR SST v4.1 (GHRSST L4)", "doi": "10.5067/GHGMR-4FJ04",
           "url": "https://podaac.jpl.nasa.gov/dataset/MUR-JPL-L4-GLOB-v4.1",
@@ -73,6 +74,7 @@ STALE_DAYS = 3                          # a live day older than this is an outag
 STALE_ALARM_EVERY_H = 12
 FAILED_RETRY_AFTER_S = 3600
 FAILED_MAX_ATTEMPTS = 6
+NOTREADY_WARN = 6                       # hourly ticks in a row of a day PO.DAAC lists but will not serve: one mail (~6 h)
 PNG = "image/png"
 JSON = "application/json"
 
@@ -109,6 +111,10 @@ def manifest_key(day, published):
 
 def stats_key(day, published):
     return f"{day_dir(day)}/stats-{published.replace('-', '').replace(':', '')}.json"
+
+
+def notready_key(day):
+    return P.notready_key(day, PREFIX)
 
 
 def failed_key(day):
@@ -537,11 +543,12 @@ def prune(store, keep=KEEP_DAYS):
         store.delete_prefix(f"{day_dir(d)}/")
         deleted.append(d)
     oldest = min(protect) if protect else None
-    if oldest:                                                        # failure records of days older than every kept one
-        old = [k for k in store.list_keys(f"{PREFIX}/failed/")
-               if k.rsplit("/", 1)[-1][:8].isdigit() and k.rsplit("/", 1)[-1][:8] < oldest]
-        if old:
-            store.delete_keys(old, "failed records")
+    if oldest:                                                        # failure / not-served records of days older than every kept one
+        for kind in ("failed", "notready"):
+            old = [k for k in store.list_keys(f"{PREFIX}/{kind}/")
+                   if k.rsplit("/", 1)[-1][:8].isdigit() and k.rsplit("/", 1)[-1][:8] < oldest]
+            if old:
+                store.delete_keys(old, f"{kind} records")
     return deleted
 
 
@@ -610,6 +617,28 @@ def _store_from_env():
 
 
 PRIMARY, FALLBACK = "PO.DAAC", "ERDDAP"
+
+
+class NotServedYet(Exception):
+    """PO.DAAC lists the day (CMR) but refuses its file while the login still fetches the live day: the new day is not
+    served yet (section 108c: 2026-11-27 18:05Z, a 403 for 20261125 minutes after NASA re-ingested 11-23..11-25;
+    2026-11-23, the same for 20261122). Tried again next tick, no failure record or back-off, mailed only after
+    NOTREADY_WARN ticks in a row."""
+
+
+def podaac_login_ok(eget, live_day, log=print):
+    """True when PO.DAAC serves the LIVE day's file (already downloaded once with this login) to this login: one byte
+    by Range. Then a 403 / 404 for the new day is about that day, not the account (structural)."""
+    if not live_day or not re.fullmatch(r"\d{8}", str(live_day)):
+        return False
+    name = f"{live_day}{FILE_TAIL}"
+    try:
+        with eget(f"{PODAAC}/{name}", headers={"Range": "bytes=0-0"}, timeout=60) as r:
+            r.read(16)
+        return True
+    except Exception as exc:                                           # noqa: BLE001
+        log(f"PO.DAAC login check on the live day {name}: {clean(exc)}")
+        return False
 
 
 def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
@@ -692,12 +721,21 @@ def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
             tmp = tempfile.TemporaryDirectory()
             dest = os.path.join(tmp.name, name)
             started = time.monotonic()
+            not_served = None
             for src in (PRIMARY, FALLBACK):                            # the download falls back too, same deadline
                 try:
                     if src == PRIMARY:
                         eget = earthdata if earthdata is not None else earthdata_from_env()
-                        path = download(name, size, dest, get=eget, url=f"{PODAAC}/{name}", exact=False,
-                                        md5=podaac_md5(name, get), start=started)
+                        try:
+                            path = download(name, size, dest, get=eget, url=f"{PODAAC}/{name}", exact=False,
+                                            md5=podaac_md5(name, get), start=started)
+                        except urllib.error.HTTPError as exc:
+                            # a listed day refused while the live day still downloads: not served yet (section 108c)
+                            if exc.code in (403, 404) and live and podaac_login_ok(eget, latest.get("run")):
+                                not_served = NotServedYet(f"PO.DAAC lists {name} but answers {exc.code}; the live day "
+                                                          f"{latest.get('run')} still downloads, so the login is fine")
+                                raise SourceError(str(not_served)) from None
+                            raise
                     else:
                         exact = size if lister == FALLBACK else dict((n, b) for _, n, b in listing(get)).get(name)
                         if exact is None:
@@ -710,6 +748,8 @@ def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
                 except Exception as exc:                               # noqa: BLE001
                     note(src, "download", exc)
             if path is None:
+                if not_served is not None:
+                    raise not_served
                 raise IOError("no source delivered " + name + ": " + "; ".join(f"{s} {t}" for s, t, _ in problems))
             print(f"downloaded {os.path.getsize(path) / 1e6:.0f} MB from {via} in {time.monotonic() - started:.0f} s")
         source = SOURCE_ERDDAP if via == FALLBACK else SOURCE
@@ -722,6 +762,16 @@ def main(argv=None, get=_get, store=None, reader=read_mur, earthdata=None):
             pointer = {"format": FORMAT, "day": manifest["day"], "run": day, "complete": True,
                        "manifest": manifest_key(day, manifest["published_utc"]), "published_utc": manifest["published_utc"]}
             uploads.put(latest_key(), json.dumps(pointer, sort_keys=True).encode(), JSON, P.POINTER)
+    except NotServedYet as exc:
+        if not live:
+            raise
+        rec = P.record_notready(store, day, str(exc), PREFIX)
+        print(f"day {day} not served yet ({rec['count']} in a row): {exc}; the next tick tries again")
+        rc = 0
+        if rec["count"] == NOTREADY_WARN:
+            _summary(f"WARNING: PO.DAAC has listed {day} but not served it {rec['count']} ticks in a row: {exc}")
+            rc = 1
+        return finish(max(rc, stale(f"day {day} not served by PO.DAAC yet")))
     except Exception as exc:                                           # noqa: BLE001
         if live:
             rec = record_failure(store, day, exc)

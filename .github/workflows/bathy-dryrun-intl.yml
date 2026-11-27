@@ -1,6 +1,6 @@
 # TEMPORARY (plan section 111a, step 2): build the five Australia / New Zealand regions on GitHub's runner, check them
 # and read them back against their sources. No secrets, no upload. Results go to ::notice:: annotations (readable
-# without signing in). Removed before the job merge (a test pins that it is gone).
+# without signing in). Removed before the job merge (a test pins that it is gone). Run 2: after the G77 fixes.
 name: bathy-dryrun-intl
 on:
   push:

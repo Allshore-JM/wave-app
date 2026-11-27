@@ -1724,6 +1724,8 @@
     map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer) rebuildWindMarkers(false); });
     map.on('overlayadd', function (e) { if (e.layer === liveBuoyLayer) rebuildLiveBuoyMarkers(true); });   // new elements: keys, Tab stops
     map.on('overlayadd overlayremove', function (e) { if (e.layer === liveBuoyLayer) syncLegendNote(); });   // its note on the key (G37 F3)
+    // the tide icons step off the forecast dots, live dots and My points shown (plan section 113 A): ticked or unticked
+    map.on('overlayadd overlayremove', function (e) { if (e.layer === forecastLayer || e.layer === pointLayer || e.layer === liveBuoyLayer) requestTideRebuild(); });
 
     // One row at the top-right (plan section 54): the legend's key, the map tools, the settings gear; each opens its panel below.
     const SettingsControl = L.Control.extend({
@@ -2017,6 +2019,11 @@
     const TIDE_GAP_PX = 24;                         // icons (18 px) closer than this on screen overlap: the less important waits
     const TIDE_HALF = 9, TIDE_HALF_ACTIVE = 11;     // half an icon (18 px; the opened one 22 px): its box, the click target
     const TIDE_NUDGE_STEP = 12;                     // an icon whose centre lies in another's box (+1 px) moves 12 px aside
+    // a tide icon keeps this gap (px, box to box) from a forecast dot, a live dot and a My point: those stay put and the
+    // tide icon steps aside, far enough that each is clicked on its own (owner, 2026-11-27: the forecast point matters
+    // more; plan section 113 A). Fingers get more room (the dots take taps COARSE_TOL px beyond their edge).
+    const TIDE_CLEAR_PX = 8, TIDE_CLEAR_TOUCH_PX = 12;
+    const TIDE_DOT_HALF = { forecast: 4, point: 7 };   // the drawn half sizes: the circle marker (3 + stroke), My point (14 px)
     const TIDE_CELL_PX = 32;                        // the reveal grid: >= TIDE_GAP_PX, and a divisor of the world's width
     const TIDE_LIST_RETRY_MS = 30000;               // a failed station list is asked again after this (not on every pan)
     let tideListFailedAt = -Infinity;
@@ -2151,6 +2158,7 @@
           document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(s.id), source: 'map' } }));
         });
       });
+      if (typeof requestTideRebuild === 'function') requestTideRebuild();   // tide icons step off the dots (section 113 A)
     }
 
     // The visitor's points ([{id, lat, lon, label}], set by the page block after static_ui/forecast.js: setSavedPoints).
@@ -2180,6 +2188,7 @@
           document.dispatchEvent(new CustomEvent('allshore:station', { detail: { sid: String(p.id), source: 'map' } }));
         });
       });
+      if (typeof requestTideRebuild === 'function') requestTideRebuild();   // tide icons step off the points (section 113 A)
     }
 
     // After a favorite is picked (which reloads the page via the form), recenter the
@@ -3432,6 +3441,7 @@
       liveDrawn = drawnNow;
       refocusMarker(liveDrawn.map(function (d) { return d.marker; }), focusKey, 'l:');
       liveTabStops();
+      if (typeof requestTideRebuild === 'function') requestTideRebuild();   // tide icons step off the dots (section 113 A)
     }
     function openLiveBuoy(s) {                        // a click on its dot, or the forecast window's "Live buoy"
       if (typeof forgetLiveBack === 'function') forgetLiveBack();   // the link sets its own back link after this (re-check R1-3)
@@ -3528,24 +3538,76 @@
     // of importance, the opened one at its own rank with its larger box, so opening a station moves no other icon unless
     // that box needs the room (fresh check F-2: placed first, it swapped places with a neighbour under the pointer; every
     // station opened at zooms 9 to 11 still finds a free spot this way, desktop and phone views).
+    // The fixed boxes a tide icon steps away from (plan section 113 A), in world pixels at zoom z: the forecast dots,
+    // the live dots (drawn right of their coordinate, with a 2 or 3 px border) and My points, each while its layer is
+    // on. They never move; the tide icon does.
+    function tideClearPx() {
+      return (window.matchMedia && window.matchMedia('(any-pointer: coarse)').matches) ? TIDE_CLEAR_TOUCH_PX : TIDE_CLEAR_PX;
+    }
+    function tideObstacles(z) {
+      const out = [];
+      const add = function (lat, lng, h, dx) {
+        if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) return;
+        const p = map.project([Number(lat), Number(lng)], z);
+        out.push({ x: p.x + (dx || 0), y: p.y, h: h, fixed: true });
+      };
+      if (typeof forecastLayer !== 'undefined' && map.hasLayer(forecastLayer) && typeof forecastStationsData !== 'undefined') {
+        visibleCopies(forecastStationsData).forEach(function (c) { add(c.s.lat, c.lng, TIDE_DOT_HALF.forecast); });
+      }
+      if (typeof pointLayer !== 'undefined' && map.hasLayer(pointLayer) && typeof savedPointsData !== 'undefined') {
+        visibleCopies(savedPointsData).forEach(function (c) { add(c.s.lat, c.lng, TIDE_DOT_HALF.point); });
+      }
+      if (typeof liveDrawn !== 'undefined' && (typeof liveBuoyLayer === 'undefined' || map.hasLayer(liveBuoyLayer))) {
+        liveDrawn.forEach(function (d) {              // createLiveBuoyIcon's geometry (liveDotAt), plus the border
+          const size = d.active ? 15 : 11, anchor = Math.round(size / 2 - (d.active ? 8 : 7));
+          add(d.lat, d.lng, size / 2 + (d.active ? 3 : 2), size / 2 - anchor);
+        });
+      }
+      return out;
+    }
     function tideNudges(copies) {
       const out = new Map(), z = map.getZoom();
-      if (copies.length < 2) return out;
-      const placed = [];
-      const free = function (x, y, h) {
-        return placed.every(function (q) { return Math.max(Math.abs(q.x - x), Math.abs(q.y - y)) >= Math.max(h, q.h) + 1; });
+      if (!copies.length) return out;
+      const gap = tideClearPx();
+      const placed = tideObstacles(z);
+      if (copies.length < 2 && !placed.length) return out;
+      // a tide icon's centre outside another tide icon's box (+1 px); its box `gap` px clear of a fixed one
+      const clearOf = function (x, y, h, q) {
+        const d = Math.max(Math.abs(q.x - x), Math.abs(q.y - y));
+        return q.fixed ? d >= h + q.h + gap : d >= Math.max(h, q.h) + 1;
+      };
+      const free = function (x, y, h, tidesToo) {
+        return placed.every(function (q) { return (!tidesToo && !q.fixed) || clearOf(x, y, h, q); });
+      };
+      const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+      const tryRing = function (p, h, dist) {
+        let got = null;
+        DIRS.some(function (t) {
+          const dx = t[0] * dist, dy = t[1] * dist;
+          if (free(p.x + dx, p.y + dy, h, true)) { got = [dx, dy]; return true; }
+          return false;
+        });
+        return got;
       };
       copies.slice().sort(function (a, b) { return tideRankOrder(a.s, b.s) || a.o - b.o; }).forEach(function (c) {
         const p = map.project([c.s.lat, c.lng], z), h = c.s.id === activeTideId ? TIDE_HALF_ACTIVE : TIDE_HALF;
         let off = null;
-        if (!free(p.x, p.y, h)) {
-          [1, 2].some(function (ring) {                // 12 px away, then 24 (a crowded harbour beside the opened icon)
-            return [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].some(function (t) {
-              const dx = t[0] * TIDE_NUDGE_STEP * ring, dy = t[1] * TIDE_NUDGE_STEP * ring;
-              if (free(p.x + dx, p.y + dy, h)) { off = [dx, dy]; return true; }
-              return false;
+        if (!free(p.x, p.y, h, true)) {
+          // the fixed boxes it touches set how far it must go: the smallest step that clears them all
+          let need = 0;
+          placed.forEach(function (q) { if (q.fixed && !clearOf(p.x, p.y, h, q)) need = Math.max(need, Math.ceil(h + q.h + gap)); });
+          const rings = need ? [need, need + TIDE_NUDGE_STEP, need + 2 * TIDE_NUDGE_STEP]
+            : [TIDE_NUDGE_STEP, 2 * TIDE_NUDGE_STEP];   // 12 px away, then 24 (a crowded harbour beside the opened icon)
+          rings.some(function (dist) { off = tryRing(p, h, dist); return !!off; });
+          if (!off && need) {                          // no spot clear of everything: clear of the dots at least (a
+            [need, need + TIDE_NUDGE_STEP, need + 2 * TIDE_NUDGE_STEP].some(function (dist) {   // tide icon on a tide
+              return DIRS.some(function (t) {        // icon still opens one of them; one on a dot hides the dot)
+                const dx = t[0] * dist, dy = t[1] * dist;
+                if (free(p.x + dx, p.y + dy, h, false)) { off = [dx, dy]; return true; }
+                return false;
+              });
             });
-          });
+          }
         }
         placed.push(off ? { x: p.x + off[0], y: p.y + off[1], h: h } : { x: p.x, y: p.y, h: h });
         if (off) out.set(c.s.id + '#' + c.o, off);
@@ -3641,9 +3703,18 @@
       });
       setTabStops(tideDrawn.map(function (d) { return d.marker; }), function (m, i) { return pts[i]; });
       const flags = (typeof windDrawn !== 'undefined' ? windDrawn : []).map(function (d) { const q = map.latLngToContainerPoint([d.s.lat, d.lng]); return { x: q.x, y: q.y, id: d.s.id, o: d.o }; });
+      // the forecast dots, live dots and My points the icons step away from: a pad stops before their edge too
+      // (plan section 113 A; in screen pixels, the same boxes as tideObstacles)
+      const z0 = map.getZoom(), ref = tideDrawn[0], wp = map.project([ref.s.lat, ref.lng], z0), cp = map.latLngToContainerPoint([ref.s.lat, ref.lng]);
+      const sx = cp.x - wp.x, sy = cp.y - wp.y;        // world pixels -> the container's
+      const dots = tideObstacles(z0).map(function (q) { return { x: q.x + sx, y: q.y + sy, h: q.h }; });
       pts.forEach(function (p, i) {
         let c = Infinity;                               // the nearest drawn icon, by the boxes' measure (Chebyshev)
         pts.forEach(function (q, j) { if (j !== i) c = Math.min(c, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y))); });
+        // a dot: the pad ends at least 2 px before the dot's own box (the pad may reach half-way to an icon's centre,
+        // but a dot is small: half-way to its centre would cover it)
+        let dotPad = Infinity;
+        dots.forEach(function (q) { dotPad = Math.min(dotPad, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y)) - q.h - p.h - 2); });
         // a wind flag on the same spot: no pad (the flag's ring disc around the icon opens the wind window: owner, 2026-10-10)
         // (the same gauge by its id: the two snapshots place some gauges 1-2 m apart, several pixels at zoom 18: G28 A-10)
         const tid = 'coops:' + tideDrawn[i].s.id;
@@ -3652,12 +3723,22 @@
         // another station's wind flag counts like any other icon: the pad stops half-way to it, as a live dot's does
         // (re-check O-1: a tap on a wind ring 12-22 px away opened the tide window)
         flags.forEach(function (q) { if (!mine(q)) c = Math.min(c, Math.max(Math.abs(q.x - p.x), Math.abs(q.y - p.y))); });
-        const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h)));
+        const pad = shared ? 0 : Math.max(0, Math.min(10, Math.floor(c / 2 - p.h), Math.floor(dotPad + 1e-6)));   // (1e-6: projection round-off)
         const el = tideDrawn[i].marker.getElement && tideDrawn[i].marker.getElement();
         if (el && el.style && el.style.setProperty && tideDrawn[i].pad !== pad) { el.style.setProperty('--tide-tap', pad + 'px'); tideDrawn[i].pad = pad; }
       });
     }
+    // the forecast dots, live dots or My points changed (a list, a layer, an opened buoy): one tide rebuild after the
+    // round, unless the round rebuilt the tides itself (a pan rebuilds every layer, the tides last). `var`: the forecast
+    // markers may be drawn before this line runs.
+    var tideRebuildDue = false;
+    function requestTideRebuild() {
+      if (tideRebuildDue) return;
+      tideRebuildDue = true;
+      Promise.resolve().then(function () { if (!tideRebuildDue) return; tideRebuildDue = false; rebuildTideMarkers(false); });
+    }
     function rebuildTideMarkers(force = false) {
+      tideRebuildDue = false;
       const on = tideVisible();
       if (on && !tideListPromise && Date.now() - tideListFailedAt >= TIDE_LIST_RETRY_MS) loadTideStations();
       const all = on ? visibleCopies(tideStationsData) : [], vis = on ? thinTideCopies(all) : [];

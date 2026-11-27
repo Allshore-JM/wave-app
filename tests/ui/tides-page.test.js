@@ -49,7 +49,10 @@ function boot(o = {}) {
   const pxPerDeg = o.pxPerDeg || 1000, scale = () => pxPerDeg * Math.pow(2, zoom - 9);
   const container = { focused: 0, focus() { this.focused++; } };
   const liveLayer = { items: [], clearLayers() { this.items = []; }, removeLayer(m) { this.items = this.items.filter((x) => x !== m); } };
-  const map = { hasLayer: (l) => (l === tideLayer && on) || (l === liveLayer && o.liveOn !== false), getZoom: () => zoom,
+  // plan section 113 A: the forecast dots and My points the tide icons step away from (winds-page.test.js's stubs)
+  const forecastLayer = { name: 'forecast' }, pointLayer = { name: 'points' };
+  const map = { hasLayer: (l) => (l === tideLayer && on) || (l === liveLayer && o.liveOn !== false) ||
+      (l === forecastLayer && o.forecastOn !== false) || (l === pointLayer && o.pointsOn !== false), getZoom: () => zoom,
     latLngToContainerPoint: (ll) => ({ x: (ll[1] + 180) * scale(), y: (90 - ll[0]) * scale() }),
     project: (ll, z) => ({ x: (ll[1] + 180) * pxPerDeg * Math.pow(2, z - 9), y: (90 - ll[0]) * pxPerDeg * Math.pow(2, z - 9) }),   // Leaflet's: x from -180
     getSize: () => o.size || { x: 1e9, y: 1e9 }, getContainer: () => container,
@@ -76,7 +79,7 @@ function boot(o = {}) {
   const view = { load: (st, opts) => loads.push([st.id, opts]), clear: () => clears.push(1), resize() {}, show() {}, setUnit() {}, setZone() {} };
   const AllshoreTides = { createTideView: (deps) => { view.deps = deps; return view; } };
   const toolClicks = [];
-  const window = { AllshoreTides: o.noTides ? null : AllshoreTides, AllshoreTools: { active: () => !!o.toolActive, click: (ll, ev) => toolClicks.push(ll) }, Chart: undefined, sessionStorage: { getItem: () => null, setItem() {} } };
+  const window = { matchMedia: (q) => ({ matches: !!o.coarse && /coarse/.test(q) }), AllshoreTides: o.noTides ? null : AllshoreTides, AllshoreTools: { active: () => !!o.toolActive, click: (ll, ev) => toolClicks.push(ll) }, Chart: undefined, sessionStorage: { getItem: () => null, setItem() {} } };
   const tideWin = { opens: 0, el: byId.tideWin, isOpen: () => !byId.tideWin.hidden, window: { mode: 'normal' },
     open() { this.opens++; byId.tideWin.hidden = false; }, close() { byId.tideWin.hidden = true; api.tideWindowClosed(); } };
   const visibleCopies = (stations) => stations.flatMap((s) => (o.copies || [0]).map((off) => ({ s, lng: s.lon + off, o: off })));
@@ -91,11 +94,13 @@ function boot(o = {}) {
   const windDrawn = o.windDrawn || [];                                  // the wind block's drawn flags ({s: {lat}, lng}): a tide icon on one keeps no pad
   const api = new Function('window', 'document', 'fetch', 'map', 'L', 'tideLayer', 'tideIcon', 'tideIconActive', 'visibleCopies', 'renderSignature', 'textTip',
     'saveMapView', 'saveLayerVisibility', 'measureTopRight', 'getSelectedUnit', 'tzAbbr', 'loadChartJs', 'CustomEvent', 'tideWin', 'layersControl', 'MAX_MAP_ZOOM',
-    'liveBuoyLayer', 'liveBuoyIconActive', 'liveBuoyIconInactive', 'buoyDisplayLabel', 'loadLiveBuoyDetails', 'windDrawn', code)(
+    'liveBuoyLayer', 'liveBuoyIconActive', 'liveBuoyIconInactive', 'buoyDisplayLabel', 'loadLiveBuoyDetails', 'windDrawn',
+    'forecastLayer', 'forecastStationsData', 'pointLayer', 'savedPointsData', code)(
     window, document, fetch, map, L, tideLayer, 'ICON', 'ICON-ACTIVE', visibleCopies, renderSignature, (t) => ({ text: String(t) }),
     () => saves.push('view'), () => saves.push('layers'), () => measures.push(1), () => (o.unit || 'US'), (iso, tz) => tz + '!', () => Promise.resolve(),
     class { constructor(type) { this.type = type; } }, tideWin, layersControl, 11,
-    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => { liveOpened.push(st.id); Object.defineProperty(liveOpened, 'last', { value: st, configurable: true }); }, windDrawn);
+    liveLayer, 'LIVE-ACTIVE', 'LIVE', (st) => st.id, (st) => { liveOpened.push(st.id); Object.defineProperty(liveOpened, 'last', { value: st, configurable: true }); }, windDrawn,
+    forecastLayer, o.forecast || [], pointLayer, o.points || []);
   api.container = container;
   return { api, notes, byId, events, tideLayer, credits, fetchCalls, loads, clears, view, toolClicks, saves, measures, layersControl, tideWin,
     document, mkEl, liveLayer, liveOpened, setZoom: (z) => { zoom = z; }, setOn: (v) => { on = v; } };
@@ -668,4 +673,82 @@ test('the subtitle names the source: NOAA with its id, a TICON gauge, an agency,
   assert.equal(open('linz:auckland'), 'Tide station · LINZ New Zealand');
   assert.equal(open('model:51201'), 'Tide model point · FES2022');
   assert.equal(open('constructor:x'), 'Tide station · official table', 'no prototype key read as an agency');
+});
+
+// ---- plan section 113 A: a tide icon steps clear of the forecast dots, live dots and My points ----
+const byLabel = (b, label) => b.tideLayer.items.find((m) => m.opts.title === label);
+const stepOf = (m) => (m.opts.icon && m.opts.icon.divIcon ? m.opts.icon.divIcon.tooltipAnchor : [0, 0]);
+// the gap between two square boxes (half sizes ha, hb) whose centres are (dx, dy) apart
+const boxGap = (dx, dy, ha, hb) => Math.max(Math.abs(dx), Math.abs(dy)) - ha - hb;
+
+test('section 113 A: J-Bay, a model point on its forecast dot steps >= 21 px aside, its box 8 px clear of the dot, at zooms 9-13; the forecast layer off: it stays', async () => {
+  const list = { fields: FIELDS, stations: [['model:jbay', 'Off Jeffreys Bay', -34.05, 24.93, 'M', 'Africa/Johannesburg', false]] };
+  const forecast = [{ id: 'JBAY', lat: -34.05, lon: 24.93 }];
+  for (const z of [9, 10, 11, 12, 13]) {
+    const b = boot({ zoom: z, list, forecast });
+    b.api.rebuildTideMarkers(true); await flush();
+    const m = byLabel(b, 'Tide model point Off Jeffreys Bay');
+    assert.ok(m, 'drawn at zoom ' + z);
+    const off = stepOf(m);
+    assert.ok(Math.max(Math.abs(off[0]), Math.abs(off[1])) >= 21, 'zoom ' + z + ': moved ' + off);
+    assert.ok(boxGap(off[0], off[1], 9, 4) >= 8, 'zoom ' + z + ': its box clear of the dot by 8 px');
+    assert.ok(/tide-icon-model/.test(m.opts.icon.divIcon.className), 'still the model icon');
+    assert.deepEqual(m.ll, [-34.05, 24.93], 'its place on the map stays (only the anchor moves)');
+  }
+  const off = boot({ zoom: 11, list, forecast, forecastOn: false });
+  off.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byLabel(off, 'Tide model point Off Jeffreys Bay')), [0, 0], 'no forecast dots shown: nothing to step off');
+});
+
+test('section 113 A: a tide icon steps off a live dot (drawn 6.5 px right of its coordinate, 2 px border) and off a My point; fingers get 12 px', async () => {
+  const list = { fields: FIELDS, stations: [['G', 'Gauge on buoy', 30, -150, 'R', 'UTC', true], ['P', 'Gauge on point', 20, -150, 'R', 'UTC', true]] };
+  for (const coarse of [false, true]) {
+    const gap = coarse ? 12 : 8;
+    const b = boot({ zoom: 10, list, coarse, points: [{ id: 'p1', lat: 20, lon: -150, label: 'Mine' }] });
+    b.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
+    b.api.rebuildLiveBuoyMarkers(true);
+    b.api.rebuildTideMarkers(true); await flush();
+    const g = stepOf(byTitle(b, 'Gauge on buoy'));
+    assert.ok(boxGap(g[0] - 6.5, g[1], 9, 7.5) >= gap, (coarse ? 'touch' : 'mouse') + ': clear of the live dot by ' + gap + ' px: ' + g);
+    const p = stepOf(byTitle(b, 'Gauge on point'));
+    assert.ok(boxGap(p[0], p[1], 9, 7) >= gap, (coarse ? 'touch' : 'mouse') + ': clear of My point by ' + gap + ' px: ' + p);
+  }
+  const plain = boot({ zoom: 10, list, pointsOn: false, liveOn: false, points: [{ id: 'p1', lat: 20, lon: -150, label: 'Mine' }] });
+  plain.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
+  plain.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(plain, 'Gauge on buoy')), [0, 0], 'the live layer off: no step');
+  assert.deepEqual(stepOf(byTitle(plain, 'Gauge on point')), [0, 0], 'My points off: no step');
+});
+
+test('section 113 A: several tide icons around one forecast dot: every box clear of the dot, no two on one spot; a dot 30 px away moves nothing', async () => {
+  const list = { fields: FIELDS, stations: [
+    ['C1', 'Crowd a', 25, -150, 'R', 'UTC', true], ['C2', 'Crowd b', 25, -150, 'S', 'UTC', false], ['C3', 'Crowd c', 25, -150, 'S', 'UTC', false],
+    ['C4', 'Crowd d', 25.002, -149.998, 'S', 'UTC', false], ['model:c5', 'Crowd e', 25, -150.003, 'M', 'UTC', false],
+    ['F', 'Far one', 40, -150, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 11, list, forecast: [{ id: 'X', lat: 25, lon: -150 }, { id: 'Y', lat: 40, lon: -149.9925 }] });
+  b.api.rebuildTideMarkers(true); await flush();
+  const spots = new Set();
+  for (const [n, title] of [['C1', 'Tide station Crowd a'], ['C2', 'Tide station Crowd b'], ['C3', 'Tide station Crowd c'],
+    ['C4', 'Tide station Crowd d'], ['c5', 'Tide model point Crowd e']]) {
+    const m = byLabel(b, title), off = stepOf(m), at = [(m.ll[1] + 150) * 4000 + off[0], (25 - m.ll[0]) * 4000 + off[1]];
+    assert.ok(boxGap(at[0], at[1], 9, 4) >= 8, n + ' clear of the dot: ' + at);
+    spots.add(Math.round(at[0]) + ',' + Math.round(at[1]));
+  }
+  assert.equal(spots.size, 5, 'five icons, five places');
+  assert.deepEqual(stepOf(byTitle(b, 'Far one')), [0, 0], '30 px from a dot (gap 17): it stays');
+});
+
+test('section 113 A: a tide icon\'s touch pad stops before a dot\'s box; a live list that brings a buoy onto a tide icon moves it (one rebuild after the round)', async () => {
+  // zoom 9: 1/1000 degree = 1 px; a forecast dot 22 px east (gap 22 - 9 - 4 = 9 >= 8: the icon stays) leaves 7 px of pad
+  const list = { fields: FIELDS, stations: [['A', 'Pad', 40, -150, 'R', 'UTC', true], ['B', 'Late buoy', 30, -150, 'R', 'UTC', true]] };
+  const b = boot({ zoom: 9, list, forecast: [{ id: 'X', lat: 40, lon: -149.978 }] });
+  b.api.rebuildTideMarkers(true); await flush();
+  assert.deepEqual(stepOf(byTitle(b, 'Pad')), [0, 0]);
+  assert.equal(byTitle(b, 'Pad').el.style.props['--tide-tap'], '7px', '22 - 4 - 9 - 2 = 7 (10 without the dot)');
+  assert.deepEqual(stepOf(byTitle(b, 'Late buoy')), [0, 0], 'no buoy yet');
+  b.api.liveData = [{ id: 'B1', lat: 30, lon: -150, source: 'NDBC' }];
+  b.api.rebuildLiveBuoyMarkers(true);                                  // the live list lands: the tides follow after the round
+  await flush();
+  const g = stepOf(byTitle(b, 'Late buoy'));
+  assert.ok(boxGap(g[0] - 6.5, g[1], 9, 7.5) >= 8, 'moved off the new live dot: ' + g);
 });

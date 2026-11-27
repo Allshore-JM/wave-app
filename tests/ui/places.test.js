@@ -1304,7 +1304,7 @@ test('section 114 create(): world view = country names only, Los Angeles joins a
   assert.equal(spans().find((s) => s.textContent === 'SPAIN').className, 'place-label place-country pc-1', 'each name in its own font group');
   assert.equal(seen.filter((x) => x[0] === CURL).length, 1, 'never asked again');
   // a two-line name's box is two lines high
-  assert.equal(pl.countryBox('CENTRAL\nAFRICAN REP.', 1).h, 2 * Math.round(13.5 * 1.25));
+  assert.equal(pl.countryBox('CENTRAL\nAFRICAN REP.', 1).h, 2 * Math.round(12.5 * 1.25));
   // a pooled span used for a city again loses the country class and the opacity
   map.center = { lat: 21.3, lon: -157.9 }; map.zoom = 6; map.fire('zoomend'); flush();
   assert.ok(spans().length > 0 && spans().every((s) => s.className.indexOf('place-country') < 0 && s.style.opacity === ''), 'Hawaii at 6: cities only');

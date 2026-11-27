@@ -1200,8 +1200,8 @@ def test_location_aids_on_the_page(client, monkeypatch):
     assert "LABEL_FONT = '600 11px system-ui, -apple-system, \"Segoe UI\", sans-serif'" in js
     assert "DOT_R" not in js and "LABEL_DX" not in js and "place-left" not in js
     # plan section 114: each country group's CSS size and line height = the module's COUNTRY_PX x COUNTRY_LH, and the file is served
-    assert "COUNTRY_PX = [15, 13.5, 12.5, 12, 11]" in js and "COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25" in js
-    for g, px in enumerate((15, 13.5, 12.5, 12, 11)):
+    assert "COUNTRY_PX = [13.5, 12.5, 12, 11.5, 11]" in js and "COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25" in js
+    for g, px in enumerate((13.5, 12.5, 12, 11.5, 11)):
         assert ".place-label.pc-%d { font-size: %spx; line-height: %dpx; }" % (g, ("%g" % px), round(px * 1.25)) in body, g
     r = client.get("/ui/countries.json?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and r.mimetype == "application/json" and r.get_json()["format"] == "countries-v1"

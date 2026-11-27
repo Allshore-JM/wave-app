@@ -1004,3 +1004,42 @@ test('G39 A3: the refresh button acting as Retry leaves the focus where it is; t
   s.answers[4].res(response(200, payload())); await flush();
   assert.equal(focused, 1, 'the Retry button still moves the focus into the window');
 });
+
+// ---- plan section 112: the worldwide stations (TICON gauges, agencies' tables, model points)
+test('section 112: a TICON gauge says LAT and the constants, credits DGFI-TUM, and links no NOAA page', async () => {
+  const s = setup();
+  const st = { id: 'ticon:brest-822-fra-uhslc-fd', name: 'Brest', tz: 'Pacific/Honolulu', obs: false, lat: 48.38 };
+  s.view.load(st, { unit: 'US' });
+  s.answers[0].res(response(200, payload({ id: st.id, name: 'Brest', type: 'G', obs: false, datum: 'LAT (computed)', method: 'ticon',
+    source: 'Predicted from tide-gauge harmonic constants: TICON-4 (Hart-Davis, Dettmering & Seitz, DGFI-TUM), CC BY 4.0' })));
+  await flush();
+  const m = s.els.meta.textContent;
+  assert.match(m, /Heights above the lowest astronomical tide \(LAT, computed from the constants\)/);
+  assert.match(m, /Predicted on this site from this tide gauge’s harmonic constants \(TICON-4, DGFI-TUM\)/);
+  assert.match(m, /TICON-4 \(Hart-Davis, Dettmering & Seitz, DGFI-TUM\), CC BY 4\.0/);
+  assert.doesNotMatch(m, /NOAA|MLLW/);
+  assert.equal(s.els.meta.querySelectorAll('a').length, 0, 'no NOAA link for a prefixed id, no link without one');
+  assert.equal(s.calls.length, 1, 'no water level asked for a station without a gauge');
+});
+
+test('section 112: an agency\'s table names the agency, its datum and credit, and links only an https page', async () => {
+  const s = setup();
+  const st = { id: 'chs:08545', name: 'Bamfield', tz: 'Pacific/Honolulu', obs: false, lat: 48.8 };
+  s.view.load(st, { unit: 'US' });
+  s.answers[0].res(response(200, payload({ id: st.id, type: 'O', obs: false, datum: 'chart datum (≈ LAT)', method: 'official',
+    agency: 'Canadian Hydrographic Service', source: 'Contains data of the Canadian Hydrographic Service.', link: 'https://tides.gc.ca/en/stations/08545' })));
+  await flush();
+  const m = s.els.meta.textContent;
+  assert.match(m, /Heights above chart datum \(≈ LAT\)/);
+  assert.match(m, /Curve: Canadian Hydrographic Service’s official tide predictions/);
+  assert.match(m, /Contains data of the Canadian Hydrographic Service\. · station page/);
+  const a = s.els.meta.querySelectorAll('a');
+  assert.equal(a.length, 1); assert.equal(a[0].getAttribute('href'), 'https://tides.gc.ca/en/stations/08545');
+  const t = setup();
+  t.view.load(st, { unit: 'US' });
+  t.answers[0].res(response(200, payload({ id: st.id, type: 'O', obs: false, datum: 'LAT', method: 'official-cosine', agency: 'LINZ',
+    source: 'LINZ', link: 'javascript:alert(1)' })));
+  await flush();
+  assert.match(t.els.meta.textContent, /Curve: drawn between LINZ’s official predicted highs and lows/);
+  assert.equal(t.els.meta.querySelectorAll('a').length, 0, 'a link that is not https is not drawn');
+});

@@ -22,6 +22,7 @@ import buoy_sources
 import point_forecast
 import gfs_bulletins
 import sky
+import tide_global              # plain json / math at import: numpy only on a worldwide window (tide_global._prep)
 import tide_sources
 import chain_tls
 import cwa_tls
@@ -581,7 +582,7 @@ def ecmwf_notice():
 # The page's own client module (the forecast window, plan section 25): always served (not behind
 # the overlay flag, never under /overlay/), immutable at a versioned URL like the overlay assets.
 # ---------------------------------------------------------------------------------------------
-UI_ASSET_VERSION = "1.31.1"                 # bump on every change to static_ui/* (immutable URLs)
+UI_ASSET_VERSION = "1.32.0"                 # bump on every change to static_ui/* (immutable URLs)
 _UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static_ui")
 _UI_ASSETS = {"forecast.js": "application/javascript", "graticule.js": "application/javascript", "logo.png": "image/png",
               "tools.js": "application/javascript", "livelist.js": "application/javascript", "tides.js": "application/javascript",
@@ -1164,18 +1165,59 @@ TIDE_MAX_AGE = 1800               # a station's forecast (the same all UTC day; 
 TIDE_OBS_MAX_AGE = 300            # observed water level (6-minute samples)
 TIDE_FINAL_MAX_AGE = 600          # NOAA says it has nothing for this station (it has said so for a moment: G27 RC-2)
 TIDES_OFF = "Tide stations are not available on this server"
-_TIDES = {"svc": None, "list": None}
+_TIDES = {"svc": None, "list": None, "global": None, "base": None}
 _TIDES_LOCK = threading.Lock()
+# The agencies' official predictions (plan section 112): fetched in the visitor's request (a station at most once a UTC
+# day), far hosts included (Japan, Hong Kong, New Zealand: the far feeds' limits), at most TIDE_AGENCY_MAX_BYTES an
+# answer (Kartverket's 34 days of 10-minute heights, ~340 KB, is the largest), each agency within its own request budget.
+TIDE_AGENCY_MAX_BYTES = 4 << 20
+TIDE_AGENCY_PER_MIN = 30
+TIDE_AGENCY_BURST = 15
+
+
+def _tide_agency_get(url, headers=None, data=None):
+    if data is not None:
+        raise ValueError("no POST for the tide agencies")
+    return _capped_get(url, TIDE_AGENCY_MAX_BYTES, headers, _FAR_WINDOW_TIMEOUT, _FAR_WINDOW_MAX_S)
 
 
 def _tides():
-    """(TideService, (list payload, etag)), loaded once; raises when the snapshot cannot be read."""
+    """(TideService, (list payload, etag)), loaded once; raises when the snapshot cannot be read. The list carries
+    NOAA's stations and the worldwide ones (plan section 112: tide_global.py; their rows have type G); a worldwide
+    snapshot that cannot be read leaves NOAA's list alone (logged)."""
     with _TIDES_LOCK:
         if _TIDES["svc"] is None:
             stations, doc = tide_sources.load_stations(TIDE_STATIONS_PATH)
-            _TIDES["list"] = _json_payload_and_etag(tide_sources.client_list(doc))
+            listing = tide_sources.client_list(doc)
+            try:
+                gstations, gdoc = tide_global.load()
+                buckets = {p: wind_sources.TokenBucket(TIDE_AGENCY_PER_MIN, burst=TIDE_AGENCY_BURST)
+                           for p in list(tide_global.PROVIDERS) + ["model"]}
+                root = _points_root()
+                _TIDES["global"] = tide_global.GlobalTideService(
+                    gstations, get=_tide_agency_get, buckets=buckets, cap=_REQUEST_BUILDS,
+                    model_base=(root + "/" + tide_global.MODEL_PREFIX) if root else None)
+                listing["stations"] = listing["stations"] + tide_global.client_rows(gstations)
+                listing["sources"] = [listing.get("source"), gdoc.get("source")]
+            except Exception as exc:                      # NOAA's layer stands without the worldwide stations
+                app.logger.warning("worldwide tide stations not loaded: %s", exc)
+            _TIDES["base"] = listing
+            _TIDES["list"] = _json_payload_and_etag(listing)
             _TIDES["svc"] = tide_sources.TideService(stations, _points_fetch, bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
         return _TIDES["svc"], _TIDES["list"]
+
+
+def _tide_list():
+    """The list answer (payload, etag), the model points' list asked again at most hourly OUTSIDE the lock (a slow
+    bucket never holds the other tide requests); a changed list is swapped in under the lock."""
+    _tides()
+    gsvc = _TIDES.get("global")
+    if gsvc is not None and gsvc.refresh_models():
+        with _TIDES_LOCK:
+            listing = dict(_TIDES["base"])
+            listing["stations"] = _TIDES["base"]["stations"] + gsvc.model_rows()
+            _TIDES["list"] = _json_payload_and_etag(listing)
+    return _TIDES["list"]
 
 
 def _tide_uncached(payload, status, retry=False):
@@ -1189,11 +1231,21 @@ def _tide_uncached(payload, status, retry=False):
 
 
 def _tide_station(sid):
-    """(service, station) for a known station id, or (None, a response to return)."""
+    """(service, station) for a known station id, or (None, a response to return). An id with a source prefix
+    ("ticon:...") is a worldwide station (tide_global); a bare id is NOAA's."""
     try:
         svc, _ = _tides()
     except Exception:
         return None, _tide_uncached({"error": TIDES_OFF}, 503)
+    if ":" in sid:
+        gsvc = _TIDES.get("global")
+        if gsvc is None or not tide_global.valid_id(sid):
+            return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)
+        if sid.startswith("model:") and not gsvc.models:
+            _tide_list()                                  # a fresh process: the model points' list (G76 P0-1)
+        if sid not in gsvc.stations and sid not in gsvc.models:
+            return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)
+        return gsvc, None
     if not tide_sources.valid_id(sid) or sid not in svc.stations:
         return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)   # never a proxy to NOAA
     return svc, None
@@ -1210,7 +1262,7 @@ def _tide_answer(status, payload, max_age):
 @app.route("/api/tides/stations")
 def api_tide_stations():
     try:
-        _, (payload, etag) = _tides()
+        payload, etag = _tide_list()
     except Exception:
         return _tide_uncached({"error": TIDES_OFF}, 503)
     return _station_list_answer(payload, etag)

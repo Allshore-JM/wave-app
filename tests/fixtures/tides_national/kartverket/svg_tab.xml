@@ -1,0 +1,16 @@
+<tide>
+<stationdata>
+<location name="Stavanger" code="SVG" latitude="58.974339" longitude="5.730121">
+<data type="prediction" unit="cm" reflevelcode="CD">
+<waterlevel value="49.4" time="2026-11-26T04:01:00+00:00" flag="low"/>
+<waterlevel value="105.8" time="2026-11-26T10:22:00+00:00" flag="high"/>
+<waterlevel value="48.6" time="2026-11-26T16:28:00+00:00" flag="low"/>
+<waterlevel value="104.3" time="2026-11-26T22:49:00+00:00" flag="high"/>
+<waterlevel value="51.3" time="2026-11-27T04:44:00+00:00" flag="low"/>
+<waterlevel value="104.9" time="2026-11-27T11:08:00+00:00" flag="high"/>
+<waterlevel value="49.8" time="2026-11-27T17:14:00+00:00" flag="low"/>
+<waterlevel value="101.5" time="2026-11-27T23:37:00+00:00" flag="high"/>
+</data>
+</location>
+</stationdata>
+</tide>

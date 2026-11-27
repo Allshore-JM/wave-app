@@ -1,0 +1,8 @@
+{
+ "https://erddap.marine.ie/erddap/tabledap/IMI_TidePrediction_HighLow.csv?stationID,longitude,latitude&distinct%28%29": "hl_stations.csv",
+ "https://erddap.marine.ie/erddap/tabledap/IMI_TidePrediction_HighLow.csv?stationID,time,Water_Level_ODMalin&time%3E=2027-01-01T00%3A00%3A00Z&time%3C2028-01-01T00%3A00%3A00Z&tide_time_category=%22LOW%22&orderByMin%28%22stationID%2CWater_Level_ODMalin%22%29": "lowest_2027.csv",
+ "https://erddap.marine.ie/erddap/tabledap/IMI_TidePrediction_HighLow.csv?time,tide_time_category,Water_Level_ODMalin&stationID=%22Lahinch%22&time%3E=2026-12-30T00%3A00%3A00Z&time%3C=2027-01-02T00%3A00%3A00Z": "lahinch_hilo.csv",
+ "https://erddap.marine.ie/erddap/tabledap/imiTidePrediction.csv?stationID,Water_Level,Water_Level_ODM&time%3E=2027-01-01T00%3A00%3A00Z&time%3C=2027-01-01T03%3A00%3A00Z": "lat_span.csv",
+ "https://erddap.marine.ie/erddap/tabledap/imiTidePrediction.csv?stationID,longitude,latitude&distinct%28%29": "curve_stations.csv",
+ "https://erddap.marine.ie/erddap/tabledap/imiTidePrediction.csv?time,Water_Level_ODM&stationID=%22Lahinch_MODELLED%22&time%3E=2026-12-30T00%3A00%3A00Z&time%3C=2027-01-02T00%3A00%3A00Z&orderByClosest%28%22time%2F30minutes%22%29": "lahinch_curve.csv"
+}

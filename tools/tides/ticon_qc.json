@@ -1,0 +1,32 @@
+{
+ "band_agree_min": 10.0,
+ "flagged": {
+  "ticon:belum-5980060-deu-wsv": 172.6,
+  "ticon:borkumsdstrand-9340030-deu-wsv": 117.4,
+  "ticon:brisbane-bar-59980-aus-bom": 66.6,
+  "ticon:caillou-lake-sister-lake-sw-of-dulac-la-7381349-usa-usgs": 126.7,
+  "ticon:crms0541-crms0541-usa-crms": 125.4,
+  "ticon:crms0543-crms0543-usa-crms": 127.5,
+  "ticon:crms0622-crms0622-usa-crms": 183.9,
+  "ticon:crms1277-crms1277-usa-crms": 236.7,
+  "ticon:dagebll-9570040-deu-wsv": 172.7,
+  "ticon:eastbay-anerr-dock-11272-usa-nwfwmd": 116.8,
+  "ticon:esbjerg-esb-dnk-dmi": 56.1,
+  "ticon:hiron-point-134a-bgd-uhslc-rq": 59.5,
+  "ticon:hong-kong-329-hkg-uhslc-fd": -59.6,
+  "ticon:l9-platform-l9pfm-nld-rws": 52.5,
+  "ticon:langeoog-9390010-deu-wsv": 118.8,
+  "ticon:las-palmas-217a-esp-uhslc-rq": -61.2,
+  "ticon:narviktg-nar-nor-cmems": -63.7,
+  "ticon:nassawadox-creek-ab-church-crk-nr-silver-beach-va-1484812-us": 115.5,
+  "ticon:newark-bay-at-pvsc-at-newark-nj-1392650-usa-usgs": 63.5,
+  "ticon:s29-t-biscaynebaynorth-navd88-s29-t-usa-sfwmd": -178.1,
+  "ticon:s37a-s37a-usa-sfwmd": -233.0,
+  "ticon:san-felipe-307a-mex-uhslc-rq": 56.8,
+  "ticon:split-spl-hrv-eseas": 61.4,
+  "ticon:tasiujaq-4315-can-meds": 65.4,
+  "ticon:venezia-vene-ita-cv": 52.3
+ },
+ "hour_tol_min": 8.0,
+ "model": "GOT5.5 extrapolated (NASA GSFC)"
+}

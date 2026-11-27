@@ -1,0 +1,8 @@
+{
+ "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id=3c364f05-c44b-402d-a14c-61cf409b9a18&filters=%7B%22Date%22%3A%5B%2201%2F01%2F2027%22%2C%2202%2F01%2F2027%22%5D%7D&fields=Date%2CTime%2CReading&sort=_id&limit=10000&records_format=csv": "abbot_curve_2027.json",
+ "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id=47e590ab-8624-4a4c-a32a-a598ff5e1419&filters=%7B%22Date%22%3A%5B%2230%2F12%2F2026%22%2C%2231%2F12%2F2026%22%5D%7D&fields=Date%2CTime%2CInd%2CReading&sort=_id&limit=10000&records_format=csv": "abbot_hilo_2026.json",
+ "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id=4fb76039-7cbd-47fc-a304-4237eb1d9f60&filters=%7B%22Date%22%3A%5B%2201%2F01%2F2027%22%2C%2202%2F01%2F2027%22%5D%7D&fields=Date%2CTime%2CInd%2CReading&sort=_id&limit=10000&records_format=csv": "abbot_hilo_2027.json",
+ "https://www.data.qld.gov.au/api/3/action/datastore_search?resource_id=54791c1c-3710-4ac1-8703-a474151dff39&filters=%7B%22Date%22%3A%5B%2230%2F12%2F2026%22%2C%2231%2F12%2F2026%22%5D%7D&fields=Date%2CTime%2CReading&sort=_id&limit=10000&records_format=csv": "abbot_curve_2026.json",
+ "https://www.data.qld.gov.au/api/3/action/package_search?q=name%3A%2A-tide-gauge-predicted-high-low-data%2A&rows=1000": "search_hilo.json",
+ "https://www.data.qld.gov.au/api/3/action/package_search?q=name%3A%2A-tide-gauge-predicted-interval-data%2A&rows=1000": "search_interval.json"
+}

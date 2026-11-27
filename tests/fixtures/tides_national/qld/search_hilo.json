@@ -1,0 +1,64 @@
+{
+"help": "https://www.data.qld.gov.au/api/3/action/help_show?name=package_search",
+"success": true,
+"result": {
+"count": 3,
+"results": [
+{
+"name": "karumba-tide-gauge-predicted-high-low-data",
+"title": "Karumba tide gauge—predicted high/low data",
+"resources": [
+{
+"id": "fd65253b-131f-4dad-8179-3ae45497f4dc",
+"name": "2027 — Karumba tide gauge predicted high/low data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "fb79c169-4613-4b75-a71f-112fe7457c41",
+"name": "2026 — Karumba tide gauge predicted high/low data",
+"format": "CSV",
+"datastore_active": true
+}
+]
+},
+{
+"name": "abbot-point-tide-gauge-predicted-high-low-data",
+"title": "Abbot Point tide gauge—predicted high/low data",
+"resources": [
+{
+"id": "4fb76039-7cbd-47fc-a304-4237eb1d9f60",
+"name": "2027 — Abbot Point tide gauge predicted high/low data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "47e590ab-8624-4a4c-a32a-a598ff5e1419",
+"name": "2026 — Abbot Point tide gauge predicted high/low data",
+"format": "CSV",
+"datastore_active": true
+}
+]
+},
+{
+"name": "half-tide-tug-harbour-tide-gauge-predicted-high-low-data",
+"title": "Half Tide Tug Harbour tide gauge—predicted high/low data",
+"resources": [
+{
+"id": "56399b81-4fb3-4ca4-9c1c-0f2dfe199fc7",
+"name": "2027 — Half Tide Tug Harbour tide gauge predicted high/low data",
+"format": "CSV",
+"datastore_active": true
+},
+{
+"id": "6819fb2c-40e1-4718-9893-d835c01ccb4b",
+"name": "2026 — Half Tide Tug Harbour tide gauge predicted high/low data",
+"format": "CSV",
+"datastore_active": true
+}
+]
+}
+],
+"sort": "score desc, metadata_modified desc"
+}
+}

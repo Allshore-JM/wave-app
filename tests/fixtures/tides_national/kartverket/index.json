@@ -1,0 +1,7 @@
+{
+ "https://vannstand.kartverket.no/tideapi.php?tide_request=stationdata&stationcode=SVG&fromtime=2026-11-26T00%3A00&totime=2026-11-28T00%3A00&datatype=pre&refcode=cd&lang=en&dst=0&tzone=0&interval=10": "svg_pre.xml",
+ "https://vannstand.kartverket.no/tideapi.php?tide_request=stationdata&stationcode=SVG&fromtime=2026-11-26T00%3A00&totime=2026-11-28T00%3A00&datatype=tab&refcode=cd&lang=en&dst=0&tzone=0": "svg_tab.xml",
+ "https://vannstand.kartverket.no/tideapi.php?tide_request=stationdata&stationcode=SVG&fromtime=garbage2026-11-26T00%3A00&totime=2026-11-28T00%3A00&datatype=tab&refcode=cd&lang=en&dst=0&tzone=0": "error_time.xml",
+ "https://vannstand.kartverket.no/tideapi.php?tide_request=stationdata&stationcode=XXQ&fromtime=2026-11-26T00%3A00&totime=2026-11-28T00%3A00&datatype=tab&refcode=cd&lang=en&dst=0&tzone=0": "error_code.xml",
+ "https://vannstand.kartverket.no/tideapi.php?tide_request=stationlist": "stationlist.xml"
+}

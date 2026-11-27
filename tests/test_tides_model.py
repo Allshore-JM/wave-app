@@ -216,8 +216,9 @@ def test_almost_no_points_kept_stops_the_job():
     with pytest.raises(SystemExit):
         F.check_kept(3, 3958)
     with pytest.raises(SystemExit):
-        F.check_kept(395, 3958)
-    F.check_kept(396, 3958)
+        F.check_kept(197, 3958)                       # 5% of 3958 = 197.9
+    F.check_kept(198, 3958)
+    F.check_kept(452, 3958)                           # run 46037126451
     F.check_kept(0, 0)
 
 

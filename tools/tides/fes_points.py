@@ -49,7 +49,8 @@ NEAREST_KM = 15.0
 DAYS = 47
 STEP_S = 1800
 EX_STEP_S = 360
-MIN_KEPT = 0.10          # fewer points than this share with a model tide = a broken land test: stop, publish nothing
+MIN_KEPT = 0.05          # fewer points than this share with a model tide = a broken land test: stop, publish nothing
+                         # (run 46037126451 kept 452 of 3958 = 11.4%; the broken run kept 2)
 # FES2022b's 34 ocean-tide constituents (file name stem -> tide_harmonic name)
 FES_NAMES = {"2n2": "2n2", "eps2": "eps2", "j1": "j1", "k1": "k1", "k2": "k2", "l2": "l2", "lambda2": "lambda2",
              "m2": "m2", "m3": "m3", "m4": "m4", "m6": "m6", "m8": "m8", "mf": "mf", "mks2": "mks2", "mm": "mm",

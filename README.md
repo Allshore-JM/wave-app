@@ -2810,8 +2810,8 @@ agency's chart datum, said in the window.
   login; their FTP has no TLS, so it is not used) one constituent file at a time (`fes_points.py --add-file`, then deleted: one global grid on
   disk). The grids are the EXTRAPOLATED ones (values over land too), so "ocean" and "land" come from AVISO+'s
   `mask_fes2022B.nc` (1 MB, downloaded first; only 0 = native ocean is ocean; `--mask` is required to make
-  constants), and the job stops without publishing or caching when fewer than 10% of the points get a model tide
-  (run 45958228397 read the grids without the mask and kept ~none); a cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
+  constants), and the job stops without publishing or caching when fewer than 5% of the points get a model tide
+  (run 45958228397 read the grids without the mask and kept 2; run 46037126451 with it kept 452 of 3,958 = 11.4%); a cache that cannot be decrypted (a changed AVISO_PASS) is rebuilt (bump the cache key `fes-consts-v1` to drop
   it). The site reads the list at most hourly (5 min after a failed read; outside the tide lock;
   `/api/tides/stations` changes when it does) and a point's file when it opens; a model point's window works before any
   list request. Needs the secrets AVISO_USER / AVISO_PASS; until the first run there are no model points.

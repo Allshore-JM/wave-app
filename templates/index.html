@@ -522,6 +522,14 @@
       text-shadow: 0 0 2px rgba(0,0,0,.9), 0 0 4px rgba(0,0,0,.6);
     }
     .place-label.place-capital { font-weight: 700; }
+    /* country names (plan section 114): pale gold capitals in five groups by land area; the sizes, line heights and
+       letter spacing must equal the module's COUNTRY_PX / COUNTRY_LH / COUNTRY_LS_EM (its widths are measured with them) */
+    .place-label.place-country { color: #f2c66d; letter-spacing: 0.12em; white-space: pre; text-align: center; }
+    .place-label.pc-0 { font-size: 15px; line-height: 19px; }
+    .place-label.pc-1 { font-size: 13.5px; line-height: 17px; }
+    .place-label.pc-2 { font-size: 12.5px; line-height: 16px; }
+    .place-label.pc-3 { font-size: 12px; line-height: 15px; }
+    .place-label.pc-4 { font-size: 11px; line-height: 14px; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -1089,7 +1097,7 @@
             </select>
             <label class="grid-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="gridlines" checked> <span class="form-check-label">Lat/long gridlines</span></label>
             <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="borders" checked> <span class="form-check-label">Borders</span></label>
-            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="places" checked> <span class="form-check-label">City names</span></label>
+            <label class="grid-setting place-setting form-check mb-0 mt-2"><input class="form-check-input" type="checkbox" id="places" checked> <span class="form-check-label">Place names</span></label>
           </div>
       </div>
     </form>
@@ -5680,7 +5688,8 @@
       }
     });
   </script>
-  <!-- Location aids (static_ui/places.js, plan section 51): borders (country and state lines) and city names, each a gear row. -->
+  <!-- Location aids (static_ui/places.js, plan sections 51 and 114): borders (country and state lines) and place names
+       (country names at wide zooms, then city names), each a gear row. -->
   <script src="/ui/places.js?v={{ ui_asset_version }}"></script>
   <script>
     (function initPlaces() {
@@ -5689,6 +5698,7 @@
         var st = null; try { st = window.localStorage; } catch (e) {}
         try { st && st.removeItem('allshore.states.v1'); } catch (e) {}   // the state lines follow "Borders" now (owner, 2026-10-23)
         if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined,
+          countriesUrl: '/ui/countries.json?v={{ ui_asset_version }}',                // the country names (plan section 114)
           waitFor: function () { return window.__allshoreOverlayWait || null; } });   // the overlay's first picture first (G34 B-6)
       } catch (e) { console.error('places', e); }
       ids.forEach(function (id) {

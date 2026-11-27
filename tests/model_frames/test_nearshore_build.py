@@ -136,7 +136,13 @@ def test_assembly_refuses_a_missing_bin_a_wrong_height_another_grid_and_a_smoke_
     write_chunk(tmp, 1, c1, setname="t-2")
     with pytest.raises(ValueError, match="not a whole chunk"):
         B.assemble(SMALL, "tiny", tmp, tmp, **quiet)
-    assert B.check_boundary([dict(f0=0.05, th0=240, boundary=0.7), dict(f0=0.05, th0=315, boundary=1.019), dict(f0=0.05, th0=0, boundary=1.03)]) == [(0.05, 0, 1.03)]
+    # the pilot faces 315: 45 and 60 run along the coast (90 and 105 degrees off), 30 and 240 do not (75)
+    assert [B.off_normal(45.0, d) for d in (315, 45, 60, 30, 240)] == [0.0, 90.0, 105.0, 75.0, 75.0]
+    assert B.off_normal(4.0, 270) == 86.0 and B.off_normal(4.0, 285) == 71.0 and B.off_normal(58.5, 30) == 88.5
+    meta = [dict(f0=0.05, th0=45, boundary=0.7), dict(f0=0.05, th0=315, boundary=1.019), dict(f0=0.05, th0=0, boundary=1.03),
+            dict(f0=0.05, th0=30, boundary=0.9), dict(f0=0.05, th0=60, boundary=1.05)]
+    assert B.check_boundary(meta, 45.0) == [(0.05, 0, 1.03), (0.05, 30, 0.9), (0.05, 60, 1.05)]
+    assert B.check_boundary([dict(f0=0.05, th0=240, boundary=0.6), dict(f0=0.05, th0=270, boundary=0.9), dict(f0=0.05, th0=285, boundary=0.9)], 4.0) == [(0.05, 285, 0.9)]
 
 
 def test_a_published_set_is_never_rewritten(tmp_path, capsys):

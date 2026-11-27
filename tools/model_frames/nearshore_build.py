@@ -45,7 +45,8 @@ MDC, MSC, REL = 72, 4, 0.06          # 5-degree directions; a 5-frequency grid +
 SECTOR = 15.0                        # the offshore bin's width in direction
 EXC = -5.0                           # the bottom file's dry value
 BOUNDARY_TOL = 0.02                  # a bin's offshore-row height must be within this of 1 m ...
-GRAZING = (30.0, 45.0, 60.0, 240.0)  # ... but for the sectors that run along the coast (they never reach it whole)
+GRAZING_DEG = 78.0                   # ... but for sectors this far off the region's shore normal: they run along the coast and
+                                     # never cross the offshore side whole (the pilot: 0.81-0.97 at 90 and 105 degrees off)
 
 
 def config(path=CONFIG):
@@ -296,9 +297,19 @@ def run_chunk(cfg, rid, k, out, cache, parallel=4, swan="swan.exe", only=None, b
 
 # ---------------------------------------------------------------- the region's table
 
-def check_boundary(meta, tol=BOUNDARY_TOL):
-    """The bins whose offshore-row height is off by more than tol, grazing sectors apart."""
-    return [(m["f0"], m["th0"], m["boundary"]) for m in meta if m["th0"] not in GRAZING and abs(m["boundary"] - 1.0) > tol]
+def off_normal(alpha, th0):
+    """Degrees between a swell direction (FROM) and the direction straight onshore of a region whose x axis is alpha."""
+    return abs(((th0 - (360.0 - alpha) + 180.0) % 360.0) - 180.0)
+
+
+def check_boundary(meta, alpha, tol=BOUNDARY_TOL):
+    """The bins whose offshore-row height is wrong: off by more than tol, or for a grazing sector above 1 + tol."""
+    bad = []
+    for m in meta:
+        grazing = off_normal(alpha, m["th0"]) >= GRAZING_DEG
+        if (m["boundary"] > 1.0 + tol) or (not grazing and m["boundary"] < 1.0 - tol):
+            bad.append((m["f0"], m["th0"], m["boundary"]))
+    return bad
 
 
 def assemble(cfg, rid, src, out, log=print):
@@ -318,7 +329,7 @@ def assemble(cfg, rid, src, out, log=print):
     missing = [b for b in want if (round(b[0], 4), int(b[1])) not in got]
     if missing:
         raise ValueError(f"{rid}: {len(missing)} bins missing, e.g. {missing[:4]}")
-    off = check_boundary(metas)
+    off = check_boundary(metas, r["alpha"])
     if off:
         raise ValueError(f"{rid}: offshore height off by more than {BOUNDARY_TOL:.0%} in {len(off)} bins, e.g. {off[:4]}")
     K = np.stack([got[(round(b[0], 4), int(b[1]))][0] for b in want]); D = np.stack([got[(round(b[0], 4), int(b[1]))][1] for b in want])

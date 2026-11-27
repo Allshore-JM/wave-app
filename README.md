@@ -2717,6 +2717,51 @@ Windows: a station chip gives its subtitle up before the station's name. An expa
 parked forecast chip's buttons on a wide screen (its title stays clickable); below 1180 px its default box rises above
 that chip.
 
+## Worldwide tides (plan section 112, UI asset 1.32.0)
+
+The Tide layer carries, beside NOAA's 3,501 stations, the rest of the world's surf coasts from three kinds of source.
+Every station's window has NOAA's payload shape (tide_sources: a 30-min curve over 33 days, the highs and lows, sun and
+moon), so `static_ui/tides.js` draws them all; ids carry a prefix (`ticon:`, `chs:`, `kv:`, `jma:`, `hko:`, `linz:`,
+`mi:`, `qld:`, `model:`; NOAA's stay bare). Outside the US heights are above LAT (the lowest astronomical tide) or the
+agency's chart datum, said in the window.
+
+- **Tide gauges' harmonic constants** (type G, `tide_global.json`, built by `tools/tides/build_global.py` from TICON-4
+  and TICON-3, Hart-Davis, Dettmering & Seitz, DGFI-TUM, CC BY 4.0, from GESLA records): coastal gauges without a
+  quality-control flag, one per harbour (3 km), none within 2 km of a NOAA station; 1,774 built, 1,331 listed (the
+  rest give way to an agency's station within 2 km). Names from TICON's file names, else the nearest GeoNames town.
+  Predicted on the site by `tide_harmonic.py` (numpy only): Doodson arguments with Meeus' mean longitudes, the nodal
+  factors f / u tabulated monthly 2010-2050 in `tide_constituents.json` (`tools/tides/make_constituent_table.py`, pyTMD,
+  run once in a developer's venv), high / low by a parabola through the 6-minute series. Checked: equal to pyTMD to 2 mm
+  over 2020-2049; NOAA's own constants give NOAA's predictions within 2 cm RMS (Honolulu, San Diego, Boston, Seattle,
+  with NOAA's conventions); TICON's constants at NOAA gauges give NOAA's predictions within 0.8-2.7 cm RMS. TICON
+  defines the annual tide SA as NOAA does (the Sun's longitude alone; `sa_h`), pyTMD and FES subtract the solar perigee
+  (`tide_harmonic.CONVENTIONS`). LAT per station is the lowest hourly height over 18.61 years: within 3 cm of Norway's
+  chart datum (LAT by law) at 11 of 12 gauges. Estuaries with strong compound tides (Anchorage, up rivers) are not
+  reproduced by 50 constituents; TICON's river and lake gauges are left out.
+- **Agencies' official predictions** (type O, `tide_national.json`, `tools/tides/build_national.py`; one module per
+  agency in `tide_providers/`, interface in its `__init__`): Canada CHS IWLS (1,074; highs/lows + 15-min curve; the
+  licence's notice verbatim), Japan JMA tide tables (239; hourly heights + highs/lows; romanised names with the Japanese
+  in brackets), New Zealand LINZ (88; highs/lows only: half-cosine curve; chart datum, up to 0.45 m below LAT),
+  Queensland MSQ (76; 10-min curve + highs/lows through the data portal's DataStore API), Ireland Marine Institute (38;
+  5-min curve thinned to 30 min, the MI's local LAT), Norway Kartverket (33; chart datum = LAT), Hong Kong Observatory
+  (13; Chi Ma Wan and Lok On Pai left out: closed gauges). A station is fetched in the visitor's request at most once
+  per UTC day (`tide_global.GlobalTideService`): a failure is remembered a minute (the page retries), a second visitor
+  waits for the first, each agency has a request budget (`TIDE_AGENCY_PER_MIN`) and the far-feed time limits, under the
+  shared build cap. Not used: SHOM, Puertos del Estado, Instituto Hidrografico, BSH, BOM / WA DoT (paid or not
+  open), UKHO Discovery (caching not allowed); Korea KHOA and Taiwan CWA need free keys (later).
+- **Tide-model points** (type M, dashed ring): FES2022b (CNES / AVISO+) at the forecast stations with no tide station
+  within 10 km and land within 30 km. Licensed to the owner's AVISO+ account, so the model never reaches the site: the
+  weekly job `.github/workflows/tides-fes.yml` (`tools/tides/fes_points.py`) extracts the constants on the runner (kept
+  in the Actions cache encrypted with AVISO_PASS: the repository is public), predicts 47 days from two days back and
+  publishes predictions only, to R2 `tides/fes/v1/` (`points.json` + `p/<id>.json`, cm above LAT). The site reads the
+  list at most hourly (outside the tide lock; `/api/tides/stations` changes when it does) and a point's file when it
+  opens. Needs the secrets AVISO_USER / AVISO_PASS; until the first run there are no model points.
+
+The page: types O and G draw today's icon, M a dashed ring; where icons crowd a gauge with water level wins, then NOAA
+harmonic and agency stations, TICON gauges, NOAA subordinates, model points. The window's first line names the datum,
+the method line the source, and the source line carries the agency's credit (text) and an https-only station link
+instead of NOAA's. The map credit adds the national agencies and TICON-4.
+
 ## Location aids (plan section 51, UI asset 1.25.3, overlay asset 2.22.3; names centred since UI 1.25.6, plan section 52)
 
 Two rows in the settings gear, both on for a new visitor, each remembered in this browser (localStorage, "0" = off); the

@@ -1,0 +1,68 @@
+{
+ "set": "nsw-marine-2018",
+ "credit": "NSW Marine LiDAR Topo-Bathy 2018, 5 m topo-bathy DEM (GDA2020 MGA zone 56, Australian Height Datum), State of New South Wales: Department of Planning, Industry and Environment (now the Department of Climate Change, Energy, the Environment and Water); captured by Fugro for NSW OEH, July-December 2018; ordered from ELVIS (elevation.fsdf.org.au), clipped to the coast Point Danger to Cape Howe, 2026-11-26.",
+ "licence": "Creative Commons Attribution 4.0 (http://creativecommons.org/licenses/by/4.0); attribute 'Department of Planning, Industry and Environment'.",
+ "note": "ELVIS order archives; DATA_31932 also holds ByronBay2011 / Tweed2011 land DEM tiles the build never reads.",
+ "files": [
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31932.zip",
+   "bytes": 240583361,
+   "sha256": "298a0c5fbedd32bd237c640dc9fd7e5f33fa6d38711e03f5c1b7f95eb5b32b97",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31949.zip",
+   "bytes": 180387764,
+   "sha256": "035690d8f6e3127d09c19bf93d0243b6eb0780aa742f2e9f360869b7d25184cd",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31986.zip",
+   "bytes": 101101675,
+   "sha256": "6f94b3c1380e9cda2383b05077ae1db1831dee02c772d9bcbc23f6be64fd486a",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31991.zip",
+   "bytes": 65273532,
+   "sha256": "d8718f715b6538090adeb8f3a51a9441dff0c043aaa8ea823739675a4eab40ec",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31997.zip",
+   "bytes": 102742240,
+   "sha256": "24016370fe0de18f50e87ed59682d02d5c3d93417ea44a6079685d86573bad5d",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32011.zip",
+   "bytes": 62033855,
+   "sha256": "f2624bfe8dcdeaf78b68e7eb447caab1ee1253fa0734edd97fe6e229ec258d38",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32019.zip",
+   "bytes": 53975030,
+   "sha256": "3404130b355fb35375d543debc4a273e885587e71faa09e1a071bbad0d5bc6a2",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32028.zip",
+   "bytes": 46308080,
+   "sha256": "31832b824452f3f98bedd4d11ee5d87ce082916dd3430b5fc8d67b72b3503bb4",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32080.zip",
+   "bytes": 72064330,
+   "sha256": "e3dced1b138519da7986f29d4d00f2b1dd0a71724da29d52247423a67cec6d82",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  },
+  {
+   "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32089.zip",
+   "bytes": 115552478,
+   "sha256": "9ff7960ad77e6ef73bee6aabefa363079b9ba9a500869d6e5b49918f4c3fc8a0",
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+  }
+ ]
+}

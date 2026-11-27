@@ -386,3 +386,10 @@ def test_a_mirrored_set_reads_only_the_archives_meeting_the_box_and_fetches_a_ba
     open(man, "w").write(json.dumps(m))
     with pytest.raises(ValueError, match="bbox"):
         F.manifest(man)
+
+
+def test_the_temporary_dry_run_workflow_is_gone():
+    """The five regions were dry-run on the runner four times (runs 45949043774, 45952959741, 45956034869,
+    46038647069; the last after the NZ seed change: all green, read-back medians <= 0.02 m); the push-triggered
+    workflow must never reach production."""
+    assert not os.path.exists(os.path.join(ROOT, ".github", "workflows", "bathy-dryrun-intl.yml"))

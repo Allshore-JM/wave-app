@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 import tide_global  # noqa: E402
 
 OUT = os.path.join(ROOT, "tide_national.json")
@@ -34,6 +35,28 @@ def get(url, headers=None, data=None):
         if r.status != 200:
             raise RuntimeError("HTTP %s from %s" % (r.status, url))
         return r.read()
+
+
+def readable_names(prefix, stations):
+    """JMA names its tide-table stations in Japanese only ("東京 (TK)"): give each a romanised name from the nearest TICON
+    gauge within 3 km (TICON's names are romanised), else the nearest GeoNames town within 15 km, keeping the Japanese
+    name in brackets ("Tokyo (東京)")."""
+    if prefix != "jma":
+        return
+    import build_global as BG                                       # tools/tides/build_global.py: Grid, GeoNames
+    g = json.load(open(os.path.join(ROOT, "tide_global.json"), encoding="utf-8"))
+    gi = g["fields"]
+    ticon = BG.Grid([(r[gi.index("lat")], r[gi.index("lon")], r[gi.index("name")]) for r in g["stations"]
+                     if r[gi.index("cc")] == "JPN" and "(tide gauge)" not in r[gi.index("name")]])
+    places = BG.load_geonames(None)
+    for s in stations:
+        ja = re.sub(r"\s*\([A-Za-z0-9]+\)\s*$", "", s["name"]).strip()
+        near = ticon.near(s["lat"], s["lon"], 3.0)
+        roman = near[0][1][2] if near else None
+        if not roman:
+            near = places.near(s["lat"], s["lon"], 15.0)
+            roman = near[0][1][2] if near else None
+        s["name"] = "%s (%s)" % (roman, ja) if roman and ja else (roman or s["name"])
 
 
 def main():
@@ -55,6 +78,7 @@ def main():
             continue
         mod = importlib.import_module("tide_providers." + modname)
         got = mod.build_station_list(get)
+        readable_names(prefix, got)
         seen = set()
         for s in got:
             if not ID_RE.fullmatch(s["id"]) or not s["id"].startswith(prefix + ":") or s["id"] in seen:

@@ -74,7 +74,18 @@ jobs:
           # one global grid on disk at a time: download, add to the partial constants, delete (G76 P2-9)
           for c in 2n2 eps2 j1 k1 k2 l2 lambda2 m2 m3 m4 m6 m8 mf mks2 mm mn4 ms4 msf msqm mtm mu2 n2 n4 nu2 o1 p1 q1 r2 s1 s2 s4 sa ssa t2; do
             f="${c}_fes2022.nc"
-            curl -sSf --retry 3 --proto '=https' --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "$FES_URL/$f.xz"
+            # AVISO+ can close a transfer early (run 45944053840: "curl: (18) transfer closed with 4266025 bytes remaining",
+            # file 14 of 34): curl retries every error and resumes the file (-C -), xz -t checks it is whole, and a file
+            # still bad is fetched afresh, three attempts in all
+            for attempt in 1 2 3; do
+              if curl -sSf --retry 5 --retry-all-errors --retry-delay 30 -C - --proto '=https' --cacert "$CA" --capath "$NOCAPATH" --user "$AVISO_USER:$AVISO_PASS" -o "fes/$f.xz" "$FES_URL/$f.xz"                  && xz -t "fes/$f.xz"; then
+                break
+              fi
+              echo "$f: attempt $attempt failed"
+              rm -f "fes/$f.xz"
+              if [ "$attempt" = 3 ]; then exit 1; fi
+              sleep 60
+            done
             xz -d "fes/$f.xz"
             python tools/tides/fes_points.py --add-file "fes/$f"
             rm -f "fes/$f" "fes/$f.xz"

@@ -508,6 +508,22 @@ def dep_blocks(reg, src, workers):
     return found
 
 
+def sheets_in_regions(key, sheets, tol=FOOT_PAD + 1e-6):
+    """Every sheet (name, lon/lat rect) of source `key` must lie inside the box (grown by its reach) of one region that
+    reads the source as its own: a region's sources are cut to its box, so a sheet outside every box (one a renewed
+    pin brought in) would never be drawn, without a word. Raises ValueError naming them."""
+    boxes = []
+    for r in S.REGIONS.values():
+        if key in r.get("sources", ()):
+            boxes.append(reach_box(tuple(r["box"]), r.get("reach", 0)) if r.get("reach") else tuple(r["box"]))
+    out = [n for (n, b) in sheets
+           if not any(b[0] >= w - tol and b[1] >= s - tol and b[2] <= e + tol and b[3] <= nn + tol
+                      for (w, s, e, nn) in boxes)]
+    if out:
+        raise ValueError("%s: %d sheet(s) lie outside every region that reads the source, e.g. %s: add or widen a "
+                         "region" % (key, len(out), out[:5]))
+
+
 PREPASS_FACTOR = 16     # a sheet's pre-pass reads every 16th pixel (its overview, where the file has one)
 PREPASS_HIGH_M = 5.0    # a pre-pass pixel at or below this (source datum, offset added) is low ground worth a block
 
@@ -1415,13 +1431,19 @@ def build(name, out_root, version=1, box=None, workers=None, gebco=None, local=N
                         scheme = BT.read_scheme(bluetopo_scheme(work, local))
                     s["tiles"] = BT.tiles_in(scheme, read_box(reg), s["bt_res"])
                 elif s["kind"] == "stac":
-                    # the pinned collection's sheets meeting the box (lon/lat outlines from the items, no file read)
-                    s["tiles"] = [(p, r) for (_, r, p) in STAC.read_items(s["stac"], _https_bytes)
-                                  if _hits([r], whole)]
+                    # the pinned collection's sheets meeting the box (lon/lat outlines from the items, no file read);
+                    # every sheet must lie inside a region that reads the source (none silently left out)
+                    items = STAC.read_items(s["stac"], _https_bytes)
+                    sheets_in_regions(s["key"], [(k, r) for (k, r, _) in items])
+                    s["tiles"] = [(p, r) for (_, r, p) in items if _hits([r], whole)]
                 else:
-                    # the mirrored archives (bathy_mirror), checked by hash; each one's GeoTIFF taken out and checked
-                    files = F.fetch_mirror(s["mirror"], work, s["crs"], log=log, get=lambda u, p, ua: retrying(
-                        lambda: L.download(u, p, ua), http_transient, "download " + u))
+                    # the mirrored archives (bathy_mirror) meeting the box, checked by hash; each one's GeoTIFF taken
+                    # out and checked; every archive must lie inside a region that reads the source
+                    man = F.manifest(s["mirror"])
+                    sheets_in_regions(s["key"], [(f["sha256"][:16], tuple(f["bbox"])) for f in man["files"]])
+                    files = F.fetch_mirror(s["mirror"], work, s["crs"], log=log, box=whole,
+                                           get=lambda u, p, ua: retrying(lambda: L.download(u, p, ua),
+                                                                         http_transient, "download " + u))
                     s["tiles"] = [(f, r) for f in files for r in footprint({"local": f, "gdal": f})
                                   if _hits([r], whole)]
                 log("%s: %d %s tiles meet the box" % (s["key"], len(s["tiles"]), s["kind"]))
@@ -1600,7 +1622,7 @@ def licence_text(reg):
                   "from www.ngdc.noaa.gov; the lidar DEMs' heights are taken below the same datum (the two NAVD88 "
                   "surveys 0.01 m lower). Lake St Clair from Lake Erie's grid, 0.9 m lower."]
     if reg.get("mhhw") == "grid:nz":
-        lines += ["- The water's edge (mean higher high water above mean sea level, 0.56-1.49 m): the EOT20 global ocean "
+        lines += ["- The water's edge (mean higher high water above mean sea level, 0.28-1.49 m): the EOT20 global ocean "
                   "tide model (Hart-Davis et al. 2021, DGFI-TUM; SEANOE doi:10.17882/79489; CC BY 4.0), predicted for "
                   "19 years by Allshore Surf and corrected at 12 UHSLC tide gauges."]
     if any(s.get("kind") == "stac" for s in reg["srcs"]):

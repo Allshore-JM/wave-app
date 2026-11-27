@@ -64,7 +64,7 @@ def source_files(reg, src, work):
     if src.get("kind") == "stac":
         return [(p, r) for (_, r, p) in STAC.read_items(src["stac"], B._https_bytes)]
     if src.get("kind") == "tilezip":
-        files = F.fetch_mirror(src["mirror"], work, src["crs"], log=lambda *a: None)
+        files = F.fetch_mirror(src["mirror"], work, src["crs"], log=lambda *a: None, box=B.read_box(reg))
         return [(f, r) for f in files for r in B.footprint({"local": f, "gdal": f})]
     if src.get("gdal"):
         return [(src["gdal"], (-180.0, -90.0, 180.0, 90.0))]
@@ -94,6 +94,63 @@ def grid_at(path, pts):
     import rasterio
     with rasterio.open(path) as d:
         return np.array([float(v[0]) for v in d.sample(pts, indexes=1)])
+
+
+COVER_SAMPLES = 300      # low source pixels tried per sheet
+COVER_WARN = 0.5         # a sheet whose low ground comes out as water less often than this is named
+
+
+def sheet_cover(out, index, reg, src, files, rnd):
+    """[(sheet, low pixels tried, share drawn as water)] for each sheet of a sheet source: random source pixels (a
+    1/16 read) at or below the region's high-tide line, looked up in the built finest-zoom tiles. Ground below the
+    line that is not joined to the sea is rightly land, so a low share is a pointer to look, not a failure; a sheet
+    with low ground and almost no water drawn is the case the depth read-back cannot see (water dropped)."""
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.warp import transform
+    z = index["zmax"]
+    have = B.scan_tiles(out).get(z, set())
+    res = []
+    for path, _ in files:
+        with rasterio.open(path) as d:
+            f = B.PREPASS_FACTOR
+            h, w = max(1, d.height // f), max(1, d.width // f)
+            a = d.read(1, out_shape=(h, w), resampling=Resampling.nearest).astype(np.float64)
+            nd = d.nodata if d.nodata is not None else src.get("nodata")
+            tr = d.transform @ d.transform.scale(d.width / w, d.height / h)
+            crs = d.crs
+        ok = np.isfinite(a) & (np.abs(a) < B.S.SANE_M)
+        if nd is not None:
+            ok &= a != np.float32(nd)
+        rr, cc = np.nonzero(ok)
+        if not rr.size:
+            res.append((os.path.basename(path), 0, None))
+            continue
+        lon, lat = transform(crs, "EPSG:4326", (tr.c + (cc + 0.5) * tr.a).tolist(), (tr.f + (rr + 0.5) * tr.e).tolist())
+        lon, lat = np.asarray(lon), np.asarray(lat)
+        v = a[rr, cc] + src.get("offset", 0.0)
+        if src.get("geoid_path"):
+            v = v - grid_at(src["geoid_path"], list(zip(lon, lat)))
+        mh = (grid_at(reg["mhhw_path"], list(zip(lon, lat))) if isinstance(reg.get("mhhw"), str)
+              else np.full(v.shape, float(reg["mhhw"])))
+        inside = (lon >= reg["box"][0]) & (lon <= reg["box"][2]) & (lat >= reg["box"][1]) & (lat <= reg["box"][3])
+        low = np.flatnonzero((v <= mh) & inside)
+        if not low.size:
+            res.append((os.path.basename(path), 0, None))
+            continue
+        pick = rnd.sample(low.tolist(), min(COVER_SAMPLES, low.size))
+        wet = 0
+        for i in pick:
+            x, y = T.tile_of(lon[i], lat[i], z)
+            if (x, y) not in have:
+                continue
+            code, _ = T.unpack_tile(tile_bytes(out, z, x, y))
+            x0, y0, x1, y1 = T.tile_bounds(z, x, y)
+            p = (x1 - x0) / T.TILE
+            mx, my = T.lonlat_to_xy(lon[i], lat[i])
+            wet += code[int((y1 - my) / p) + 1, int((mx - x0) / p) + 1] > 0
+        res.append((os.path.basename(path), len(pick), wet / len(pick)))
+    return res
 
 
 def main(argv=None):
@@ -130,6 +187,16 @@ def main(argv=None):
               " within 0.1 m %.1f %%" % (s["key"], s["id"], d.size, med, amed, float(np.percentile(np.abs(d), 90)),
                                          float(np.abs(d).max()), 100.0 * float((np.abs(d) <= 0.1).mean())))
         bad = bad or abs(med) > LIMIT_M or amed > LIMIT_M
+    for s in reg["srcs"]:
+        if s.get("kind") not in ("stac", "tilezip") or s.get("fill"):
+            continue
+        files = [(p, r) for (p, r) in source_files(reg, s, work) if B._hits([r], reg["box"])]
+        cover = sheet_cover(a.dir, index, reg, s, files, random.Random(7))
+        tried = [c for c in cover if c[1]]
+        low = [c for c in tried if c[2] < COVER_WARN]
+        print("%s: %d sheets with low ground in the box; share of it drawn as water: median %.2f; below %.1f: %s" % (
+            s["key"], len(tried), float(np.median([c[2] for c in tried])) if tried else float("nan"), COVER_WARN,
+            ", ".join("%s %.2f of %d" % (c[0], c[2], c[1]) for c in low) or "none"))
     print("READBACK %s: %s" % (index["region"], "FAIL" if bad else "ok"))
     return 1 if bad else 0
 

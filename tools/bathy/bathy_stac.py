@@ -6,6 +6,9 @@ multihash: "1220" + the SHA-256 in hex). A source pins the collection's id, its 
 pin is renewed (the error names the new digest). Each item document is fetched and checked against its listed checksum;
 its lon/lat bbox is the sheet's footprint and its "visual" asset (a relative "./<sheet>.tiff") the GeoTIFF read by
 window over https (/vsicurl/). No GDAL here.
+
+The pin covers the item documents, not the GeoTIFF bytes: a sheet's file replaced while its item document stays the same
+would go unnoticed (LINZ updates an item's checksum and dates with its file, so this is the residual risk).
 """
 import hashlib
 import json

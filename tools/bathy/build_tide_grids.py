@@ -10,8 +10,9 @@ tools/bathy/nz_datum_stations.json (-0.03 .. -0.21 m: a constant would be up to 
 
 MHHW above MSL comes from the EOT20 global ocean tide model (DGFI-TUM, Hart-Davis et al. 2021, CC BY 4.0; SEANOE
 doi:10.17882/79489), predicted hourly for 19 years (2003-2021, pyTMD) at every 1/8-degree cell within REACH of a region
-that reads the grid: the mean of each UTC day's highest hour, less the mean, exactly as the gauges' observed planes were
-taken (nz_datum_stations.json, gauges). EOT20 has no weather, and reads 0.00-0.11 m below the 12 gauges (median 0.03);
+that reads the grid: the mean of each UTC day's highest hour, less the mean (the gauges' observed planes were taken the
+same way with a parabola fit through each day's peak hour, nz_datum_stations.json; the gauge correction absorbs the
+few millimetres between the two). EOT20 has no weather, and reads 0.00-0.11 m below the 12 gauges (median 0.03);
 that difference, interpolated from the gauges the same way, is added (leave-one-out after it: median 0.019 m, max 0.08 m
 on 2026-11-26). Every other cell of the grid takes its nearest computed cell's value, so the grid has no hole.
 

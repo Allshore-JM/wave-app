@@ -8,61 +8,121 @@
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31932.zip",
    "bytes": 240583361,
    "sha256": "298a0c5fbedd32bd237c640dc9fd7e5f33fa6d38711e03f5c1b7f95eb5b32b97",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    153.1721,
+    -29.6848,
+    153.6728,
+    -28.0985
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31949.zip",
    "bytes": 180387764,
    "sha256": "035690d8f6e3127d09c19bf93d0243b6eb0780aa742f2e9f360869b7d25184cd",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    152.9573,
+    -31.2676,
+    153.4611,
+    -29.6819
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31986.zip",
    "bytes": 101101675,
    "sha256": "6f94b3c1380e9cda2383b05077ae1db1831dee02c772d9bcbc23f6be64fd486a",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    151.2306,
+    -33.651,
+    152.055,
+    -32.8403
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31991.zip",
    "bytes": 65273532,
    "sha256": "d8718f715b6538090adeb8f3a51a9441dff0c043aaa8ea823739675a4eab40ec",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    150.8928,
+    -34.4411,
+    151.362,
+    -33.6339
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_31997.zip",
    "bytes": 102742240,
    "sha256": "24016370fe0de18f50e87ed59682d02d5c3d93417ea44a6079685d86573bad5d",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    150.5286,
+    -35.2343,
+    150.9985,
+    -34.4243
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32011.zip",
    "bytes": 62033855,
    "sha256": "f2624bfe8dcdeaf78b68e7eb447caab1ee1253fa0734edd97fe6e229ec258d38",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    150.1029,
+    -36.0286,
+    150.7045,
+    -35.2119
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32019.zip",
    "bytes": 53975030,
    "sha256": "3404130b355fb35375d543debc4a273e885587e71faa09e1a071bbad0d5bc6a2",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    149.9213,
+    -36.8161,
+    150.2491,
+    -36.0091
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32028.zip",
    "bytes": 46308080,
    "sha256": "31832b824452f3f98bedd4d11ee5d87ce082916dd3430b5fc8d67b72b3503bb4",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    149.8098,
+    -37.5283,
+    150.1042,
+    -36.8026
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32080.zip",
    "bytes": 72064330,
    "sha256": "e3dced1b138519da7986f29d4d00f2b1dd0a71724da29d52247423a67cec6d82",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    152.5425,
+    -32.0601,
+    153.0391,
+    -31.2648
+   ]
   },
   {
    "url": "https://elvis-downloads.s3.amazonaws.com/DATA_32089.zip",
    "bytes": 115552478,
    "sha256": "9ff7960ad77e6ef73bee6aabefa363079b9ba9a500869d6e5b49918f4c3fc8a0",
-   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif"
+   "member": "NSW Government - DCCEEW/DEM/5 Metre/NSW_Marine_5m_TopoBathy_DEM.tif",
+   "bbox": [
+    151.859,
+    -32.8556,
+    152.6334,
+    -32.0529
+   ]
   }
  ]
 }

@@ -118,7 +118,7 @@ def _set(tmp_path, tifs, member=MEMBER):
             z.writestr("NSW Government - DCCEEW/DEM/5 Metre/readme_metadata.html", "x")
         data = b.getvalue()
         files.append(dict(url="https://elvis-downloads.s3.amazonaws.com/DATA_%d.zip" % len(files), bytes=len(data),
-                          sha256=hashlib.sha256(data).hexdigest(), member=MEMBER))
+                          sha256=hashlib.sha256(data).hexdigest(), member=MEMBER, bbox=[151.0, -34.0, 151.5, -33.5]))
         served[data] = data
     m = dict(set="nsw-test", credit="NSW DPIE test", licence="CC BY 4.0", files=files)
     p = tmp_path / "mirror_test.json"
@@ -335,3 +335,51 @@ def test_the_committed_nz_grids_are_pinned_and_match_the_ports_and_gauges():
             v = float(next(d.sample([(g["lon"], g["lat"])]))[0])
             assert -0.08 <= g["mhhw_msl"] - v <= 0.08, g["name"]
         assert 0.0 < d.read(1).min() and d.read(1).max() <= 1.5
+        # over the regions' own boxes the lowest cell is by Cook Strait (0.28 m, off Makara), the amphidrome off
+        # Puysegur (0.03 m) lies outside them
+        a, t = d.read(1), d.transform
+        lon = t.c + (np.arange(a.shape[1]) + 0.5) * t.a
+        lat = t.f + (np.arange(a.shape[0]) + 0.5) * t.e
+        for name in ("nz-north", "nz-central", "nz-south"):
+            w, s_, e, n_ = S.REGIONS[name]["box"]
+            sub = a[np.ix_((lat >= s_) & (lat <= n_), (lon >= w) & (lon <= e))]
+            assert sub.min() >= 0.25, (name, float(sub.min()))
+
+
+def test_a_sheet_outside_every_region_stops_the_build():
+    """G77 P2-1: the sources are cut to their regions' boxes, so a sheet a renewed pin brings in outside all of them
+    would never be drawn: the build stops instead. The committed NSW archives all lie inside au-nsw-s / au-nsw-n."""
+    m = F.manifest("mirror_nsw.json")
+    B.sheets_in_regions("nsw-marine18", [(f["sha256"][:16], tuple(f["bbox"])) for f in m["files"]])
+    B.sheets_in_regions("linz-nz-coastal", [("BQ31", (174.573, -41.487, 174.869, -41.158)),
+                                            ("CH11", (168.429, -46.928, 168.769, -46.593))])
+    with pytest.raises(ValueError, match="outside every region"):
+        B.sheets_in_regions("linz-nz-coastal", [("CI01", (166.0, -48.0, 166.4, -47.6))])      # south of nz-south
+    with pytest.raises(ValueError, match="outside every region"):
+        B.sheets_in_regions("nsw-marine18", [("qld", (153.3, -28.0, 153.6, -27.5))])           # north of au-nsw-n
+
+
+def test_a_mirrored_set_reads_only_the_archives_meeting_the_box_and_fetches_a_bad_copy_again(tmp_path):
+    t = _tif(str(tmp_path / "a.tif"), "EPSG:7856", 340000.0, 6250000.0, 16, 5.0, lambda x, y: x * 0 - 1.0)
+    man, by_url = _set(tmp_path, [t])                      # its bbox: 151.0-151.5 E, 34.0-33.5 S
+    calls = []
+
+    def never(url, path, ua):
+        calls.append(url)
+    assert F.fetch_mirror(man, str(tmp_path / "w1"), "EPSG:7856", get=never, box=(152.0, -33.0, 153.0, -32.0),
+                          log=lambda *a: None) == [] and calls == []
+    served = []
+
+    def flaky(url, path, ua):                              # a damaged copy first, the right one second
+        served.append(url)
+        d = by_url[url]
+        with open(path, "wb") as f:
+            f.write(d if len(served) > 1 else d[:40] + bytes([d[40] ^ 0xFF]) + d[41:])
+    got = F.fetch_mirror(man, str(tmp_path / "w2"), "EPSG:7856", get=flaky, box=(151.2, -33.8, 151.3, -33.7),
+                         log=lambda *a: None)
+    assert len(got) == 1 and len(served) == 2
+    m = json.load(open(man))
+    m["files"][0]["bbox"] = [151.5, -34.0, 151.0, -33.5]   # west of east
+    open(man, "w").write(json.dumps(m))
+    with pytest.raises(ValueError, match="bbox"):
+        F.manifest(man)

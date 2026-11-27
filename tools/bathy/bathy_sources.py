@@ -530,8 +530,8 @@ for _name, (_box, _srcs, _fill, _base) in LIDAR98_BOXES.items():
                           sources=list(_srcs), fill=list(_fill), presence=[_base])
 
 # International coasts (plan section 111a: Australia and New Zealand). Each region is built on its own, cut to its box
-# (nothing finer lies beneath them: GEBCO only), its open water seeded from the GSHHG land file (seed "sea": the surveys
-# stop 10-49 m deep).
+# (nothing finer lies beneath them: GEBCO only), its open water seeded from the GSHHG land file (seed "sea": most surveys
+# stop 10-49 m deep, but several NZ sheets only 1-3 m, never reaching the 20-m deep-water seed).
 #
 # New Zealand: LINZ's national "New Zealand Coastal LiDAR 1m DEM" (kind "stac": the collection's 65 1-m COG sheets on the
 # open bucket nz-coastal, NZGD2000 / NZTM EPSG:2193, NZVD2016 heights, nodata -9999), read by window over https. The
@@ -539,7 +539,8 @@ for _name, (_box, _srcs, _fill, _base) in LIDAR98_BOXES.items():
 # item's link checksum), so a new or changed sheet stops the build until the pin is renewed. Heights become heights above
 # mean sea level by subtracting the committed grid of MSL in NZVD2016 (from 10 LINZ standard ports, -0.03 .. -0.21 m),
 # and the water's edge is mean higher high water from the committed EOT20 tide grid corrected at 12 tide gauges
-# (tools/bathy/build_tide_grids.py; 0.56-1.49 m round the coast). Deeper than 30 m a pixel earns zoom 15 only.
+# (tools/bathy/build_tide_grids.py; 0.28-1.49 m over the sheets, lowest by Cook Strait). Deeper than 30 m a pixel earns
+# zoom 15 only.
 #
 # New South Wales: the 2018 Marine LiDAR topo-bathy DEM, 5 m (kind "tilezip": ten ELVIS order archives mirrored to the
 # bucket by tools/bathy/bathy_mirror.py, mirror_nsw.json; each holds one GeoTIFF in GDA2020 / MGA zone 56, EPSG:7856,

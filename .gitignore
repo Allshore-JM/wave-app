@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .claude/
 tools/alerts/.cache/
+
+# GeoNames download cache of tools/tides/build_global.py (plan section 112)
+tools/tides/.cities1000.zip

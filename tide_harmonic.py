@@ -31,11 +31,12 @@ ALIASES = {
     "e2": "eps2", "ep2": "eps2", "epsilon2": "eps2",
     "oo1": "oo1", "ko1": "oo1", "msq": "msqm", "mtm": "mtm",
     "smn": "msn2", "2mk3": "2mk3", "mo3": "mo3",
+    "mi2": "mu2", "ni2": "nu2", "lm2": "lambda2", "mks": "mks2",          # TICON-3's spellings
 }
 
 
 def _norm(name):
-    n = str(name).strip().lower().replace("_", "")
+    n = str(name).strip().lower()
     return ALIASES.get(n, n)
 
 

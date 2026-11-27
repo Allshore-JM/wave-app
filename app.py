@@ -22,6 +22,7 @@ import buoy_sources
 import point_forecast
 import gfs_bulletins
 import sky
+import tide_global
 import tide_sources
 import chain_tls
 import cwa_tls
@@ -1214,16 +1215,26 @@ TIDE_MAX_AGE = 1800               # a station's forecast (the same all UTC day; 
 TIDE_OBS_MAX_AGE = 300            # observed water level (6-minute samples)
 TIDE_FINAL_MAX_AGE = 600          # NOAA says it has nothing for this station (it has said so for a moment: G27 RC-2)
 TIDES_OFF = "Tide stations are not available on this server"
-_TIDES = {"svc": None, "list": None}
+_TIDES = {"svc": None, "list": None, "global": None}
 _TIDES_LOCK = threading.Lock()
 
 
 def _tides():
-    """(TideService, (list payload, etag)), loaded once; raises when the snapshot cannot be read."""
+    """(TideService, (list payload, etag)), loaded once; raises when the snapshot cannot be read. The list carries
+    NOAA's stations and the worldwide ones (plan section 112: tide_global.py; their rows have type G); a worldwide
+    snapshot that cannot be read leaves NOAA's list alone (logged)."""
     with _TIDES_LOCK:
         if _TIDES["svc"] is None:
             stations, doc = tide_sources.load_stations(TIDE_STATIONS_PATH)
-            _TIDES["list"] = _json_payload_and_etag(tide_sources.client_list(doc))
+            listing = tide_sources.client_list(doc)
+            try:
+                gstations, gdoc = tide_global.load()
+                _TIDES["global"] = tide_global.GlobalTideService(gstations)
+                listing["stations"] = listing["stations"] + tide_global.client_rows(gstations)
+                listing["sources"] = [listing.get("source"), gdoc.get("source")]
+            except Exception as exc:                      # NOAA's layer stands without the worldwide stations
+                app.logger.warning("worldwide tide stations not loaded: %s", exc)
+            _TIDES["list"] = _json_payload_and_etag(listing)
             _TIDES["svc"] = tide_sources.TideService(stations, _points_fetch, bucket=_COOPS_BUDGET, cap=_REQUEST_BUILDS)
         return _TIDES["svc"], _TIDES["list"]
 
@@ -1239,11 +1250,17 @@ def _tide_uncached(payload, status, retry=False):
 
 
 def _tide_station(sid):
-    """(service, station) for a known station id, or (None, a response to return)."""
+    """(service, station) for a known station id, or (None, a response to return). An id with a source prefix
+    ("ticon:...") is a worldwide station (tide_global); a bare id is NOAA's."""
     try:
         svc, _ = _tides()
     except Exception:
         return None, _tide_uncached({"error": TIDES_OFF}, 503)
+    if ":" in sid:
+        gsvc = _TIDES.get("global")
+        if gsvc is None or not tide_global.valid_id(sid) or sid not in gsvc.stations:
+            return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)
+        return gsvc, None
     if not tide_sources.valid_id(sid) or sid not in svc.stations:
         return None, _tide_uncached({"id": sid, "error": "Unknown tide station"}, 404)   # never a proxy to NOAA
     return svc, None

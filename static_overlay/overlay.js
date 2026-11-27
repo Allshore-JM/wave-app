@@ -7291,30 +7291,33 @@
   // wind overlay and hands it the pressure frame of the step on the map (setData) or clears it (clearData: at once, so no
   // old lines stay under a new time). It redraws on a new frame and on every view change, in one animation frame after
   // the event (never on the stack of a frame landing); it is hidden while the map zooms.
-  // ---- Nearshore analysis (plan section 109): the breaking zone and the break lines of the pilot stretch (Himalayas
-  // to Chun's, Oahu) for the step on the map, over the GFS wave height. One small picture per step from the nearshore
-  // job (tools/model_frames/nearshore.py): a header row, one 256x256 plane of set-wave heights per z14 tile, then the
-  // break lines' vertices. A layer of its own with its own few requests: it never takes a slot from the field's frames,
-  // and a failure here leaves the wave height as it was. A modelled estimate, not safety guidance.
-  var NEAR_PREFIX = 'gfswave/nearshore/v1', NEAR_MIN_Z = 11.5, NEAR_ARROW_Z = 15, NEAR_HIT_PX = 14, NEAR_KEEP = 12, NEAR_ALPHA = 205, NEAR_AHEAD = 3, NEAR_FLIGHT = 3, NEAR_RELOAD_MS = 60000;
+  // ---- Nearshore analysis (plan section 109): the breaking zone and the break lines of Oahu's North Shore (Kaena Point
+  // to Kahuku Point, in regions) for the step on the map, over the GFS wave height. One small picture per region and step
+  // from the nearshore job (tools/model_frames/nearshore.py): a header row, one 256x256 plane of set-wave heights per z14
+  // tile, then the break lines' vertices. Only the regions in view are asked for. A layer of its own with its own few
+  // requests: it never takes a slot from the field's frames, and a failure here leaves the wave height as it was.
+  // A modelled estimate, not safety guidance.
+  var NEAR_PREFIX = 'gfswave/nearshore/v1', NEAR_MIN_Z = 12, NEAR_ARROW_Z = 15, NEAR_HIT_PX = 14, NEAR_KEEP = 36, NEAR_ALPHA = 205, NEAR_AHEAD = 2, NEAR_FLIGHT = 12, NEAR_RELOAD_MS = 60000;
   var NEAR_BANDS = [['closeout', '#e8312c', 'under 15°'], ['fast', '#f5a623', '15-30°'], ['ideal', '#2ecc40', '30-50°'],
                     ['easy', '#2d9cf0', '50-70°'], ['soft', '#9aa0a6', 'over 70°']];
   var NEAR_BREAKERS = ['spilling', 'plunging', 'collapsing'];
   var NEAR_SETS = 1.67 / 1.27;                             // the biggest sets (H1/100) over the set wave drawn (H1/10)
   var NEAR_VB = 10;                                        // bytes per vertex
-  // The decoded picture -> header, planes, vertices (world positions at zoom 0 are worked out once per frame).
-  function parseNearFrame(q, cols, rows, doc) {
+  var NEAR_REGIONS_MAX = 16;
+  // The decoded picture of one region -> header, planes, vertices (world positions at zoom 0 are worked out once per frame).
+  // region = the index's entry: its tiles and the box its vertices are shares of.
+  function parseNearFrame(q, cols, rows, region) {
     if (cols !== 256 || rows < 1 || q[0] !== 78 || q[1] !== 83 || q[2] !== 72 || q[3] !== 49) throw new Error('not a nearshore frame');   // "NSH1"
     var nt = q[5], nv = q[6] | q[7] << 8, tide = q[8] | q[9] << 8, at = 256 * (1 + nt * 256);
     if (tide > 32767) tide -= 65536;
-    if (nt !== doc.tiles.length || rows * 256 < at + nv * NEAR_VB) throw new Error('bad nearshore frame');
-    var v = q.subarray(at, at + nv * NEAR_VB), wx = new Float64Array(nv), wy = new Float64Array(nv), b = doc.box;
+    if (nt !== region.tiles.length || rows * 256 < at + nv * NEAR_VB) throw new Error('bad nearshore frame');
+    var v = q.subarray(at, at + nv * NEAR_VB), wx = new Float64Array(nv), wy = new Float64Array(nv), b = region.box;
     for (var i = 0; i < nv; i++) {
       var o = i * NEAR_VB, lon = b[0] + (v[o] | v[o + 1] << 8) / 65535 * (b[2] - b[0]), lat = b[1] + (v[o + 2] | v[o + 3] << 8) / 65535 * (b[3] - b[1]);
       var s = Math.sin(lat * Math.PI / 180);
       wx[i] = (lon + 180) / 360; wy[i] = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
     }
-    return { planes: q.subarray(256, at), n: nv, v: v, wx: wx, wy: wy, tide: tide / 100,
+    return { region: region, planes: q.subarray(256, at), n: nv, v: v, wx: wx, wy: wy, tide: tide / 100,
       buoy: { hs: (q[10] | q[11] << 8) / 100, tp: (q[12] | q[13] << 8) / 10, dir: q[14] | q[15] << 8 }, tiles: null };
   }
   function NearshoreLayer(map, root, opts) {
@@ -7349,10 +7352,14 @@
   // An index document the layer can use: every field it reads is checked here, so nothing later can throw on it.
   function validNearDoc(d) {
     var int = function (v) { return typeof v === 'number' && isFinite(v) && Math.floor(v) === v; };
-    return !!(d && d.format === 'nearshore-v1' && typeof d.run === 'string' && /^\d{10}$/.test(d.run) &&
+    var box = function (b) { return Array.isArray(b) && b.length === 4 && b.every(function (v) { return typeof v === 'number' && isFinite(v); }) && b[0] < b[2] && b[1] < b[3]; };
+    var region = function (r) {
+      return !!(r && typeof r.id === 'string' && /^[a-z][a-z0-9-]{1,20}$/.test(r.id) && box(r.box) &&
+        Array.isArray(r.tiles) && r.tiles.length > 0 && r.tiles.length < 64 && r.tiles.every(function (t) { return Array.isArray(t) && t.length === 2 && int(t[0]) && int(t[1]); }));
+    };
+    return !!(d && d.format === 'nearshore-v2' && typeof d.run === 'string' && /^\d{10}$/.test(d.run) &&
       Array.isArray(d.steps) && d.steps.length > 0 && d.steps.length <= 400 && d.steps.every(function (s) { return int(s) && s >= 0; }) &&
-      Array.isArray(d.tiles) && d.tiles.length > 0 && d.tiles.length < 64 && d.tiles.every(function (t) { return Array.isArray(t) && t.length === 2 && int(t[0]) && int(t[1]); }) &&
-      Array.isArray(d.box) && d.box.length === 4 && d.box.every(function (v) { return typeof v === 'number' && isFinite(v); }) && d.box[0] < d.box[2] && d.box[1] < d.box[3] &&
+      Array.isArray(d.regions) && d.regions.length > 0 && d.regions.length <= NEAR_REGIONS_MAX && d.regions.every(region) &&
       d.z === 14 && d.vertex_bytes === NEAR_VB && typeof d.height_step_m === 'number' && d.height_step_m > 0);
   }
   // The pointer, then the run's index. A failure is the "unavailable" note, never an error panel. Asked again (at most
@@ -7362,7 +7369,7 @@
     this.loadedAt = Date.now();
     return fetch(url + '/latest.json', { mode: 'cors' }).then(function (r) { if (!r.ok) throw new Error('nearshore ' + r.status); return r.json(); })
       .then(function (p) {
-        // <run>/<table version>/index.json: the frames sit beside the index (a run built from another table is another folder)
+        // <run>/<table set>/index.json: each region's frames sit in its folder beside the index
         if (!p || typeof p.index !== 'string' || !/^gfswave\/nearshore\/v1\/\d{10}\/[A-Za-z0-9._-]{1,40}\/index\.json$/.test(p.index)) throw new Error('bad nearshore pointer');
         base = self.root + '/' + p.index.slice(0, -'index.json'.length);
         return fetch(self.root + '/' + p.index, { mode: 'cors' });
@@ -7370,7 +7377,9 @@
       .then(function (d) {
         if (!validNearDoc(d)) throw new Error('bad nearshore index');
         if (self.dead) return;
-        if (self.doc && (self.doc.run !== d.run || self.base !== base)) self._forget();   // another run or table: none of the old pictures
+        if (self.doc && (self.doc.run !== d.run || self.base !== base)) self._forget();   // another run or table set: none of the old pictures
+        d.box = [Infinity, Infinity, -Infinity, -Infinity];                                // the whole product's box
+        d.regions.forEach(function (r) { d.box = [Math.min(d.box[0], r.box[0]), Math.min(d.box[1], r.box[1]), Math.max(d.box[2], r.box[2]), Math.max(d.box[3], r.box[3])]; });
         self.doc = d; self.base = base; self.runMs = Date.UTC(+d.run.slice(0, 4), +d.run.slice(4, 6) - 1, +d.run.slice(6, 8), +d.run.slice(8, 10));
         self.state = 'ready';
         if (self.wantMs !== null) self.setTime(self.wantMs); else if (self.onChange) self.onChange();
@@ -7384,75 +7393,102 @@
     this.flights.forEach(function (c) { c.abort(); }); this.flights.clear();
     this.frames.clear(); this.shown = null; this.shownStep = null; this.lastStep = null; this._schedule();
   };
-  NearshoreLayer.prototype.setColours = function (lut, legend) { this.lut = lut; this.legend = legend; if (this.shown) this.shown.tiles = null; this._schedule(); };
-  // The map wraps round the world: the copy of the stretch nearest the view's centre is the one drawn (degrees to add).
+  NearshoreLayer.prototype.setColours = function (lut, legend) {
+    this.lut = lut; this.legend = legend;
+    this.frames.forEach(function (f) { f.tiles = null; });
+    this._schedule();
+  };
+  // The map wraps round the world: the copy of the coast nearest the view's centre is the one drawn (degrees to add).
   NearshoreLayer.prototype._wrapDeg = function () {
     if (!this.doc || !this.map.getCenter) return 0;
-    return 360 * Math.round((this.map.getCenter().lng - (this.doc.box[0] + this.doc.box[2]) / 2) / 360);
+    return 360 * Math.round((this.map.getCenter().lng - (this.doc.box[0] + this.doc.box[2]) / 2) / 360) || 0;
   };
-  NearshoreLayer.prototype.inView = function () {
-    if (!this.doc || this.map.getZoom() < NEAR_MIN_Z) return false;
-    var b = this.map.getBounds(), x = this.doc.box, o = this._wrapDeg();
-    return b.getWest() < x[2] + o && b.getEast() > x[0] + o && b.getSouth() < x[3] && b.getNorth() > x[1];
+  // The regions whose box meets the view (their places in the index), none when the map is zoomed out too far.
+  NearshoreLayer.prototype.regionsInView = function () {
+    var out = [];
+    if (!this.doc || this.map.getZoom() < NEAR_MIN_Z) return out;
+    var b = this.map.getBounds(), o = this._wrapDeg(), w = b.getWest(), e = b.getEast(), s = b.getSouth(), n = b.getNorth();
+    for (var k = 0; k < this.doc.regions.length; k++) {
+      var x = this.doc.regions[k].box;
+      if (w < x[2] + o && e > x[0] + o && s < x[3] && n > x[1]) out.push(k);
+    }
+    return out;
   };
+  NearshoreLayer.prototype.inView = function () { return this.regionsInView().length > 0; };
   NearshoreLayer.prototype._moved = function () { if (this.wantMs !== null && this.doc) this.setTime(this.wantMs); else this._schedule(); };
-  // The step whose valid time is ms. Out of view nothing is fetched; a time the run does not hold clears the picture.
-  // Stepping forward one step at a time (playback) also asks for the next NEAR_AHEAD steps, so the pictures are in hand
-  // when their turn comes.
+  NearshoreLayer.prototype._key = function (step, k) { return step * 64 + k; };
+  // The pictures on the map. One that leaves gives up its drawn tiles (they are made again in a moment if it comes back):
+  // only what is on the map holds canvases.
+  NearshoreLayer.prototype._put = function (list, step) {
+    var old = this.shown || [];
+    for (var i = 0; i < old.length; i++) if (!list || list.indexOf(old[i]) < 0) old[i].tiles = null;
+    this.shown = list; this.shownStep = step;
+  };
+  // The step whose valid time is ms, for the regions in view. Out of view nothing is fetched; a time the run does not hold
+  // clears the picture. Stepping forward one step at a time (playback) also asks for the next NEAR_AHEAD steps, so the
+  // pictures are in hand when their turn comes.
   NearshoreLayer.prototype.setTime = function (ms) {
     this.wantMs = ms;
     if (!this.doc) return;
-    var step = (ms - this.runMs) / 3.6e6, at = this.doc.steps.indexOf(step);
-    if (at < 0) { this.shown = null; this.shownStep = null; this.lastStep = null; this._set('nostep'); this._schedule(); return; }
-    if (!this.inView()) { this.shown = null; this.shownStep = null; this.lastStep = null; this._set('away'); this._schedule(); return; }
-    var forward = this.lastStep !== null && at > 0 && this.doc.steps[at - 1] === this.lastStep, hit = this.frames.get(step);
+    var step = (ms - this.runMs) / 3.6e6, at = this.doc.steps.indexOf(step), self = this;
+    if (at < 0) { this._put(null, null); this.lastStep = null; this._set('nostep'); this._schedule(); return; }
+    var regs = this.regionsInView();
+    if (!regs.length) { this._put(null, null); this.lastStep = null; this._set('away'); this._schedule(); return; }
+    var forward = this.lastStep !== null && at > 0 && this.doc.steps[at - 1] === this.lastStep;
     this.lastStep = step;
-    if (hit) this._show(step, hit);
-    else {
-      if (this.shownStep !== step) { this.shown = null; this.shownStep = null; this._schedule(); }   // never another time's lines under this time
-      this._fetch(step);
-      this._set('fetching');
-    }
-    if (forward) for (var k = 1; k <= NEAR_AHEAD && at + k < this.doc.steps.length; k++) this._fetch(this.doc.steps[at + k]);
+    if (this.shownStep !== step) this._put(null, null);                                  // never another time's lines under this time
+    regs.forEach(function (k) { if (!self.frames.has(self._key(step, k))) self._fetch(step, k); });
+    this._gather(step, regs);
+    if (forward) for (var a = 1; a <= NEAR_AHEAD && at + a < this.doc.steps.length; a++) regs.forEach(function (k) { self._fetch(self.doc.steps[at + a], k); });
   };
-  NearshoreLayer.prototype._keep = function (step, frame) {
-    this.frames.delete(step); this.frames.set(step, frame);            // newest last
-    var it = this.frames.keys();
-    while (this.frames.size > NEAR_KEEP) {
-      var old = it.next().value;
-      if (old === this.shownStep || old === step) continue;
-      var f = this.frames.get(old); if (f) f.tiles = null; this.frames.delete(old);
-    }
-  };
-  NearshoreLayer.prototype._show = function (step, frame) {
-    this.shown = frame; this.shownStep = step; this._keep(step, frame); this.state = 'shown';
+  // What is in hand of the step for the regions in view goes on the map; the note says "Loading" until all of it is.
+  NearshoreLayer.prototype._gather = function (step, regs) {
+    var have = [], self = this;
+    regs.forEach(function (k) { var f = self.frames.get(self._key(step, k)); if (f) have.push(f); });
+    if (have.length) this._put(have, step);
+    var state = have.length === regs.length ? 'shown' : 'fetching';
+    if (this.state !== state) this.state = state;
     if (this.onChange) this.onChange();
     this._schedule();
   };
-  NearshoreLayer.prototype._wantStep = function () { return this.wantMs === null ? null : (this.wantMs - this.runMs) / 3.6e6; };
-  // One step's picture, decoded (the tests put their own in its place).
-  NearshoreLayer.prototype._download = function (step, signal) {
-    return decodeFrame(this.base + 'f' + pad3(step) + '.png', signal, null, null, true);
+  NearshoreLayer.prototype._keep = function (key, frame) {
+    this.frames.delete(key); this.frames.set(key, frame);              // newest last
+    var it = this.frames.keys(), shown = this.shown || [];
+    while (this.frames.size > NEAR_KEEP) {
+      var nx = it.next();
+      if (nx.done) break;                                              // only the pictures on the map are left
+      var old = nx.value, f = this.frames.get(old);
+      if (old === key || shown.indexOf(f) >= 0) continue;
+      if (f) f.tiles = null;
+      this.frames.delete(old);
+    }
   };
-  // Asks for a step unless it is in hand or on its way. At most NEAR_FLIGHT requests at once: a new one for the step on
-  // the map takes the place of the oldest other request; a request ahead of the map just waits its turn.
-  NearshoreLayer.prototype._fetch = function (step) {
-    var self = this, doc = this.doc, wanted = this._wantStep() === step;
-    if (this.frames.has(step) || this.flights.has(step)) return;
+  NearshoreLayer.prototype._wantStep = function () { return this.wantMs === null ? null : (this.wantMs - this.runMs) / 3.6e6; };
+  // One region's picture of a step, decoded (the tests put their own in its place).
+  NearshoreLayer.prototype._download = function (step, k, signal) {
+    return decodeFrame(this.base + this.doc.regions[k].id + '/f' + pad3(step) + '.png', signal, null, null, true);
+  };
+  // Asks for a region's step unless it is in hand or on its way. At most NEAR_FLIGHT requests at once: a new one for the
+  // step on the map takes the place of the oldest request that is not for that step; a request ahead of the map waits.
+  NearshoreLayer.prototype._fetch = function (step, k) {
+    var self = this, doc = this.doc, key = this._key(step, k), wanted = this._wantStep() === step;
+    if (this.frames.has(key) || this.flights.has(key)) return;
     if (this.flights.size >= NEAR_FLIGHT) {
       if (!wanted) return;
-      var oldest = this.flights.keys().next().value;
-      this.flights.get(oldest).abort(); this.flights.delete(oldest);
+      var drop = null, want = this._wantStep();
+      this.flights.forEach(function (c, fk) { if (drop === null && Math.floor(fk / 64) !== want) drop = fk; });
+      if (drop === null) return;                                     // every place holds a picture of the step on the map
+      this.flights.get(drop).abort(); this.flights.delete(drop);
     }
     var ctrl = typeof AbortController === 'function' ? new AbortController() : { signal: undefined, abort: function () {} };
-    this.flights.set(step, ctrl);
-    this._download(step, ctrl.signal).then(function (res) {
-      if (self.flights.get(step) === ctrl) self.flights.delete(step);
+    this.flights.set(key, ctrl);
+    this._download(step, k, ctrl.signal).then(function (res) {
+      if (self.flights.get(key) === ctrl) self.flights.delete(key);
       if (self.dead || self.doc !== doc) return;
-      var frame = parseNearFrame(res.q, res.cols, res.rows, doc);
-      if (self._wantStep() === step && self.inView()) self._show(step, frame); else self._keep(step, frame);
+      self._keep(key, parseNearFrame(res.q, res.cols, res.rows, doc.regions[k]));
+      if (self._wantStep() === step) { var regs = self.regionsInView(); if (regs.length) self._gather(step, regs); }
     }).catch(function (err) {
-      if (self.flights.get(step) === ctrl) self.flights.delete(step);
+      if (self.flights.get(key) === ctrl) self.flights.delete(key);
       if (self.dead || self.doc !== doc || (err && err.name === 'AbortError')) return;
       if (self._wantStep() !== step) return;                           // a step asked for ahead of the map: asked again at its turn
       if (typeof console !== 'undefined' && console.warn) console.warn('overlay nearshore', err);
@@ -7486,19 +7522,26 @@
     var v = viewOf(this.map, null), ctx = this.ctx;
     this.v = v; placeCanvas(this.canvas, ctx, this.map, v);
     ctx.clearRect(0, 0, v.w, v.h);
-    var f = this.shown, doc = this.doc;
-    if (!f || !doc || !this.inView()) return;
-    var world = TILE * Math.pow(2, v.z), tpx = world / Math.pow(2, doc.z), k, i, shift = this._wrapDeg() / 360 * world;
+    var doc = this.doc, shown = this.shown;
+    if (!shown || !doc || !this.inView()) return;
+    var world = TILE * Math.pow(2, v.z), tpx = world / Math.pow(2, doc.z), shift = this._wrapDeg() / 360 * world, n, k;
     ctx.imageSmoothingEnabled = true;
-    for (k = 0; k < doc.tiles.length; k++) {
-      // whole-pixel edges shared by neighbouring tiles: no gap between them and no pixel painted twice
-      var x0 = Math.round(doc.tiles[k][0] * tpx - v.ox + shift), y0 = Math.round(doc.tiles[k][1] * tpx - v.oy);
-      var x1 = Math.round((doc.tiles[k][0] + 1) * tpx - v.ox + shift), y1 = Math.round((doc.tiles[k][1] + 1) * tpx - v.oy);
-      if (x0 > v.w || y0 > v.h || x1 < 0 || y1 < 0 || x1 <= x0 || y1 <= y0) continue;
-      ctx.drawImage(this._tile(f, k), x0, y0, x1 - x0, y1 - y0);
+    // every region's zone first, then every region's lines: a line is never under a neighbour's colours
+    for (n = 0; n < shown.length; n++) {
+      var tiles = shown[n].region.tiles;
+      for (k = 0; k < tiles.length; k++) {
+        // whole-pixel edges shared by neighbouring tiles: no gap between them and no pixel painted twice
+        var x0 = Math.round(tiles[k][0] * tpx - v.ox + shift), y0 = Math.round(tiles[k][1] * tpx - v.oy);
+        var x1 = Math.round((tiles[k][0] + 1) * tpx - v.ox + shift), y1 = Math.round((tiles[k][1] + 1) * tpx - v.oy);
+        if (x0 > v.w || y0 > v.h || x1 < 0 || y1 < 0 || x1 <= x0 || y1 <= y0) continue;
+        ctx.drawImage(this._tile(shown[n], k), x0, y0, x1 - x0, y1 - y0);
+      }
     }
+    for (n = 0; n < shown.length; n++) this._lines(ctx, v, shown[n], world, shift);
+  };
+  NearshoreLayer.prototype._lines = function (ctx, v, f, world, shift) {
     if (!f.n) return;
-    var X = new Float32Array(f.n), Y = new Float32Array(f.n), vb = f.v;
+    var X = new Float32Array(f.n), Y = new Float32Array(f.n), vb = f.v, i;
     for (i = 0; i < f.n; i++) { X[i] = f.wx[i] * world - v.ox + shift; Y[i] = f.wy[i] * world - v.oy; }
     var wide = v.z >= 14 ? 3.2 : 2.2;
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
@@ -7522,9 +7565,9 @@
       gap += Math.hypot(X[i] - X[i - 1], Y[i] - Y[i - 1]);
       if (gap < 120 || band === 0 || !vb[i * NEAR_VB + 6] || (vb[(i + 1) * NEAR_VB + 5] & 128)) continue;
       gap = 0;
-      var dx = X[i + 1] - X[i - 1], dy = Y[i + 1] - Y[i - 1], n = Math.hypot(dx, dy);
-      if (n < 1e-6) continue;
-      var sgn = vb[i * NEAR_VB + 4] & 128 ? 1 : -1, ux = sgn * dx / n, uy = sgn * dy / n, r = 3.6;
+      var dx = X[i + 1] - X[i - 1], dy = Y[i + 1] - Y[i - 1], len = Math.hypot(dx, dy);
+      if (len < 1e-6) continue;
+      var sgn = vb[i * NEAR_VB + 4] & 128 ? 1 : -1, ux = sgn * dx / len, uy = sgn * dy / len, r = 3.6;
       ctx.beginPath();
       ctx.moveTo(X[i] + ux * r * 1.5, Y[i] + uy * r * 1.5);
       ctx.lineTo(X[i] - ux * r - uy * r, Y[i] - uy * r + ux * r);
@@ -7537,43 +7580,48 @@
     var u = unitOf('hs', this.opts.getUnit ? this.opts.getUnit() : 'US'), x = u.f(m);
     return (x < 10 ? x.toFixed(1) : String(Math.round(x))) + ' ' + u.label;
   };
-  // The readout's text under (lat, lng): the nearest break-line vertex within NEAR_HIT_PX, else the zone's height under the
-  // cursor, else null (the wave height's own readout shows).
+  // The readout's text under (lat, lng): the nearest break-line vertex within NEAR_HIT_PX (of any region shown), else the
+  // zone's height under the cursor, else null (the wave height's own readout shows).
   NearshoreLayer.prototype.readoutAt = function (lat, lng) {
-    var f = this.shown, doc = this.doc;
-    if (!f || !doc || !this.inView()) return null;
+    var shown = this.shown, doc = this.doc;
+    if (!shown || !doc || !this.inView()) return null;
     lng -= this._wrapDeg();                                    // the cursor on another copy of the world
     var z = this.map.getZoom(), world = TILE * Math.pow(2, z), s = Math.sin(lat * Math.PI / 180);
-    var px = (lng + 180) / 360 * world, py = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * world, best = -1, bd = NEAR_HIT_PX * NEAR_HIT_PX, i;
-    for (i = 0; i < f.n; i++) {
-      var dx = f.wx[i] * world - px, dy = f.wy[i] * world - py, d2 = dx * dx + dy * dy;
-      if (d2 < bd) { bd = d2; best = i; }
+    var px = (lng + 180) / 360 * world, py = (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * world, best = -1, bf = null, bd = NEAR_HIT_PX * NEAR_HIT_PX, i, n;
+    for (n = 0; n < shown.length; n++) {
+      var f = shown[n];
+      for (i = 0; i < f.n; i++) {
+        var dx = f.wx[i] * world - px, dy = f.wy[i] * world - py, d2 = dx * dx + dy * dy;
+        if (d2 < bd) { bd = d2; best = i; bf = f; }
+      }
     }
-    var txt = null, step = doc.height_step_m;
-    if (best >= 0) {
-      var o = best * NEAR_VB, vb = f.v, fl = vb[o + 5], band = fl >> 4 & 7, hb = vb[o + 7] * step, ride = vb[o + 6] * 5;
-      txt = 'Breaking face ' + this.heightText(hb) + ' (sets ' + this.heightText(hb * NEAR_SETS) + ') · Peel ' + (vb[o + 4] & 127) + '° ' +
+    var step = doc.height_step_m;
+    if (bf) {
+      var o = best * NEAR_VB, vb = bf.v, fl = vb[o + 5], band = fl >> 4 & 7, hb = vb[o + 7] * step, ride = vb[o + 6] * 5;
+      return 'Breaking face ' + this.heightText(hb) + ' (sets ' + this.heightText(hb * NEAR_SETS) + ') · Peel ' + (vb[o + 4] & 127) + '° ' +
         (NEAR_BANDS[band] ? NEAR_BANDS[band][0] : '') + (band > 0 ? ', ' + (fl & 1 ? 'right' : 'left') : '') +
         (ride >= 10 && band > 0 ? ' · Ride ' + (ride >= 1275 ? '1,275+' : ride) + ' m' : '') + ' · ' + NEAR_BREAKERS[fl >> 2 & 3] +
         (vb[o + 9] < 70 ? ' · reform (broke further out)' : '') + (fl & 2 ? ' · mixed swell' : '');
-    } else {
-      var tpx = world / Math.pow(2, doc.z), tx = Math.floor(px / tpx), ty = Math.floor(py / tpx);
-      for (var k = 0; k < doc.tiles.length; k++) {
-        if (doc.tiles[k][0] !== tx || doc.tiles[k][1] !== ty) continue;
-        var cx = Math.min(255, Math.floor((px / tpx - tx) * 256)), cy = Math.min(255, Math.floor((py / tpx - ty) * 256)), c = f.planes[k * 65536 + cy * 256 + cx];
-        if (c) txt = 'Breaking zone: face ' + this.heightText(c * step) + (c === 255 ? '+' : '') + ' (sets ' + this.heightText(c * step * NEAR_SETS) + ')';
-        break;
+    }
+    var tpx = world / Math.pow(2, doc.z), tx = Math.floor(px / tpx), ty = Math.floor(py / tpx);
+    var cx = Math.min(255, Math.floor((px / tpx - tx) * 256)), cy = Math.min(255, Math.floor((py / tpx - ty) * 256));
+    for (n = 0; n < shown.length; n++) {                       // regions may share a tile: each holds only the pixels it owns
+      var tiles = shown[n].region.tiles;
+      for (var k = 0; k < tiles.length; k++) {
+        if (tiles[k][0] !== tx || tiles[k][1] !== ty) continue;
+        var c = shown[n].planes[k * 65536 + cy * 256 + cx];
+        if (c) return 'Breaking zone: face ' + this.heightText(c * step) + (c === 255 ? '+' : '') + ' (sets ' + this.heightText(c * step * NEAR_SETS) + ')';
       }
     }
-    return txt;
+    return null;
   };
   // The note beside the box: what is shown, or why nothing is.
   NearshoreLayer.prototype.noteText = function () {
     if (this.state === 'error') return 'Nearshore data is unavailable';
     if (this.state === 'loading' || this.state === 'fetching') return 'Loading …';
-    if (this.state === 'away' || (this.doc && !this.inView())) return 'Zoom in on Oahu’s North Shore (Laniakea)';
+    if (this.state === 'away' || (this.doc && !this.inView())) return 'Zoom in on Oahu’s North Shore';
     if (this.state === 'nostep') return 'No nearshore step for this time';
-    var f = this.shown;
+    var f = this.shown && this.shown[0];
     if (!f) return '';
     var u = unitOf('hs', this.opts.getUnit ? this.opts.getUnit() : 'US'), tide = u.f(f.tide);
     return 'Buoy swell ' + u.f(f.buoy.hs).toFixed(1) + ' ' + u.label + ' @ ' + Math.round(f.buoy.tp) + ' s from ' + pad3(f.buoy.dir) + '° · tide ' +

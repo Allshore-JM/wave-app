@@ -2,7 +2,7 @@
 # every listed station's GFS-Wave spectra, from NOAA's spectra archive on AWS (the file the winds job streams, ~1.7 GB,
 # streamed once more per run, split in a process pool). Between cycles the job short-circuits in a few seconds; a build
 # takes minutes (the step summary records the cpus, the workers and the time). The same pinned environment (one cached env).
-# A second step publishes the Nearshore Analysis of the pilot stretch under gfswave/nearshore/v1/ (plan section 109) from
+# A second step publishes the Nearshore Analysis of Oahu's North Shore under gfswave/nearshore/v1/ (plan section 109) from
 # the 51201 spectrum the first step keeps and the data branch (data/nearshore) at the commit pinned below. It never fails
 # the tables' job: a failure is a warning in the summary, and the next tick tries again.
 # Secrets: R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET.
@@ -99,7 +99,7 @@ jobs:
         continue-on-error: true
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
         with:
-          ref: 8d16aecc26c1a5ea966376d32c4718f1cf6bd81d   # data/nearshore: the pilot table, the atlas, the tide predictions
+          ref: 903aed18b7803c5d89fc005ef41d79d976d88627   # data/nearshore: the tide predictions and the pin of table set ns-1
           path: nearshore-data
       - name: Publish the nearshore analysis
         if: steps.env.outcome == 'success'

@@ -3724,10 +3724,22 @@
       });
       return tideView;
     }
+    // The window's subtitle says whose prediction it is (plan section 112): NOAA ids are bare; the others carry their
+    // source in the id prefix (the raw TICON / agency id means nothing to a visitor, so it is not shown).
+    const TIDE_AGENCY = { chs: 'CHS Canada', kv: 'Kartverket Norway', jma: 'JMA Japan', hko: 'Hong Kong Observatory',
+      linz: 'LINZ New Zealand', mi: 'Marine Institute Ireland', qld: 'Queensland MSQ' };
+    function tideSubtitle(station) {
+      const id = String(station.id || ''), i = id.indexOf(':');
+      if (i < 0) return 'Tide station \u00b7 NOAA ' + id;
+      const p = id.slice(0, i);
+      if (p === 'ticon') return 'Tide gauge \u00b7 TICON-4 constants';
+      if (p === 'model') return 'Tide model point \u00b7 FES2022';
+      return 'Tide station \u00b7 ' + (Object.prototype.hasOwnProperty.call(TIDE_AGENCY, p) ? TIDE_AGENCY[p] : 'official table');
+    }
     function openTideStation(station) {
       if (!ensureTideView()) return;
       document.getElementById('tideTitle').textContent = station.name;
-      document.getElementById('tideSubtitle').textContent = 'Tide station \u00b7 NOAA ' + station.id;
+      document.getElementById('tideSubtitle').textContent = tideSubtitle(station);
       if (tideWin) tideWin.open(); else document.getElementById('tideWin').hidden = false;
       try { document.dispatchEvent(new CustomEvent('allshore:tidepanel')); } catch (e) {}   // bring the window forward
       tideView.load(station, { unit: getSelectedUnit(), zone: tideZone(station) });

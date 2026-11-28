@@ -1745,3 +1745,18 @@ test('G81 A-8: decodeIslands refuses an island that ends before it starts', () =
   assert.throws(() => I.decodeIslands(d), /bad island/);
   d.islands[3] = ['X', 0, 0, 60, 60, 1]; assert.doesNotThrow(() => I.decodeIslands(d));
 });
+
+test('G81 B-2 create(): an island name never takes a national capital\'s place (the capital named as on production); a town in the same spot still gives way', async () => {
+  const { M, flush } = loadWithFrames();
+  const run = async (city) => {
+    const map = fakeMap(7.9, OAHU[0], OAHU[1], 1440, 810), pl = M.create(map, iopts(map, islandFetch({ 'world-places.bin': placesAt([{ lat: OAHU[0], lon: OAHU[1], ...city }]) })));
+    for (let i = 0; i < 4; i++) { await settle(); flush(); }
+    return spanTexts(pl);
+  };
+  let n = await run({ mz10: 45, name: 'Capitalia', flags: 1 });
+  assert.ok(n.includes('Capitalia') && !n.includes('Oʻahu'), 'a capital keeps its place: ' + n.join());
+  n = await run({ mz10: 45, name: 'Smallton' });
+  assert.ok(!n.includes('Smallton') && n.includes('Oʻahu'), 'a town gives way: ' + n.join());
+  n = await run({ mz10: 45, name: 'Capitalia', flags: 1, lat: 21.1, lon: -157.0 });
+  assert.ok(n.includes('Capitalia') && n.includes('Oʻahu'), 'a capital elsewhere: both: ' + n.join());
+});

@@ -919,6 +919,18 @@
       }
       return out;
     }
+    // The national capitals' labels (thin's boxes, in container px): the island names keep clear of them as of a marker,
+    // so an island name never takes a capital's place (G81 B-2: København under Zealand, Nukuʻalofa under Tongatapu).
+    function capitalRects(items, h) {
+      var out = [];
+      for (var k = 0; k < items.length; k++) {
+        var it = items[k];
+        if (it.cand.country || it.cand.island || !(it.cand.flags & FLAG_CAPITAL)) continue;
+        var hw = it.w / 2, hh = (h || LABEL_H) / 2;
+        out.push({ left: it.x - hw - LABEL_GAP, top: it.y - hh - LABEL_GAP, right: it.x + hw + LABEL_GAP, bottom: it.y + hh + LABEL_GAP });
+      }
+      return out;
+    }
     // The screen's widest view: the map's minimum zoom (the page sets it to one world across, or the band between the
     // poles on a tall screen); one world across where the map has none. Rounded down to the map's 0.1 zoom step, so each
     // group starts on a zoom the map can land on (a phone's 1.82 -> 1.8: the islands from 3.3, not 3.32 = 3.4).
@@ -956,7 +968,7 @@
         else if (cd.country) { var cb = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: cb.w, h: cb.h, cand: cd }); }
         else items.push({ x: p.x, y: p.y, w: textWidth(cd.name, !!(cd.flags & FLAG_CAPITAL)), cand: cd });
       }
-      var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size, font.h, isl.length ? markRects() : null), used = 0;
+      var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size, font.h, isl.length ? markRects().concat(capitalRects(items, font.h)) : null), used = 0;
       for (i = 0; i < kept.length; i++) {
         var it = kept[i], el = pool[used] || (pool[used] = box.appendChild(doc.createElement('span'))), lp = map.latLngToLayerPoint([it.cand.lat, it.cand.lon]);
         var region = it.cand.country || it.cand.island;

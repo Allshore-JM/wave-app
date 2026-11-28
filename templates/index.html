@@ -533,6 +533,11 @@
     .place-label.pc-2 { font-size: 12px; line-height: 15px; }
     .place-label.pc-3 { font-size: 11.5px; line-height: 14px; }
     .place-label.pc-4 { font-size: 11px; line-height: 14px; }
+    /* island names (plan section 115): white italic; groups in letter-spaced capitals (pi-0), single islands pi-1; the
+       sizes, line heights and letter spacing must equal the module's ISLAND_PX / COUNTRY_LH / ISLAND_LS_EM */
+    .place-label.place-island { color: #fff; font-style: italic; white-space: pre; text-align: center; }
+    .place-label.pi-0 { font-size: 12px; line-height: 15px; letter-spacing: 0.12em; }
+    .place-label.pi-1 { font-size: 12px; line-height: 15px; }
     /* Colored dot next to each layer-control label (doubles as the legend) */
     .lc-dot {
       display: inline-block; width: 11px; height: 11px; border-radius: 50%;
@@ -5703,6 +5708,9 @@
         try { st && st.removeItem('allshore.states.v1'); } catch (e) {}   // the state lines follow "Borders" now (owner, 2026-10-23)
         if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined,
           countriesUrl: '/ui/countries.json?v={{ ui_asset_version }}',                // the country names (plan section 114)
+          islandsUrl: '/ui/islands.json?v={{ ui_asset_version }}',                    // the island names (plan section 115)
+          // the forecast points' dots (drawn on the canvas): the island names keep clear of them (plan section 115)
+          dots: function () { var out = []; if (map.hasLayer(forecastLayer)) forecastLayer.eachLayer(function (l) { if (l.getLatLng) out.push(l.getLatLng()); }); return out; },
           waitFor: function () { return window.__allshoreOverlayWait || null; } });   // the overlay's first picture first (G34 B-6)
       } catch (e) { console.error('places', e); }
       ids.forEach(function (id) {

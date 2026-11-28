@@ -1488,3 +1488,205 @@ test('G80 A-11 create(): the countries file is not asked at a zoom where no coun
   map.zoom = 6.9; map.fire('zoomend'); await settle();
   assert.equal(f.asked.filter((u) => u === CURL).length, 1, 'zoom 6.9: asked');
 });
+
+// ---- the island names (plan section 115) ----
+const ISLANDS = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'islands.json'), 'utf8'));
+const IS = I.decodeIslands(ISLANDS);
+const IURL = BASE + '/islands.json';
+const OAHU = [21.525, -158.006];
+const HAWAII_BOX = [-165, 18, -154, 25];             // (the group's label sits at its hull's centre, 23.4 N 162.3 W)
+const islandFetch = (extra) => fakeFetch({ ...TIER0, 'countries.json': { json: COUNTRIES }, 'islands.json': { json: ISLANDS }, ...(extra || {}) });
+const iopts = (map, f, st) => ({ base: BASE, countriesUrl: CURL, islandsUrl: IURL, L: fakeL(map), document: oahuDoc(), storage: st || storage({ 'allshore.borders.v1': '0' }), fetch: f, whenReady: (go) => go() });
+
+test('section 115: the islands file decodes (409 names, groups and islands, Hawaiian spellings); damaged files are refused', () => {
+  assert.equal(IS.n, 409);
+  const at = (label) => IS.label.indexOf(label);
+  for (const n of ['Oʻahu', 'Maui', 'Kauaʻi', 'Molokaʻi', 'Lānaʻi', 'Niʻihau', 'Kahoʻolawe', 'Hawaiʻi']) assert.ok(at(n) >= 0, n);
+  assert.equal(IS.kind[at('Oʻahu')], 1); assert.equal(IS.start[at('Oʻahu')], 53); assert.equal(IS.kind[at('Hawaiian Islands')], 0);
+  assert.ok(!IS.label.some((l) => /‘/.test(l)), 'the ʻokina, never a quote mark');
+  assert.ok(!IS.label.includes('Japan') && !IS.label.includes('Polynesia'), 'no country repeats, no ocean-wide regions');
+  const bad = (mut) => { const d = JSON.parse(JSON.stringify(ISLANDS)); mut(d); return () => I.decodeIslands(d); };
+  assert.throws(bad((d) => { d.format = 'countries-v1'; }), /islands-v1/);
+  assert.throws(bad((d) => { d.count = 3; }), /islands-v1/);
+  for (const rec of [['X', 0, 0, 5, 70, 1], ['X', 0, 0, 125, 130, 1], ['X', 0, 0, 40, 260, 1], ['X', 0, 0, 40, 70, 2], ['X', 0, 0, 40.5, 70, 1],
+    ['', 0, 0, 40, 70, 1], ['A\nB\nC', 0, 0, 40, 70, 1], ['X', '21', 0, 40, 70, 1], ['X', null, 0, 40, 70, 1], ['X', 95, 0, 40, 70, 1], ['X', 0, 0, 40, 70]]) {
+    assert.throws(bad((d) => { d.islands[3] = rec; }), /bad island/, JSON.stringify(rec));
+  }
+  assert.throws(() => I.decodeIslands(null), /islands-v1/);
+});
+
+test('section 115: an island name from its own label zoom until about 900 px across, at least 1.5 zooms, never after zoom 12; the fade; groups in capitals', () => {
+  const o = IS.label.indexOf('Oʻahu');
+  assert.equal(I.islandAlpha(IS.start[o], IS.end[o], 5.29), 0); assert.equal(I.islandAlpha(IS.start[o], IS.end[o], 5.3), 1);
+  assert.ok(IS.end[o] >= 110 && IS.end[o] <= 120, 'Oʻahu gone near zoom 11.7');
+  assert.ok(Math.abs(I.islandAlpha(53, 116, 11.35) - 0.5) < 1e-9); assert.equal(I.islandAlpha(53, 116, 11.6), 0);
+  assert.equal(I.islandAlpha(60, 200, 11.99) > 0, true); assert.equal(I.islandAlpha(60, 200, 12), 0, 'never after zoom 12');
+  assert.equal(I.islandAlpha(40, 45, 4.9), 1, 'kept at least 1.5 zooms (to 5.5, fading from 5.0)'); assert.ok(I.islandAlpha(40, 45, 5.4) > 0); assert.equal(I.islandAlpha(40, 45, 5.5), 0);
+  const at = (z, box) => I.islandCandidates(IS, z, ...(box || HAWAII_BOX), 0);
+  const n53 = at(5.3).map((c) => c.name);
+  assert.ok(n53.includes('Oʻahu') && n53.includes('Kauaʻi') && n53.includes('HAWAIIAN ISLANDS') && n53.includes('Hawaiʻi') && n53.includes('Maui'), n53.join());
+  assert.ok(!at(5.29).map((c) => c.name).includes('Oʻahu'));
+  assert.ok(at(5.4).map((c) => c.name).includes('Kahoʻolawe') && at(5.4).map((c) => c.name).includes('Lānaʻi'));
+  const g = at(5.3).find((c) => c.name === 'HAWAIIAN ISLANDS'), oa = at(5.3).find((c) => c.name === 'Oʻahu');
+  assert.equal(g.kind, 0); assert.equal(g.size, I.COUNTRY_PX.length); assert.equal(oa.kind, 1); assert.equal(oa.size, I.COUNTRY_PX.length + 1);
+  assert.equal(oa.island, true); assert.equal(oa.country, undefined);
+  assert.ok(!at(7.2).map((c) => c.name).includes('HAWAIIAN ISLANDS'), 'the group gone once its hull is a screen wide');
+  const wide = I.islandCandidates(IS, 5.4, -270, 18, 270, 23, 0).filter((c) => c.name === 'Oʻahu').map((c) => c.lon).sort((a, b) => a - b);
+  assert.equal(wide.length, 2, 'a world copy');
+  assert.deepEqual(I.islandCandidates(null, 5, ...HAWAII_BOX, 0), []);
+  assert.equal(I.nameClass(5), 'place-label place-island pi-0'); assert.equal(I.nameClass(6), 'place-label place-island pi-1'); assert.equal(I.nameClass(1), 'place-label place-country pc-1');
+  const nf = I.nameFonts();
+  assert.equal(nf.length, 7); assert.ok(/^italic 600 12px/.test(nf[5].f) && /^italic 600 12px/.test(nf[6].f));
+  assert.equal(nf[5].ls, 1.44); assert.equal(nf[6].ls, 0); assert.equal(nf[6].lh, 15);
+});
+
+test('section 115 create(): island names drawn white italic (classes pi-0 / pi-1), with the fade; the file asked once, low priority', async () => {
+  const { M, flush } = loadWithFrames();
+  const f = islandFetch(), seen = [];
+  const ff = (u, init) => { seen.push([u, init && init.priority]); return f(u, init); };
+  const map = fakeMap(5.4, 20.8, -157.5, 1440, 810), pl = M.create(map, iopts(map, ff));
+  await settle(); flush(); await settle(); flush();
+  const spans = () => pl.labels.children.filter((s) => !s.hidden);
+  const oa = spans().find((s) => s.textContent === 'Kauaʻi'), g = spans().find((s) => s.textContent === 'HAWAIIAN ISLANDS');   // (Oʻahu sits under Honolulu here)
+  assert.ok(oa && g, spans().map((s) => s.textContent).join());
+  assert.equal(oa.className, 'place-label place-island pi-1'); assert.equal(g.className, 'place-label place-island pi-0'); assert.equal(oa.style.opacity, '');
+  assert.deepEqual(seen.filter((x) => x[0] === IURL), [[IURL, 'low']]);
+  assert.equal(pl.islands().status, 'ok');
+  map.zoom = 6.9; map.fire('zoomend'); flush();
+  const gf = spans().find((s) => s.textContent === 'HAWAIIAN ISLANDS');
+  assert.ok(gf && gf.style.opacity !== '' && +gf.style.opacity < 1, 'the group fading near zoom 7');
+  map.zoom = 7.2; map.fire('zoomend'); flush();
+  assert.ok(!spans().some((s) => s.textContent === 'HAWAIIAN ISLANDS'));
+  assert.equal(seen.filter((x) => x[0] === IURL).length, 1, 'never asked again');
+});
+
+test('section 115 create(): island names come last (owner 2026-11-28: never cover a city name): at any zoom the town keeps its place and the island name tries the spots around its label point', async () => {
+  const { M, flush } = loadWithFrames();
+  const run = async (z, city, cell) => {
+    const extra = { 'world-places.bin': placesAt([{ lat: OAHU[0], lon: OAHU[1], ...city }]) };
+    if (cell) {                                                         // the Oahu cell (zoom 8 and closer), listed with its length
+      const cb = placesAt([{ lat: OAHU[0], lon: OAHU[1], ...cell }]);
+      extra['c/20_-160.p.bin'] = cb;
+      extra['index.json'] = { json: { ...INDEX, tier1: { ...INDEX.tier1, cells: { ...INDEX.tier1.cells, '20_-160': [0, cb.byteLength] } } } };
+    }
+    const map = fakeMap(z, OAHU[0], OAHU[1], 1440, 810), pl = M.create(map, iopts(map, islandFetch(extra)));
+    for (let i = 0; i < 4; i++) { await settle(); flush(); }
+    const lp = map.latLngToLayerPoint(OAHU), sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Oʻahu');
+    return { names: spanTexts(pl), oahu: sp ? [parseInt(sp.style.left, 10) - Math.round(lp.x), parseInt(sp.style.top, 10) - Math.round(lp.y)] : null };
+  };
+  for (const [z, city, cell] of [[6, { mz10: 30, name: 'Bigcity' }], [7.9, { mz10: 45, name: 'Smallton' }],
+    [9, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Wahiawā', flags: 2 }]]) {
+    const r = await run(z, city, cell), town = cell ? cell.name : city.name;
+    assert.ok(r.names.includes(town), 'zoom ' + z + ': the town keeps its place: ' + r.names.join());
+    assert.ok(r.names.includes('Oʻahu') && r.oahu && r.oahu[0] === 0 && r.oahu[1] < 0, 'zoom ' + z + ': Oʻahu moves to the spot north of it: ' + JSON.stringify(r.oahu));
+  }
+  const clear = await run(9, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Far2', lat: 21.3, lon: -157.7, flags: 2 });
+  assert.ok(clear.names.includes('Oʻahu') && clear.oahu[0] === 0 && clear.oahu[1] === 0, 'nothing under it: at its own point');
+});
+
+test('section 115: thin tries an item\'s spots in order, keeps clear of its avoid rects, and drops it when every spot is taken', () => {
+  const sp = I.islandSpots(40, 15);
+  assert.deepEqual(sp, [[0, -25], [0, 25], [30, 0], [-30, 0], [30, -25], [-30, -25], [30, 25], [-30, 25]], 'N, S, E, W, then the corners, 10 px clear');
+  const town = { x: 200, y: 200, w: 40 }, isl = () => ({ x: 200, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15) });
+  let k = I.thin([town, isl()], [], 10, null, 14);
+  assert.equal(k.length, 2); assert.deepEqual([k[1].dx, k[1].dy], [0, -25], 'north first');
+  k = I.thin([town, { x: 200, y: 175, w: 40 }, isl()], [], 10, null, 14);
+  assert.deepEqual([k[2].dx, k[2].dy], [0, 25], 'north taken: south');
+  assert.equal(I.thin([isl()], [{ left: 0, top: 0, right: 400, bottom: 400 }], 10, null, 14).length, 0, 'every spot taken: left out');
+  assert.equal(I.thin([{ x: 200, y: 200, w: 40 }, { x: 200, y: 200, w: 40 }], [], 10, null, 14).length, 1, 'an item without spots is never moved');
+  assert.equal(I.thin([{ x: 5, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15) }], [], 10, { x: 400, y: 400 }, 14)[0].dx, 30, 'off the map at its point: the east spot');
+});
+
+test('section 115 create(): an island name never covers a country name; it moves to a spot', async () => {
+  const { M, flush } = loadWithFrames();
+  // a country label put on Kauaʻi's point (no big city near): the island name must leave it the place
+  const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
+  const c2 = JSON.parse(JSON.stringify(COUNTRIES)); c2.countries.push(['Testland', KAUAI[0], KAUAI[1], 0, 70, 0]); c2.count++;
+  const map = fakeMap(6, KAUAI[0], KAUAI[1], 1440, 810);
+  map.getMinZoom = () => 2.9;
+  const pl = M.create(map, iopts(map, islandFetch({ 'countries.json': { json: c2 } })));
+  for (let i = 0; i < 4; i++) { await settle(); flush(); }
+  const names = spanTexts(pl), sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Kauaʻi'), lp = map.latLngToLayerPoint(KAUAI);
+  assert.ok(names.includes('TESTLAND'), names.join());
+  assert.ok(sp && (parseInt(sp.style.top, 10) !== Math.round(lp.y) || parseInt(sp.style.left, 10) !== Math.round(lp.x)), 'Kauaʻi moved off the country name');
+});
+
+test('section 115 create(): the islands file is asked below zoom 12 only; failing keeps the country and city names; Place names off hides them and asks nothing; credited alone', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { M, flush } = loadWithFrames();
+  const f12 = islandFetch(), m12 = fakeMap(12.5, 21.3, -157.9);
+  M.create(m12, iopts(m12, f12)); await settle();
+  assert.ok(!f12.asked.includes(IURL), 'zoom 12.5: not asked');
+  m12.zoom = 11.9; m12.fire('zoomend'); await settle();
+  assert.equal(f12.asked.filter((u) => u === IURL).length, 1, 'zoom 11.9: asked');
+  assert.ok(!f12.asked.includes(CURL), 'the countries file still waits for zoom 7');
+  const f9 = islandFetch({ 'islands.json': undefined }), m9 = fakeMap(3, 20, -100), p9 = M.create(m9, iopts(m9, f9));
+  await settle(); flush();
+  assert.equal(p9.islands().status, 'failed'); assert.equal(p9.countries().status, 'ok');
+  assert.ok(spanTexts(p9).includes('USA'), 'the country names stay');
+  const off = islandFetch(), mo = fakeMap(5.4, 20.8, -157.5), po = M.create(mo, iopts(mo, off, storage({ 'allshore.borders.v1': '0', 'allshore.places.v1': '0' })));
+  await settle(); flush();
+  assert.deepEqual(off.asked, []); assert.equal(spanTexts(po).length, 0);
+  po.set('places', true); await settle(); flush(); await settle(); flush();
+  assert.ok(spanTexts(po).includes('Kauaʻi'), spanTexts(po).join());
+  po.set('places', false); assert.equal(po.labels.hidden, true);
+  const fa = islandFetch({ 'world-places.bin': undefined, 'countries.json': undefined }), ma = fakeMap(9, 21.5, -158), pa = M.create(ma, iopts(ma, fa));
+  await settle(); flush();
+  assert.equal(pa.islands().status, 'ok'); assert.ok(ma.credits.includes('+Places:'), 'credited with only the island names: ' + ma.credits.join());
+  assert.ok(spanTexts(pa).includes('Oʻahu'));
+});
+
+test('section 115 create(): the island fonts probed from the page (italic, letter spacing), the box two lines for a wrapped group', async () => {
+  const { M, flush } = loadWithFrames();
+  const map = fakeMap(5.4, 20.8, -157.5), pl = M.create(map, iopts(map, islandFetch()));
+  await settle(); flush();
+  assert.equal(pl.countryBox('ARKTICHESKIY\nINSTITUT ISLANDS', 5).h, 2 * 15);
+  assert.ok(pl.countryBox('HAWAIIAN ISLANDS', 5).w > pl.countryBox('Hawaiian Islands', 6).w, 'letter spacing widens a group');
+});
+
+test('section 115 create(): the island kinds\' fonts are probed from the page (.pi-0 / .pi-1: italic, size, letter spacing)', async () => {
+  const doc = {
+    defaultView: { getComputedStyle: (sp) => (/pi-0/.test(sp.className) ? { fontSize: '15px', fontFamily: 'Georgia', fontWeight: '600', fontStyle: 'italic', lineHeight: '19px', letterSpacing: '1.8px' }
+      : /pi-1/.test(sp.className) ? { fontSize: '14px', fontFamily: 'Georgia', fontWeight: '600', fontStyle: 'italic', lineHeight: '18px', letterSpacing: 'normal' }
+        : { fontSize: '11px', fontFamily: 'system-ui', fontWeight: '600', fontStyle: 'normal', lineHeight: '14px', letterSpacing: 'normal' }) },
+    createElement: (tag) => { const e = el(tag); e.removeChild = function (c) { this.children = this.children.filter((x) => x !== c); }; return e; }
+  };
+  const map = fakeMap(5.4, 20.8, -157.5), pl = P.create(map, { base: BASE, islandsUrl: IURL, L: fakeL(map), document: doc, storage: storage({ 'allshore.borders.v1': '0' }), fetch: islandFetch(), whenReady: (go) => go() });
+  await settle(); pl.update();
+  const c = pl.fontUsed().c;
+  assert.equal(c[5].f, 'italic 600 15px Georgia'); assert.equal(c[5].lh, 19); assert.equal(c[5].ls, 1.8);
+  assert.equal(c[6].f, 'italic 600 14px Georgia'); assert.equal(c[6].ls, 0);
+  assert.equal(pl.countryBox('A\nB', 6).h, 36, 'the probed line height');
+});
+
+test('section 115: thin: a soft item (an island name) keeps clear of the marks, which block no other item', () => {
+  const marks = [{ left: 196, top: 196, right: 204, bottom: 204 }];
+  const isl = { x: 200, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15), soft: true };
+  let k = I.thin([isl], [], 10, null, 14, marks);
+  assert.equal(k.length, 1); assert.deepEqual([k[0].dx, k[0].dy], [0, -25], 'off the mark: north');
+  k = I.thin([{ x: 200, y: 200, w: 40 }], [], 10, null, 14, marks);
+  assert.equal(k.length, 1); assert.equal(k[0].dy, 0, 'a city name is not moved by a mark');
+  assert.equal(I.thin([{ x: 200, y: 200, w: 40, h: 15, soft: true }], [], 10, null, 14, marks).length, 0, 'no spots: left out');
+});
+
+test('section 115 create(): an island name keeps clear of the forecast dots (opts.dots) and the marker icons, moving to a spot', async () => {
+  const { M, flush } = loadWithFrames();
+  const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
+  const run = async (extra, icon) => {
+    const map = fakeMap(7, KAUAI[0], KAUAI[1], 1440, 810);
+    if (icon) {
+      const base = map.getContainer.bind(map);
+      map.getContainer = () => { const c = base(), q = c.querySelectorAll;
+        c.querySelectorAll = (sel) => (sel === I.MARKER_SELECTOR ? [{ getBoundingClientRect: () => { const p = map.latLngToContainerPoint(KAUAI); return { left: 10 + p.x - 9, top: 20 + p.y - 9, right: 10 + p.x + 9, bottom: 20 + p.y + 9 }; } },
+          { getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 900 }) }] : q(sel)); return c; };   // (the second: too big to be a marker)
+    }
+    const pl = M.create(map, { ...iopts(map, islandFetch()), ...extra });
+    for (let i = 0; i < 3; i++) { await settle(); flush(); }
+    const sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Kauaʻi'), lp = map.latLngToLayerPoint(KAUAI);
+    return sp ? [parseInt(sp.style.left, 10) - Math.round(lp.x), parseInt(sp.style.top, 10) - Math.round(lp.y)] : null;
+  };
+  assert.deepEqual(await run({}), [0, 0], 'nothing there: at its point');
+  assert.deepEqual(await run({ dots: () => [{ lat: KAUAI[0], lng: KAUAI[1] }] }), [0, -25], 'a forecast dot on it: north');
+  assert.deepEqual(await run({ dots: () => { throw new Error('x'); } }), [0, 0], 'a failing dots() is ignored');
+  assert.deepEqual(await run({}, true), [0, -25], 'a station icon on it: north (an element larger than a marker is not one)');
+});

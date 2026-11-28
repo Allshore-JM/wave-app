@@ -1560,7 +1560,7 @@ test('section 115 create(): island names drawn white italic (classes pi-0 / pi-1
   assert.equal(seen.filter((x) => x[0] === IURL).length, 1, 'never asked again');
 });
 
-test('section 115 create(): island names come last (owner 2026-11-28: never cover a city name): at any zoom the town keeps its place and the island name tries the spots around its label point', async () => {
+test('section 115 create(): an island name sits centred on its island, never moved (owner 2026-11-28: "center on the island and fade to city names at closer zooms"): a big city keeps its place, the island name wins over a town while at full strength and gives way to the towns as it fades', async () => {
   const { M, flush } = loadWithFrames();
   const run = async (z, city, cell) => {
     const extra = { 'world-places.bin': placesAt([{ lat: OAHU[0], lon: OAHU[1], ...city }]) };
@@ -1574,30 +1574,33 @@ test('section 115 create(): island names come last (owner 2026-11-28: never cove
     const lp = map.latLngToLayerPoint(OAHU), sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Oʻahu');
     return { names: spanTexts(pl), oahu: sp ? [parseInt(sp.style.left, 10) - Math.round(lp.x), parseInt(sp.style.top, 10) - Math.round(lp.y)] : null };
   };
-  for (const [z, city, cell] of [[6, { mz10: 30, name: 'Bigcity' }], [7.9, { mz10: 45, name: 'Smallton' }],
-    [9, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Wahiawā', flags: 2 }]]) {
-    const r = await run(z, city, cell), town = cell ? cell.name : city.name;
-    assert.ok(r.names.includes(town), 'zoom ' + z + ': the town keeps its place: ' + r.names.join());
-    assert.ok(r.names.includes('Oʻahu') && r.oahu && r.oahu[0] === 0 && r.oahu[1] < 0, 'zoom ' + z + ': Oʻahu moves to the spot north of it: ' + JSON.stringify(r.oahu));
+  const far = { mz10: 45, name: 'Far', lat: 30, lon: -140 };
+  let r = await run(6, { mz10: 30, name: 'Bigcity' });
+  assert.ok(r.names.includes('Bigcity') && !r.names.includes('Oʻahu'), 'zoom 6: a big city first; the island name is left out, not moved: ' + r.names.join());
+  for (const [z, city, cell] of [[7.9, { mz10: 45, name: 'Smallton' }], [9, far, { mz10: 80, name: 'Wahiawā', flags: 2 }]]) {
+    r = await run(z, city, cell);
+    const town = cell ? cell.name : city.name;
+    assert.ok(r.names.includes('Oʻahu') && !r.names.includes(town), 'zoom ' + z + ': Oʻahu (full strength) over the town: ' + r.names.join());
+    assert.deepEqual(r.oahu, [0, 0], 'zoom ' + z + ': centred on its point');
   }
-  const clear = await run(9, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Far2', lat: 21.3, lon: -157.7, flags: 2 });
-  assert.ok(clear.names.includes('Oʻahu') && clear.oahu[0] === 0 && clear.oahu[1] === 0, 'nothing under it: at its own point');
+  r = await run(11.4, far, { mz10: 80, name: 'Wahiawā', flags: 2 });
+  assert.ok(r.names.includes('Wahiawā') && !r.names.includes('Oʻahu'), 'zoom 11.4: Oʻahu fading: the town takes the place: ' + r.names.join());
+  r = await run(11.4, far, { mz10: 80, name: 'Far2', lat: 21.45, lon: -157.9, flags: 2 });
+  assert.ok(r.names.includes('Oʻahu') && r.names.includes('Far2'), 'nothing under it: the fading name still shows, centred');
+  assert.deepEqual(r.oahu, [0, 0]);
 });
 
-test('section 115: thin tries an item\'s spots in order, keeps clear of its avoid rects, and drops it when every spot is taken', () => {
-  const sp = I.islandSpots(40, 15);
-  assert.deepEqual(sp, [[0, -25], [0, 25], [30, 0], [-30, 0], [30, -25], [-30, -25], [30, 25], [-30, 25]], 'N, S, E, W, then the corners, 10 px clear');
-  const town = { x: 200, y: 200, w: 40 }, isl = () => ({ x: 200, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15) });
+test('section 115: thin never moves a name: one whose place is taken, or that would run off the map, is left out', () => {
+  assert.equal(I.islandSpots, undefined, 'no spots any more');
+  const town = { x: 200, y: 200, w: 40 }, isl = () => ({ x: 200, y: 200, w: 40, h: 15, alts: [[0, -25]] });
   let k = I.thin([town, isl()], [], 10, null, 14);
-  assert.equal(k.length, 2); assert.deepEqual([k[1].dx, k[1].dy], [0, -25], 'north first');
-  k = I.thin([town, { x: 200, y: 175, w: 40 }, isl()], [], 10, null, 14);
-  assert.deepEqual([k[2].dx, k[2].dy], [0, 25], 'north taken: south');
-  assert.equal(I.thin([isl()], [{ left: 0, top: 0, right: 400, bottom: 400 }], 10, null, 14).length, 0, 'every spot taken: left out');
-  assert.equal(I.thin([{ x: 200, y: 200, w: 40 }, { x: 200, y: 200, w: 40 }], [], 10, null, 14).length, 1, 'an item without spots is never moved');
-  assert.equal(I.thin([{ x: 5, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15) }], [], 10, { x: 400, y: 400 }, 14)[0].dx, 30, 'off the map at its point: the east spot');
+  assert.equal(k.length, 1); assert.equal(k[0], town, 'taken: left out (an alts list is ignored)');
+  k = I.thin([isl(), town], [], 10, null, 14);
+  assert.equal(k.length, 1); assert.equal(k[0].h, 15); assert.equal(k[0].dx, undefined, 'kept at its own point');
+  assert.equal(I.thin([{ x: 5, y: 200, w: 40, h: 15 }], [], 10, { x: 400, y: 400 }, 14).length, 0, 'off the map at its point: left out');
 });
 
-test('section 115 create(): an island name never covers a country name; it moves to a spot', async () => {
+test('section 115 create(): an island name never covers a country name; it is left out, not moved', async () => {
   const { M, flush } = loadWithFrames();
   // a country label put on Kauaʻi's point (no big city near): the island name must leave it the place
   const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
@@ -1608,7 +1611,8 @@ test('section 115 create(): an island name never covers a country name; it moves
   for (let i = 0; i < 4; i++) { await settle(); flush(); }
   const names = spanTexts(pl), sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Kauaʻi'), lp = map.latLngToLayerPoint(KAUAI);
   assert.ok(names.includes('TESTLAND'), names.join());
-  assert.ok(sp && (parseInt(sp.style.top, 10) !== Math.round(lp.y) || parseInt(sp.style.left, 10) !== Math.round(lp.x)), 'Kauaʻi moved off the country name');
+  assert.ok(!sp, 'Kauaʻi left out under the country name');
+  assert.ok(names.includes('Oʻahu') || names.includes('Niʻihau') || names.includes('HAWAIIAN ISLANDS'), 'the other island names stay: ' + names.join() + ' ' + lp.x);
 });
 
 test('section 115 create(): the islands file is asked below zoom 12 only; failing keeps the country and city names; Place names off hides them and asks nothing; credited alone', async (t) => {
@@ -1661,15 +1665,16 @@ test('section 115 create(): the island kinds\' fonts are probed from the page (.
 
 test('section 115: thin: a soft item (an island name) keeps clear of the marks, which block no other item', () => {
   const marks = [{ left: 196, top: 196, right: 204, bottom: 204 }];
-  const isl = { x: 200, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15), soft: true };
-  let k = I.thin([isl], [], 10, null, 14, marks);
-  assert.equal(k.length, 1); assert.deepEqual([k[0].dx, k[0].dy], [0, -25], 'off the mark: north');
+  let k = I.thin([{ x: 200, y: 200, w: 40, h: 15, soft: true }], [], 10, null, 14, marks);
+  assert.equal(k.length, 0, 'on a mark: left out');
+  assert.equal(I.thin([{ x: 200, y: 260, w: 40, h: 15, soft: true }], [], 10, null, 14, marks).length, 1, 'clear of the mark: kept');
   k = I.thin([{ x: 200, y: 200, w: 40 }], [], 10, null, 14, marks);
-  assert.equal(k.length, 1); assert.equal(k[0].dy, 0, 'a city name is not moved by a mark');
-  assert.equal(I.thin([{ x: 200, y: 200, w: 40, h: 15, soft: true }], [], 10, null, 14, marks).length, 0, 'no spots: left out');
+  assert.equal(k.length, 1, 'a city name is not blocked by a mark');
+  k = I.thin([{ x: 200, y: 200, w: 40 }, { x: 200, y: 260, w: 40, h: 15, soft: true }], [], 10, null, 14, marks);
+  assert.equal(k.length, 2, 'a mark blocks no other item, and filing one never blocks a later soft item');
 });
 
-test('section 115 create(): an island name keeps clear of the forecast dots (opts.dots) and the marker icons, moving to a spot', async () => {
+test('section 115 create(): an island name keeps clear of the forecast dots (opts.dots) and the marker icons: left out where one sits under it', async () => {
   const { M, flush } = loadWithFrames();
   const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
   const run = async (extra, icon) => {
@@ -1686,7 +1691,8 @@ test('section 115 create(): an island name keeps clear of the forecast dots (opt
     return sp ? [parseInt(sp.style.left, 10) - Math.round(lp.x), parseInt(sp.style.top, 10) - Math.round(lp.y)] : null;
   };
   assert.deepEqual(await run({}), [0, 0], 'nothing there: at its point');
-  assert.deepEqual(await run({ dots: () => [{ lat: KAUAI[0], lng: KAUAI[1] }] }), [0, -25], 'a forecast dot on it: north');
+  assert.equal(await run({ dots: () => [{ lat: KAUAI[0], lng: KAUAI[1] }] }), null, 'a forecast dot on it: left out');
+  assert.deepEqual(await run({ dots: () => [{ lat: KAUAI[0] + 1, lng: KAUAI[1] }] }), [0, 0], 'a dot a degree away: kept');
   assert.deepEqual(await run({ dots: () => { throw new Error('x'); } }), [0, 0], 'a failing dots() is ignored');
-  assert.deepEqual(await run({}, true), [0, -25], 'a station icon on it: north (an element larger than a marker is not one)');
+  assert.equal(await run({}, true), null, 'a station icon on it: left out (an element larger than a marker is not one)');
 });

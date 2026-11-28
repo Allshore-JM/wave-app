@@ -1,0 +1,1366 @@
+{
+ "about": "Plan section 111b: the stations behind the European datum grids (tools/bathy/build_tide_grids.py --area eu).",
+ "gauges_mhhw": {
+  "about": "MHHW above MSL (m) predicted from each gauge's TICON-4 tidal constants (tide_global.json, CC BY 4.0): 19 years hourly from 2011-01-01 UTC, the mean of each UTC day's highest hour less the mean, sa/ssa left out. Gauges whose value differs from EOT20's by more than 0.15 m (estuaries, harbours the 1/8-degree model cannot represent) are left out.",
+  "dropped": [
+   [
+    "Bayonne (tide gauge)",
+    -0.169
+   ],
+   [
+    "Donges",
+    0.183
+   ],
+   [
+    "Mimizan",
+    -0.221
+   ],
+   [
+    "Paimboeuf",
+    0.262
+   ],
+   [
+    "Rochefort",
+    0.16
+   ],
+   [
+    "Saint-Vivien-de-Médoc (tide gauge)",
+    -0.195
+   ],
+   [
+    "Villefranque (tide gauge)",
+    -0.294
+   ],
+   [
+    "Avonmouth",
+    0.2
+   ],
+   [
+    "Heysham",
+    0.367
+   ],
+   [
+    "Immingham",
+    0.164
+   ],
+   [
+    "Liverpool",
+    0.215
+   ],
+   [
+    "Lymington",
+    0.223
+   ],
+   [
+    "Severn Bridge",
+    0.334
+   ],
+   [
+    "Southampton",
+    0.502
+   ],
+   [
+    "Weymouth",
+    -0.189
+   ],
+   [
+    "Kinvara Unreferenced",
+    -0.837
+   ]
+  ],
+  "stations": {
+   "ticon:langosteiratg-lan-esp-cmems": {
+    "name": "Arteixo (tide gauge)",
+    "lat": 43.3465,
+    "lon": -8.5301,
+    "mhhw_msl": 1.283
+   },
+   "ticon:avilestg-avi-esp-cmems": {
+    "name": "Avilés (tide gauge)",
+    "lat": 43.59138,
+    "lon": -5.92993,
+    "mhhw_msl": 1.44
+   },
+   "ticon:cadiz-cadi-esp-ieo": {
+    "name": "Cadiz",
+    "lat": 36.54,
+    "lon": -6.283,
+    "mhhw_msl": 1.153
+   },
+   "ticon:ferrol2tg-fer-esp-cmems": {
+    "name": "Ferrol (tide gauge)",
+    "lat": 43.4762,
+    "lon": -8.2485,
+    "mhhw_msl": 1.32
+   },
+   "ticon:la-coruna-830-esp-uhslc-fd": {
+    "name": "La Coruna",
+    "lat": 43.3667,
+    "lon": -8.4,
+    "mhhw_msl": 1.286
+   },
+   "ticon:marintg-mar-esp-cmems": {
+    "name": "Marín (tide gauge)",
+    "lat": 42.4061,
+    "lon": -8.6911,
+    "mhhw_msl": 1.213
+   },
+   "ticon:huelvatg-hue-esp-cmems": {
+    "name": "Mazagón (tide gauge)",
+    "lat": 37.132,
+    "lon": -6.834,
+    "mhhw_msl": 1.16
+   },
+   "ticon:ferroltg-fer-esp-cmems": {
+    "name": "Mugardos (tide gauge)",
+    "lat": 43.463,
+    "lon": -8.326,
+    "mhhw_msl": 1.292
+   },
+   "ticon:gijontg-gij-esp-cmems": {
+    "name": "Natahoyo (tide gauge)",
+    "lat": 43.558,
+    "lon": -5.698,
+    "mhhw_msl": 1.386
+   },
+   "ticon:pasaiatg-pas-esp-cmems": {
+    "name": "Pasaia (tide gauge)",
+    "lat": 43.3232,
+    "lon": -1.92325,
+    "mhhw_msl": 1.413
+   },
+   "ticon:bonanzatg-bon-esp-cmems": {
+    "name": "Sanlúcar de Barrameda (tide gauge)",
+    "lat": 36.8,
+    "lon": -6.34,
+    "mhhw_msl": 1.05
+   },
+   "ticon:santander-sant-esp-ieo": {
+    "name": "Santander",
+    "lat": 43.4614,
+    "lon": -3.7908,
+    "mhhw_msl": 1.403
+   },
+   "ticon:tarifa-tari-esp-ieo": {
+    "name": "Tarifa",
+    "lat": 36.0086,
+    "lon": -5.6026,
+    "mhhw_msl": 0.475
+   },
+   "ticon:vigo-vigo-esp-ieo": {
+    "name": "Vigo",
+    "lat": 42.238,
+    "lon": -8.73,
+    "mhhw_msl": 1.188
+   },
+   "ticon:sancibraotg-san-esp-cmems": {
+    "name": "Xove (tide gauge)",
+    "lat": 43.7091,
+    "lon": -7.4609,
+    "mhhw_msl": 1.34
+   },
+   "ticon:bilbaotg-bil-esp-cmems": {
+    "name": "Zierbena (tide gauge)",
+    "lat": 43.357,
+    "lon": -3.05,
+    "mhhw_msl": 1.402
+   },
+   "ticon:aiguillon-sur-mer-6257-fra-refmar": {
+    "name": "Aiguillon sur Mer",
+    "lat": 46.335,
+    "lon": -1.31639,
+    "mhhw_msl": 1.643
+   },
+   "ticon:arcachon-eyrac-190-fra-refmar": {
+    "name": "Arcachon Eyrac",
+    "lat": 44.665,
+    "lon": -1.16355,
+    "mhhw_msl": 1.443
+   },
+   "ticon:audierne-port-6305-fra-refmar": {
+    "name": "Audierne Port",
+    "lat": 48.02155,
+    "lon": -4.53758,
+    "mhhw_msl": 1.625
+   },
+   "ticon:bayonne-boucau-94-fra-refmar": {
+    "name": "Bayonne Boucau",
+    "lat": 43.52732,
+    "lon": -1.51483,
+    "mhhw_msl": 1.332
+   },
+   "ticon:boulogne-sur-mer-111-fra-refmar": {
+    "name": "Boulogne sur Mer",
+    "lat": 50.72738,
+    "lon": 1.57766,
+    "mhhw_msl": 3.247
+   },
+   "ticon:bourcefranc-le-chapus-155-fra-refmar": {
+    "name": "Bourcefranc le Chapus",
+    "lat": 45.85341,
+    "lon": -1.17782,
+    "mhhw_msl": 1.664
+   },
+   "ticon:brest-822-fra-uhslc-fd": {
+    "name": "Brest",
+    "lat": 48.3833,
+    "lon": -4.495,
+    "mhhw_msl": 2.198
+   },
+   "ticon:benodetvigicruestg-06minute-ben-fra-cmems": {
+    "name": "Bénodet (tide gauge)",
+    "lat": 47.88092,
+    "lon": -4.11598,
+    "mhhw_msl": 1.583
+   },
+   "ticon:calais-55-fra-refmar": {
+    "name": "Calais",
+    "lat": 50.9694,
+    "lon": 1.86772,
+    "mhhw_msl": 2.684
+   },
+   "ticon:cherbourg-13-fra-refmar": {
+    "name": "Cherbourg",
+    "lat": 49.65145,
+    "lon": -1.63551,
+    "mhhw_msl": 1.992
+   },
+   "ticon:concarneau-160-fra-refmar": {
+    "name": "Concarneau",
+    "lat": 47.87355,
+    "lon": -3.90721,
+    "mhhw_msl": 1.55
+   },
+   "ticon:dielette-628-fra-refmar": {
+    "name": "Dielette",
+    "lat": 49.5525,
+    "lon": -1.86083,
+    "mhhw_msl": 3.201
+   },
+   "ticon:dieppe-24-fra-refmar": {
+    "name": "Dieppe",
+    "lat": 49.92917,
+    "lon": 1.08449,
+    "mhhw_msl": 3.44
+   },
+   "ticon:dunkerque-2-fra-refmar": {
+    "name": "Dunkerque",
+    "lat": 51.04809,
+    "lon": 2.3667,
+    "mhhw_msl": 2.367
+   },
+   "ticon:herbaudiere-198-fra-refmar": {
+    "name": "Herbaudiere",
+    "lat": 47.02494,
+    "lon": -2.29891,
+    "mhhw_msl": 1.668
+   },
+   "ticon:ile-d-aix-189-fra-refmar": {
+    "name": "Ile D Aix",
+    "lat": 46.00736,
+    "lon": -1.17434,
+    "mhhw_msl": 1.733
+   },
+   "ticon:la-cotiniere-736-fra-refmar": {
+    "name": "La Cotiniere",
+    "lat": 45.9136,
+    "lon": -1.32781,
+    "mhhw_msl": 1.543
+   },
+   "ticon:la-rochelle-la-pallice-34-fra-refmar": {
+    "name": "La Rochelle la Pallice",
+    "lat": 46.1585,
+    "lon": -1.22065,
+    "mhhw_msl": 1.698
+   },
+   "ticon:pontseudretg-05minute-pon-fra-cmems": {
+    "name": "La Tremblade (tide gauge)",
+    "lat": 45.79917,
+    "lon": -1.13874,
+    "mhhw_msl": 1.607
+   },
+   "ticon:le-conquet-152-fra-refmar": {
+    "name": "Le Conquet",
+    "lat": 48.3591,
+    "lon": -4.78075,
+    "mhhw_msl": 2.185
+   },
+   "ticon:le-crouesty-185-fra-refmar": {
+    "name": "Le Crouesty",
+    "lat": 47.54268,
+    "lon": -2.89517,
+    "mhhw_msl": 1.623
+   },
+   "ticon:le-havre-4-fra-refmar": {
+    "name": "Le Havre",
+    "lat": 49.48189,
+    "lon": 0.10598,
+    "mhhw_msl": 2.54
+   },
+   "ticon:les-sables-d-olonne-62-fra-refmar": {
+    "name": "Les Sables D Olonne",
+    "lat": 46.49736,
+    "lon": -1.79353,
+    "mhhw_msl": 1.555
+   },
+   "ticon:ouistreham-311-fra-refmar": {
+    "name": "Ouistreham",
+    "lat": 49.27936,
+    "lon": -0.24903,
+    "mhhw_msl": 2.487
+   },
+   "ticon:pont-du-brault-6269-fra-refmar": {
+    "name": "Pont du Brault",
+    "lat": 46.31684,
+    "lon": -1.08258,
+    "mhhw_msl": 1.626
+   },
+   "ticon:port-bloc-15-fra-refmar": {
+    "name": "Port Bloc",
+    "lat": 45.56848,
+    "lon": -1.06156,
+    "mhhw_msl": 1.597
+   },
+   "ticon:port-tudy-71-fra-refmar": {
+    "name": "Port Tudy",
+    "lat": 47.64427,
+    "lon": -3.44585,
+    "mhhw_msl": 1.546
+   },
+   "ticon:roscoff-54-fra-refmar": {
+    "name": "Roscoff",
+    "lat": 48.71843,
+    "lon": -3.96568,
+    "mhhw_msl": 2.769
+   },
+   "ticon:royan-308-fra-refmar": {
+    "name": "Royan",
+    "lat": 45.62058,
+    "lon": -1.02781,
+    "mhhw_msl": 1.555
+   },
+   "ticon:saint-gildas-36-fra-refmar": {
+    "name": "Saint Gildas",
+    "lat": 47.14038,
+    "lon": -2.24635,
+    "mhhw_msl": 1.67
+   },
+   "ticon:saint-jean-de-luz-socoa-95-fra-refmar": {
+    "name": "Saint Jean de Luz Socoa",
+    "lat": 43.39524,
+    "lon": -1.68162,
+    "mhhw_msl": 1.416
+   },
+   "ticon:saint-malo-410-fra-refmar": {
+    "name": "Saint Malo",
+    "lat": 48.64081,
+    "lon": -2.0281,
+    "mhhw_msl": 4.042
+   },
+   "ticon:saint-nazaire-37-fra-refmar": {
+    "name": "Saint Nazaire",
+    "lat": 47.26686,
+    "lon": -2.20155,
+    "mhhw_msl": 1.732
+   },
+   "ticon:saint-quay-portrieux-506-fra-refmar": {
+    "name": "Saint Quay Portrieux",
+    "lat": 48.6475,
+    "lon": -2.81806,
+    "mhhw_msl": 3.696
+   },
+   "ticon:aberdeen-abe-gbr-bodc": {
+    "name": "Aberdeen",
+    "lat": 57.14403,
+    "lon": -2.08022,
+    "mhhw_msl": 1.407
+   },
+   "ticon:bournemouth-bou-gbr-bodc": {
+    "name": "Bournemouth",
+    "lat": 50.71433,
+    "lon": -1.87486,
+    "mhhw_msl": 0.463
+   },
+   "ticon:brighton-btn-gbr-cco": {
+    "name": "Brighton",
+    "lat": 50.8118,
+    "lon": -0.1013,
+    "mhhw_msl": 2.411
+   },
+   "ticon:cromer-cro-gbr-bodc": {
+    "name": "Cromer",
+    "lat": 52.93419,
+    "lon": 1.30164,
+    "mhhw_msl": 1.726
+   },
+   "ticon:deal-pier-dlp-gbr-cco": {
+    "name": "Deal Pier",
+    "lat": 51.22378,
+    "lon": 1.40923,
+    "mhhw_msl": 2.221
+   },
+   "ticon:devonport-dev-gbr-bodc": {
+    "name": "Devonport",
+    "lat": 50.36839,
+    "lon": -4.18525,
+    "mhhw_msl": 1.692
+   },
+   "ticon:dover-dov-gbr-bodc": {
+    "name": "Dover",
+    "lat": 51.11439,
+    "lon": 1.32253,
+    "mhhw_msl": 2.467
+   },
+   "ticon:exmouth-exm-gbr-cco": {
+    "name": "Exmouth",
+    "lat": 50.61739,
+    "lon": -3.42358,
+    "mhhw_msl": 1.363
+   },
+   "ticon:felixstowe-fel-gbr-bodc": {
+    "name": "Felixstowe",
+    "lat": 51.95769,
+    "lon": 1.34656,
+    "mhhw_msl": 1.484
+   },
+   "ticon:fishguard-fis-gbr-bodc": {
+    "name": "Fishguard",
+    "lat": 52.01322,
+    "lon": -4.98375,
+    "mhhw_msl": 1.602
+   },
+   "ticon:harwich-har-gbr-bodc": {
+    "name": "Harwich",
+    "lat": 51.948,
+    "lon": 1.29206,
+    "mhhw_msl": 1.574
+   },
+   "ticon:hastings-pier-hgp-gbr-cco": {
+    "name": "Hastings Pier",
+    "lat": 50.85088,
+    "lon": 0.57283,
+    "mhhw_msl": 2.914
+   },
+   "ticon:hinkley-hin-gbr-cmems": {
+    "name": "Hinkley",
+    "lat": 51.2167,
+    "lon": -3.13333,
+    "mhhw_msl": 4.321
+   },
+   "ticon:holyhead-hol-gbr-bodc": {
+    "name": "Holyhead",
+    "lat": 53.31394,
+    "lon": -4.62042,
+    "mhhw_msl": 1.967
+   },
+   "ticon:ilfracombe-ilf-gbr-bodc": {
+    "name": "Ilfracombe",
+    "lat": 51.21114,
+    "lon": -4.11239,
+    "mhhw_msl": 3.328
+   },
+   "ticon:kinlochbervie-kin-gbr-bodc": {
+    "name": "Kinlochbervie",
+    "lat": 58.45669,
+    "lon": -5.05022,
+    "mhhw_msl": 1.536
+   },
+   "ticon:leith-lei-gbr-bodc": {
+    "name": "Leith",
+    "lat": 55.98983,
+    "lon": -3.18169,
+    "mhhw_msl": 1.936
+   },
+   "ticon:llandudno-lla-gbr-bodc": {
+    "name": "Llandudno",
+    "lat": 53.33167,
+    "lon": -3.82522,
+    "mhhw_msl": 2.966
+   },
+   "ticon:lowestoft-low-gbr-bodc": {
+    "name": "Lowestoft",
+    "lat": 52.47308,
+    "lon": 1.75025,
+    "mhhw_msl": 0.771
+   },
+   "ticon:milford-haven-mha-gbr-bodc": {
+    "name": "Milford Haven",
+    "lat": 51.70739,
+    "lon": -5.05178,
+    "mhhw_msl": 2.449
+   },
+   "ticon:millport-mil-gbr-bodc": {
+    "name": "Millport",
+    "lat": 55.74981,
+    "lon": -4.90633,
+    "mhhw_msl": 1.227
+   },
+   "ticon:moray-firth-mor-gbr-bodc": {
+    "name": "Moray Firth",
+    "lat": 57.59917,
+    "lon": -4.00878,
+    "mhhw_msl": 1.494
+   },
+   "ticon:mumbles-mum-gbr-cmems": {
+    "name": "Mumbles",
+    "lat": 51.5697,
+    "lon": -3.9737,
+    "mhhw_msl": 3.305
+   },
+   "ticon:newhaven-nha-gbr-bodc": {
+    "name": "Newhaven",
+    "lat": 50.78178,
+    "lon": 0.05703,
+    "mhhw_msl": 2.503
+   },
+   "ticon:newlyn-new-gbr-bodc": {
+    "name": "Newlyn",
+    "lat": 50.103,
+    "lon": -5.54275,
+    "mhhw_msl": 1.839
+   },
+   "ticon:newport-new-gbr-cmems": {
+    "name": "Newport",
+    "lat": 51.5496,
+    "lon": -2.986,
+    "mhhw_msl": 4.687
+   },
+   "ticon:north-shields-nsh-gbr-bodc": {
+    "name": "North Shields",
+    "lat": 55.00744,
+    "lon": -1.43978,
+    "mhhw_msl": 1.735
+   },
+   "ticon:portisaactg-por-gbr-cmems": {
+    "name": "Polzeath (tide gauge)",
+    "lat": 50.59418,
+    "lon": -4.83441,
+    "mhhw_msl": 2.677
+   },
+   "ticon:port-ellen-islay-isl-gbr-bodc": {
+    "name": "Port Ellen Islay",
+    "lat": 55.62758,
+    "lon": -6.18992,
+    "mhhw_msl": 0.266
+   },
+   "ticon:port-eri-isle-of-man-iom-gbr-bodc": {
+    "name": "Port Eri Isle of Man",
+    "lat": 54.08522,
+    "lon": -4.76806,
+    "mhhw_msl": 2.01
+   },
+   "ticon:portpatrick-por-gbr-bodc": {
+    "name": "Portpatrick",
+    "lat": 54.84256,
+    "lon": -5.12003,
+    "mhhw_msl": 1.482
+   },
+   "ticon:portrush-pru-gbr-bodc": {
+    "name": "Portrush",
+    "lat": 55.20678,
+    "lon": -6.65683,
+    "mhhw_msl": 0.694
+   },
+   "ticon:portsmouth-ptm-gbr-bodc": {
+    "name": "Portsmouth",
+    "lat": 50.80219,
+    "lon": -1.11125,
+    "mhhw_msl": 1.52
+   },
+   "ticon:arunplatformtg-aru-gbr-cmems": {
+    "name": "Rustington (tide gauge)",
+    "lat": 50.76982,
+    "lon": -0.49215,
+    "mhhw_msl": 2.154
+   },
+   "ticon:sandown-pier-sdp-gbr-cco": {
+    "name": "Sandown Pier",
+    "lat": 50.65112,
+    "lon": -1.15317,
+    "mhhw_msl": 1.384
+   },
+   "ticon:scarborough-sca-gbr-cco": {
+    "name": "Scarborough",
+    "lat": 54.28248,
+    "lon": -0.39027,
+    "mhhw_msl": 1.828
+   },
+   "ticon:st-marys-stm-gbr-da-idh": {
+    "name": "St Marys",
+    "lat": 49.91783,
+    "lon": -6.31714,
+    "mhhw_msl": 1.913
+   },
+   "ticon:sthelier-sth-gbr-cmems": {
+    "name": "Sthelier",
+    "lat": 49.1833,
+    "lon": -2.1167,
+    "mhhw_msl": 3.684
+   },
+   "ticon:stornoway-sto-gbr-bodc": {
+    "name": "Stornoway",
+    "lat": 58.20772,
+    "lon": -6.38889,
+    "mhhw_msl": 1.508
+   },
+   "ticon:swanage-pier-swp-gbr-cco": {
+    "name": "Swanage Pier",
+    "lat": 50.60935,
+    "lon": -1.94918,
+    "mhhw_msl": 0.436
+   },
+   "ticon:teignbridgepiertg-tei-gbr-cmems": {
+    "name": "Teignmouth (tide gauge)",
+    "lat": 50.54388,
+    "lon": -3.49213,
+    "mhhw_msl": 1.436
+   },
+   "ticon:tobermory-tob-gbr-bodc": {
+    "name": "Tobermory",
+    "lat": 56.62311,
+    "lon": -6.06422,
+    "mhhw_msl": 1.392
+   },
+   "ticon:ullapool-ull-gbr-bodc": {
+    "name": "Ullapool",
+    "lat": 57.89525,
+    "lon": -5.15806,
+    "mhhw_msl": 1.596
+   },
+   "ticon:west-bay-harbour-wbh-gbr-cco": {
+    "name": "West Bay Harbour",
+    "lat": 50.70888,
+    "lon": -2.76411,
+    "mhhw_msl": 1.307
+   },
+   "ticon:whitby-whi-gbr-bodc": {
+    "name": "Whitby",
+    "lat": 54.49,
+    "lon": -0.61469,
+    "mhhw_msl": 1.778
+   },
+   "ticon:wick-wic-gbr-bodc": {
+    "name": "Wick",
+    "lat": 58.44097,
+    "lon": -3.08639,
+    "mhhw_msl": 1.173
+   },
+   "ticon:workington-wor-gbr-cmems": {
+    "name": "Workington",
+    "lat": 54.65,
+    "lon": -3.56667,
+    "mhhw_msl": 3.088
+   },
+   "ticon:aranmore-island-leabgarrow-ara-irl-mi-c": {
+    "name": "Aranmore Island Leabgarrow",
+    "lat": 54.9905,
+    "lon": -8.4955,
+    "mhhw_msl": 1.362
+   },
+   "ticon:arklowharbour-ark-irl-cmems": {
+    "name": "Arklowharbour",
+    "lat": 52.792,
+    "lon": -6.1452,
+    "mhhw_msl": 0.354
+   },
+   "ticon:ballyglass-bal-irl-cmems": {
+    "name": "Ballyglass",
+    "lat": 54.253,
+    "lon": -9.89,
+    "mhhw_msl": 1.304
+   },
+   "ticon:castletownbere-835-irl-uhslc-fd": {
+    "name": "Castletownbere",
+    "lat": 51.65,
+    "lon": -9.9033,
+    "mhhw_msl": 1.177
+   },
+   "ticon:dingle-harbour-din-irl-mi-c": {
+    "name": "Dingle Harbour",
+    "lat": 52.13924,
+    "lon": -10.27732,
+    "mhhw_msl": 1.324
+   },
+   "ticon:galway-port-gal-irl-mi-c": {
+    "name": "Galway Port",
+    "lat": 53.269,
+    "lon": -9.048,
+    "mhhw_msl": 1.684
+   },
+   "ticon:howth-how-irl-cmems": {
+    "name": "Howth",
+    "lat": 53.3915,
+    "lon": -6.0683,
+    "mhhw_msl": 1.533
+   },
+   "ticon:inishmore-ini-irl-mi-c": {
+    "name": "Inishmore",
+    "lat": 53.1178,
+    "lon": -9.6669,
+    "mhhw_msl": 1.585
+   },
+   "ticon:killybegs-port-kil-irl-mi-c": {
+    "name": "Killybegs Port",
+    "lat": 54.6364,
+    "lon": -8.3949,
+    "mhhw_msl": 1.393
+   },
+   "ticon:kilrush-lough-kil-irl-mi-c": {
+    "name": "Kilrush Lough",
+    "lat": 52.63191,
+    "lon": -9.50208,
+    "mhhw_msl": 1.677
+   },
+   "ticon:malin-head-834a-irl-uhslc-rq": {
+    "name": "Malin Head",
+    "lat": 55.3667,
+    "lon": -7.3333,
+    "mhhw_msl": 1.199
+   },
+   "ticon:roonagh-pier-roo-irl-mi-c": {
+    "name": "Roonagh Pier",
+    "lat": 53.76235,
+    "lon": -9.90442,
+    "mhhw_msl": 1.426
+   },
+   "ticon:skerries-harbour-ske-irl-mi-c": {
+    "name": "Skerries Harbour",
+    "lat": 53.585,
+    "lon": -6.1081,
+    "mhhw_msl": 1.705
+   },
+   "ticon:union-hall-harbor-2-uni-irl-mi-c": {
+    "name": "Skibbereen (tide gauge)",
+    "lat": 51.55896,
+    "lon": -9.13349,
+    "mhhw_msl": 1.313
+   },
+   "ticon:sligo-sli-irl-cmems": {
+    "name": "Sligo",
+    "lat": 54.3046,
+    "lon": -8.5689,
+    "mhhw_msl": 1.415
+   },
+   "ticon:aukfield-platform-aukfpfm-nld-rws": {
+    "name": "Aukfield Platform",
+    "lat": 56.39904,
+    "lon": 2.06402,
+    "mhhw_msl": 0.494
+   },
+   "ticon:platform-j6-j6-nld-rws": {
+    "name": "Tide gauge 53.82, 2.95",
+    "lat": 53.81663,
+    "lon": 2.95001,
+    "mhhw_msl": 0.816
+   },
+   "ticon:platform-d15-a-d15-nld-rws": {
+    "name": "Tide gauge 54.33, 2.94",
+    "lat": 54.32567,
+    "lon": 2.93575,
+    "mhhw_msl": 0.734
+   },
+   "ticon:cascais-209a-prt-uhslc-rq": {
+    "name": "Cascais",
+    "lat": 38.6917,
+    "lon": -9.4167,
+    "mhhw_msl": 1.105
+   },
+   "ticon:lagos-algarve-723a-prt-uhslc-rq": {
+    "name": "Lagos Algarve",
+    "lat": 37.0983,
+    "lon": -8.6683,
+    "mhhw_msl": 1.127
+   },
+   "ticon:nazaretg-naz-prt-cmems": {
+    "name": "Nazaré (tide gauge)",
+    "lat": 39.586,
+    "lon": -9.074,
+    "mhhw_msl": 1.091
+   },
+   "ticon:penichetg-pen-prt-cmems": {
+    "name": "Peniche (tide gauge)",
+    "lat": 39.354,
+    "lon": -9.367,
+    "mhhw_msl": 1.134
+   },
+   "ticon:sinestg-sin-prt-cmems": {
+    "name": "Sines (tide gauge)",
+    "lat": 37.949,
+    "lon": -8.888,
+    "mhhw_msl": 1.103
+   },
+   "ticon:vianadocastelotg-via-prt-cmems": {
+    "name": "Viana do Castelo (tide gauge)",
+    "lat": 41.685,
+    "lon": -8.8396,
+    "mhhw_msl": 1.136
+   }
+  }
+ },
+ "ie_msl_lat": {
+  "about": "Mean sea level above Lowest Astronomical Tide (m) at Irish National Tide Gauge Network stations, Marine Institute station records on data.gov.ie (CC BY 4.0; the records note LAT is model derived). Positions from TICON-4 (Dunmore East from the station record).",
+  "stations": {
+   "Killybegs": {
+    "lat": 54.6364,
+    "lon": -8.3949,
+    "msl_lat": 2.301
+   },
+   "Sligo (Rosses Point)": {
+    "lat": 54.3046,
+    "lon": -8.5689,
+    "msl_lat": 2.326
+   },
+   "Ballyglass": {
+    "lat": 54.253,
+    "lon": -9.89,
+    "msl_lat": 2.17
+   },
+   "Galway Port": {
+    "lat": 53.269,
+    "lon": -9.048,
+    "msl_lat": 2.996
+   },
+   "Inishmore": {
+    "lat": 53.1178,
+    "lon": -9.6669,
+    "msl_lat": 2.808
+   },
+   "Dingle": {
+    "lat": 52.13924,
+    "lon": -10.27732,
+    "msl_lat": 2.366
+   },
+   "Castletownbere": {
+    "lat": 51.65,
+    "lon": -9.9033,
+    "msl_lat": 1.927
+   },
+   "Malin Head": {
+    "lat": 55.3667,
+    "lon": -7.3333,
+    "msl_lat": 2.126
+   },
+   "Dunmore East": {
+    "lat": 52.1475,
+    "lon": -6.992,
+    "msl_lat": 2.371
+   }
+  }
+ },
+ "fr_msl_ign69": {
+  "about": "Mean sea level's height in IGN69 (m) = NM + ZH_ref at Shom's Références Altimétriques Maritimes ports (Shom, 2025. Références Altimétriques Maritimes, doi:10.17183/MAREE_COURANTS_RAM, Licence Ouverte 2.0), Atlantic coast 43.2-49 N, 5.3-0.9 W; river ports, ties before 1980 and ports more than 0.15 m from their four neighbours (leave-one-out) left out.",
+  "dropped_outliers": {
+   "Port du Vorlen": -0.222,
+   "Plogoff": 0.212,
+   "Lesconil": 0.173,
+   "Loctudy": -0.163,
+   "Port-Maria": -0.163,
+   "Hoëdic": -0.264,
+   "Fromentine (embarcadère)": 0.171,
+   "Port-Joinville (Île d'Yeu)": -0.16,
+   "L'Aiguillon-sur-Mer": 0.181,
+   "Arcachon": 0.171,
+   "Pilat Plage": -0.173
+  },
+  "stations": {
+   "Saint-Malo": {
+    "lat": 48.641167,
+    "lon": -2.0275,
+    "msl_ign69": 0.491,
+    "tie_year": 2013
+   },
+   "Granville": {
+    "lat": 48.834167,
+    "lon": -1.644333,
+    "msl_ign69": 0.48,
+    "tie_year": 2010
+   },
+   "Le Mont-Saint-Michel": {
+    "lat": 48.633333,
+    "lon": -1.516667,
+    "msl_ign69": 0.45,
+    "tie_year": 1987
+   },
+   "Cancale": {
+    "lat": 48.68,
+    "lon": -1.826667,
+    "msl_ign69": 0.426,
+    "tie_year": 2010
+   },
+   "Saint-Briac-sur-Mer": {
+    "lat": 48.634,
+    "lon": -2.1685,
+    "msl_ign69": 0.461,
+    "tie_year": 2010
+   },
+   "Saint-Cast": {
+    "lat": 48.638333,
+    "lon": -2.243333,
+    "msl_ign69": 0.376,
+    "tie_year": 2010
+   },
+   "Erquy": {
+    "lat": 48.639217,
+    "lon": -2.490183,
+    "msl_ign69": 0.501,
+    "tie_year": 1985
+   },
+   "Dahouet": {
+    "lat": 48.579167,
+    "lon": -2.569333,
+    "msl_ign69": 0.524,
+    "tie_year": 1985
+   },
+   "Le Légué (Bouée)": {
+    "lat": 48.566667,
+    "lon": -2.683333,
+    "msl_ign69": 0.514,
+    "tie_year": 1990
+   },
+   "Binic": {
+    "lat": 48.6,
+    "lon": -2.816667,
+    "msl_ign69": 0.462,
+    "tie_year": 1985
+   },
+   "Saint-Quay-Portrieux": {
+    "lat": 48.6475,
+    "lon": -2.818056,
+    "msl_ign69": 0.552,
+    "tie_year": 2010
+   },
+   "Brehec": {
+    "lat": 48.7265,
+    "lon": -2.945833,
+    "msl_ign69": 0.485,
+    "tie_year": 1985
+   },
+   "Île de Bréhat": {
+    "lat": 48.835167,
+    "lon": -3.003333,
+    "msl_ign69": 0.445,
+    "tie_year": 2010
+   },
+   "Lézardrieux": {
+    "lat": 48.783333,
+    "lon": -3.1,
+    "msl_ign69": 0.431,
+    "tie_year": 2010
+   },
+   "Paimpol": {
+    "lat": 48.790333,
+    "lon": -2.955333,
+    "msl_ign69": 0.561,
+    "tie_year": 2010
+   },
+   "Roscoff": {
+    "lat": 48.718694,
+    "lon": -3.965694,
+    "msl_ign69": 0.536,
+    "tie_year": 1985
+   },
+   "Port-Béni": {
+    "lat": 48.847167,
+    "lon": -3.172333,
+    "msl_ign69": 0.426,
+    "tie_year": 1987
+   },
+   "Tréguier": {
+    "lat": 48.786333,
+    "lon": -3.219333,
+    "msl_ign69": 0.432,
+    "tie_year": 1985
+   },
+   "Perros-Guirec": {
+    "lat": 48.82,
+    "lon": -3.458333,
+    "msl_ign69": 0.531,
+    "tie_year": 1987
+   },
+   "Ploumanac'h": {
+    "lat": 48.836667,
+    "lon": -3.486,
+    "msl_ign69": 0.455,
+    "tie_year": 1987
+   },
+   "Trébeurden": {
+    "lat": 48.770833,
+    "lon": -3.586667,
+    "msl_ign69": 0.437,
+    "tie_year": 2010
+   },
+   "Locquemeau": {
+    "lat": 48.725,
+    "lon": -3.581667,
+    "msl_ign69": 0.457,
+    "tie_year": 1985
+   },
+   "Anse de Primel": {
+    "lat": 48.716667,
+    "lon": -3.833333,
+    "msl_ign69": 0.482,
+    "tie_year": 1987
+   },
+   "L'Aber Wrac'h": {
+    "lat": 48.598333,
+    "lon": -4.561667,
+    "msl_ign69": 0.394,
+    "tie_year": 1987
+   },
+   "L'Aber Benoît": {
+    "lat": 48.5915,
+    "lon": -4.633333,
+    "msl_ign69": 0.458,
+    "tie_year": 1987
+   },
+   "Portsall": {
+    "lat": 48.566667,
+    "lon": -4.716667,
+    "msl_ign69": 0.545,
+    "tie_year": 2007
+   },
+   "L'Aber Ildut": {
+    "lat": 48.471167,
+    "lon": -4.7545,
+    "msl_ign69": 0.532,
+    "tie_year": 1987
+   },
+   "Baie du Stiff (Île d'Ouessant)": {
+    "lat": 48.468018,
+    "lon": -5.054047,
+    "msl_ign69": 0.488,
+    "tie_year": 2011
+   },
+   "Brest": {
+    "lat": 48.3825,
+    "lon": -4.494722,
+    "msl_ign69": 0.505,
+    "tie_year": 2010
+   },
+   "Baie de Lampaul (Île d'Ouessant)": {
+    "lat": 48.45,
+    "lon": -5.1,
+    "msl_ign69": 0.416,
+    "tie_year": 2010
+   },
+   "Île Molène": {
+    "lat": 48.4035,
+    "lon": -4.954667,
+    "msl_ign69": 0.529,
+    "tie_year": 2010
+   },
+   "Le Conquet": {
+    "lat": 48.359528,
+    "lon": -4.782836,
+    "msl_ign69": 0.507,
+    "tie_year": 2010
+   },
+   "Camaret-sur-Mer": {
+    "lat": 48.278333,
+    "lon": -4.59,
+    "msl_ign69": 0.516,
+    "tie_year": 2010
+   },
+   "Trez-Hir": {
+    "lat": 48.339667,
+    "lon": -4.699333,
+    "msl_ign69": 0.479,
+    "tie_year": 1986
+   },
+   "Le Dellec": {
+    "lat": 48.353667,
+    "lon": -4.562,
+    "msl_ign69": 0.399,
+    "tie_year": 1996
+   },
+   "Moulin Blanc": {
+    "lat": 48.395,
+    "lon": -4.43,
+    "msl_ign69": 0.484,
+    "tie_year": 1996
+   },
+   "Tinduff": {
+    "lat": 48.335833,
+    "lon": -4.3675,
+    "msl_ign69": 0.529,
+    "tie_year": 1986
+   },
+   "Morgat": {
+    "lat": 48.2245,
+    "lon": -4.497333,
+    "msl_ign69": 0.508,
+    "tie_year": 1986
+   },
+   "Douarnenez": {
+    "lat": 48.1,
+    "lon": -4.316667,
+    "msl_ign69": 0.498,
+    "tie_year": 2010
+   },
+   "Île de Sein": {
+    "lat": 48.040167,
+    "lon": -4.8475,
+    "msl_ign69": 0.589,
+    "tie_year": 2010
+   },
+   "Concarneau": {
+    "lat": 47.873333,
+    "lon": -3.906667,
+    "msl_ign69": 0.526,
+    "tie_year": 1985
+   },
+   "Audierne (Quai Pelletan)": {
+    "lat": 48.02155,
+    "lon": -4.537583,
+    "msl_ign69": 0.519,
+    "tie_year": 2010
+   },
+   "Saint-Guénolé": {
+    "lat": 47.814,
+    "lon": -4.3825,
+    "msl_ign69": 0.499,
+    "tie_year": 1986
+   },
+   "Le Guilvinec": {
+    "lat": 47.794167,
+    "lon": -4.2785,
+    "msl_ign69": 0.503,
+    "tie_year": 2010
+   },
+   "Bénodet": {
+    "lat": 47.881,
+    "lon": -4.115833,
+    "msl_ign69": 0.516,
+    "tie_year": 2010
+   },
+   "Les trois Tourtes": {
+    "lat": 47.946167,
+    "lon": -4.1125,
+    "msl_ign69": 0.568,
+    "tie_year": 1986
+   },
+   "Port-la-Forêt": {
+    "lat": 47.901,
+    "lon": -3.973833,
+    "msl_ign69": 0.436,
+    "tie_year": 2010
+   },
+   "Penfret (Îles de Glénan)": {
+    "lat": 47.722167,
+    "lon": -3.955,
+    "msl_ign69": 0.462,
+    "tie_year": 1995
+   },
+   "Port Manec'h": {
+    "lat": 47.800833,
+    "lon": -3.7385,
+    "msl_ign69": 0.457,
+    "tie_year": 1985
+   },
+   "Port-Tudy": {
+    "lat": 47.644583,
+    "lon": -3.446306,
+    "msl_ign69": 0.448,
+    "tie_year": 2010
+   },
+   "Port-Louis (Locmalo)": {
+    "lat": 47.7055,
+    "lon": -3.345333,
+    "msl_ign69": 0.532,
+    "tie_year": 1985
+   },
+   "Lorient (Port de commerce)": {
+    "lat": 47.7375,
+    "lon": -3.3545,
+    "msl_ign69": 0.53,
+    "tie_year": 1986
+   },
+   "Port d'Étel": {
+    "lat": 47.656667,
+    "lon": -3.206667,
+    "msl_ign69": 0.515,
+    "tie_year": 2010
+   },
+   "Portivy": {
+    "lat": 47.531333,
+    "lon": -3.147333,
+    "msl_ign69": 0.39,
+    "tie_year": 1985
+   },
+   "Les Sables d'Olonne": {
+    "lat": 46.4975,
+    "lon": -1.793611,
+    "msl_ign69": 0.482,
+    "tie_year": 2017
+   },
+   "Port-Navalo": {
+    "lat": 47.55,
+    "lon": -2.916667,
+    "msl_ign69": 0.425,
+    "tie_year": 1985
+   },
+   "Le Palais (Belle-Île)": {
+    "lat": 47.347667,
+    "lon": -3.152167,
+    "msl_ign69": 0.446,
+    "tie_year": 2010
+   },
+   "Port-Haliguen": {
+    "lat": 47.483333,
+    "lon": -3.1,
+    "msl_ign69": 0.431,
+    "tie_year": 1986
+   },
+   "La Trinité-sur-Mer": {
+    "lat": 47.5875,
+    "lon": -3.025556,
+    "msl_ign69": 0.446,
+    "tie_year": 1985
+   },
+   "Fort Espagnol": {
+    "lat": 47.612333,
+    "lon": -2.953167,
+    "msl_ign69": 0.486,
+    "tie_year": 2003
+   },
+   "Locmariaquer": {
+    "lat": 47.57,
+    "lon": -2.93,
+    "msl_ign69": 0.511,
+    "tie_year": 2003
+   },
+   "Arradon": {
+    "lat": 47.615,
+    "lon": -2.83,
+    "msl_ign69": 0.509,
+    "tie_year": 1983
+   },
+   "Le Logeo": {
+    "lat": 47.547833,
+    "lon": -2.8455,
+    "msl_ign69": 0.524,
+    "tie_year": 2004
+   },
+   "Port du Crouesty": {
+    "lat": 47.5426,
+    "lon": -2.89495,
+    "msl_ign69": 0.47,
+    "tie_year": 2010
+   },
+   "Pénerf": {
+    "lat": 47.514333,
+    "lon": -2.623833,
+    "msl_ign69": 0.518,
+    "tie_year": 1986
+   },
+   "Tréhiguier": {
+    "lat": 47.495,
+    "lon": -2.44,
+    "msl_ign69": 0.47,
+    "tie_year": 1986
+   },
+   "Saint-Nazaire": {
+    "lat": 47.266944,
+    "lon": -2.201667,
+    "msl_ign69": 0.45,
+    "tie_year": 2015
+   },
+   "Pointe de Saint-Gildas": {
+    "lat": 47.14,
+    "lon": -2.246667,
+    "msl_ign69": 0.362,
+    "tie_year": 1986
+   },
+   "Pornic": {
+    "lat": 47.109167,
+    "lon": -2.113667,
+    "msl_ign69": 0.371,
+    "tie_year": 1985
+   },
+   "L'Herbaudière (Île de Noirmoutier)": {
+    "lat": 47.026667,
+    "lon": -2.298333,
+    "msl_ign69": 0.495,
+    "tie_year": 2011
+   },
+   "Saint-Gilles-Croix-de-Vie": {
+    "lat": 46.696667,
+    "lon": -1.9425,
+    "msl_ign69": 0.418,
+    "tie_year": 2008
+   },
+   "La Rochelle - La Pallice": {
+    "lat": 46.16,
+    "lon": -1.221667,
+    "msl_ign69": 0.397,
+    "tie_year": 2011
+   },
+   "Saint-Martin-de-Ré (Île de Ré)": {
+    "lat": 46.208,
+    "lon": -1.3655,
+    "msl_ign69": 0.317,
+    "tie_year": 2011
+   },
+   "Saint-Denis d'Oléron": {
+    "lat": 46.036833,
+    "lon": -1.372333,
+    "msl_ign69": 0.481,
+    "tie_year": 2011
+   },
+   "Île d'Aix": {
+    "lat": 46.008333,
+    "lon": -1.173333,
+    "msl_ign69": 0.455,
+    "tie_year": 2011
+   },
+   "Le Chapus": {
+    "lat": 45.853667,
+    "lon": -1.178,
+    "msl_ign69": 0.475,
+    "tie_year": 2011
+   },
+   "La Cotinière": {
+    "lat": 45.914167,
+    "lon": -1.325833,
+    "msl_ign69": 0.429,
+    "tie_year": 2015
+   },
+   "Royan": {
+    "lat": 45.619333,
+    "lon": -1.028,
+    "msl_ign69": 0.43,
+    "tie_year": 2011
+   },
+   "Saint-Jean-de-Luz": {
+    "lat": 43.395,
+    "lon": -1.681667,
+    "msl_ign69": 0.337,
+    "tie_year": 2012
+   },
+   "Boucau-Bayonne": {
+    "lat": 43.527222,
+    "lon": -1.514722,
+    "msl_ign69": 0.387,
+    "tie_year": 1982
+   },
+   "Mimizan": {
+    "lat": 44.216667,
+    "lon": -1.3,
+    "msl_ign69": 0.47,
+    "tie_year": 2012
+   },
+   "Capbreton": {
+    "lat": 43.653667,
+    "lon": -1.437167,
+    "msl_ign69": 0.316,
+    "tie_year": 2006
+   },
+   "Hendaye": {
+    "lat": 43.379333,
+    "lon": -1.784667,
+    "msl_ign69": 0.302,
+    "tie_year": 2006
+   }
+  }
+ }
+}

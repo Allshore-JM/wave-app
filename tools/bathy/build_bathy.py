@@ -1628,10 +1628,28 @@ def licence_text(reg):
     if any(s.get("kind") == "stac" for s in reg["srcs"]):
         lines += ["- LINZ data: Toitu Te Whenua Land Information New Zealand, CC BY 4.0, read from s3://nz-coastal; "
                   "not endorsed by LINZ."]
-    if any(s.get("kind") == "tilezip" for s in reg["srcs"]):
+    keys = {s.get("key") for s in reg["srcs"]}
+    if "nsw-marine18" in keys:
         lines += ["- NSW data: Department of Planning, Industry and Environment, CC BY 4.0, ordered through ELVIS "
                   "(elevation.fsdf.org.au) and kept unchanged under static/bathy-src/; not endorsed by the NSW "
                   "Government."]
+    if reg.get("mhhw") == "grid:eu":
+        lines += ["- The water's edge (mean higher high water above mean sea level): the EOT20 global ocean tide model "
+                  "(Hart-Davis et al. 2021, DGFI-TUM; SEANOE doi:10.17882/79489; CC BY 4.0), predicted for 19 years by "
+                  "Allshore Surf and corrected at 121 tide gauges from their TICON-4 tidal constants (DGFI-TUM, SEANOE "
+                  "2025; CC BY 4.0)."]
+    if "emodnet-dtm24" in keys:
+        lines += ["- This data product was created by EMODnet: EMODnet's mean-sea-level version of the DTM 2024 tiles, "
+                  "cut to the site's boxes (static/bathy-src/emodnet-dtm-2024/)."]
+    if keys & {"litto3d-naq", "litto3d-fin"}:
+        lines += ["- Litto3D (Shom - IGN), Licence Ouverte 2.0: the packs' 1-m DEM, kept under static/bathy-src/; heights "
+                  "above IGN69 converted to mean sea level with a grid from Shom's References Altimetriques Maritimes "
+                  "(Shom, 2025, doi:10.17183/MAREE_COURANTS_RAM)."]
+    if "infomar" in keys:
+        lines += ["- INFOMAR survey grids (Geological Survey Ireland & Marine Institute), kept under static/bathy-src/; "
+                  "heights above Lowest Astronomical Tide converted to mean sea level with an EOT20 grid corrected at "
+                  "9 Irish National Tide Gauge Network stations (Marine Institute, CC BY 4.0); where surveys overlap the "
+                  "newest is used."]
     if reg["name"] == "gebco":
         lines += ["- Land mask: %s. %s. Licence: %s. Used only to tell land from sea; not redistributed." % (
             S.LAND["name"], S.LAND["credit"], S.LAND["licence"]),

@@ -587,6 +587,60 @@ NZ_SEED_M = 300.0
 for _name in ("nz-north", "nz-central", "nz-south"):
     REGIONS[_name]["seed_m"] = NZ_SEED_M
 
+# Europe (plan section 111b). Every source is prepared once by tools/bathy/bathy_prep.py on a runner (downloaded from its
+# publisher, checked, the seabed part kept, written as one compressed GeoTIFF per archive) and mirrored to the bucket
+# under static/bathy-src/<set>/ (mirror_*.json: size and SHA-256 of each prepared zip): the publishers' packages are too
+# big to read at every build (Litto3D Nouvelle-Aquitaine: 219 GB of 7z packs, mostly point clouds), and the Irish survey
+# grids reach 8 GB each.
+#
+# EMODnet Digital Bathymetry DTM 2024 (1/16 arc-minute, ~115 m), the version EMODnet converts to mean sea level itself
+# (LAT surface from Deltares' GTSM; the "msl" ESRI ASCII tiles), is the base under the national surveys: Portugal to
+# Shetland, zooms 8-11 (deeper than 200 m: 9). Litto3D (Shom - IGN, 1 m land-sea lidar, IGN69 heights, Lambert-93):
+# Nouvelle-Aquitaine 2020-2022 and Finistere 2011-2013, mean sea level from the committed grid of MSL in IGN69 (83 Shom
+# RAM ports, +0.30 .. +0.55 m). INFOMAR (Geological Survey Ireland & Marine Institute, 2-5 m multibeam and lidar grids,
+# heights above Lowest Astronomical Tide via the UKHO VORF model): mean sea level from the committed grid of MSL above
+# LAT (EOT20 corrected at 9 Irish gauges, 1.9-3.0 m). The water's edge everywhere: the committed EOT20 grid of MHHW
+# above MSL corrected at 121 tide gauges (eu_mhhw_msl.tif, tools/bathy/build_tide_grids.py --area eu).
+EU_LITTO = dict(kind="tilezip", id=1, zmax=17, res_m=1, offset=0.0, clip=True, nodata=-99999.0, deep=(30.0, 15),
+                survey_fade=True,
+                geoid="fr_msl_ign69", crs="EPSG:2154", licence="Licence Ouverte 2.0 (Etalab)", short="Litto3D",
+                datum="IGN69 to mean sea level: grid from 83 Shom RAM ports (+0.30 to +0.55 m)")
+SOURCES.update({
+    "emodnet-dtm24": dict(kind="tilezip", id=1, zmax=11, res_m=115, offset=0.0, clip=True, nodata=9999.0,
+                          deep=(200.0, 9), crs="EPSG:4326", mirror="mirror_emodnet.json", year="2024",
+                          name="EMODnet DTM", short="EMODnet", licence="CC BY 4.0",
+                          datum="mean sea level (EMODnet's MSL version: LAT surface from Deltares GTSM)",
+                          credit="EMODnet Bathymetry Consortium (2024): EMODnet Digital Bathymetry (DTM 2024), "
+                                 "doi:10.12770/cf51df64-56f9-4a99-b1aa-36b8d7b743a1, CC BY 4.0"),
+    "litto3d-naq": dict(EU_LITTO, mirror="mirror_litto3d_naq.json", year="2020-2022",
+                        name="Litto3D Nouvelle-Aquitaine",
+                        credit="Shom - IGN, 2025. Litto3D Nouvelle-Aquitaine 2020-2022, "
+                               "doi:10.17183/LITTO3D_NAQ_2020_2022, Licence Ouverte 2.0"),
+    "litto3d-fin": dict(EU_LITTO, mirror="mirror_litto3d_fin.json", year="2011-2013", name="Litto3D Finistere",
+                        credit="Shom - IGN, 2014. Litto3D Finistere (surveys 2011-2013), Licence Ouverte 2.0"),
+    "infomar": dict(kind="tilezip", id=1, zmax=16, res_m=2, offset=0.0, clip=True, nodata=-9999.0, deep=(30.0, 14),
+                    geoid="ie_msl_lat", crs="EPSG:32629", mirror="mirror_infomar.json", year="2002-2026",
+                    name="INFOMAR surveys", short="INFOMAR", licence="CC BY 4.0",
+                    datum="Lowest Astronomical Tide to mean sea level: EOT20 grid corrected at 9 Irish gauges "
+                          "(1.9 to 3.0 m)",
+                    credit="Contains Irish Public Sector Data (Geological Survey Ireland & Marine Institute) licensed "
+                           "under a Creative Commons Attribution 4.0 International (CC BY 4.0) licence"),
+})
+EU_BOXES = {
+    # the EMODnet base: the Atlantic coasts from Shetland to the Bay of Biscay, and Iberia's Atlantic side
+    "eu-atlantic-n": ((-12.0, 43.0, 3.0, 61.0), ["emodnet-dtm24"], 5),
+    "eu-atlantic-s": ((-10.0, 35.9, -5.6, 43.0), ["emodnet-dtm24"], 5),
+    # Litto3D: Nouvelle-Aquitaine (Charente-Maritime to the Spanish border) and Finistere
+    "fr-naq": ((-1.85, 43.28, -0.85, 46.35), ["litto3d-naq"], 20),
+    "fr-finistere": ((-5.2, 47.65, -3.5, 48.8), ["litto3d-fin"], 20),
+    # INFOMAR's inshore surveys round Ireland, split at 53.3 N
+    "ie-n": ((-11.0, 53.3, -5.0, 55.6), ["infomar"], 20),
+    "ie-s": ((-11.0, 51.2, -5.0, 53.3), ["infomar"], 20),
+}
+for _name, (_box, _srcs, _prio) in EU_BOXES.items():
+    REGIONS[_name] = dict(box=_box, sources=list(_srcs), mhhw="grid:eu", zmin=8, prio=_prio, cut=True, seed="sea",
+                          reach=INTL_REACH)
+
 FEATHER_PX = 24        # at a region's finest zoom: the widest band inside the lidar's edge that blends to the fill
 FEATHER_MIN_PX = 2     # the narrowest (round a gap of a pixel or two)
 
@@ -601,19 +655,28 @@ DATUM_GRIDS = {      # file name -> sha256 (built 2026-11-16 from tools/bathy/us
     # and EOT20): MSL in NZVD2016, MHHW above MSL
     "nz_msl_nzvd2016.tif": "e14f883213f1aae4bdffdd16685ded8a7c221a8019591c53329c2bd025b347ac",
     "nz_mhhw_msl.tif": "2d345eb9ca36f8b2a2f9fbf033010449a52615b2a08172899dcc331643eaac9e",
+    # Europe (plan section 111b, built 2026-11-27 by tools/bathy/build_tide_grids.py --area eu from
+    # eu_datum_stations.json and EOT20): MHHW above MSL, MSL above LAT (Ireland), MSL in IGN69 (France)
+    "eu_mhhw_msl.tif": "740eba19a1d9d29143f6bf560fa06582663063562376ed8391bcc600770fe5e6",
+    "ie_msl_lat.tif": "b767b695ce35089535599dfca871da89758e5340f69f871a6af7e43dc1c8eb62",
+    "fr_msl_ign69.tif": "472411ac4af46e74162631a028dba725fe2ece2b44d67f261ae95561abedee7e",
 }
 MHHW_GRID = os.path.join(DATUM_DIR, "us_mhhw_msl.tif")
 # A region's mhhw "grid" (the Lower 48) or "grid:<name>" -> the committed grid of MHHW above mean sea level it reads.
 # nz_mhhw_msl.tif: EOT20 (DGFI-TUM, CC BY 4.0) predicted 19 years at each 1/8-degree cell, corrected at 12 UHSLC tide
 # gauges (tools/bathy/build_tide_grids.py, plan section 111a).
-MHHW_GRIDS = {"grid": MHHW_GRID, "grid:nz": os.path.join(DATUM_DIR, "nz_mhhw_msl.tif")}
+MHHW_GRIDS = {"grid": MHHW_GRID, "grid:nz": os.path.join(DATUM_DIR, "nz_mhhw_msl.tif"),
+              "grid:eu": os.path.join(DATUM_DIR, "eu_mhhw_msl.tif")}
 
 # Grids a source subtracts from its elevations (a source's `geoid`), GDAL paths, metres. "egm2008": the geoid height N
 # above the ellipsoid (ellipsoid height - N = height above the geoid). "msl_navd88": mean sea level above NAVD88 (NAVD88
 # height - it = height above mean sea level). "nz_msl_nzvd2016": mean sea level in NZVD2016 (plan section 111a).
 GEOIDS = {"egm2008": "/vsicurl/https://cdn.proj.org/us_nga_egm08_25.tif",
           "msl_navd88": os.path.join(DATUM_DIR, "us_msl_navd88.tif"),
-          "nz_msl_nzvd2016": os.path.join(DATUM_DIR, "nz_msl_nzvd2016.tif")}
+          "nz_msl_nzvd2016": os.path.join(DATUM_DIR, "nz_msl_nzvd2016.tif"),
+          # plan section 111b: mean sea level in IGN69 (Litto3D) and above Lowest Astronomical Tide (INFOMAR)
+          "fr_msl_ign69": os.path.join(DATUM_DIR, "fr_msl_ign69.tif"),
+          "ie_msl_lat": os.path.join(DATUM_DIR, "ie_msl_lat.tif")}
 GEOID_SANE_M = 200.0  # |geoid height| beyond this is a fill value of the geoid grid (real N: about -107 to +86 m)
 
 GEBCO_URL = "https://dap.ceda.ac.uk/bodc/gebco/global/gebco_2026/ice_surface_elevation/geotiff/gebco_2026_geotiff.zip"

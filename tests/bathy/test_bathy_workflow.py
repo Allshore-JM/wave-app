@@ -36,7 +36,7 @@ def test_tests_on_push_build_only_on_dispatch():
 def test_the_inputs_are_checked_and_the_upload_is_asked_for():
     steps = _steps(_text())
     check = steps["Check the inputs"]
-    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem|ca-s1|ca-s2w|ca-s2e|ca-c|ca-n|key-or|key-wa|key-nc|key-nj|key-ny-rock|key-ny-mtk|key-ri|key-nh|key-fl-space|au-nsw-s|au-nsw-n|nz-north|nz-central|nz-south)" in check
+    assert "hawaii|marianas|samoa|prvi|gebco|hawaii-lidar|guam-lidar|pr-lidar|nwhi-lidar|pacific-sdb|us-me-nh|us-sne-ny|us-nj-ches|us-va-nc|us-sc-ga|us-fl-east|us-fl-south|us-gulf-east|us-gulf-west|us-ca-south|us-ca-north|us-or-wa|lake-superior|lake-superior-dem|lake-michigan|lake-michigan-dem|lake-huron|lake-huron-dem|lake-stclair|lake-stclair-dem|lake-erie|lake-erie-dem|lake-ontario|lake-ontario-dem|ca-s1|ca-s2w|ca-s2e|ca-c|ca-n|key-or|key-wa|key-nc|key-nj|key-ny-rock|key-ny-mtk|key-ri|key-nh|key-fl-space|au-nsw-s|au-nsw-n|nz-north|nz-central|nz-south|eu-atlantic-n|eu-atlantic-s|fr-naq|fr-finistere|ie-n|ie-s)" in check
     assert '[[ "$VERSION" =~ ^[1-9][0-9]*$ ]]' in check
     up = steps["Upload to R2"]
     assert "if: github.event.inputs.upload == 'true'" in up

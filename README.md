@@ -1743,6 +1743,37 @@ water seeded from the GSHHG land file, `reach` 0.3 degrees):
   digest equals its dry run's; the bucket read-back (400 finest-zoom tiles per region from the public host against the
   source) gave |median| 0.010-0.019 m, signed median within 0.001 m.
 
+### Bathymetry stage 3b: Europe (plan section 111b, the builder)
+
+Six regions, each built on its own and cut to its box (zooms 8 to their source's finest, GEBCO beneath, open water
+seeded from the GSHHG land file, `reach` 0.3 degrees, water's edge from `eu_mhhw_msl.tif`):
+
+| Region | Source | Finest zoom | Datum to mean sea level | prio |
+|---|---|---|---|---|
+| `eu-atlantic-n`, `eu-atlantic-s` | EMODnet Digital Bathymetry DTM 2024, ~115 m | 11 (deeper than 200 m: 9) | EMODnet's own MSL version (GTSM) | 5 |
+| `fr-naq`, `fr-finistere` | Litto3D (Shom - IGN), 1 m: Nouvelle-Aquitaine 2020-22, Finistere 2011-13 | 17 (deeper than 30 m: 15) | IGN69 less `fr_msl_ign69.tif` (83 Shom RAM ports) | 20 |
+| `ie-n`, `ie-s` (split at 53.3 N) | INFOMAR inshore surveys, 2-5 m, newest first | 16 (deeper than 30 m: 14) | LAT less `ie_msl_lat.tif` (EOT20 + 9 Irish gauges) | 20 |
+
+- **Prepared once, then mirrored** (`tools/bathy/bathy_prep.py`, the `prep_*.json` lists). The publishers' packages are
+  too big for every build (Litto3D Nouvelle-Aquitaine: 324 7z packs, 219 GB, mostly point clouds; INFOMAR grids up to
+  8 GB), so a one-off run downloads each archive, checks it (Shom's MD5; size), keeps what the builder reads and writes
+  one compressed GeoTIFF per archive inside a zip under `static/bathy-src/<set>/<sha16>.zip`: Litto3D's 1-km 1-m tiles
+  with a value at or below +6 m IGN69 mosaicked per pack; INFOMAR's grid cut to the pixels within 45 m of LAT (grids
+  in another UTM zone or lon/lat warped to UTM 29N); EMODnet's MSL ASCII tiles cut to the two Atlantic boxes. Values
+  are unchanged. `bathy_prep.py merge` joins the parts' rows into the committed `mirror_*.json` the builder reads as
+  kind `tilezip` (in the prep list's order: for INFOMAR the newest survey wins where surveys overlap). The zips are
+  written with a fixed date, so a part run again finds its keys already there. INFOMAR's zips are Deflate64: the prep
+  uses 7-Zip when installed (the runners have it), else `zipfile-deflate64`.
+- **The datum grids** (`tools/bathy/build_tide_grids.py --area eu`, laptop only, from `eu_datum_stations.json`): MHHW
+  above MSL from EOT20 at the model's coastal cells near a European region, corrected at 121 tide gauges (MHHW from
+  their TICON-4 constants; 16 estuary / harbour gauges more than 0.15 m off the model left out); MSL above LAT the same
+  way, corrected at 9 Irish gauges (Marine Institute); MSL in IGN69 by inverse distance from 83 Shom RAM ports (river
+  ports, ties before 1980 and 11 ports more than 0.15 m off their neighbours left out).
+- **Not covered:** England (the Environment Agency's SurfZone DEM has no seabed at Fistral or Croyde), Wales, Scotland's
+  surf coasts, Spain, Portugal (DGT's 2 m coastal lidar asked for on 2026-11-27), and the Irish beaches INFOMAR does not
+  reach close inshore (Lahinch; Bundoran, Mullaghmore, Easkey and Rossnowlagh start 0.5-1.5 km out): those keep
+  EMODnet / GEBCO.
+
 ### The Bathymetry layer (plan section 93b, the client; overlay asset 2.27.5)
 
 `BATHY_OVERLAY=1` adds "Bathymetry" to the overlay dropdown: an observation kind like SST and radar (no player, no model

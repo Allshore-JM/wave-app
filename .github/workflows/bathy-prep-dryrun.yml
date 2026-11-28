@@ -1,0 +1,56 @@
+# TEMPORARY (plan section 111b step 2): a trial of tools/bathy/bathy_prep.py on GitHub's runner with a few named
+# archives of each European source - nothing is uploaded and no secret is read. Shows the runner's 7-Zip on INFOMAR's
+# Deflate64 zips, the cut to the Ireland box, the warp of a lon/lat survey, Shom's download speed and the sizes the
+# prepared grids come out at. Runs only on a push to feat/bathy-intl that touches this file. REMOVE BEFORE THE MERGE (a
+# test pins that it is gone).
+name: bathy-prep-dryrun
+on:
+  push:
+    branches: ["feat/bathy-intl"]
+    paths: [".github/workflows/bathy-prep-dryrun.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: bathy-prep-dryrun
+  cancel-in-progress: true
+jobs:
+  trial:
+    name: trial ${{ matrix.list }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        include:
+          - {list: prep_emodnet.json, names: "E3,F3"}
+          - {list: prep_litto3d_naq.json, names: "0340_6300,0330_6280"}
+          - {list: prep_litto3d_fin.json, names: "0150_6775"}
+          - {list: prep_infomar.json, names: "LIR23_01_1,KRY14_02_1,TC26_01_1,CE04_03_1,CV06_02_Scallop_North_1"}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: pip install numpy==2.5.4 rasterio==1.5.2 pyproj==3.8.0 boto3==1.43.98 certifi==2026.10.23
+      - name: Tools and disk
+        run: |
+          7z i | head -3
+          sudo mkdir -p /mnt/prep && sudo chown "$USER" /mnt/prep
+          df -h / /mnt
+      - name: Trial
+        env:
+          LIST: ${{ matrix.list }}
+          NAMES: ${{ matrix.names }}
+        run: |
+          set -o pipefail
+          /usr/bin/time -v -o time.txt python tools/bathy/bathy_prep.py run "tools/bathy/$LIST" --names "$NAMES" --work /mnt/prep --out part.json | tee prep.log
+          python - <<'PY' | tee -a prep.log
+          import json
+          d = json.load(open("part.json"))
+          for r in d["rows"]:
+              print("ROW", r.get("name"), "%.1f MB" % (r["bytes"] / 1e6), r["bbox"], r["member"])
+          print("LEFT OUT", d["left_out"])
+          PY
+          { echo '```'; cat prep.log | tail -40; grep -E "Maximum resident|Elapsed" time.txt; df -h /mnt | tail -1; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          while read -r line; do echo "::notice title=prep::$line"; done < <(grep -E "^ROW|^LEFT|MB in|kept|warped|left out|Elapsed" prep.log time.txt | head -9 | tr '\n' ' ' | fold -w 900)

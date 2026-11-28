@@ -1,0 +1,52 @@
+{
+ "set": "emodnet-dtm-2024",
+ "kind": "emodnet",
+ "mirror": "mirror_emodnet.json",
+ "crs": "EPSG:4326",
+ "nodata": 9999.0,
+ "boxes": [
+  [
+   -12.25,
+   42.75,
+   3.25,
+   61.25
+  ],
+  [
+   -10.25,
+   35.65,
+   -5.35,
+   43.25
+  ]
+ ],
+ "credit": "EMODnet Bathymetry Consortium (2024): EMODnet Digital Bathymetry (DTM 2024), https://doi.org/10.12770/cf51df64-56f9-4a99-b1aa-36b8d7b743a1. This data product was created by EMODnet.",
+ "licence": "CC BY 4.0, https://creativecommons.org/licenses/by/4.0/",
+ "derived": "EMODnet's mean-sea-level version of the DTM 2024 tiles (ESRI ASCII, 1/16 arc-minute), cut to the site's Atlantic boxes and written as GeoTIFF. Values unchanged.",
+ "files": [
+  {
+   "url": "https://downloads.emodnet-bathymetry.eu/v12/D3_2024.msl.zip",
+   "name": "D3"
+  },
+  {
+   "url": "https://downloads.emodnet-bathymetry.eu/v12/D4_2024.msl.zip",
+   "name": "D4"
+  },
+  {
+   "url": "https://downloads.emodnet-bathymetry.eu/v12/E3_2024.msl.zip",
+   "name": "E3"
+  },
+  {
+   "url": "https://downloads.emodnet-bathymetry.eu/v12/E4_2024.msl.zip",
+   "name": "E4",
+   "bytes": 87284365,
+   "sha256": "af57fdb7b68415f55dbc6ff12e0853d30af3db53d63aaee7a3b6fd70a00f46d0"
+  },
+  {
+   "url": "https://downloads.emodnet-bathymetry.eu/v12/F3_2024.msl.zip",
+   "name": "F3"
+  },
+  {
+   "url": "https://downloads.emodnet-bathymetry.eu/v12/F4_2024.msl.zip",
+   "name": "F4"
+  }
+ ]
+}

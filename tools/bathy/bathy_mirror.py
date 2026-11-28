@@ -29,7 +29,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 PREFIX = "static/bathy-src"
-ALLOWED_HOSTS = ("elvis-downloads.s3.amazonaws.com",)
+# NSW's ELVIS orders (plan section 111a); Shom's Litto3D packs, INFOMAR's survey grids and EMODnet's DTM tiles
+# (plan section 111b: prepared by bathy_prep.py, the manifest's url naming the publisher's archive it came from)
+ALLOWED_HOSTS = ("elvis-downloads.s3.amazonaws.com", "services.data.shom.fr", "gsi.geodata.gov.ie",
+                 "downloads.emodnet-bathymetry.eu")
 MAX_BYTES = 4 * 1024 ** 3          # one archive
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,40}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -108,6 +111,10 @@ def check_zip(path, member):
 
 
 def readme(m):
+    if m.get("derived"):
+        # a prepared set (bathy_prep.py): the publisher's data, cut and re-encoded as the manifest's `derived` says
+        return ("Source grids kept for the bathymetry build of allshoresurf.com (set %s), prepared from the publisher's "
+                "archives: %s\n\n%s\nLicence: %s\n" % (m["set"], m["derived"], m["credit"], m["licence"]))
     return ("Source archives kept for the bathymetry build of allshoresurf.com (set %s), as downloaded, unchanged.\n\n"
             "%s\nLicence: %s\n" % (m["set"], m["credit"], m["licence"]))
 

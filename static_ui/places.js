@@ -599,7 +599,7 @@
     for (var k = 0; k < n; k++) {
       var r = rows[k];
       if (!Array.isArray(r) || r.length !== 6 || !goodLabel(r[0]) || typeof r[1] !== 'number' || typeof r[2] !== 'number' ||
-          !(r[1] >= -90 && r[1] <= 90) || !(r[2] >= -180 && r[2] <= 180) || !whole(r[3], 10, ISLAND_END_CAP10) || !whole(r[4], 10, 250) ||
+          !(r[1] >= -90 && r[1] <= 90) || !(r[2] >= -180 && r[2] <= 180) || !whole(r[3], 10, ISLAND_END_CAP10) || !whole(r[4], 10, 250) || r[4] < r[3] ||
           !whole(r[5], 0, ISLAND_PX.length - 1)) throw new Error('places: a bad island record');
       out.label.push(r[0]); out.lat[k] = r[1]; out.lon[k] = r[2]; out.start[k] = r[3]; out.end[k] = r[4]; out.kind[k] = r[5];
     }
@@ -657,10 +657,10 @@
   // With the map's size {x, y} a label is kept only where its whole text lies on the map; a name that would run off an
   // edge is dropped, never shifted (owner, plan section 52: cities are areas, the name sits over the place).
   // h: the labels' height (the drawn font's line; LABEL_H by default).
-  // An item may be soft (true: it also keeps clear of the `marks` rects, which block no other item): the island names,
-  // plan section 115.
+  // An item may be soft (true: it also keeps clear of the `marks` rects, which block no other item, and does not count
+  // toward `max`, so an island name takes no city's place it does not cover): the island names, plan section 115.
   function thin(items, blocked, max, size, h, marks) {
-    var kept = [], grid = {}, soft = {}, i, j;
+    var kept = [], grid = {}, soft = {}, counted = 0, i, j;   // counted: the kept items that count toward max
     function boxOf(it) {
       var hw = it.w / 2, hh = (it.h || h || LABEL_H) / 2, x = it.x, y = it.y;   // an item's own height (a country name's lines) first
       return { left: x - hw - LABEL_GAP, top: y - hh - LABEL_GAP, right: x + hw + LABEL_GAP, bottom: y + hh + LABEL_GAP };
@@ -685,10 +685,13 @@
     }
     for (i = 0; i < blocked.length; i++) file(blocked[i]);
     for (i = 0; marks && i < marks.length; i++) file(marks[i], soft);
-    for (i = 0; i < items.length && kept.length < max; i++) {
-      var it = items[i], r = boxOf(it);
+    for (i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it.soft && counted >= max) continue;
+      var r = boxOf(it);
       if (!fits(r) || !free(r) || (it.soft && !free(r, soft))) continue;
       file(r); kept.push(it);
+      if (!it.soft) counted++;
     }
     return kept;
   }
@@ -925,6 +928,7 @@
       return Math.floor(mz * 10 + 1e-6) / 10;
     }
     function update() {
+      islandsShown = false;
       var cities = !!(store && store.ok('p')), regionNames = countries.status === 'ok' || islands.status === 'ok';
       if (!on.places || !store || !(cities || regionNames)) { box.hidden = true; labelsComplete = !(on.places && store && (store.unit.p.status === 'loading' || countries.status === 'loading' || islands.status === 'loading')); return; }
       if (!probed) probeFont();
@@ -942,6 +946,7 @@
       // country names, before the other cities; fading, after the fading country names.
       var cn = countryCandidates(countries.data, zoom, worldZoom(), west, south, east, north, margin), ct = candidatesFor(got.sets, zoom10, west, south, east, north, margin);
       var isl = islandCandidates(islands.data, zoom, west, south, east, north, margin);
+      islandsShown = isl.length > 0;
       var nb = 0; while (nb < ct.length && ct[nb].mz <= BIG_CITY_ZOOM10) nb++;
       var solid = function (c) { return c.alpha >= 1; }, fading = function (c) { return !solid(c); };
       var cands = ct.slice(0, nb).concat(cn.filter(solid), isl.filter(solid), ct.slice(nb), cn.filter(fading), isl.filter(fading)), items = [];
@@ -964,7 +969,7 @@
       }
       for (i = used; i < pool.length; i++) pool[i].hidden = true;
     }
-    var frame = null;
+    var frame = null, islandsShown = false;
     function schedule() { if (frame !== null) return; frame = (root.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(function () { frame = null; update(); }); }
     if (store) store.onChange = function () { redraw(true); if (!labelsComplete) schedule(); };
     // a tier-0 file that lands is drawn and credited at once, without waiting for the other one (re-check R-2); the names
@@ -1038,6 +1043,10 @@
     }
     map.on('zoomend', sync);
     map.on('moveend zoomend resize viewreset zoomlevelschange', schedule);   // zoomlevelschange: the widest view moved (G80 A-3)
+    // A marker or forecast dot coming or going (the page rebuilds them after a move, the tide and wind icons come with their
+    // data, a layer turned on or off) lays the island names out again, which keep clear of them (G81 A-1); only while an
+    // island name is a candidate, so other views (and playback) never relay for it.
+    map.on('layeradd layerremove', function (e) { if (islandsShown && e && e.layer && typeof e.layer.getLatLng === 'function') schedule(); });
     map.on('resize', function () { probed = false; });                        // the font is read again (a zoomed page)
     map.on('movestart zoomstart viewreset', function () { if (store) store.newView(); });
     map.on('zoomstart', function () { box.hidden = true; });

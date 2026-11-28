@@ -72,6 +72,10 @@ NAME_FIXES = {
     "Zanzibar Archipelago": "Zanzibar Island", "Disko Island": "Qeqertarsuaq", "Chuuk Lagoon": "Chuuk",
     "Stewart Island / Rakiura": "Stewart Island/Rakiura",            # the New Zealand Gazetteer form
     "Isla Salas y Gómez": "Salas y Gómez Island",
+    # G81 A-4: the English or formal form of a transliterated or abbreviated name
+    "Zemlya Georga": "George Land", "Arkticheskiy Institut Islands": "Arctic Institute Islands",
+    "Iwo Jima": "Iōtō",                                                # the official name since 2007 (as Honshū)
+    "St. Lawrence Island": "Saint Lawrence Island", "St. Matthew Island": "Saint Matthew Island",   # GNIS
 }
 # The one feature whose NAME_EN names another place: Natural Earth's "Bear Is." (Medvezhyi) says "Batu Islands".
 NAME_EN_FIXES = {"Bear Is.": "Bear Islands"}
@@ -292,7 +296,7 @@ def check(data, real=True, countries=None):
         if not isinstance(label, str) or not label.strip() or label.count("\n") > 1 or any(not x.strip() for x in label.split("\n")):
             problems.append("record %d: bad label %r" % (k, label))
             continue
-        if "‘" in label or re.search(r"[aeiouAEIOU]'[aeiou]", label):        # Savai'i, not D'Entrecasteaux
+        if re.search("[‘’ʼ`]", label) or re.search(r"[aeiouAEIOU]'[aeiou]", label):   # Savai'i, Niuafoʼou; not D'Entrecasteaux (G81 A-5)
             problems.append("record %d (%s): an apostrophe for an ʻokina" % (k, label))
         if "\n" not in label and len(label) > WRAP_CHARS and " " in label:
             problems.append("record %d (%s): long label not wrapped" % (k, label))

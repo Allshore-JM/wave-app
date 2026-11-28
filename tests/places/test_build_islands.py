@@ -16,7 +16,7 @@ import build_countries as C  # noqa: E402
 
 COMMITTED = os.path.join(ROOT, "static_ui", "islands.json")
 # The committed file's bytes: a change must be deliberate (rebuild from the pinned file, then update this pin).
-PIN_SHA256 = "2c53a2742a5aad6697fa8fc8c4f3aac2e4e811b5566f419be21b816b2e3a64bc"
+PIN_SHA256 = "e4c743bbce9ecf77e8dbd54417c93fe2edea2292f2af35f2401dbc61bd080b5d"
 
 
 def square(lon, lat, half):
@@ -121,8 +121,8 @@ def test_duplicates_within_500_km_are_one_the_larger_kept_far_apart_both():
 
 def test_long_labels_wrap_as_the_country_names_do():
     rows = by_label(build([feature("Arctic Institute I.", "Arkticheskiy Institut Islands", "Island group", lon=81.7, lat=75.4)]))
-    assert "Arkticheskiy Institut Islands" in rows
-    assert rows["Arkticheskiy Institut Islands"][0] == "Arkticheskiy\nInstitut Islands"
+    assert "Arctic Institute Islands" in rows, "the English name (G81 A-4)"
+    assert rows["Arctic Institute Islands"][0] == "Arctic Institute\nIslands"
     assert B.wrap is C.wrap
 
 
@@ -138,7 +138,8 @@ def test_check_flags_bad_files():
                       (["Bigland", 0.0, 0.0, 40, 125, 1], "zooms"), (["Bigland", "0", 0.0, 40, 70, 1], "position"),
                       (["Bigland", True, 0.0, 40, 70, 1], "position"), (["Bigland", 0.0, 0.0, 40, 70, 2], "kind"),
                       (["", 0.0, 0.0, 40, 70, 1], "label"), (["O‘ahu", 0.0, 0.0, 40, 70, 1], "okina"),
-                      (["Savai'i", 0.0, 0.0, 40, 70, 1], "okina"), (["Arkticheskiy Institut Islands", 0.0, 0.0, 40, 70, 0], "wrapped")):
+                      (["Savai'i", 0.0, 0.0, 40, 70, 1], "okina"),
+                      (["Niuafoʼou", 0.0, 0.0, 40, 70, 1], "okina"), (["Niuafo’ou", 0.0, 0.0, 40, 70, 1], "okina"), (["Arkticheskiy Institut Islands", 0.0, 0.0, 40, 70, 0], "wrapped")):
         p = B.check(json.dumps(dict(good, islands=[bad])).encode(), real=False)
         assert any(what in x for x in p), (bad, p)
     assert B.check(json.dumps(dict(good, islands=[["D'Entrecasteaux\nIslands", 0.0, 0.0, 40, 70, 0]])).encode(), real=False) == []

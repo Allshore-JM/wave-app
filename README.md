@@ -2908,7 +2908,9 @@ groups in letter-spaced capitals, 12 px. An island name sits centred on its isla
 placed as the country names are: after the largest cities, over the other towns while at full strength, behind every
 city once it fades, so the towns take over as the map closes in; no name is drawn over another. Where a marker sits
 under it (station, tide and wind icons; the forecast points' dots, which the page passes as `dots`), the name is left
-out. The file loads under the same rules as the country file, asked below zoom 12.
+out; the names are laid out again whenever a marker comes or goes (the page rebuilds its markers just after a move;
+G81). Island names do not count toward the cap on labels per view, so a city loses only a place an island name
+actually covers. The file loads under the same rules as the country file, asked below zoom 12.
 
 ## A live buoy on a forecast point (plan section 52, UI asset 1.25.9)
 

@@ -2856,10 +2856,10 @@ lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
 | Row / layer | Key | Shows from | Source |
 |---|---|---|---|
 | Borders (country and state / province lines together) | `allshore.borders.v1` | country lines from map zoom 3, state lines from 5 (each line from its own Natural Earth zoom too) | Natural Earth admin-0 lines (disputed dashed) and admin-1 lines (dashed, fainter); public domain |
-| Place names (City names until UI 1.33; country names since plan section 114) | `allshore.places.v1` | country names from the screen's widest view by land area (see below), all gone by zoom 7; city names from each place's own zoom (Natural Earth `min_zoom`, never before 3.5; GeoNames towns 8 / 9 / 10 by size) | Natural Earth admin-0 countries and populated places (public domain) + GeoNames `cities1000` (CC BY 4.0) |
+| Place names (City names until UI 1.33; country names since plan section 114, island names since 115) | `allshore.places.v1` | country names from the screen's widest view by land area (see below), all gone by zoom 7; island names from Natural Earth's label zoom to about 900 px across (never after 12); city names from each place's own zoom (Natural Earth `min_zoom`, never before 3.5; GeoNames towns 8 / 9 / 10 by size) | Natural Earth admin-0 countries and populated places (public domain) + GeoNames `cities1000` (CC BY 4.0) |
 | Lake outlines (always, no row) | - | tile zoom 4, under the wind overlay only | GSHHG lakes of 100 km² or more (see Model overlays) |
 
-`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, countriesUrl, storage, waitFor})`) draws the borders on 256-px canvas tiles in
+`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, countriesUrl, islandsUrl, storage, waitFor})`) draws the borders on 256-px canvas tiles in
 the pane `placesLinePane` (z 340: above the particles, below the gridlines and the forecast points) as a light 1-px line
 over a dark halo, and the names as text spans in `placesLabelPane` (z 620: above the station icons, below the tooltips; a
 name takes no tap, so an icon under it stays clickable), each name centred on its place with no dot (a city is an area,
@@ -2897,6 +2897,15 @@ open-ocean island nations +1.5; never later than zoom 5.5. A name goes once the 
 run of the largest cities (Natural Earth zoom 4.0 or lower), before the other cities, and a fading name after every city.
 The file is asked only below zoom 7 and only with the places bucket; a failed download is asked again by itself up to 3
 times a minute apart (never after a 404), and by any later zoom after the 60-s cooldown.
+
+Island names (plan section 115, UI 1.34) come from `static_ui/islands.json` (`/ui/islands.json?v=<UI version>`, built by
+`tools/places/build_islands.py` from Natural Earth's geography regions, classes Island and Island group; 409 names): the
+formal English name (Hawaiian ʻokina and kahakō: Oʻahu, Lānaʻi, Hawaiʻi), without the names that repeat a country and
+the ocean-wide regions, Kahoʻolawe added by hand. Each shows from Natural Earth's label zoom until the island (or the
+group's hull) is about 900 px across, at least 1.5 zooms, never after 12, fading over its last half zoom; white italic,
+groups in letter-spaced capitals, 12 px. They are placed with the country names (after the largest cities) below zoom
+8 and behind every town from zoom 8, where the towns start. The file loads under the same rules as the country file,
+asked below zoom 12.
 
 ## A live buoy on a forecast point (plan section 52, UI asset 1.25.9)
 

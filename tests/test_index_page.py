@@ -1190,6 +1190,11 @@ def test_location_aids_on_the_page(client, monkeypatch):
         # plan section 114: the country names' file beside the module, and their CSS = the module's constants
         "countriesUrl: '/ui/countries.json?v=%s'," % A.UI_ASSET_VERSION,
         ".place-label.place-country { color: #f2c66d; letter-spacing: 0.12em; white-space: pre; text-align: center; }",
+        # plan section 115: the island names' file and CSS
+        "islandsUrl: '/ui/islands.json?v=%s'," % A.UI_ASSET_VERSION,
+        ".place-label.place-island { color: #fff; font-style: italic; white-space: pre; text-align: center; }",
+        ".place-label.pi-0 { font-size: 12px; line-height: 15px; letter-spacing: 0.12em; }",
+        ".place-label.pi-1 { font-size: 12px; line-height: 15px; }",
     ):
         assert needle in body, needle
     # no dot before a name and no left-side variant (section 52): neither in the page's CSS nor in the module
@@ -1206,6 +1211,11 @@ def test_location_aids_on_the_page(client, monkeypatch):
     r = client.get("/ui/countries.json?v=" + A.UI_ASSET_VERSION)
     assert r.status_code == 200 and r.mimetype == "application/json" and r.get_json()["format"] == "countries-v1"
     assert r.get_data() == open(os.path.join(os.path.dirname(__file__), "..", "static_ui", "countries.json"), "rb").read()
+    # plan section 115: the island kinds' CSS = the module's ISLAND_PX / ISLAND_LS_EM, and the file is served as committed
+    assert "ISLAND_PX = [12, 12], ISLAND_LS_EM = [0.12, 0]" in js
+    r = client.get("/ui/islands.json?v=" + A.UI_ASSET_VERSION)
+    assert r.status_code == 200 and r.mimetype == "application/json" and r.get_json()["format"] == "islands-v1"
+    assert r.get_data() == open(os.path.join(os.path.dirname(__file__), "..", "static_ui", "islands.json"), "rb").read()
     assert "createPane" not in body.split("<script src=\"/ui/places.js")[1].split("</script>", 2)[1]
     monkeypatch.setenv("PLACES_BASE", "https://example.test/places/v1/")
     body = client.get("/?station=51201").get_data(as_text=True)

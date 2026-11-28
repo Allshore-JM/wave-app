@@ -23,9 +23,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {list: prep_emodnet.json, names: "E3,F3"}
-          - {list: prep_litto3d_naq.json, names: "0340_6300,0330_6280"}
-          - {list: prep_litto3d_fin.json, names: "0150_6775"}
           - {list: prep_infomar.json, names: "LIR23_01_1,KRY14_02_1,TC26_01_1,CE04_03_1,CV06_02_Scallop_North_1"}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
@@ -53,4 +50,4 @@ jobs:
           print("LEFT OUT", d["left_out"])
           PY
           { echo '```'; cat prep.log | tail -40; grep -E "Maximum resident|Elapsed" time.txt; df -h /mnt | tail -1; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          while read -r line; do echo "::notice title=prep::$line"; done < <(grep -E "^ROW|^LEFT|MB in|kept|warped|left out|Elapsed" prep.log time.txt | head -9 | tr '\n' ' ' | fold -w 900)
+          grep -E "^ROW|^LEFT|kept of|warped|left out" prep.log | cut -c1-300 | while read -r line; do echo "::notice title=prep::$line"; done

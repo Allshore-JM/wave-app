@@ -380,6 +380,16 @@ def check_fit(tif, plist):
     return tif
 
 
+def same_horizontal(crs, want):
+    """True when `crs` (a rasterio CRS, possibly compound: INFOMAR's grids are "UTM zone 29N + LAT depth") has the
+    horizontal CRS `want` ("EPSG:<n>")."""
+    from pyproj import CRS
+    c = CRS.from_wkt(crs.to_wkt())
+    if c.is_compound:
+        c = c.sub_crs_list[0]
+    return c.to_epsg() == CRS.from_user_input(want).to_epsg()
+
+
 def prep_infomar(arc, work, plist, stem, log=print):
     """One survey zip -> one GeoTIFF in the list's CRS, pixels deeper than deep_m below LAT dropped, cut to the rest
     and to the rectangle round the list's boxes (cut_rect)."""
@@ -405,7 +415,7 @@ def prep_infomar(arc, work, plist, stem, log=print):
 
             if d.crs is None:
                 raise ValueError("%s: no CRS" % member)
-            if d.crs.to_string() != plist["crs"]:
+            if not same_horizontal(d.crs, plist["crs"]):
                 # another UTM zone or lon/lat: warped to the list's CRS at its own resolution (bilinear)
                 tr, w, h = calculate_default_transform(d.crs, plist["crs"], d.width, d.height, *d.bounds)
                 a = np.full((h, w), np.nan, np.float32)
@@ -442,7 +452,7 @@ def prep_infomar(arc, work, plist, stem, log=print):
             r0, r1, c0, c1 = win
             tr = d.window_transform(Window(c0, r0, c1 - c0, r1 - r0))
             tif = os.path.join(work, stem + ".tif")
-            prof = dict(PROFILE, width=c1 - c0, height=r1 - r0, transform=tr, crs=d.crs, nodata=nd_out)
+            prof = dict(PROFILE, width=c1 - c0, height=r1 - r0, transform=tr, crs=plist["crs"], nodata=nd_out)
             with rasterio.open(tif, "w", **prof) as o:
                 for y in range(r0, r1, 1024):
                     h = min(1024, r1 - y)

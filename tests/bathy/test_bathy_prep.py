@@ -330,3 +330,12 @@ def test_a_prepared_grid_reaching_far_past_its_box_is_refused(tmp_path):
     assert P.check_fit(str(tif), near) == str(tif)          # 0.1 past the box: inside FIT_PAD
     with pytest.raises(ValueError, match="reaches past"):
         P.check_fit(str(tif), dict(boxes=[[-11.0, 53.0, -5.0, 55.0]]))
+
+
+def test_a_compound_utm_plus_lat_crs_counts_as_its_utm_zone():
+    from rasterio.crs import CRS as RCRS
+    wkt = RCRS.from_epsg(32629).to_wkt()
+    comp = RCRS.from_wkt('COMPD_CS["WGS 84 / UTM zone 29N + LAT depth",%s,VERT_CS["LAT depth",VERT_DATUM["Lowest '
+                         'Astronomic Tide",2005],UNIT["metre",1],AXIS["Depth",DOWN]]]' % wkt)
+    assert P.same_horizontal(comp, "EPSG:32629") and not P.same_horizontal(comp, "EPSG:32630")
+    assert P.same_horizontal(RCRS.from_epsg(32629), "EPSG:32629")

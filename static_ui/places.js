@@ -23,11 +23,11 @@
  * allshore.places.v1) shows or hides all the names.
  * Island names (plan section 115): from static_ui/islands.json (opts.islandsUrl), white italic (island groups in
  * letter-spaced capitals, .place-island.pi-0; single islands .pi-1), each from Natural Earth's own label zoom until the
- * island is about a screen wide (never after zoom 12), fading as the country names do. Island names are placed last:
- * they never cover a city or country name, only the space those leave, and keep clear of the map's markers too (the
- * station icons, and the forecast points' dots from opts.dots); a name blocked at its label point tries eight spots
- * around it (north, south, east, west, then the corners) before it is left out (owner, 2026-11-28: "should not cover
- * city names or anything else, a simple, uncluttered look").
+ * island is about a screen wide (never after zoom 12), fading as the country names do. An island name sits centred on
+ * its island's label point, never moved (owner, 2026-11-28: "the Island name should center on the island and fade to
+ * city names at closer zooms"). It is placed as the country names are: after the largest cities, over the other towns
+ * while at full strength, behind every city once it fades; no name is ever drawn over another. Where a marker (a
+ * station icon, a forecast point's dot from opts.dots) sits under it, the name is left out.
  * Nothing is fetched before the page has loaded and the overlay's first picture has settled (at most 30 s: on a slow
  * link the overlay's coastline comes first, G34 B-6), nor while every kind is off or the map is below the first wanted
  * zoom; every download asks for a low priority. A download is given up only after 15 s in which no byte arrived. The
@@ -66,12 +66,13 @@
   // Island names (plan section 115, owner 2026-11-28): static_ui/islands.json (tools/places/build_islands.py) gives each
   // island's label, label point, the zoom (x 10, absolute: Natural Earth's label zoom) it shows from, the zoom it has
   // gone by, and its kind (0 a group: letter-spaced capitals, 1 an island). A name stays at least COUNTRY_MIN_SPAN10,
-  // never after ISLAND_END_CAP10, and fades as the country names do. Island names are placed after every other name
-  // (owner, 2026-11-28: "Island names should not cover city names or anything else, a simple, uncluttered, look"); a
-  // blocked one tries the spots of islandSpots (ISLAND_SPOT_PX apart) before it is left out ("try spots around it").
+  // never after ISLAND_END_CAP10, and fades as the country names do. An island name sits on its label point only, never
+  // moved (owner, 2026-11-28: "the Island name should center on the island and fade to city names at closer zooms"):
+  // it is placed as the country names are (after the largest cities, before the other cities while at full strength,
+  // after every city while it fades), so it is drawn over no other name, and it keeps clear of the map's markers.
   // Their fonts follow the country groups in one list (NAME_PX: groups 0-4 countries, 5 island groups, 6 islands).
   var ISLAND_PX = [12, 12], ISLAND_LS_EM = [0.12, 0], ISLAND_END_CAP10 = 120;
-  var MAX_ISLAND_BYTES = 256 << 10, MAX_ISLANDS = 2000, ISLAND_SPOT_PX = 10;   // (clear of a one-line name on the point: 2 x LABEL_GAP + 2)
+  var MAX_ISLAND_BYTES = 256 << 10, MAX_ISLANDS = 2000;
   var NAME_PX = COUNTRY_PX.concat(ISLAND_PX);
   var TIER0_MAX_ZOOM = 7;                            // tile zoom up to which the world files serve (tier 1 from 8)
   var LINES_MAGIC = 'LNS1', LINES_HEADER = 40, PLACES_MAGIC = 'PLC1', PLACES_HEADER = 36;
@@ -656,13 +657,12 @@
   // With the map's size {x, y} a label is kept only where its whole text lies on the map; a name that would run off an
   // edge is dropped, never shifted (owner, plan section 52: cities are areas, the name sits over the place).
   // h: the labels' height (the drawn font's line; LABEL_H by default).
-  // An item may carry alts ([[dx, dy], ...]: other spots tried in order when its own is taken; the spot used is set as
-  // it.dx / it.dy) and soft (true: it also keeps clear of the `marks` rects, which block no other item): the island
-  // names, plan section 115.
+  // An item may be soft (true: it also keeps clear of the `marks` rects, which block no other item): the island names,
+  // plan section 115.
   function thin(items, blocked, max, size, h, marks) {
-    var kept = [], grid = {}, soft = {}, i, j, t;
-    function boxOf(it, dx, dy) {
-      var hw = it.w / 2, hh = (it.h || h || LABEL_H) / 2, x = it.x + dx, y = it.y + dy;   // an item's own height (a country name's lines) first
+    var kept = [], grid = {}, soft = {}, i, j;
+    function boxOf(it) {
+      var hw = it.w / 2, hh = (it.h || h || LABEL_H) / 2, x = it.x, y = it.y;   // an item's own height (a country name's lines) first
       return { left: x - hw - LABEL_GAP, top: y - hh - LABEL_GAP, right: x + hw + LABEL_GAP, bottom: y + hh + LABEL_GAP };
     }
     function fits(r) { return !size || (r.left + LABEL_GAP >= 0 && r.top + LABEL_GAP >= 0 && r.right - LABEL_GAP <= size.x && r.bottom - LABEL_GAP <= size.y); }
@@ -686,21 +686,11 @@
     for (i = 0; i < blocked.length; i++) file(blocked[i]);
     for (i = 0; marks && i < marks.length; i++) file(marks[i], soft);
     for (i = 0; i < items.length && kept.length < max; i++) {
-      var it = items[i], spots = it.alts ? [[0, 0]].concat(it.alts) : [[0, 0]];
-      for (t = 0; t < spots.length; t++) {
-        var r = boxOf(it, spots[t][0], spots[t][1]);
-        if (!fits(r) || !free(r) || (it.soft && !free(r, soft))) continue;
-        file(r); it.dx = spots[t][0]; it.dy = spots[t][1]; kept.push(it);
-        break;
-      }
+      var it = items[i], r = boxOf(it);
+      if (!fits(r) || !free(r) || (it.soft && !free(r, soft))) continue;
+      file(r); kept.push(it);
     }
     return kept;
-  }
-  // The other spots an island name of w x h px tries (offsets from its label point): north, south, east, west, then the
-  // corners, each ISLAND_SPOT_PX clear of the point.
-  function islandSpots(w, h) {
-    var d = h + ISLAND_SPOT_PX, e = w / 2 + ISLAND_SPOT_PX;
-    return [[0, -d], [0, d], [e, 0], [-e, 0], [e, -d], [-e, -d], [e, d], [-e, d]];
   }
   // Calls start once the promise `waitFor()` returns has settled (the overlay's first picture: G34 B-6), at once without
   // one, and WAIT_MAX_MS after the call at the latest.
@@ -947,16 +937,17 @@
       // placed in this order (plan section 114, G80 A-2): the largest cities (the leading run of the cities' own order whose
       // Natural Earth zoom is up to BIG_CITY_ZOOM10), the country names at full strength (in the file's order: the
       // earliest, then the larger), the other cities, then the country names that are fading out (a name going never
-      // hides a city). The cities keep their order among themselves. The island names come last (plan section 115: they
-      // never cover another name), at full strength before the fading ones, each trying its spots.
+      // hides a city). The cities keep their order among themselves. The island names go as the country names do (plan
+      // section 115, owner: "center on the island and fade to city names at closer zooms"): at full strength after the
+      // country names, before the other cities; fading, after the fading country names.
       var cn = countryCandidates(countries.data, zoom, worldZoom(), west, south, east, north, margin), ct = candidatesFor(got.sets, zoom10, west, south, east, north, margin);
       var isl = islandCandidates(islands.data, zoom, west, south, east, north, margin);
       var nb = 0; while (nb < ct.length && ct[nb].mz <= BIG_CITY_ZOOM10) nb++;
       var solid = function (c) { return c.alpha >= 1; }, fading = function (c) { return !solid(c); };
-      var cands = ct.slice(0, nb).concat(cn.filter(solid), ct.slice(nb), cn.filter(fading), isl.filter(solid), isl.filter(fading)), items = [];
+      var cands = ct.slice(0, nb).concat(cn.filter(solid), isl.filter(solid), ct.slice(nb), cn.filter(fading), isl.filter(fading)), items = [];
       for (var i = 0; i < cands.length; i++) {
         var cd = cands[i], p = map.latLngToContainerPoint([cd.lat, cd.lon]);
-        if (cd.island) { var ib = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: ib.w, h: ib.h, cand: cd, alts: islandSpots(ib.w, ib.h), soft: true }); }
+        if (cd.island) { var ib = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: ib.w, h: ib.h, cand: cd, soft: true }); }
         else if (cd.country) { var cb = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: cb.w, h: cb.h, cand: cd }); }
         else items.push({ x: p.x, y: p.y, w: textWidth(cd.name, !!(cd.flags & FLAG_CAPITAL)), cand: cd });
       }
@@ -967,7 +958,7 @@
         el.className = region ? nameClass(it.cand.size) : 'place-label' + (it.cand.flags & FLAG_CAPITAL ? ' place-capital' : '');
         el.textContent = it.cand.name;
         el.style.opacity = region && it.cand.alpha < 1 ? it.cand.alpha.toFixed(2) : '';
-        el.style.left = Math.round(lp.x + (it.dx || 0)) + 'px'; el.style.top = Math.round(lp.y + (it.dy || 0)) + 'px';
+        el.style.left = Math.round(lp.x) + 'px'; el.style.top = Math.round(lp.y) + 'px';
         el.hidden = false;
         used++;
       }
@@ -1074,6 +1065,6 @@
                   drawTile: drawTile, placeShown: placeShown, candidatesFor: candidatesFor, thin: thin, readOn: readOn, writeOn: writeOn,
                   CITY_MIN_ZOOM10: CITY_MIN_ZOOM10, BIG_CITY_ZOOM10: BIG_CITY_ZOOM10, COUNTRY_START_CAP10: COUNTRY_START_CAP10, COUNTRY_FADE10: COUNTRY_FADE10, COUNTRY_MIN_SPAN10: COUNTRY_MIN_SPAN10, COUNTRY_END_CAP10: COUNTRY_END_CAP10, COUNTRY_PX: COUNTRY_PX, COUNTRY_LS_EM: COUNTRY_LS_EM, COUNTRY_LH: COUNTRY_LH,
                   MAX_COUNTRY_BYTES: MAX_COUNTRY_BYTES, MAX_ISLAND_BYTES: MAX_ISLAND_BYTES, ISLAND_PX: ISLAND_PX, ISLAND_LS_EM: ISLAND_LS_EM, ISLAND_END_CAP10: ISLAND_END_CAP10, NAME_PX: NAME_PX,
-                  decodeIslands: decodeIslands, islandAlpha: islandAlpha, islandCandidates: islandCandidates, islandSpots: islandSpots, ISLAND_SPOT_PX: ISLAND_SPOT_PX, MARKER_SELECTOR: MARKER_SELECTOR, MARKER_MAX_PX: MARKER_MAX_PX, DOT_PX: DOT_PX, nameAlpha: nameAlpha, nameFonts: nameFonts, nameClass: nameClass, decodeCountries: decodeCountries, countryAlpha: countryAlpha, countryCandidates: countryCandidates, countryFonts: countryFonts }
+                  decodeIslands: decodeIslands, islandAlpha: islandAlpha, islandCandidates: islandCandidates, MARKER_SELECTOR: MARKER_SELECTOR, MARKER_MAX_PX: MARKER_MAX_PX, DOT_PX: DOT_PX, nameAlpha: nameAlpha, nameFonts: nameFonts, nameClass: nameClass, decodeCountries: decodeCountries, countryAlpha: countryAlpha, countryCandidates: countryCandidates, countryFonts: countryFonts }
   };
 })(typeof window !== 'undefined' ? window : this);

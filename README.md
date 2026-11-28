@@ -2903,11 +2903,12 @@ Island names (plan section 115, UI 1.34) come from `static_ui/islands.json` (`/u
 formal English name (Hawaiian ʻokina and kahakō: Oʻahu, Lānaʻi, Hawaiʻi), without the names that repeat a country and
 the ocean-wide regions, Kahoʻolawe added by hand. Each shows from Natural Earth's label zoom until the island (or the
 group's hull) is about 900 px across, at least 1.5 zooms, never after 12, fading over its last half zoom; white italic,
-groups in letter-spaced capitals, 12 px. Island names are placed last: they never cover a city or country name, only
-the space those leave, and keep clear of the map's markers too (station, tide and wind icons; the forecast points'
-dots, which the page passes as `dots`); a name blocked at its label point tries eight spots around it (north, south,
-east, west, then the corners) before it is left out (owner, 2026-11-28: "should not cover city names or anything else,
-a simple, uncluttered look"). The file loads under the same rules as the country file, asked below zoom 12.
+groups in letter-spaced capitals, 12 px. An island name sits centred on its island's label point and is never moved
+(owner, 2026-11-28: "the Island name should center on the island and fade to city names at closer zooms"). It is
+placed as the country names are: after the largest cities, over the other towns while at full strength, behind every
+city once it fades, so the towns take over as the map closes in; no name is drawn over another. Where a marker sits
+under it (station, tide and wind icons; the forecast points' dots, which the page passes as `dots`), the name is left
+out. The file loads under the same rules as the country file, asked below zoom 12.
 
 ## A live buoy on a forecast point (plan section 52, UI asset 1.25.9)
 

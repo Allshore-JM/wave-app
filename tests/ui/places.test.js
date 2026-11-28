@@ -1226,7 +1226,7 @@ test('section 114: the countries file decodes (239 names, zooms, groups); damage
 
 test('section 114: which country names a zoom shows, counted from the screen\'s widest view: the largest there, Spain 1.0 closer, the islands 1.5, Japan 1.8; all gone by 7; the fade; world copies', () => {
   const at = (world, z, box) => cnames(I.countryCandidates(CS, z, world, ...(box || WORLD), 0));
-  // the owner's laptop (1908 px: widest view 2.9) and a phone (widest view about 1.85): the same 19 at the widest view
+  // a laptop (widest view 2.9; the owner's 1908 px gives 2.899, rounded down to 2.8 by the page) and a phone (about 1.6-1.9)
   for (const world of [2.9, 1.85, 2.49]) {
     const w = at(world, world);
     assert.equal(w.length, 19, 'widest view ' + world + ': the 19 largest only');
@@ -1238,7 +1238,8 @@ test('section 114: which country names a zoom shows, counted from the screen\'s 
   assert.ok(!at(2.9, 4.39).includes('FIJI') && at(2.9, 4.4).includes('FIJI') && at(2.9, 4.4).includes('SAMOA') && at(2.9, 4.4).includes('MICRONESIA'), 'island nations 1.5 after');
   assert.ok(!at(2.9, 4.69).includes('JAPAN') && at(2.9, 4.7).includes('JAPAN'), 'mid-size 1.8 after');
   assert.ok(!at(2.9, 5.39).includes('PORTUGAL') && at(2.9, 5.4).includes('PORTUGAL'), 'small 2.5 after');
-  assert.ok(!at(2.9, 6.09).includes('LUXEMBOURG') && at(2.9, 6.1).includes('LUXEMBOURG'), 'smallest 3.2 after');
+  assert.ok(!at(2.2, 5.39).includes('LUXEMBOURG') && at(2.2, 5.4).includes('LUXEMBOURG'), 'smallest 3.2 after (widest 2.2: from 5.4)');
+  assert.ok(!at(2.9, 5.49).includes('LUXEMBOURG') && at(2.9, 5.5).includes('LUXEMBOURG'), '... but never after 5.5 (G80 A-1)');
   assert.ok(at(2.9, 6).includes('SPAIN') && at(2.9, 6).includes('PORTUGAL'), 'zoom 6: Spain and Portugal still named');
   assert.deepEqual(at(2.9, 7), [], 'zoom 7: every country name gone'); assert.ok(at(2.9, 6.9).length > 0);
   // the fade: full until the last half zoom, then falling to 0
@@ -1246,8 +1247,8 @@ test('section 114: which country names a zoom shows, counted from the screen\'s 
   assert.equal(I.countryAlpha(0, 51, 1.49, 1.5), 0); assert.equal(I.countryAlpha(0, 51, 1.5, 1.5), 1);
   // kept at least 1.5 zooms after it came: Russia (gone at 4.1 by size) stays to 4.4 on the laptop
   assert.ok(Math.abs(I.countryAlpha(0, 41, 4.2, 2.9) - 0.4) < 1e-9); assert.equal(I.countryAlpha(0, 41, 4.4, 2.9), 0);
-  // ... never after zoom 7: a group that would start after it never shows
-  assert.equal(I.countryAlpha(32, 70, 6.9, 4.0), 0); assert.ok(I.countryAlpha(32, 70, 6.5, 2.9) > 0);
+  // ... never after zoom 7, and no group starts after 5.5 (G80 A-1): on a 3840-px screen (widest 3.9) the smallest show
+  assert.equal(I.countryAlpha(32, 70, 7.0, 4.0), 0); assert.equal(I.countryAlpha(32, 70, 6.5, 4.0), 1); assert.ok(I.countryAlpha(32, 70, 6.5, 2.9) > 0);
   const rus = I.countryCandidates(CS, 3.85, 1.5, ...WORLD, 0).find((c) => c.name === 'RUSSIA');
   assert.ok(Math.abs(rus.alpha - 0.5) < 1e-9 && rus.size === 0 && rus.country === true, 'Russia (gone at 4.1) half faded at 3.85');
   // world copies: a view wider than the world names a country once per copy
@@ -1293,8 +1294,8 @@ test('section 114 create(): world view = country names only, Los Angeles joins a
   assert.ok(!shown().includes('Los Angeles'), 'zoom 3.4: no Los Angeles (its own zoom is 2.0)'); assert.ok(shown().includes('USA'));
   map.zoom = 3.5; map.fire('zoomend'); flush();
   assert.ok(shown().includes('Los Angeles'), 'zoom 3.5: Los Angeles');
-  const kinds = spans().map((s) => /place-country/.test(s.className));
-  assert.ok(kinds.indexOf(false) > 0 && kinds.lastIndexOf(true) < kinds.indexOf(false), 'every country name placed before the first city');
+  const order = spans().map((s) => s.textContent);
+  assert.ok(order.indexOf('Los Angeles') >= 0 && order.indexOf('Los Angeles') < order.indexOf('USA'), 'a big city (zoom 2.0) placed before the country names (G80 A-2)');
   map.center = { lat: 58, lon: 45 }; map.zoom = 3.85; map.fire('zoomend'); flush();
   const rus = spans().find((s) => s.textContent === 'RUSSIA');
   assert.equal(rus.style.opacity, '0.50', 'Russia half faded');
@@ -1332,7 +1333,8 @@ test('section 114 create(): the widest view is the map\'s minimum zoom (one worl
   assert.ok((await isl(3.3)).includes('FIJI') && !(await isl(3.2)).includes('FIJI'));
 });
 
-test('section 114 create(): the countries file failing keeps the city names; Places is credited with only the country names; Place names off asks for nothing and hides both', async () => {
+test('section 114 create(): the countries file failing keeps the city names; Places is credited with only the country names; Place names off asks for nothing and hides both', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });                         // the retry timer (G80 A-4)
   const { M, flush } = loadWithFrames();
   const f = fakeFetch({ ...TIER0 });                                   // no countries.json: a 404
   const map = fakeMap(4, 21.3, -157.9), pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage(), fetch: f, whenReady: (go) => go() });
@@ -1357,4 +1359,132 @@ test('section 114 create(): the countries file failing keeps the city names; Pla
   M.create(map4, { base: BASE, countriesUrl: CURL, L: fakeL(map4), document: oahuDoc(), storage: storage({ 'allshore.places.v1': '0' }), fetch: f4, whenReady: (go) => go() });
   await settle();
   assert.ok(f4.asked.includes(BASE + '/world-lines.bin') && !f4.asked.includes(CURL), 'Borders alone: no country names file');
+});
+
+// ---- G80 fix round (plan section 114) ----
+const spanTexts = (pl) => pl.labels.children.filter((s) => !s.hidden).map((s) => s.textContent);
+const placesAt = (cities) => encodePlaces(cities.map((c, i) => ({ rank: i, pop: 1000000 - i, flags: 0, ...c })));
+const SPAIN = [40.091, -3.465];
+
+test('G80 A-1: no group starts after zoom 5.5, so even the smallest names keep 1.5 zooms on a wide screen', () => {
+  assert.equal(I.COUNTRY_START_CAP10, 55);
+  for (const world of [3.3, 3.4, 3.8, 3.9, 4.5]) {                       // 2560, 2880, 3566, 3840 px and wider
+    assert.equal(I.countryAlpha(32, 70, 5.49, world), 0, 'not before 5.5 at ' + world);
+    assert.equal(I.countryAlpha(32, 70, 5.5, world), 1, 'from 5.5 at ' + world);
+    assert.equal(I.countryAlpha(32, 70, 6.5, world), 1); assert.ok(Math.abs(I.countryAlpha(32, 70, 6.75, world) - 0.5) < 1e-9);
+  }
+  assert.equal(I.countryAlpha(32, 70, 5.4, 2.8), 0, 'the laptop (widest 2.8): from 5.5 too (2.8 + 3.2 = 6.0 is past the cap)');
+  assert.equal(I.countryAlpha(32, 70, 5.5, 2.8), 1);
+  assert.equal(I.countryAlpha(25, 70, 5.0, 2.6), 0, 'below the cap a group keeps its own start: 2.6 + 2.5 = 5.1');
+  assert.equal(I.countryAlpha(25, 70, 5.1, 2.6), 1);
+  const at = (world, z) => cnames(I.countryCandidates(CS, z, world, ...WORLD, 0));
+  assert.ok(at(3.9, 5.5).includes('LUXEMBOURG') && at(3.9, 6.4).includes('LUXEMBOURG'), 'a 3840-px screen names Luxembourg');
+});
+
+test('G80 A-2 create(): the largest cities before the country names, the country names before the other cities, a fading name after every city', async () => {
+  const { M, flush } = loadWithFrames();
+  const run = async (city, z) => {
+    const map = fakeMap(z, SPAIN[0], SPAIN[1], 1908, 906); map.getMinZoom = () => 2.9;
+    const pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }),
+      fetch: countryFetch({ 'world-places.bin': placesAt([{ lat: SPAIN[0], lon: SPAIN[1], ...city }]) }), whenReady: (go) => go() });
+    await settle(); flush();
+    return spanTexts(pl);
+  };
+  const big = await run({ mz10: 30, name: 'Madrid' }, 4.5);
+  assert.ok(big.includes('Madrid') && !big.includes('SPAIN'), 'a big city (zoom 3.0) beats the country name on it: ' + big.join());
+  const edge = await run({ mz10: 40, name: 'Edge' }, 4.5);
+  assert.ok(edge.includes('Edge') && !edge.includes('SPAIN'), 'zoom 4.0 is still a big city');
+  const small = await run({ mz10: 41, name: 'Smallton' }, 4.5);
+  assert.ok(small.includes('SPAIN') && !small.includes('Smallton'), 'a smaller city loses to the country name: ' + small.join());
+  const fading = await run({ mz10: 41, name: 'Smallton' }, 6.7);
+  assert.ok(fading.includes('Smallton') && !fading.includes('SPAIN'), 'a fading country name never hides a city: ' + fading.join());
+  const alone = await run({ mz10: 41, name: 'Faraway', lat: 60, lon: 100 }, 6.7);
+  assert.ok(alone.includes('SPAIN'), 'with nothing under it the fading name still shows');
+});
+
+test('G80 A-3 create(): a change of the minimum zoom (zoomlevelschange) lays the names out again', async () => {
+  const { M, flush } = loadWithFrames();
+  const map = fakeMap(3.9, SPAIN[0], SPAIN[1], 1908, 906); let mz = 2.9; map.getMinZoom = () => mz;
+  const pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: countryFetch(), whenReady: (go) => go() });
+  await settle(); flush();
+  assert.ok(spanTexts(pl).includes('SPAIN'), 'Spain from 3.9 (widest 2.9)');
+  mz = 3.0; map.fire('zoomlevelschange'); flush();
+  assert.ok(!spanTexts(pl).includes('SPAIN'), 'the widest view moved to 3.0: Spain from 4.0');
+});
+
+test('G80 A-4 create(): a failed countries file is asked again by itself after the cooldown, a pan never needed', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const { M, flush } = loadWithFrames();
+  let down = true;
+  const f = countryFetch(), asked = [];
+  const ff = (u, init) => { if (u === CURL) { asked.push(u); if (down) return Promise.resolve({ ok: false, status: 503 }); } return f(u, init); };
+  const map = fakeMap(3, 20, -100), pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: ff, whenReady: (go) => go() });
+  await settle(); flush();
+  assert.equal(pl.countries().status, 'failed'); assert.equal(asked.length, 1);
+  t.mock.timers.tick(59000); await settle();
+  assert.equal(asked.length, 1, 'not inside the cooldown');
+  down = false; t.mock.timers.tick(1000); await settle(); flush();
+  assert.equal(asked.length, 2, 'asked again by itself'); assert.equal(pl.countries().status, 'ok');
+  assert.ok(spanTexts(pl).includes('USA'));
+  // a file that keeps failing is asked by itself at most 3 more times; a 404 is not asked by itself at all
+  down = true;
+  const map2 = fakeMap(3, 20, -100), pl2 = M.create(map2, { base: BASE, countriesUrl: CURL, L: fakeL(map2), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: ff, whenReady: (go) => go() });
+  await settle(); asked.length = 0;
+  for (let i = 0; i < 6; i++) { t.mock.timers.tick(60000); await settle(); }
+  assert.equal(asked.length, 3, 'three retries, then only a zoom asks'); assert.equal(pl2.countries().status, 'failed');
+  const f404 = fakeFetch({ ...TIER0 }), map3 = fakeMap(3, 20, -100);
+  const pl3 = M.create(map3, { base: BASE, countriesUrl: CURL, L: fakeL(map3), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: f404, whenReady: (go) => go() });
+  await settle(); t.mock.timers.tick(300000); await settle();
+  assert.equal(f404.asked.filter((u) => u === CURL).length, 1, 'a 404 is not asked again by itself'); assert.equal(pl3.countries().status, 'failed');
+});
+
+test('G80 A-4 create(): the stall rule: no answer for STALL_MS gives the file up (the cities stay)', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const { M, flush } = loadWithFrames();
+  const f = countryFetch();
+  const ff = (u, init) => (u === CURL ? new Promise((res, rej) => { init.signal.addEventListener('abort', () => rej(new Error('aborted'))); }) : f(u, init));
+  const map = fakeMap(3, 20, -100), pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: ff, whenReady: (go) => go() });
+  await settle(); flush();
+  assert.equal(pl.countries().status, 'loading');
+  t.mock.timers.tick(I.STALL_MS - 1); await settle();
+  assert.equal(pl.countries().status, 'loading', 'still waiting');
+  t.mock.timers.tick(1); await settle();
+  assert.equal(pl.countries().status, 'failed', 'given up after STALL_MS');
+});
+
+test('G80 A-7 create(): the streamed download a browser takes (a real Response body) decodes and draws; broken UTF-8 or an oversized body is refused', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { M, flush } = loadWithFrames();
+  const run = async (body) => {
+    const f = countryFetch(), ff = (u, init) => (u === CURL ? Promise.resolve(new Response(body)) : f(u, init));
+    const map = fakeMap(3, 20, -100), pl = M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: ff, whenReady: (go) => go() });
+    await settle(); flush();
+    return pl;
+  };
+  const ok = await run(fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'countries.json')));
+  await settle(); flush();
+  assert.equal(ok.countries().status, 'ok', 'streamed'); assert.ok(spanTexts(ok).includes('USA') && spanTexts(ok).includes('MEXICO'), spanTexts(ok).join());
+  const txt = fs.readFileSync(path.join(__dirname, '..', '..', 'static_ui', 'countries.json'));
+  const broken = Buffer.from(txt); broken[broken.indexOf('Russia')] = 0xff;
+  assert.equal((await run(broken)).countries().status, 'failed', 'broken UTF-8');
+  assert.equal((await run(Buffer.alloc(I.MAX_COUNTRY_BYTES + 1, 32))).countries().status, 'failed', 'over the size cap');
+});
+
+test('G80 A-8: decodeCountries refuses non-number positions, blank or three-line labels', () => {
+  const bad = (rec) => () => { const d = JSON.parse(JSON.stringify(COUNTRIES)); d.countries[3] = rec; return I.decodeCountries(d); };
+  for (const rec of [['X', null, null, 0, 70, 0], ['X', true, false, 0, 70, 0], ['X', '45', 0, 0, 70, 0], ['X', [], 0, 0, 70, 0],
+    ['   ', 0, 0, 0, 70, 0], ['A\nB\nC', 0, 0, 0, 70, 0], ['A\n', 0, 0, 0, 70, 0]]) assert.throws(bad(rec), /bad country/, JSON.stringify(rec));
+  assert.doesNotThrow(bad(['A\nB', 0, 0, 0, 70, 0]), 'two lines are fine');
+});
+
+test('G80 A-11 create(): the countries file is not asked at a zoom where no country name can show (7 and closer); asked on zooming out', async () => {
+  const { M, flush } = loadWithFrames();
+  const f = countryFetch(), map = fakeMap(9, 21.3, -157.9);
+  M.create(map, { base: BASE, countriesUrl: CURL, L: fakeL(map), document: oahuDoc(), storage: storage({ 'allshore.borders.v1': '0' }), fetch: f, whenReady: (go) => go() });
+  await settle(); flush();
+  assert.ok(!f.asked.includes(CURL), 'zoom 9: not asked');
+  map.zoom = 7; map.fire('zoomend'); await settle();
+  assert.ok(!f.asked.includes(CURL), 'zoom 7: not asked');
+  map.zoom = 6.9; map.fire('zoomend'); await settle();
+  assert.equal(f.asked.filter((u) => u === CURL).length, 1, 'zoom 6.9: asked');
 });

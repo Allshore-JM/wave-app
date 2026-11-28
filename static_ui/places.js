@@ -51,6 +51,10 @@
   // goes. City names show no earlier than CITY_MIN_ZOOM10, so wide views name countries, closer ones cities.
   var CITY_MIN_ZOOM10 = 35, COUNTRY_FADE10 = 5, COUNTRY_PX = [13.5, 12.5, 12, 11.5, 11], COUNTRY_LS_EM = 0.12, COUNTRY_LH = 1.25;
   var COUNTRY_MIN_SPAN10 = 15, COUNTRY_END_CAP10 = 70;
+  // No group starts after COUNTRY_START_CAP10, so each keeps its COUNTRY_MIN_SPAN10 on any screen (G80 A-1, owner
+  // 2026-11-28: "start no later than 5.5"). The largest cities (Natural Earth zoom up to BIG_CITY_ZOOM10) are placed
+  // before the country names, and a fading country name after every city (G80 A-2, owner: "big cities first").
+  var COUNTRY_START_CAP10 = COUNTRY_END_CAP10 - COUNTRY_MIN_SPAN10, BIG_CITY_ZOOM10 = 40;
   var MAX_COUNTRY_BYTES = 256 << 10, MAX_COUNTRIES = 1000;
   var TIER0_MAX_ZOOM = 7;                            // tile zoom up to which the world files serve (tier 1 from 8)
   var LINES_MAGIC = 'LNS1', LINES_HEADER = 40, PLACES_MAGIC = 'PLC1', PLACES_HEADER = 36;
@@ -535,17 +539,18 @@
     var rows = d.countries, n = rows.length, out = { n: n, label: [], lat: new Float64Array(n), lon: new Float64Array(n), start: new Uint8Array(n), end: new Uint8Array(n), size: new Uint8Array(n) };
     for (var k = 0; k < n; k++) {
       var r = rows[k];
-      if (!Array.isArray(r) || r.length !== 6 || typeof r[0] !== 'string' || !r[0] || r[0].length > 80 || !(r[1] >= -90 && r[1] <= 90) || !(r[2] >= -180 && r[2] <= 180) ||
+      if (!Array.isArray(r) || r.length !== 6 || typeof r[0] !== 'string' || r[0].length > 80 || r[0].split('\n').length > 2 || r[0].split('\n').some(function (s) { return !s.trim(); }) ||
+          typeof r[1] !== 'number' || typeof r[2] !== 'number' || !(r[1] >= -90 && r[1] <= 90) || !(r[2] >= -180 && r[2] <= 180) ||
           !(r[3] >= 0 && r[3] <= 80 && r[4] >= 10 && r[4] <= 250 && Math.floor(r[3]) === r[3] && Math.floor(r[4]) === r[4]) || !(r[5] >= 0 && r[5] < COUNTRY_PX.length && Math.floor(r[5]) === r[5])) throw new Error('places: a bad country record');
       out.label.push(r[0]); out.lat[k] = r[1]; out.lon[k] = r[2]; out.start[k] = r[3]; out.end[k] = r[4]; out.size[k] = r[5];
     }
     return out;
   }
   // A country's name at map zoom `zoom` on a screen whose widest view is zoom `world`: shown from `off10` (x 10) after
-  // the widest view until its end, kept at least COUNTRY_MIN_SPAN10, never after COUNTRY_END_CAP10; its opacity falls
-  // from 1 to 0 over the last COUNTRY_FADE10. -> 0 when not shown.
+  // the widest view (never later than COUNTRY_START_CAP10) until its end, kept at least COUNTRY_MIN_SPAN10, never after
+  // COUNTRY_END_CAP10; its opacity falls from 1 to 0 over the last COUNTRY_FADE10. -> 0 when not shown.
   function countryAlpha(off10, end10, zoom, world) {
-    var start = world * 10 + off10, z = zoom * 10;
+    var start = Math.min(world * 10 + off10, COUNTRY_START_CAP10), z = zoom * 10;
     var end = Math.min(COUNTRY_END_CAP10, Math.max(end10, start + COUNTRY_MIN_SPAN10));
     if (z + 1e-6 < start || z >= end) return 0;
     return Math.max(0, Math.min(1, (end - z) / COUNTRY_FADE10));
@@ -576,7 +581,7 @@
         if (!placeShown(c.mz[k], zoom10) || c.lat[k] < s || c.lat[k] > n) continue;
         var lon = c.lon[k];
         for (var copy = Math.ceil((w - lon) / 360); lon + copy * 360 <= e; copy++) {
-          out.push({ lat: c.lat[k], lon: lon + copy * 360, rank: c.rank[k], pop: c.pop[k], flags: c.flags[k], name: c.name[k] });
+          out.push({ lat: c.lat[k], lon: lon + copy * 360, rank: c.rank[k], pop: c.pop[k], flags: c.flags[k], name: c.name[k], mz: c.mz[k] });
         }
       }
     }
@@ -662,10 +667,14 @@
     // the data is wanted once the page may download, with a kind on, from the zoom its first kind shows
     function firstZoom() { return on.places ? PLACES_ZOOM : BORDER_ZOOM; }
     function wanted() { return !!(started && store && (on.borders || on.places) && Math.round(map.getZoom()) >= firstZoom()); }
-    // The country names' file (opts.countriesUrl, the page's own versioned asset): asked once names are wanted, beside
-    // the tier-0 files, at a low priority; given up after STALL_MS with no byte, then asked again after RETRY_MS. A
-    // failure leaves the city names as they are.
-    var countries = { status: 'idle', data: null, failedAt: 0 };
+    // The country names' file (opts.countriesUrl, the page's own versioned asset): asked once names are wanted and a
+    // country name can show (below zoom COUNTRY_END_CAP10, G80 A-11), beside the tier-0 files, at a low priority; given up
+    // after STALL_MS with no byte, then asked again by itself RETRY_MS later, up to COUNTRY_AUTO_RETRIES times and never
+    // after a 404 / 403 (a pan alone must not leave the map without them: G80 A-4; a later zoom still asks after the
+    // cooldown, as the tier-0 files do). A failure leaves the city names as they are. Like the cities, the names need the places bucket
+    // (opts.base): no store, no names.
+    var countries = { status: 'idle', data: null, failedAt: 0, retries: 0 }, countriesRetry = null, COUNTRY_AUTO_RETRIES = 3;
+    function countriesWanted() { return wanted() && on.places && map.getZoom() * 10 < COUNTRY_END_CAP10; }
     function loadCountries() {
       var url = opts.countriesUrl, fetchFn = opts.fetch || (root.fetch && root.fetch.bind(root));
       if (!url || !fetchFn || countries.status === 'ok' || countries.status === 'loading') return;
@@ -677,18 +686,23 @@
       Promise.resolve().then(function () {
         return fetchFn(url, { signal: ctrl ? ctrl.signal : undefined, priority: 'low', credentials: 'same-origin' });
       }).then(function (r) {
-        if (!r.ok) throw new Error('places: countries ' + r.status);
+        if (!r.ok) { var err = new Error('places: countries ' + r.status); err.status = r.status; throw err; }
         arm();
-        if (r.body && r.body.getReader) return readAll(r.body.getReader(), MAX_COUNTRY_BYTES, arm).then(function (b) { return JSON.parse(new TextDecoder('utf-8').decode(b)); });
+        if (r.body && r.body.getReader) return readAll(r.body.getReader(), MAX_COUNTRY_BYTES, arm).then(function (b) { return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(b)); });
         return r.json();
       }).then(function (json) {
         clearTimeout(timer);
         countries.data = decodeCountries(json); countries.status = 'ok';
+      }).then(function () {
         credits();
         if (!map._animatingZoom) update();
-      }).catch(function () {
+      }, function (err) {
         clearTimeout(timer);
         countries.status = 'failed'; countries.failedAt = Date.now();
+        clearTimeout(countriesRetry); countriesRetry = null;
+        if (err && (err.status === 404 || err.status === 403) || countries.retries >= COUNTRY_AUTO_RETRIES) return;
+        countries.retries++;
+        countriesRetry = setTimeout(function () { countriesRetry = null; if (countriesWanted()) loadCountries(); }, RETRY_MS);
       });
     }
     // A tile with no line keeps a 1x1 backing store (a full one is 1 MB at dpr 2: most of a surf map has no border; G34
@@ -824,8 +838,14 @@
       var degPx = 360 / (TILE * Math.pow(2, zoom)), margin = VIEW_MARGIN_PX * degPx;
       var got = cities ? store.placesFor(west - margin, south - margin, east + margin, north + margin, z) : { sets: [], complete: false };
       labelsComplete = got.complete && countries.status !== 'loading';
-      // the country names first (in the file's order: the earliest, then the larger), then the cities (plan section 114)
-      var cands = countryCandidates(countries.data, zoom, worldZoom(), west, south, east, north, margin).concat(candidatesFor(got.sets, zoom10, west, south, east, north, margin)), items = [];
+      // placed in this order (plan section 114, G80 A-2): the largest cities (the leading run of the cities' own order whose
+      // Natural Earth zoom is up to BIG_CITY_ZOOM10), the country names at full strength (in the file's order: the
+      // earliest, then the larger), the other cities, then the country names that are fading out (a name going never
+      // hides a city). The cities keep their order among themselves.
+      var cn = countryCandidates(countries.data, zoom, worldZoom(), west, south, east, north, margin), ct = candidatesFor(got.sets, zoom10, west, south, east, north, margin);
+      var nb = 0; while (nb < ct.length && ct[nb].mz <= BIG_CITY_ZOOM10) nb++;
+      var solid = function (c) { return c.alpha >= 1; };
+      var cands = ct.slice(0, nb).concat(cn.filter(solid), ct.slice(nb), cn.filter(function (c) { return !solid(c); })), items = [];
       for (var i = 0; i < cands.length; i++) {
         var cd = cands[i], p = map.latLngToContainerPoint([cd.lat, cd.lon]);
         if (cd.country) { var cb = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: cb.w, h: cb.h, cand: cd }); }
@@ -901,7 +921,7 @@
       credits();
       // only the files of the kinds that are on (Borders off downloads no lines: re-check R-2); each draws as it lands
       // a kind turned on during a load starts its file at once beside it (V2-2); nothing new asked: no second call
-      if (wanted() && on.places) loadCountries();
+      if (countriesWanted()) loadCountries();
       var miss = wanted() ? units().filter(function (k) { return !store.ok(k) && !(store.loading && store.unit[k].status === 'loading'); }) : [];
       if (miss.length) store.load(units()).then(function () {
         credits();
@@ -915,7 +935,7 @@
       sync(); redraw(false); update();
     }
     map.on('zoomend', sync);
-    map.on('moveend zoomend resize viewreset', schedule);
+    map.on('moveend zoomend resize viewreset zoomlevelschange', schedule);   // zoomlevelschange: the widest view moved (G80 A-3)
     map.on('resize', function () { probed = false; });                        // the font is read again (a zoomed page)
     map.on('movestart zoomstart viewreset', function () { if (store) store.newView(); });
     map.on('zoomstart', function () { box.hidden = true; });
@@ -941,7 +961,7 @@
                   lonToX: lonToX, latToY: latToY, yToLat: yToLat, decodeLines: decodeLines, decodePlaces: decodePlaces, readVarints: readVarints, unzz: unzz, validIndex: validIndex,
                   cellName: cellName, cellsForBox: cellsForBox, cellsForTile: cellsForTile, PlacesStore: PlacesStore, kindsAt: kindsAt, lineShown: lineShown, tilePaths: tilePaths, clipSegment: clipSegment, CLIP_PX: CLIP_PX,
                   drawTile: drawTile, placeShown: placeShown, candidatesFor: candidatesFor, thin: thin, readOn: readOn, writeOn: writeOn,
-                  CITY_MIN_ZOOM10: CITY_MIN_ZOOM10, COUNTRY_FADE10: COUNTRY_FADE10, COUNTRY_MIN_SPAN10: COUNTRY_MIN_SPAN10, COUNTRY_END_CAP10: COUNTRY_END_CAP10, COUNTRY_PX: COUNTRY_PX, COUNTRY_LS_EM: COUNTRY_LS_EM, COUNTRY_LH: COUNTRY_LH,
+                  CITY_MIN_ZOOM10: CITY_MIN_ZOOM10, BIG_CITY_ZOOM10: BIG_CITY_ZOOM10, COUNTRY_START_CAP10: COUNTRY_START_CAP10, COUNTRY_FADE10: COUNTRY_FADE10, COUNTRY_MIN_SPAN10: COUNTRY_MIN_SPAN10, COUNTRY_END_CAP10: COUNTRY_END_CAP10, COUNTRY_PX: COUNTRY_PX, COUNTRY_LS_EM: COUNTRY_LS_EM, COUNTRY_LH: COUNTRY_LH,
                   MAX_COUNTRY_BYTES: MAX_COUNTRY_BYTES, decodeCountries: decodeCountries, countryAlpha: countryAlpha, countryCandidates: countryCandidates, countryFonts: countryFonts }
   };
 })(typeof window !== 'undefined' ? window : this);

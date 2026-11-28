@@ -9,8 +9,8 @@ Writes static_ui/countries.json, a small UI asset the page serves beside places.
            (NAME_FIXES after that), then the owner's short form for long names (SHORT_FORMS); a label still longer than
            WRAP_CHARS characters is cut onto two lines ("\\n") at the space nearest its middle
   lat/lon  Natural Earth's label point (LABEL_Y / LABEL_X), degrees, 3 decimals
-  start10  how many zooms (x 10) after the screen's widest view (one world across: about 2.9 on a 1908-px laptop, 1.0
-           on a phone) the name shows: by land area (AREA_TIERS), the open-ocean island nations of ISLANDS after
+  start10  how many zooms (x 10) after the screen's widest view (one world across: 2.8 on a 1908-px laptop after the
+           client rounds it down, about 1.6-1.9 on a phone) the name shows (the client never starts one after 5.5): by land area (AREA_TIERS), the open-ocean island nations of ISLANDS after
            ISLAND_ZOOM10 (owner, 2026-11-27: "land area + islands", counted from the widest view)
   end10    the map zoom (x 10, absolute) from which it has gone: once the country is about END_PX across on screen (the
            square root of its area at its label latitude), never after END_CAP10. The client keeps a name at least
@@ -53,7 +53,9 @@ SKIP = frozenset(("Akrotiri", "Dhekelia", "Cyprus U.N. Buffer Zone", "Bajo Nuevo
                   "Scarborough Reef", "Brazilian I.", "Bir Tawil", "Southern Patagonian Ice Field", "Siachen Glacier",
                   "Ashmore and Cartier Is.", "Coral Sea Is.", "Spratly Is.", "Antarctica", "U.S. Minor Outlying Is.",
                   "Indian Ocean Ter.", "Clipperton I."))
-NAME_FIXES = {"N. Cyprus": "Northern Cyprus", "eSwatini": "Eswatini"}     # NAME -> label (NAME_EN is wrong or too long)
+# NAME -> label (NAME_EN is wrong or too long; St-Martin / St-Barthélemy are abbreviations without a dot: G80 A-6)
+NAME_FIXES = {"N. Cyprus": "Northern Cyprus", "eSwatini": "Eswatini", "St-Martin": "Saint Martin",
+              "St-Barthélemy": "Saint Barthélemy"}
 # The open-ocean island nations shown from ocean views (owner, 2026-11-27). Keys are labels before SHORT_FORMS.
 ISLANDS = frozenset(("Fiji", "Samoa", "Tonga", "French Polynesia", "Cook Islands", "Vanuatu", "Solomon Islands",
                      "New Caledonia", "Kiribati", "Marshall Islands", "Micronesia", "Palau", "Tuvalu", "Nauru", "Guam",
@@ -73,7 +75,7 @@ SHORT_FORMS = {
     "British Indian Ocean Territory": "Br. Indian Ocean Ter.",
     "South Georgia and the South Sandwich Islands": "S. Georgia & S. Sandwich Is.",
     "French Southern and Antarctic Lands": "Fr. Southern & Antarctic Lands",
-    "Heard Island and McDonald Islands": "Heard & McDonald Is.",
+    "Heard Island and McDonald Islands": "Heard & McDonald Is.", "Wallis and Futuna": "Wallis & Futuna",
 }
 RULES = ("area tiers %s; islands %d/size %d; end %dpx min %d cap %d; wrap %d; skip types %s"
          % (",".join("%d:%d" % t for t in AREA_TIERS), ISLAND_ZOOM10, ISLAND_SIZE, END_PX, MIN_SPAN10, END_CAP10,
@@ -114,11 +116,14 @@ def base_name(p):
 
 
 def wrap(label):
-    """A label over WRAP_CHARS characters with a space -> two lines at the space nearest its middle."""
+    """A label over WRAP_CHARS characters with a space -> two lines at the space nearest its middle, never right after
+    a one-letter abbreviation ("S. Georgia &" / "S. Sandwich Is.", not "S." on its own line end: G80 A-6)."""
     if len(label) <= WRAP_CHARS or " " not in label:
         return label
     mid = len(label) / 2.0
-    cut = min((i for i, ch in enumerate(label) if ch == " "), key=lambda i: (abs(i - mid), i))
+    spaces = [i for i, ch in enumerate(label) if ch == " "]
+    good = [i for i in spaces if not (i >= 2 and label[i - 1] == "." and (i == 2 or label[i - 3] == " "))]
+    cut = min(good or spaces, key=lambda i: (abs(i - mid), i))
     return label[:cut] + "\n" + label[cut + 1:]
 
 
@@ -177,9 +182,13 @@ def check(data, real=True):
         d = json.loads(data.decode("utf-8"))
     except ValueError as exc:
         return ["not JSON: %s" % exc]
+    if not isinstance(d, dict):
+        return ["not a countries object"]
     if d.get("format") != FORMAT:
         problems.append("format %r" % d.get("format"))
     rows = d.get("countries") or []
+    if not isinstance(rows, list):
+        return ["countries is not a list"]
     if d.get("count") != len(rows):
         problems.append("count %r != %d records" % (d.get("count"), len(rows)))
     prev = None
@@ -192,11 +201,12 @@ def check(data, real=True):
             problems.append("record %d: bad label %r" % (k, label))
         elif any(len(line) > WRAP_CHARS and " " in line for line in label.split("\n")) and "\n" not in label:
             problems.append("record %d (%s): long label not wrapped" % (k, label))
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        if not (isinstance(lat, (int, float)) and isinstance(lon, (int, float)) and not isinstance(lat, bool)
+                and not isinstance(lon, bool) and -90 <= lat <= 90 and -180 <= lon <= 180):
             problems.append("record %d (%s): position out of range" % (k, label))
-        if not (isinstance(s10, int) and isinstance(e10, int) and 0 <= s10 <= 40 and 10 <= e10 <= END_CAP10):
+        if not (type(s10) is int and type(e10) is int and 0 <= s10 <= 40 and 10 <= e10 <= END_CAP10):
             problems.append("record %d (%s): zooms %r..%r out of rule" % (k, label, s10, e10))
-        if size not in (0, 1, 2, 3, 4):
+        if type(size) is not int or size not in (0, 1, 2, 3, 4):
             problems.append("record %d (%s): size %r" % (k, label, size))
         if prev is not None and s10 < prev:
             problems.append("record %d (%s): not sorted by start" % (k, label))
@@ -207,7 +217,8 @@ def check(data, real=True):
             problems.append("source is not the pinned Natural Earth file")
         if len(rows) != COUNT_EXPECT:
             problems.append("%d records, expected %d" % (len(rows), COUNT_EXPECT))
-        by = {r[0]: r for r in rows if isinstance(r, list) and r}
+        by = {r[0]: r for r in rows if isinstance(r, list) and r and isinstance(r[0], str)}
+        flat = {r[0].replace("\n", " ") for r in by.values()}
         for label, s10, erange in PROBES:
             r = by.get(label)
             if r is None:
@@ -218,7 +229,7 @@ def check(data, real=True):
             if erange and not (erange[0] <= r[4] <= erange[1]):
                 problems.append("probe: %s ends at %d, expected %d..%d" % (label, r[4], erange[0], erange[1]))
         for long_name in SHORT_FORMS:
-            if long_name in by:
+            if long_name in flat:                               # compared unwrapped (a long name is always wrapped)
                 problems.append("probe: %r kept its long name" % long_name)
     return problems
 

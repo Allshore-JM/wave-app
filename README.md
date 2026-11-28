@@ -2856,10 +2856,10 @@ lakes' shores under wind are always drawn (owner, 2026-10-23: no row):
 | Row / layer | Key | Shows from | Source |
 |---|---|---|---|
 | Borders (country and state / province lines together) | `allshore.borders.v1` | country lines from map zoom 3, state lines from 5 (each line from its own Natural Earth zoom too) | Natural Earth admin-0 lines (disputed dashed) and admin-1 lines (dashed, fainter); public domain |
-| City names | `allshore.places.v1` | each place's own zoom (Natural Earth `min_zoom`; GeoNames towns 8 / 9 / 10 by size) | Natural Earth populated places + GeoNames `cities1000` (CC BY 4.0) |
+| Place names (City names until UI 1.33; country names since plan section 114) | `allshore.places.v1` | country names from the screen's widest view by land area (see below), all gone by zoom 7; city names from each place's own zoom (Natural Earth `min_zoom`, never before 3.5; GeoNames towns 8 / 9 / 10 by size) | Natural Earth admin-0 countries and populated places (public domain) + GeoNames `cities1000` (CC BY 4.0) |
 | Lake outlines (always, no row) | - | tile zoom 4, under the wind overlay only | GSHHG lakes of 100 km² or more (see Model overlays) |
 
-`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, storage, waitFor})`) draws the borders on 256-px canvas tiles in
+`static_ui/places.js` (`window.AllshorePlaces.create(map, {base, countriesUrl, storage, waitFor})`) draws the borders on 256-px canvas tiles in
 the pane `placesLinePane` (z 340: above the particles, below the gridlines and the forecast points) as a light 1-px line
 over a dark halo, and the names as text spans in `placesLabelPane` (z 620: above the station icons, below the tooltips; a
 name takes no tap, so an icon under it stays clickable), each name centred on its place with no dot (a city is an area,
@@ -2871,7 +2871,7 @@ under 600 px wide), measured in the font they are drawn in (a browser's minimum 
 zooming and rebuilt after a move or when any of those obstacles opens, closes, moves or changes size. The line layer is
 on the map only while Borders is on, and a tile with no line keeps a 1x1 canvas. Nothing is fetched before the page's
 load event (+ 1.5 s) and the overlay's first picture and its coastline (both drawn, in, failed or given up; at most 120 s), so
-on a slow phone link the overlay's coastline is not starved; nor while both rows are off, or below zoom 3 (2 for
+on a slow phone link the overlay's coastline is not starved; nor while both rows are off, or below zoom 3 (1 for
 names). Every request asks for a low priority, and a download is given up only after 15 s with no byte arriving. The
 data comes from `static/places/v2/` beside the model frames (derived in the overlay's gated block), or from env
 `PLACES_BASE`: `index.json`, the world tier (`world-lines.bin`, `world-places.bin`, used to map zoom 7; only the file of
@@ -2885,6 +2885,18 @@ clipping and a "Coastline still loading" note, and clipped the moment the coastl
 beside the coastline and is given up only after 5 s with no byte (the owner's call after the G34 re-check; every frame
 since 2.22.4). A row turned on while the other row's file is still loading starts its own file at once (UI 1.25.4), with a full 15 s for its first byte (UI 1.25.5).
 Built and published by `tools/places/build_places.py` (coast-build workflow, `set: places`; `tools/places/README.md`).
+
+Country names (plan section 114, UI 1.33; G80 fix round UI 1.33.2) come from `static_ui/countries.json`, a committed UI asset
+served at `/ui/countries.json?v=<UI version>` and built by `tools/places/build_countries.py` from Natural Earth's admin-0
+countries at the pinned commit (`--check` re-derives it byte for byte). Each name starts a set number of zooms after the
+screen's widest view (the map's minimum zoom, rounded down to 0.1: 2.8 on a 1908-px laptop, about 1.6-1.9 on a phone) by
+land area: 1.5 million km² or more at once, 500,000 km² +1.0, 100,000 km² +1.8, 20,000 km² +2.5, smaller +3.2, and 32
+open-ocean island nations +1.5; never later than zoom 5.5. A name goes once the country is about 900 px across (at least
+1.5 zooms after it came, all gone by 7), fading over its last half zoom. Pale gold capitals, 13.5 / 12.5 / 12 / 11.5 /
+11 px by group; long names take common short forms (USA, DR Congo, UAE, "&" pairs). They are placed after the leading
+run of the largest cities (Natural Earth zoom 4.0 or lower), before the other cities, and a fading name after every city.
+The file is asked only below zoom 7 and only with the places bucket; a failed download is asked again by itself up to 3
+times a minute apart (never after a 404), and by any later zoom after the 60-s cooldown.
 
 ## A live buoy on a forecast point (plan section 52, UI asset 1.25.9)
 

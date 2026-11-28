@@ -98,13 +98,16 @@ The real build of 2026-10-23 (GeoNames file of 2026-10-23) had these sizes:
 small UI asset (about 9 KB) committed to the repository and served with the page's other `static_ui` files, not a
 bucket prefix: `static/places/v2` is unchanged.
 
-- **Name:** Natural Earth's `NAME`, or `NAME_EN` where `NAME` is abbreviated (Northern Cyprus and Eswatini by hand).
+- **Name:** Natural Earth's `NAME`, or `NAME_EN` where `NAME` is abbreviated (Northern Cyprus, Eswatini, Saint Martin
+  and Saint Barthélemy by hand).
   Long names take a common short form (owner, 2026-11-27): USA, DR Congo, UAE, Central African Rep., Bosnia & Herz.,
-  "and" pairs as "&", island groups as "Is.". A label still longer than 16 characters is cut onto two lines.
-- **Shown from:** counted from the screen's widest view (the map's minimum zoom, one world across: about 2.9 on a
-  1908-px laptop, 2.5 on a 1440-px screen, about 1.85 on a phone), by land area on the sphere: 1.5 million km² and more
+  "and" pairs as "&", island groups as "Is.". A label still longer than 16 characters is cut onto two lines, never
+  right after a one-letter abbreviation ("S. Georgia &" / "S. Sandwich Is.").
+- **Shown from:** counted from the screen's widest view (the map's minimum zoom, one world across, rounded down to the
+  0.1 step: 2.8 on a 1908-px laptop, 2.4 on a 1440-px screen, about 1.6-1.9 on a phone), by land area on the sphere: 1.5 million km² and more
   at the widest view, 500,000 one zoom closer, 100,000 1.8 closer, 20,000 2.5 closer, the rest 3.2 closer. 32 open-ocean
-  island nations (Fiji, Samoa, Tonga, French Polynesia ...) 1.5 closer. The file stores these offsets (x 10).
+  island nations (Fiji, Samoa, Tonga, French Polynesia ...) 1.5 closer. The file stores these offsets (x 10); the client
+  never starts a name after zoom 5.5 (G80, owner 2026-11-28), so a wide screen still sees the smallest.
 - **Gone from:** the zoom at which the country is about 900 px across (the square root of its area at its label
   latitude), never after zoom 7. The client keeps a name at least 1.5 zooms after it came (still never after zoom 7).
 - **Left out:** leases and bases, the Cyprus buffer zone, uninhabited banks, reefs and ice, Antarctica, the U.S. Minor

@@ -16,7 +16,7 @@ import build_countries as B  # noqa: E402
 
 COMMITTED = os.path.join(ROOT, "static_ui", "countries.json")
 # The committed file's bytes: a change must be deliberate (rebuild from the pinned file, then update this pin).
-PIN_SHA256 = "761b2766e47d8193f1fdfb3958be4bd62933ec236f9e14e81420950a543782e1"
+PIN_SHA256 = "067e126976e07229d7f7b8288e4d69e65962f6bc1c607fd722e47fbb810c2693"
 
 
 def square(lon, lat, half):
@@ -64,6 +64,10 @@ def test_base_name_rule():
     assert B.base_name({"NAME": "N. Cyprus", "NAME_EN": "Turkish Republic of Northern Cyprus"}) == "Northern Cyprus"
     assert B.base_name({"NAME": "eSwatini", "NAME_EN": "Eswatini"}) == "Eswatini"
     assert B.base_name({"NAME": "Fr. Polynesia", "NAME_EN": None}) == "Fr. Polynesia"            # no NAME_EN: keep NAME
+    # abbreviations without a dot (G80 A-6): "Saint" spelled out, as Saint Lucia
+    assert B.base_name({"NAME": "St-Martin", "NAME_EN": "Saint Martin"}) == "Saint Martin"
+    assert B.base_name({"NAME": "St-Barthélemy", "NAME_EN": "Saint Barthélemy"}) == "Saint Barthélemy"
+    assert B.SHORT_FORMS["Wallis and Futuna"] == "Wallis & Futuna"                       # pairs use "&" (decision 5)
 
 
 def test_wrap_at_the_space_nearest_the_middle():
@@ -71,6 +75,11 @@ def test_wrap_at_the_space_nearest_the_middle():
     assert B.wrap("Central African Rep.") == "Central\nAfrican Rep."
     assert B.wrap("Fr. Southern & Antarctic Lands") == "Fr. Southern &\nAntarctic Lands"
     assert B.wrap("Abcdefghijklmnopqrstu") == "Abcdefghijklmnopqrstu"       # no space: one line
+    # never right after a one-letter abbreviation (G80 A-6)
+    assert B.wrap("S. Georgia & S. Sandwich Is.") == "S. Georgia &\nS. Sandwich Is."
+    assert B.wrap("Abcdefgh S. Ijklmnopq") == "Abcdefgh\nS. Ijklmnopq"
+    assert B.wrap("Ab C. Defghijklmnopqr") == "Ab\nC. Defghijklmnopqr"     # the other space, however far from the middle
+    assert B.wrap("X. Abcdefghijklmnopqr") == "X. Abcdefghijklmnopqr".replace(" ", "\n", 1)   # no other space: still cut
 
 
 def test_start_by_area_tier_and_islands():
@@ -143,6 +152,22 @@ def test_check_flags_bad_files():
         assert any(what in x for x in p), (bad, p)
     assert any("count" in x for x in B.check(json.dumps(dict(good, count=2)).encode(), real=False))
     assert B.check(b"{", real=False)[0].startswith("not JSON")
+    # G80 A-9: problems, never an exception, for a text position, a top-level list, booleans
+    for bad in (["Bigland", "0", 0.0, 10, 60, 1], ["Bigland", True, 0.0, 10, 60, 1], ["Bigland", 0.0, None, 10, 60, 1]):
+        assert any("position" in x for x in B.check(json.dumps(dict(good, countries=[bad])).encode(), real=False)), bad
+    assert any("zooms" in x for x in B.check(json.dumps(dict(good, countries=[["Bigland", 0.0, 0.0, True, 60, 1]])).encode(), real=False))
+    assert any("size" in x for x in B.check(json.dumps(dict(good, countries=[["Bigland", 0.0, 0.0, 10, 60, True]])).encode(), real=False))
+    assert B.check(b"[]", real=False) == ["not a countries object"]
+    assert B.check(json.dumps(dict(good, countries={"a": 1})).encode(), real=False) == ["countries is not a list"]
+
+
+def test_check_finds_a_long_name_left_unshortened():
+    # G80 A-9: every SHORT_FORMS key is longer than WRAP_CHARS, so an unshortened one arrives wrapped
+    data = open(COMMITTED, "rb").read().decode("utf-8")
+    assert '"Bosnia & Herz."' in data
+    bad = data.replace('"Bosnia & Herz."', '"Bosnia and\\nHerzegovina"')
+    assert bad != data
+    assert any("Bosnia and Herzegovina" in x and "long name" in x for x in B.check(bad.encode("utf-8"))), B.check(bad.encode("utf-8"))
 
 
 def test_ne_commit_is_the_places_pin():

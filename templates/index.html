@@ -5705,6 +5705,8 @@
         if (window.AllshorePlaces) pl = window.AllshorePlaces.create(map, { base: {{ places_base|tojson }} || window.__allshorePlacesBase || '', storage: st || undefined,
           countriesUrl: '/ui/countries.json?v={{ ui_asset_version }}',                // the country names (plan section 114)
           islandsUrl: '/ui/islands.json?v={{ ui_asset_version }}',                    // the island names (plan section 115)
+          // the forecast points' dots (drawn on the canvas): the island names keep clear of them (plan section 115)
+          dots: function () { var out = []; if (map.hasLayer(forecastLayer)) forecastLayer.eachLayer(function (l) { if (l.getLatLng) out.push(l.getLatLng()); }); return out; },
           waitFor: function () { return window.__allshoreOverlayWait || null; } });   // the overlay's first picture first (G34 B-6)
       } catch (e) { console.error('places', e); }
       ids.forEach(function (id) {

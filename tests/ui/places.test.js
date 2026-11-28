@@ -1658,3 +1658,35 @@ test('section 115 create(): the island kinds\' fonts are probed from the page (.
   assert.equal(c[6].f, 'italic 600 14px Georgia'); assert.equal(c[6].ls, 0);
   assert.equal(pl.countryBox('A\nB', 6).h, 36, 'the probed line height');
 });
+
+test('section 115: thin: a soft item (an island name) keeps clear of the marks, which block no other item', () => {
+  const marks = [{ left: 196, top: 196, right: 204, bottom: 204 }];
+  const isl = { x: 200, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15), soft: true };
+  let k = I.thin([isl], [], 10, null, 14, marks);
+  assert.equal(k.length, 1); assert.deepEqual([k[0].dx, k[0].dy], [0, -25], 'off the mark: north');
+  k = I.thin([{ x: 200, y: 200, w: 40 }], [], 10, null, 14, marks);
+  assert.equal(k.length, 1); assert.equal(k[0].dy, 0, 'a city name is not moved by a mark');
+  assert.equal(I.thin([{ x: 200, y: 200, w: 40, h: 15, soft: true }], [], 10, null, 14, marks).length, 0, 'no spots: left out');
+});
+
+test('section 115 create(): an island name keeps clear of the forecast dots (opts.dots) and the marker icons, moving to a spot', async () => {
+  const { M, flush } = loadWithFrames();
+  const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
+  const run = async (extra, icon) => {
+    const map = fakeMap(7, KAUAI[0], KAUAI[1], 1440, 810);
+    if (icon) {
+      const base = map.getContainer.bind(map);
+      map.getContainer = () => { const c = base(), q = c.querySelectorAll;
+        c.querySelectorAll = (sel) => (sel === I.MARKER_SELECTOR ? [{ getBoundingClientRect: () => { const p = map.latLngToContainerPoint(KAUAI); return { left: 10 + p.x - 9, top: 20 + p.y - 9, right: 10 + p.x + 9, bottom: 20 + p.y + 9 }; } },
+          { getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 900 }) }] : q(sel)); return c; };   // (the second: too big to be a marker)
+    }
+    const pl = M.create(map, { ...iopts(map, islandFetch()), ...extra });
+    for (let i = 0; i < 3; i++) { await settle(); flush(); }
+    const sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Kauaʻi'), lp = map.latLngToLayerPoint(KAUAI);
+    return sp ? [parseInt(sp.style.left, 10) - Math.round(lp.x), parseInt(sp.style.top, 10) - Math.round(lp.y)] : null;
+  };
+  assert.deepEqual(await run({}), [0, 0], 'nothing there: at its point');
+  assert.deepEqual(await run({ dots: () => [{ lat: KAUAI[0], lng: KAUAI[1] }] }), [0, -25], 'a forecast dot on it: north');
+  assert.deepEqual(await run({ dots: () => { throw new Error('x'); } }), [0, 0], 'a failing dots() is ignored');
+  assert.deepEqual(await run({}, true), [0, -25], 'a station icon on it: north (an element larger than a marker is not one)');
+});

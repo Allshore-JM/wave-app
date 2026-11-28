@@ -24,9 +24,10 @@
  * Island names (plan section 115): from static_ui/islands.json (opts.islandsUrl), white italic (island groups in
  * letter-spaced capitals, .place-island.pi-0; single islands .pi-1), each from Natural Earth's own label zoom until the
  * island is about a screen wide (never after zoom 12), fading as the country names do. Island names are placed last:
- * they never cover a city or country name, only the space those leave; a name blocked at its label point tries eight
- * spots around it (north, south, east, west, then the corners) before it is left out (owner, 2026-11-28: "a simple,
- * uncluttered look").
+ * they never cover a city or country name, only the space those leave, and keep clear of the map's markers too (the
+ * station icons, and the forecast points' dots from opts.dots); a name blocked at its label point tries eight spots
+ * around it (north, south, east, west, then the corners) before it is left out (owner, 2026-11-28: "should not cover
+ * city names or anything else, a simple, uncluttered look").
  * Nothing is fetched before the page has loaded and the overlay's first picture has settled (at most 30 s: on a slow
  * link the overlay's coastline comes first, G34 B-6), nor while every kind is off or the map is below the first wanted
  * zoom; every download asks for a low priority. A download is given up only after 15 s in which no byte arrived. The
@@ -94,6 +95,7 @@
   var LABEL_MAX = 120, LABEL_MAX_NARROW = 60, NARROW_PX = 600, VIEW_MARGIN_PX = 40, BUCKET = 32;
   var LABEL_PANE_Z = 620;                            // above the marker pane (600), below the tooltips (650)
   var BLOCKED_SELECTOR = '.leaflet-control, .settings-panel, .ov-sheet, .graticule-label, .tools-fan, .tools-label, .tools-ring-label';
+  var MARKER_SELECTOR = '.leaflet-marker-icon', MARKER_MAX_PX = 48, DOT_PX = 4;   // the markers the island names keep clear of
   var FLOAT_SELECTOR = '.fwin';                      // the floating windows (outside the map's container; the hidden ones skipped)
   var RELAY_CLASSES = ['ov-sheet', 'tools-fan', 'tools-label', 'tools-ring-label'];   // their coming and going lays the names out again
   var CHAR_PX = 6.2;                                 // the width estimate without a canvas
@@ -655,23 +657,26 @@
   // edge is dropped, never shifted (owner, plan section 52: cities are areas, the name sits over the place).
   // h: the labels' height (the drawn font's line; LABEL_H by default).
   // An item may carry alts ([[dx, dy], ...]: other spots tried in order when its own is taken; the spot used is set as
-  // it.dx / it.dy: the island names, plan section 115).
-  function thin(items, blocked, max, size, h) {
-    var kept = [], grid = {}, i, j, t;
+  // it.dx / it.dy) and soft (true: it also keeps clear of the `marks` rects, which block no other item): the island
+  // names, plan section 115.
+  function thin(items, blocked, max, size, h, marks) {
+    var kept = [], grid = {}, soft = {}, i, j, t;
     function boxOf(it, dx, dy) {
       var hw = it.w / 2, hh = (it.h || h || LABEL_H) / 2, x = it.x + dx, y = it.y + dy;   // an item's own height (a country name's lines) first
       return { left: x - hw - LABEL_GAP, top: y - hh - LABEL_GAP, right: x + hw + LABEL_GAP, bottom: y + hh + LABEL_GAP };
     }
     function fits(r) { return !size || (r.left + LABEL_GAP >= 0 && r.top + LABEL_GAP >= 0 && r.right - LABEL_GAP <= size.x && r.bottom - LABEL_GAP <= size.y); }
-    function file(r) {
+    function file(r, g) {
+      g = g || grid;
       for (var gy = Math.floor(r.top / BUCKET); gy <= Math.floor(r.bottom / BUCKET); gy++) {
-        for (var gx = Math.floor(r.left / BUCKET); gx <= Math.floor(r.right / BUCKET); gx++) (grid[gx + ',' + gy] = grid[gx + ',' + gy] || []).push(r);
+        for (var gx = Math.floor(r.left / BUCKET); gx <= Math.floor(r.right / BUCKET); gx++) (g[gx + ',' + gy] = g[gx + ',' + gy] || []).push(r);
       }
     }
-    function free(r) {
+    function free(r, g) {
+      g = g || grid;
       for (var gy = Math.floor(r.top / BUCKET); gy <= Math.floor(r.bottom / BUCKET); gy++) {
         for (var gx = Math.floor(r.left / BUCKET); gx <= Math.floor(r.right / BUCKET); gx++) {
-          var list = grid[gx + ',' + gy];
+          var list = g[gx + ',' + gy];
           if (!list) continue;
           for (j = 0; j < list.length; j++) { var o = list[j]; if (r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top) return false; }
         }
@@ -679,11 +684,12 @@
       return true;
     }
     for (i = 0; i < blocked.length; i++) file(blocked[i]);
+    for (i = 0; marks && i < marks.length; i++) file(marks[i], soft);
     for (i = 0; i < items.length && kept.length < max; i++) {
       var it = items[i], spots = it.alts ? [[0, 0]].concat(it.alts) : [[0, 0]];
       for (t = 0; t < spots.length; t++) {
         var r = boxOf(it, spots[t][0], spots[t][1]);
-        if (!fits(r) || !free(r)) continue;
+        if (!fits(r) || !free(r) || (it.soft && !free(r, soft))) continue;
         file(r); it.dx = spots[t][0]; it.dy = spots[t][1]; kept.push(it);
         break;
       }
@@ -899,6 +905,27 @@
       if (doc.querySelectorAll) Array.prototype.forEach.call(doc.querySelectorAll(FLOAT_SELECTOR), add);
       return out;
     }
+    // The markers the island names keep clear of (plan section 115), in container px: the visible marker icons (station,
+    // tide and wind icons, up to MARKER_MAX_PX) and the dots opts.dots() gives ([{lat, lng}]: points drawn on a canvas).
+    function markRects() {
+      var c = map.getContainer(), base = c.getBoundingClientRect ? c.getBoundingClientRect() : { left: 0, top: 0 }, size = map.getSize(), out = [];
+      function keep(b) { if (!(b.right < 0 || b.bottom < 0 || b.left > size.x || b.top > size.y)) out.push(b); }
+      if (c.querySelectorAll) Array.prototype.forEach.call(c.querySelectorAll(MARKER_SELECTOR), function (el) {
+        if (el.hidden || !el.getBoundingClientRect) return;
+        var r = el.getBoundingClientRect();
+        if (r.right <= r.left || r.bottom <= r.top || r.right - r.left > MARKER_MAX_PX || r.bottom - r.top > MARKER_MAX_PX) return;
+        keep({ left: r.left - base.left, top: r.top - base.top, right: r.right - base.left, bottom: r.bottom - base.top });
+      });
+      var dots = null;
+      try { dots = typeof opts.dots === 'function' ? opts.dots() : null; } catch (e) { dots = null; }
+      for (var k = 0; dots && k < dots.length; k++) {
+        var d = dots[k];
+        if (!d || !(d.lat >= -90) || !(d.lng >= -1e4)) continue;
+        var q = map.latLngToContainerPoint([d.lat, d.lng]);
+        keep({ left: q.x - DOT_PX, top: q.y - DOT_PX, right: q.x + DOT_PX, bottom: q.y + DOT_PX });
+      }
+      return out;
+    }
     // The screen's widest view: the map's minimum zoom (the page sets it to one world across, or the band between the
     // poles on a tall screen); one world across where the map has none. Rounded down to the map's 0.1 zoom step, so each
     // group starts on a zoom the map can land on (a phone's 1.82 -> 1.8: the islands from 3.3, not 3.32 = 3.4).
@@ -929,11 +956,11 @@
       var cands = ct.slice(0, nb).concat(cn.filter(solid), ct.slice(nb), cn.filter(fading), isl.filter(solid), isl.filter(fading)), items = [];
       for (var i = 0; i < cands.length; i++) {
         var cd = cands[i], p = map.latLngToContainerPoint([cd.lat, cd.lon]);
-        if (cd.island) { var ib = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: ib.w, h: ib.h, cand: cd, alts: islandSpots(ib.w, ib.h) }); }
+        if (cd.island) { var ib = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: ib.w, h: ib.h, cand: cd, alts: islandSpots(ib.w, ib.h), soft: true }); }
         else if (cd.country) { var cb = countryBox(cd.name, cd.size); items.push({ x: p.x, y: p.y, w: cb.w, h: cb.h, cand: cd }); }
         else items.push({ x: p.x, y: p.y, w: textWidth(cd.name, !!(cd.flags & FLAG_CAPITAL)), cand: cd });
       }
-      var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size, font.h), used = 0;
+      var kept = thin(items, blockedRects(), size.x < NARROW_PX ? LABEL_MAX_NARROW : LABEL_MAX, size, font.h, isl.length ? markRects() : null), used = 0;
       for (i = 0; i < kept.length; i++) {
         var it = kept[i], el = pool[used] || (pool[used] = box.appendChild(doc.createElement('span'))), lp = map.latLngToLayerPoint([it.cand.lat, it.cand.lon]);
         var region = it.cand.country || it.cand.island;
@@ -1047,6 +1074,6 @@
                   drawTile: drawTile, placeShown: placeShown, candidatesFor: candidatesFor, thin: thin, readOn: readOn, writeOn: writeOn,
                   CITY_MIN_ZOOM10: CITY_MIN_ZOOM10, BIG_CITY_ZOOM10: BIG_CITY_ZOOM10, COUNTRY_START_CAP10: COUNTRY_START_CAP10, COUNTRY_FADE10: COUNTRY_FADE10, COUNTRY_MIN_SPAN10: COUNTRY_MIN_SPAN10, COUNTRY_END_CAP10: COUNTRY_END_CAP10, COUNTRY_PX: COUNTRY_PX, COUNTRY_LS_EM: COUNTRY_LS_EM, COUNTRY_LH: COUNTRY_LH,
                   MAX_COUNTRY_BYTES: MAX_COUNTRY_BYTES, MAX_ISLAND_BYTES: MAX_ISLAND_BYTES, ISLAND_PX: ISLAND_PX, ISLAND_LS_EM: ISLAND_LS_EM, ISLAND_END_CAP10: ISLAND_END_CAP10, NAME_PX: NAME_PX,
-                  decodeIslands: decodeIslands, islandAlpha: islandAlpha, islandCandidates: islandCandidates, islandSpots: islandSpots, ISLAND_SPOT_PX: ISLAND_SPOT_PX, nameAlpha: nameAlpha, nameFonts: nameFonts, nameClass: nameClass, decodeCountries: decodeCountries, countryAlpha: countryAlpha, countryCandidates: countryCandidates, countryFonts: countryFonts }
+                  decodeIslands: decodeIslands, islandAlpha: islandAlpha, islandCandidates: islandCandidates, islandSpots: islandSpots, ISLAND_SPOT_PX: ISLAND_SPOT_PX, MARKER_SELECTOR: MARKER_SELECTOR, MARKER_MAX_PX: MARKER_MAX_PX, DOT_PX: DOT_PX, nameAlpha: nameAlpha, nameFonts: nameFonts, nameClass: nameClass, decodeCountries: decodeCountries, countryAlpha: countryAlpha, countryCandidates: countryCandidates, countryFonts: countryFonts }
   };
 })(typeof window !== 'undefined' ? window : this);

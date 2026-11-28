@@ -2904,8 +2904,10 @@ formal English name (Hawaiian ʻokina and kahakō: Oʻahu, Lānaʻi, Hawaiʻi), 
 the ocean-wide regions, Kahoʻolawe added by hand. Each shows from Natural Earth's label zoom until the island (or the
 group's hull) is about 900 px across, at least 1.5 zooms, never after 12, fading over its last half zoom; white italic,
 groups in letter-spaced capitals, 12 px. Island names are placed last: they never cover a city or country name, only
-the space those leave, and a name blocked at its label point tries eight spots around it (north, south, east, west,
-then the corners) before it is left out (owner, 2026-11-28: "a simple, uncluttered look"). The file loads under the same rules as the country file, asked below zoom 12.
+the space those leave, and keep clear of the map's markers too (station, tide and wind icons; the forecast points'
+dots, which the page passes as `dots`); a name blocked at its label point tries eight spots around it (north, south,
+east, west, then the corners) before it is left out (owner, 2026-11-28: "should not cover city names or anything else,
+a simple, uncluttered look"). The file loads under the same rules as the country file, asked below zoom 12.
 
 ## A live buoy on a forecast point (plan section 52, UI asset 1.25.9)
 

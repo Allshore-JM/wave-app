@@ -1192,6 +1192,7 @@ def test_location_aids_on_the_page(client, monkeypatch):
         ".place-label.place-country { color: #f2c66d; letter-spacing: 0.12em; white-space: pre; text-align: center; }",
         # plan section 115: the island names' file and CSS
         "islandsUrl: '/ui/islands.json?v=%s'," % A.UI_ASSET_VERSION,
+        "dots: function () { var out = []; if (map.hasLayer(forecastLayer)) forecastLayer.eachLayer(function (l) { if (l.getLatLng) out.push(l.getLatLng()); }); return out; },",
         ".place-label.place-island { color: #fff; font-style: italic; white-space: pre; text-align: center; }",
         ".place-label.pi-0 { font-size: 12px; line-height: 15px; letter-spacing: 0.12em; }",
         ".place-label.pi-1 { font-size: 12px; line-height: 15px; }",

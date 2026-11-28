@@ -1560,7 +1560,7 @@ test('section 115 create(): island names drawn white italic (classes pi-0 / pi-1
   assert.equal(seen.filter((x) => x[0] === IURL).length, 1, 'never asked again');
 });
 
-test('section 115 create(): the order: a big city beats an island name, an island name beats a smaller town below zoom 8, every town beats it from zoom 8', async () => {
+test('section 115 create(): the order (owner 2026-11-28): below zoom 8 an island name beats any town on it, Honolulu included; from 8 it yields to the towns and tries the spots around its label point', async () => {
   const { M, flush } = loadWithFrames();
   const run = async (z, city, cell) => {
     const extra = { 'world-places.bin': placesAt([{ lat: OAHU[0], lon: OAHU[1], ...city }]) };
@@ -1571,18 +1571,52 @@ test('section 115 create(): the order: a big city beats an island name, an islan
     }
     const map = fakeMap(z, OAHU[0], OAHU[1], 1440, 810), pl = M.create(map, iopts(map, islandFetch(extra)));
     for (let i = 0; i < 4; i++) { await settle(); flush(); }
-    return spanTexts(pl);
+    const lp = map.latLngToLayerPoint(OAHU), sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Oʻahu');
+    return { names: spanTexts(pl), oahu: sp ? [parseInt(sp.style.left, 10) - Math.round(lp.x), parseInt(sp.style.top, 10) - Math.round(lp.y)] : null };
   };
   const big = await run(6, { mz10: 30, name: 'Bigcity' });
-  assert.ok(big.includes('Bigcity') && !big.includes('Oʻahu'), 'a big city (zoom 3.0) first: ' + big.join());
-  const small = await run(6, { mz10: 45, name: 'Smallton' });
-  assert.ok(small.includes('Oʻahu') && !small.includes('Smallton'), 'below 8 the island beats a smaller town: ' + small.join());
-  const town = await run(9, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Wahiawā', flags: 2 });
-  assert.ok(town.includes('Wahiawā') && !town.includes('Oʻahu'), 'from 8 every town first: ' + town.join());
-  const at8 = await run(8, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Wahiawā', flags: 2 });
-  assert.ok(at8.includes('Wahiawā') && !at8.includes('Oʻahu'), 'from zoom 8.0 exactly: ' + at8.join());
+  assert.ok(big.names.includes('Oʻahu') && !big.names.includes('Bigcity'), 'below 8 the island beats even a big city: ' + big.names.join());
+  assert.deepEqual(big.oahu, [0, 0], 'at its own label point');
+  const small = await run(7.9, { mz10: 45, name: 'Smallton' });
+  assert.ok(small.names.includes('Oʻahu') && !small.names.includes('Smallton'), 'at 7.9 too: ' + small.names.join());
+  assert.deepEqual(small.oahu, [0, 0]);
+  for (const z of [8, 9]) {
+    const town = await run(z, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Wahiawā', flags: 2 });
+    assert.ok(town.names.includes('Wahiawā'), 'from ' + z + ' the town keeps its place: ' + town.names.join());
+    assert.ok(town.names.includes('Oʻahu') && town.oahu && town.oahu[0] === 0 && town.oahu[1] < 0, 'Oʻahu moves to the spot north of it: ' + JSON.stringify(town.oahu));
+  }
   const clear = await run(9, { mz10: 45, name: 'Far', lat: 30, lon: -140 }, { mz10: 80, name: 'Far2', lat: 21.3, lon: -157.7, flags: 2 });
-  assert.ok(clear.includes('Oʻahu'), 'at zoom 9 Oʻahu shows where no town is under it: ' + clear.join());
+  assert.ok(clear.names.includes('Oʻahu') && clear.oahu[0] === 0 && clear.oahu[1] === 0, 'nothing under it: at its own point');
+});
+
+test('section 115: thin tries an item\'s spots in order, keeps clear of its avoid rects, and drops it when every spot is taken', () => {
+  const sp = I.islandSpots(40, 15);
+  assert.deepEqual(sp, [[0, -25], [0, 25], [30, 0], [-30, 0], [30, -25], [-30, -25], [30, 25], [-30, 25]], 'N, S, E, W, then the corners, 10 px clear');
+  const town = { x: 200, y: 200, w: 40 }, isl = () => ({ x: 200, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15) });
+  let k = I.thin([town, isl()], [], 10, null, 14);
+  assert.equal(k.length, 2); assert.deepEqual([k[1].dx, k[1].dy], [0, -25], 'north first');
+  k = I.thin([town, { x: 200, y: 175, w: 40 }, isl()], [], 10, null, 14);
+  assert.deepEqual([k[2].dx, k[2].dy], [0, 25], 'north taken: south');
+  const avoidN = [{ left: 150, top: 160, right: 250, bottom: 190 }];
+  k = I.thin([town, Object.assign(isl(), { avoid: avoidN })], [], 10, null, 14);
+  assert.deepEqual([k[1].dx, k[1].dy], [0, 25], 'a country name north (avoid): south');
+  assert.equal(I.thin([Object.assign(isl(), { avoid: [{ left: 0, top: 0, right: 400, bottom: 400 }] })], [], 10, null, 14).length, 0, 'every spot taken: left out');
+  assert.equal(I.thin([{ x: 200, y: 200, w: 40 }, { x: 200, y: 200, w: 40 }], [], 10, null, 14).length, 1, 'an item without spots is never moved');
+  assert.equal(I.thin([{ x: 5, y: 200, w: 40, h: 15, alts: I.islandSpots(40, 15) }], [], 10, { x: 400, y: 400 }, 14)[0].dx, 30, 'off the map at its point: the east spot');
+});
+
+test('section 115 create(): below zoom 8 an island name keeps clear of the country names (which beat it), and moves to a spot', async () => {
+  const { M, flush } = loadWithFrames();
+  // a country label put on Kauaʻi's point (no big city near): the island name must leave it the place
+  const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
+  const c2 = JSON.parse(JSON.stringify(COUNTRIES)); c2.countries.push(['Testland', KAUAI[0], KAUAI[1], 0, 70, 0]); c2.count++;
+  const map = fakeMap(6, KAUAI[0], KAUAI[1], 1440, 810);
+  map.getMinZoom = () => 2.9;
+  const pl = M.create(map, iopts(map, islandFetch({ 'countries.json': { json: c2 } })));
+  for (let i = 0; i < 4; i++) { await settle(); flush(); }
+  const names = spanTexts(pl), sp = pl.labels.children.find((s) => !s.hidden && s.textContent === 'Kauaʻi'), lp = map.latLngToLayerPoint(KAUAI);
+  assert.ok(names.includes('TESTLAND'), names.join());
+  assert.ok(sp && (parseInt(sp.style.top, 10) !== Math.round(lp.y) || parseInt(sp.style.left, 10) !== Math.round(lp.x)), 'Kauaʻi moved off the country name');
 });
 
 test('section 115 create(): the islands file is asked below zoom 12 only; failing keeps the country and city names; Place names off hides them and asks nothing; credited alone', async (t) => {

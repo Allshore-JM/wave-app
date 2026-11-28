@@ -1,0 +1,72 @@
+# TEMPORARY (plan section 111b): prepares the European sources once (tools/bathy/bathy_prep.py) and mirrors them to the
+# frames bucket under static/bathy-src/<set>/ (never overwriting a key: the hash names the content), each part's
+# manifest rows under static/bathy-src/<set>/parts/. EMODnet DTM 2024 (6 tiles), Litto3D Finistere (292 packs, 29.6 GB)
+# and Nouvelle-Aquitaine (324 packs, 219 GB), INFOMAR's inshore surveys (288 grids). Runs only on a push to
+# feat/bathy-intl that touches this file. Shom serves about 1.6 MB/s per download (trial 2026-11-28), so Nouvelle-Aquitaine
+# is cut into 16 parts of ~14 GB (~2.5 h each). REMOVE BEFORE THE MERGE (a test pins that it is gone).
+name: bathy-prep-once
+on:
+  push:
+    branches: ["feat/bathy-intl"]
+    paths: [".github/workflows/bathy-prep-once.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: bathy-prep-once
+  cancel-in-progress: false
+jobs:
+  prep:
+    name: prep ${{ matrix.list }} ${{ matrix.part }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      max-parallel: 4                     # the account's runners are shared (20 in all); Shom's server is one host
+      fail-fast: false
+      matrix:
+        include:
+          - {list: prep_emodnet.json, part: "1/1"}
+          - {list: prep_litto3d_fin.json, part: "1/3"}
+          - {list: prep_litto3d_fin.json, part: "2/3"}
+          - {list: prep_litto3d_fin.json, part: "3/3"}
+          - {list: prep_litto3d_naq.json, part: "1/16"}
+          - {list: prep_litto3d_naq.json, part: "2/16"}
+          - {list: prep_litto3d_naq.json, part: "3/16"}
+          - {list: prep_litto3d_naq.json, part: "4/16"}
+          - {list: prep_litto3d_naq.json, part: "5/16"}
+          - {list: prep_litto3d_naq.json, part: "6/16"}
+          - {list: prep_litto3d_naq.json, part: "7/16"}
+          - {list: prep_litto3d_naq.json, part: "8/16"}
+          - {list: prep_litto3d_naq.json, part: "9/16"}
+          - {list: prep_litto3d_naq.json, part: "10/16"}
+          - {list: prep_litto3d_naq.json, part: "11/16"}
+          - {list: prep_litto3d_naq.json, part: "12/16"}
+          - {list: prep_litto3d_naq.json, part: "13/16"}
+          - {list: prep_litto3d_naq.json, part: "14/16"}
+          - {list: prep_litto3d_naq.json, part: "15/16"}
+          - {list: prep_litto3d_naq.json, part: "16/16"}
+          - {list: prep_infomar.json, part: "1/3"}
+          - {list: prep_infomar.json, part: "2/3"}
+          - {list: prep_infomar.json, part: "3/3"}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09   # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1   # v6.3.0
+        with:
+          python-version: "3.13"
+      - run: pip install numpy==2.5.4 rasterio==1.5.2 pyproj==3.8.0 boto3==1.43.98 certifi==2026.10.23
+      - name: Tools and disk
+        run: |
+          7z i | head -3
+          sudo mkdir -p /mnt/prep && sudo chown "$USER" /mnt/prep
+          df -h / /mnt | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Prepare and mirror
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          LIST: ${{ matrix.list }}
+          PART: ${{ matrix.part }}
+        run: |
+          set -o pipefail
+          python tools/bathy/bathy_prep.py run "tools/bathy/$LIST" --part "$PART" --upload --work /mnt/prep --out part.json | tee prep.log
+          { echo '```'; tail -25 prep.log; df -h /mnt | tail -1; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

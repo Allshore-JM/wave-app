@@ -319,7 +319,7 @@ function fakeMap(z, lat, lon, sx, sy) {
     getZoom() { return this.zoom; }, getSize: () => size,
     getPane: (n) => panes[n], createPane: (n) => (panes[n] = { style: {}, children: [], appendChild(c) { this.children.push(c); return c; } }), panes,
     hasLayer: (l) => layers.has(l), removeLayer: (l) => { layers.delete(l); }, _add: (l) => layers.add(l), layers,
-    on: (e, f) => { e.split(' ').forEach((n) => { (ev[n] = ev[n] || []).push(f); }); }, fire: (e) => (ev[e] || []).forEach((f) => f()),
+    on: (e, f) => { e.split(' ').forEach((n) => { (ev[n] = ev[n] || []).push(f); }); }, fire: (e, d) => (ev[e] || []).forEach((f) => f(d)),
     _wpx() { const n = 2 ** this.zoom; return { x: I.lonToX(this.center.lon) * n, y: I.latToY(this.center.lat) * n, n }; },
     latLngToContainerPoint(ll) { const c = this._wpx(); return { x: I.lonToX(ll[1]) * c.n - c.x + size.x / 2, y: I.latToY(ll[0]) * c.n - c.y + size.y / 2 }; },
     latLngToLayerPoint(ll) { const p = this.latLngToContainerPoint(ll); return { x: p.x - 100, y: p.y - 50 }; },
@@ -1695,4 +1695,68 @@ test('section 115 create(): an island name keeps clear of the forecast dots (opt
   assert.deepEqual(await run({ dots: () => [{ lat: KAUAI[0] + 1, lng: KAUAI[1] }] }), [0, 0], 'a dot a degree away: kept');
   assert.deepEqual(await run({ dots: () => { throw new Error('x'); } }), [0, 0], 'a failing dots() is ignored');
   assert.equal(await run({}, true), null, 'a station icon on it: left out (an element larger than a marker is not one)');
+});
+
+// ---- G81 fixes (plan section 115) ----
+test('G81 A-1 create(): a marker or forecast dot coming or going lays the island names out again (the page rebuilds its markers after the names); a layer that is no point does not; nor while no island name is a candidate', async () => {
+  const { M, flush } = loadWithFrames();
+  const ki = IS.label.indexOf('Kauaʻi'), KAUAI = [IS.lat[ki], IS.lon[ki]];
+  let dots = [];
+  const map = fakeMap(7, KAUAI[0], KAUAI[1], 1440, 810), pl = M.create(map, { ...iopts(map, islandFetch()), dots: () => dots });
+  for (let i = 0; i < 3; i++) { await settle(); flush(); }
+  const has = () => spanTexts(pl).includes('Kauaʻi');
+  assert.ok(has(), spanTexts(pl).join());
+  dots = [{ lat: KAUAI[0], lng: KAUAI[1] }];                           // the page's markers arrive after the names
+  map.fire('layeradd', { layer: { getTileUrl() {} } }); flush();
+  assert.ok(has(), 'a layer with no position (a tile layer) relays nothing');
+  map.fire('layeradd', { layer: { getLatLng: () => ({ lat: KAUAI[0], lng: KAUAI[1] }) } }); flush();
+  assert.ok(!has(), 'a dot added under Kauaʻi: the name gives way');
+  dots = [];
+  map.fire('layerremove', { layer: { getLatLng: () => ({ lat: KAUAI[0], lng: KAUAI[1] }) } }); flush();
+  assert.ok(has(), 'the dot gone: the name back');
+});
+
+test('G81 A-1 create(): no relay for a marker while no island name is a candidate (zoom 13; Place names off)', async () => {
+  const q = [], M = load({ requestAnimationFrame: (fn) => { q.push(fn); return q.length; } }), flush = () => { while (q.length) q.shift()(); };
+  const ki = IS.label.indexOf('Kauaʻi'), pt = { layer: { getLatLng: () => ({ lat: IS.lat[ki], lng: IS.lon[ki] }) } };
+  const m13 = fakeMap(13, IS.lat[ki], IS.lon[ki], 1440, 810);
+  M.create(m13, iopts(m13, islandFetch()));
+  for (let i = 0; i < 3; i++) { await settle(); flush(); }
+  m13.fire('layeradd', pt);
+  assert.equal(q.length, 0, 'zoom 13: no frame asked');
+  const m7 = fakeMap(7, IS.lat[ki], IS.lon[ki], 1440, 810), p7 = M.create(m7, iopts(m7, islandFetch()));
+  for (let i = 0; i < 3; i++) { await settle(); flush(); }
+  m7.fire('layeradd', pt);
+  assert.equal(q.length, 1, 'zoom 7, Kauaʻi a candidate: a frame asked'); flush();
+  p7.set('places', false); flush();
+  m7.fire('layeradd', pt);
+  assert.equal(q.length, 0, 'Place names off: no frame asked');
+});
+
+test('G81 A-2: thin: island names (soft) do not count toward the label cap, so no city loses a place an island name does not cover', () => {
+  const s1 = { x: 100, y: 100, w: 40, h: 15, soft: true }, c1 = { x: 300, y: 100, w: 40 }, s2 = { x: 100, y: 300, w: 40, h: 15, soft: true }, c2 = { x: 300, y: 300, w: 40 }, c3 = { x: 500, y: 300, w: 40 };
+  assert.deepEqual(I.thin([s1, c1, s2, c2, c3], [], 2, null, 14), [s1, c1, s2, c2], 'two cities (the cap) and both island names');
+  assert.deepEqual(I.thin([c1, c2, c3], [], 2, null, 14), [c1, c2]);
+  assert.deepEqual(I.thin([c1, c2, c3, s1, s2], [], 2, null, 14), [c1, c2, s1, s2], 'island names after the cap is reached are still placed');
+});
+
+test('G81 A-8: decodeIslands refuses an island that ends before it starts', () => {
+  const d = JSON.parse(JSON.stringify(ISLANDS)); d.islands[3] = ['X', 0, 0, 60, 50, 1];
+  assert.throws(() => I.decodeIslands(d), /bad island/);
+  d.islands[3] = ['X', 0, 0, 60, 60, 1]; assert.doesNotThrow(() => I.decodeIslands(d));
+});
+
+test('G81 B-2 create(): an island name never takes a national capital\'s place (the capital named as on production); a town in the same spot still gives way', async () => {
+  const { M, flush } = loadWithFrames();
+  const run = async (city) => {
+    const map = fakeMap(7.9, OAHU[0], OAHU[1], 1440, 810), pl = M.create(map, iopts(map, islandFetch({ 'world-places.bin': placesAt([{ lat: OAHU[0], lon: OAHU[1], ...city }]) })));
+    for (let i = 0; i < 4; i++) { await settle(); flush(); }
+    return spanTexts(pl);
+  };
+  let n = await run({ mz10: 45, name: 'Capitalia', flags: 1 });
+  assert.ok(n.includes('Capitalia') && !n.includes('Oʻahu'), 'a capital keeps its place: ' + n.join());
+  n = await run({ mz10: 45, name: 'Smallton' });
+  assert.ok(!n.includes('Smallton') && n.includes('Oʻahu'), 'a town gives way: ' + n.join());
+  n = await run({ mz10: 45, name: 'Capitalia', flags: 1, lat: 21.1, lon: -157.0 });
+  assert.ok(n.includes('Capitalia') && n.includes('Oʻahu'), 'a capital elsewhere: both: ' + n.join());
 });

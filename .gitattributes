@@ -19,3 +19,4 @@ tests/fixtures/radar/** -text
 tools/coast/band_v5.json -text
 # The country names (plan section 114): the served bytes are pinned by sha256 in tests/places/test_build_countries.py
 static_ui/countries.json -text
+static_ui/islands.json -text

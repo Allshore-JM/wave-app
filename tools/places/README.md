@@ -123,3 +123,30 @@ python tools/places/build_countries.py --ne ne_10m_admin_0_countries.geojson --c
 
 `--check` with `--ne` also requires the committed file to equal a rebuild byte for byte. `tests/places/test_build_countries.py`
 pins the committed file's sha256, so a rebuild with new rules must update that pin.
+
+## Island names (`static_ui/islands.json`, plan section 115)
+
+`build_islands.py` builds the island and island-group names from Natural Earth's
+`ne_10m_geography_regions_polys.geojson` (classes Island and Island group; the same pinned commit, the file's sha256
+pinned in the script). Like the country names it is a small committed UI asset (about 18 KB), not a bucket prefix.
+
+- **Name:** the English name (`NAME_EN`, else `NAME`) in its formal spelling: Hawaiian names with the ʻokina (U+02BB)
+  and kahakō (Oʻahu, Lānaʻi, Hawaiʻi), Honshū, Galápagos Islands; Natural Earth's wrong or odd English names corrected
+  by hand (`NAME_FIXES`). Long labels wrap as the country names do.
+- **Left out:** a name that repeats a country label (`static_ui/countries.json`) or its alias (Cape Verde, Maldive
+  Islands, Bahama Islands), the ocean-wide regions (Polynesia, Melanesia, Micronesia, West Indies, Malay Archipelago,
+  British Isles, Arctic Archipelago) and four features that are not islands. Kahoʻolawe is added by hand.
+- **Group or island:** from the name (Islands, Archipelago, Group, Chain ...), not Natural Earth's class, which files
+  Maui and Tahiti as groups. Groups are drawn in letter-spaced capitals.
+- **Shown from:** Natural Earth's label zoom (`MIN_LABEL`, absolute). **Gone from:** the zoom at which the island (or the
+  group's hull) is about 900 px across, at least 1.5 zooms after it came, never after zoom 12.
+- **Label point:** the pole of inaccessibility of the largest polygon, so a crescent island's name sits on land.
+
+```bash
+curl -sSfLo ne_10m_geography_regions_polys.geojson   https://raw.githubusercontent.com/nvkelso/natural-earth-vector/ca96624a56bd078437bca8184e78163e5039ad19/geojson/ne_10m_geography_regions_polys.geojson
+python tools/places/build_islands.py --ne ne_10m_geography_regions_polys.geojson --out static_ui/islands.json
+python tools/places/build_islands.py --ne ne_10m_geography_regions_polys.geojson --check static_ui/islands.json
+```
+
+`tests/places/test_build_islands.py` pins the committed file's sha256. Rebuild `islands.json` after `countries.json`
+changes (the duplicate rule reads it).
